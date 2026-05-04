@@ -62,7 +62,7 @@ fi
 # ── 3. symlink subctl + convenience shims into /usr/local/bin (if writable) ─
 subctl_info "linking subctl CLI + shorthand shims"
 
-SHIMS=(subctl claude-teams claude-radar claude-dash claude-deck)
+SHIMS=(subctl claude-teams claude-radar claude-dash claude-deck claude-kill)
 SYS_BIN="/usr/local/bin"
 USER_BIN="$HOME/bin"
 

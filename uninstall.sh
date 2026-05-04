@@ -50,7 +50,7 @@ fi
 # 5. Remove CLI + shim symlinks. If the shim was a backup-replacing symlink,
 #    restore the most recent backup file in its place (so users with a
 #    pre-subctl claude-teams get their original back).
-for shim in subctl claude-teams claude-radar claude-dash claude-deck; do
+for shim in subctl claude-teams claude-radar claude-dash claude-deck claude-kill; do
   for dir in /usr/local/bin "$HOME/bin"; do
     path="$dir/$shim"
     if [[ -L "$path" ]]; then

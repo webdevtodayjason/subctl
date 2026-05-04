@@ -46,9 +46,13 @@ Usage:
 
   subctl session-list [--format <plain|sesh|json>]
                                       List tmux sessions enriched with account
-                                      + ctx % + RL today + status. Used by sesh.
+                                      + ctx % + RL today + status.
   subctl session-preview <name>       Render the metadata block for one session.
-                                      Used as sesh's preview_command.
+  subctl session-kill <name> [name...]
+                                      Kill one or more tmux sessions.
+  subctl session-prune [--older-than 6h] [--yes]
+                                      Kill all tmux sessions older than DUR
+                                      (default 6h). Asks before killing.
   subctl whoami                       Current shell's CLAUDE_CONFIG_DIR account
   subctl config edit                  Open accounts.conf
   subctl doctor                       Health check
@@ -186,6 +190,16 @@ case "$cmd" in
   session-list)
     . "$SUBCTL_REPO_ROOT/lib/session-preview.sh"
     subctl_session_list "$@"
+    ;;
+
+  session-kill|kill)
+    . "$SUBCTL_REPO_ROOT/lib/session-preview.sh"
+    subctl_session_kill "$@"
+    ;;
+
+  session-prune|prune)
+    . "$SUBCTL_REPO_ROOT/lib/session-preview.sh"
+    subctl_session_prune "$@"
     ;;
 
   whoami)

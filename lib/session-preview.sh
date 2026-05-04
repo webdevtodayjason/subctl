@@ -258,6 +258,118 @@ EOF
   printf "%s\n" "$capture" | tail -8
 }
 
+# ── public: subctl session-kill <name> [name...] ────────────────────────────
+subctl_session_kill() {
+  if [[ $# -eq 0 ]]; then
+    cat <<EOF
+subctl session-kill <name> [name...]
+
+  Kill one or more tmux sessions by name.
+
+  Examples:
+    subctl session-kill claude-shannon
+    subctl session-kill claude-shannon claude-holace
+    subctl session-list --format sesh | xargs subctl session-kill   # nuclear
+EOF
+    return 1
+  fi
+
+  if ! command -v tmux >/dev/null 2>&1; then
+    subctl_die "tmux not installed"
+  fi
+
+  local killed=0 missing=0
+  for name in "$@"; do
+    if tmux has-session -t "$name" 2>/dev/null; then
+      if tmux kill-session -t "$name" 2>/dev/null; then
+        subctl_ok "killed $name"
+        killed=$((killed + 1))
+      else
+        subctl_err "failed to kill $name"
+      fi
+    else
+      subctl_warn "no session: $name"
+      missing=$((missing + 1))
+    fi
+  done
+
+  echo
+  printf "  killed: %d   missing: %d\n" "$killed" "$missing"
+}
+
+# ── public: subctl session-prune [--older-than DUR] [--yes] ─────────────────
+# Kill all tmux sessions older than the threshold. DUR accepts: 6h, 30m, 2d.
+# Default: 6h (matches the radar age-red threshold).
+subctl_session_prune() {
+  local threshold_str="6h" auto_yes=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --older-than) threshold_str="$2"; shift 2 ;;
+      --yes|-y)     auto_yes=true; shift ;;
+      -h|--help)
+        cat <<EOF
+subctl session-prune [--older-than DUR] [--yes]
+
+  Kill all tmux sessions older than DUR. Asks for confirmation
+  unless --yes is passed.
+
+  DUR formats: 30m, 6h (default), 2d
+EOF
+        return 0 ;;
+      *) subctl_die "unknown flag: $1" ;;
+    esac
+  done
+
+  if ! command -v tmux >/dev/null 2>&1; then
+    subctl_die "tmux not installed"
+  fi
+
+  # Parse DUR → seconds.
+  local threshold
+  case "$threshold_str" in
+    *d) threshold=$(( ${threshold_str%d} * 86400 )) ;;
+    *h) threshold=$(( ${threshold_str%h} * 3600 )) ;;
+    *m) threshold=$(( ${threshold_str%m} * 60 )) ;;
+    *)  threshold="$threshold_str" ;;  # bare seconds
+  esac
+
+  local now stale_names=() stale_ages=()
+  now=$(date +%s)
+  while IFS='|' read -r name created; do
+    [[ -z "$name" || -z "$created" ]] && continue
+    local age=$(( now - created ))
+    if [[ "$age" -ge "$threshold" ]]; then
+      stale_names+=("$name")
+      stale_ages+=("$age")
+    fi
+  done < <(tmux list-sessions -F '#{session_name}|#{session_created}' 2>/dev/null)
+
+  if [[ ${#stale_names[@]} -eq 0 ]]; then
+    subctl_info "no sessions older than $threshold_str"
+    return 0
+  fi
+
+  echo "Sessions older than $threshold_str:"
+  local i=0
+  for n in "${stale_names[@]}"; do
+    local age="${stale_ages[$i]}"
+    printf "  %-30s  %s\n" "$n" "$(subctl_radar_format_age "$age")"
+    i=$((i + 1))
+  done
+
+  if ! $auto_yes; then
+    echo
+    read -r -p "Kill these ${#stale_names[@]} sessions? [y/N]: " confirm
+    [[ "$confirm" == "y" || "$confirm" == "Y" ]] || { echo "aborted"; return 0; }
+  fi
+
+  for n in "${stale_names[@]}"; do
+    tmux kill-session -t "$n" 2>/dev/null \
+      && subctl_ok "killed $n" \
+      || subctl_err "failed: $n"
+  done
+}
+
 # Helper: count rate-limit hits today scoped to a specific session UUID.
 get_rl_for_session_today() {
   local sid="$1"

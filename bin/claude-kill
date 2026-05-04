@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# claude-kill — convenience shim for `subctl session-kill`.
+# Pass one or more tmux session names to kill.
+exec subctl session-kill "$@"
