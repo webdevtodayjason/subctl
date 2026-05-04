@@ -24,7 +24,7 @@ _SUBCTL_USAGE_LOADED=1
 . "$(dirname "${BASH_SOURCE[0]}")/core.sh"
 
 : "${SUBCTL_USAGE_API_BASE:=https://api.anthropic.com}"
-: "${SUBCTL_USAGE_CACHE_TTL:=60}"   # seconds
+: "${SUBCTL_USAGE_CACHE_TTL:=300}"  # 5min — matches dashboard history poller cadence; 7d/5h util doesn't move faster
 : "${SUBCTL_USAGE_TIMEOUT:=8}"       # curl total timeout
 
 # Compute the macOS Keychain service name Claude Code uses for a given

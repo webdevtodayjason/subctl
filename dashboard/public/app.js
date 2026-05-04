@@ -18,6 +18,33 @@
 
   const $ = (id) => document.getElementById(id);
 
+  // ----- Manual refresh button -----
+  // Calls /api/refresh which clears the in-process + on-disk usage caches and
+  // pushes a fresh state to all open WebSocket clients. Disabled briefly after
+  // each click to discourage rapid mashing (auto-poll runs every 5min).
+  function wireRefreshButton() {
+    const btn = $("refresh-btn");
+    if (!btn) return;
+    btn.addEventListener("click", async () => {
+      if (btn.disabled) return;
+      btn.disabled = true;
+      btn.classList.add("spinning");
+      try {
+        const r = await fetch("/api/refresh", { method: "POST" });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        // The server pushes the fresh state via WS; nothing else to do.
+      } catch (err) {
+        // Visual nudge on failure: brief red flash via title.
+        btn.title = `refresh failed: ${err}; will retry on next 5-min poll`;
+      } finally {
+        setTimeout(() => {
+          btn.disabled = false;
+          btn.classList.remove("spinning");
+        }, 1500);
+      }
+    });
+  }
+
   function fmtAge(seconds) {
     if (seconds == null) return "—";
     if (seconds < 60) return `${seconds}s`;
@@ -43,6 +70,7 @@
   }
   setInterval(renderClock, 1000);
   renderClock();
+  wireRefreshButton();
 
   // ----- Status pill -----
 

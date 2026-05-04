@@ -64,7 +64,7 @@
 //   }
 // }
 
-import { readFileSync, readdirSync, statSync, existsSync, appendFileSync, mkdirSync } from "node:fs";
+import { readFileSync, readdirSync, statSync, existsSync, appendFileSync, mkdirSync, rmSync } from "node:fs";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
@@ -272,7 +272,9 @@ interface AccountUsageResult {
 }
 
 let _usageCache: { fetchedAt: number; data: AccountUsageResult[] } | null = null;
-const USAGE_CACHE_TTL_MS = 30_000;
+// 5min — same cadence as the history poller. The /api/refresh endpoint
+// (POST or GET) clears this cache for an explicit on-demand fetch.
+const USAGE_CACHE_TTL_MS = 5 * 60 * 1000;
 
 // Shells out to `subctl usage --json` once per TTL window. The bash impl has
 // its own 60s on-disk cache; this in-process cache just avoids spawning a
@@ -1142,6 +1144,31 @@ const server = Bun.serve({
     if (url.pathname === "/api/version") {
       return new Response(JSON.stringify({ version: VERSION }), {
         headers: { "Content-Type": "application/json; charset=utf-8" },
+      });
+    }
+    // POST or GET /api/refresh — bypass usage caches (in-process AND on-disk)
+    // and return a fresh state snapshot. Clicked from the dashboard "↻" button
+    // or invoked by scripts. Costs one API call per claude account; rest of
+    // the day uses the normal 5-min auto-cadence.
+    if (url.pathname === "/api/refresh") {
+      _usageCache = null;
+      try {
+        const cacheGlob = join(SUBCTL_CONFIG_DIR, "cache", "usage");
+        if (existsSync(cacheGlob)) {
+          for (const f of readdirSync(cacheGlob)) {
+            if (f.endsWith(".json")) {
+              try { rmSync(join(cacheGlob, f)); } catch { /* ignore */ }
+            }
+          }
+        }
+      } catch { /* best-effort */ }
+      const fresh = buildState();
+      // Push to all open WebSockets so other tabs update too.
+      for (const ws of sockets) {
+        try { ws.send(JSON.stringify(fresh)); } catch { /* ignore */ }
+      }
+      return new Response(JSON.stringify(fresh), {
+        headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
       });
     }
     const staticResp = serveStatic(url.pathname);

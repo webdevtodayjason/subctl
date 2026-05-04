@@ -573,3 +573,29 @@ main {
 .ev-account-unknown { color: #6c6c6c; font-style: italic; }
 
 .panel-sub { color: #6c6c6c; font-size: 12px; font-weight: normal; margin-left: 8px; }
+
+/* Manual refresh button in the topbar. Bypasses the 5-min usage cache. */
+.refresh-btn {
+  background: transparent;
+  color: var(--fg-dim);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 2px 8px;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, transform 0.4s ease;
+}
+.refresh-btn:hover:not(:disabled) {
+  color: var(--green);
+  border-color: var(--green);
+}
+.refresh-btn:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+.refresh-btn.spinning {
+  transform: rotate(360deg);
+  color: var(--green);
+}
