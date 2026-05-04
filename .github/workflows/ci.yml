@@ -32,5 +32,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
 
-      - name: Type-check dashboard
-        run: bun --check dashboard/server.ts
+      - name: Build-check dashboard
+        # `bun --check` evaluates the file (which would start Bun.serve and hang).
+        # `bun build` parses + bundles without running, exits non-zero on errors.
+        run: bun build dashboard/server.ts --target=bun --outdir=/tmp/subctl-build-check
