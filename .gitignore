@@ -18,10 +18,9 @@ node_modules/
 dist/
 .bun/
 
-# Go: compiled deck binary lives at bin/subctl-deck (built by install.sh)
-# Source code under deck/ is tracked.
+# Go: legacy v0.3 deck binary path (deck dropped in v0.4 in favor of sesh integration).
+# Kept here so any leftover binary on upgraders' machines doesn't get accidentally tracked.
 bin/subctl-deck
-deck/dist/
 
 # subctl local config (user's real accounts.conf lives in ~/.config/subctl/, never here)
 config/accounts.conf

@@ -37,14 +37,3 @@ jobs:
         # `bun build` parses + bundles without running, exits non-zero on errors.
         run: bun build dashboard/server.ts --target=bun --outdir=/tmp/subctl-build-check
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.21'
-
-      - name: Build-check deck (Go TUI)
-        # Compiles the deck module — fails on any syntax/import/type error.
-        run: |
-          cd deck
-          go vet ./...
-          go build -o /tmp/subctl-deck-bin .

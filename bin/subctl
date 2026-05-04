@@ -43,7 +43,12 @@ Usage:
   subctl service foreground           Run dashboard in current shell
 
   subctl dashboard                    Ensure service is running, open browser
-  subctl deck                         Launch the TUI session manager (Go binary)
+
+  subctl session-list [--format <plain|sesh|json>]
+                                      List tmux sessions enriched with account
+                                      + ctx % + RL today + status. Used by sesh.
+  subctl session-preview <name>       Render the metadata block for one session.
+                                      Used as sesh's preview_command.
   subctl whoami                       Current shell's CLAUDE_CONFIG_DIR account
   subctl config edit                  Open accounts.conf
   subctl doctor                       Health check
@@ -163,14 +168,20 @@ case "$cmd" in
     ;;
 
   deck)
-    DECK_BIN="$SUBCTL_REPO_ROOT/bin/subctl-deck"
-    if [[ ! -x "$DECK_BIN" ]]; then
-      subctl_err "subctl-deck binary not built yet"
-      subctl_err "  build:  cd $SUBCTL_REPO_ROOT/deck && go build -o $DECK_BIN ."
-      subctl_err "  or re-run: subctl install"
-      exit 1
-    fi
-    exec "$DECK_BIN" "$@"
+    subctl_err "'subctl deck' was removed in v0.4 in favor of sesh integration."
+    subctl_err "  See: subctl session-preview --help"
+    subctl_err "       https://github.com/webdevtodayjason/subctl/blob/main/docs/sesh-integration.md"
+    exit 1
+    ;;
+
+  session-preview)
+    . "$SUBCTL_REPO_ROOT/lib/session-preview.sh"
+    subctl_session_preview "$@"
+    ;;
+
+  session-list)
+    . "$SUBCTL_REPO_ROOT/lib/session-preview.sh"
+    subctl_session_list "$@"
     ;;
 
   whoami)

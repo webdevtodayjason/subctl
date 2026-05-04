@@ -114,43 +114,32 @@ Every subctl install drops short-form binaries alongside `subctl` itself, for mu
 | `claude-teams [opts]` | `subctl teams claude [opts]` | Launch a tmux session pinned to a specific Claude account. |
 | `claude-radar`        | `subctl radar`              | Print the dispatch-readiness verdict + cross-account signals. |
 | `claude-dash`         | `subctl dashboard`          | Ensure the dashboard service is running, open the browser. |
-| `claude-deck`         | `subctl deck`               | Open the TUI session manager (live grid of all your sessions). |
 
-All five binaries (`subctl`, `claude-teams`, `claude-radar`, `claude-dash`, `claude-deck`) are symlinks into the repo, so `git pull && ./install.sh` is the only update path.
+All four binaries (`subctl`, `claude-teams`, `claude-radar`, `claude-dash`) are symlinks into the repo, so `git pull && ./install.sh` is the only update path.
 
 If `claude-teams` already exists at `/usr/local/bin/claude-teams` (e.g. a hand-rolled script you wrote previously), the installer backs it up to `~/code/claude-teams.pre-subctl.<timestamp>.bak` before replacing it. Uninstall restores the backup.
 
+> **v0.3 → v0.4 note:** v0.3 shipped a Go-based deck TUI; v0.4 drops it in favor of [sesh integration](docs/sesh-integration.md). subctl now provides `subctl session-preview` and `subctl session-list` that plug into sesh's preview pane to give you a session picker enriched with account + RL metadata. Sesh is mature, fast, and we'd rather not maintain a session picker. The dashboard remains the panoramic web view.
+
 ---
 
-## The deck — live session manager
+## Session navigation via sesh
 
-`subctl deck` (or `claude-deck`) opens a Go + Bubble Tea TUI showing every tmux session on the machine — grouped by project, color-coded by account, with a live ANSI preview of the focused session's pane.
+Rather than ship our own picker, subctl integrates with [`sesh`](https://github.com/joshmedeski/sesh) — a fuzzy tmux session navigator. Two new commands plug in:
 
-```
-╔══════════════════════════════════════════════════════════════════════════╗
-║  subctl deck                                            v0.3.0 · 09:42   ║
-╠══════════════════════════════════════════════════════════════════════════╣
-║  ▾ ampcortex.ai                          ║  ───── claude-titanium ────── ║
-║      ● claude-titanium  16% ctx  4 panes ║                                ║
-║       ├ orchestrator        ctx 65%      ║   > /usage                     ║
-║       ├ worker:auth         ctx 12%      ║   ...                          ║
-║       └ worker:tests        ctx 23%      ║                                ║
-║      working                              ║                                ║
-║                                          ║                                ║
-║    holace                                ║                                ║
-║      ● claude-jason     7% ctx   2 panes ║                                ║
-║      idle 3m                              ║                                ║
-║  ─                                       ║                                ║
-║  [n] new   [k] kill  [a] attach  [r] ↻   ║  ↑↓ scroll preview             ║
-║  [s] split  [q] quit                     ║  ←→ switch session             ║
-╚══════════════════════════════════════════════════════════════════════════╝
+```bash
+subctl session-list [--format plain|sesh|json]    # all tmux sessions enriched with account + ctx
+subctl session-preview <name>                      # multi-line metadata block + recent activity tail
 ```
 
-Status badges: `working` · `idle` · `waiting` (e.g. permission prompt). Detected by parsing the live pane content.
+Wire it in `~/.config/sesh/sesh.toml`:
 
-Press `n` to spawn a new session — pick an account, a folder, a name, opt into orchestrator/-c/-y, hit enter. The deck shells out to `subctl teams claude` underneath, so the launch path is identical to the CLI.
+```toml
+[default_session]
+preview_command = "subctl session-preview {}"
+```
 
-**Requires Go 1.21+** at install time (the binary builds during `./install.sh`). If `go` isn't installed, the rest of subctl works fine; install Go later (`brew install go`) and re-run `subctl install`.
+Then `sesh connect` shows every session with subctl's account + ctx % + status + RL hits in the preview pane. Full setup including suggested tmux keybindings: [docs/sesh-integration.md](docs/sesh-integration.md).
 
 ---
 
