@@ -62,7 +62,7 @@ fi
 # ── 3. symlink subctl + convenience shims into /usr/local/bin (if writable) ─
 subctl_info "linking subctl CLI + shorthand shims"
 
-SHIMS=(subctl claude-teams claude-radar claude-dash)
+SHIMS=(subctl claude-teams claude-radar claude-dash claude-deck)
 SYS_BIN="/usr/local/bin"
 USER_BIN="$HOME/bin"
 
@@ -107,19 +107,21 @@ fi
 
 # ── 6. (claude-teams shim is now installed in step 3 — first-class deliverable)
 
-# ── 6b. v0.4: clean up deck artifacts from prior installs ────────────────────
-# v0.3 shipped a Go-based deck TUI; v0.4 drops it in favor of `sesh` integration.
-# Remove the orphaned binary if a previous install left one behind.
-if [[ -f "$REPO_ROOT/bin/subctl-deck" ]]; then
-  run rm -f "$REPO_ROOT/bin/subctl-deck"
-  subctl_info "removed legacy bin/subctl-deck (v0.3 artifact — deck dropped in v0.4)"
-fi
-for legacy in /usr/local/bin/claude-deck "$HOME/bin/claude-deck"; do
-  if [[ -L "$legacy" ]]; then
-    run rm -f "$legacy"
-    subctl_info "removed legacy $legacy (deck → sesh in v0.4)"
+# ── 6b. build the Go deck TUI binary (v0.3+ feature, restored in v0.4.1) ─────
+if [[ -d "$REPO_ROOT/deck" ]]; then
+  if command -v go >/dev/null 2>&1; then
+    subctl_info "building subctl-deck (Go TUI session manager)"
+    if $DRY_RUN; then
+      echo "[dry-run] cd $REPO_ROOT/deck && go build -o $REPO_ROOT/bin/subctl-deck ."
+    else
+      (cd "$REPO_ROOT/deck" && go build -o "$REPO_ROOT/bin/subctl-deck" . 2>&1) \
+        && subctl_ok "built bin/subctl-deck" \
+        || subctl_warn "go build failed — deck unavailable. Check: cd $REPO_ROOT/deck && go build ./..."
+    fi
+  else
+    subctl_warn "go not installed — deck binary skipped. Install: brew install go && re-run subctl install"
   fi
-done
+fi
 
 # ── 7. dashboard service (opt-in) ───────────────────────────────────────────
 if ! $NO_SERVICE && command -v bun >/dev/null 2>&1; then

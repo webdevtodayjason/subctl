@@ -168,10 +168,14 @@ case "$cmd" in
     ;;
 
   deck)
-    subctl_err "'subctl deck' was removed in v0.4 in favor of sesh integration."
-    subctl_err "  See: subctl session-preview --help"
-    subctl_err "       https://github.com/webdevtodayjason/subctl/blob/main/docs/sesh-integration.md"
-    exit 1
+    DECK_BIN="$SUBCTL_REPO_ROOT/bin/subctl-deck"
+    if [[ ! -x "$DECK_BIN" ]]; then
+      subctl_err "subctl-deck binary not built yet"
+      subctl_err "  build:  cd $SUBCTL_REPO_ROOT/deck && go build -o $DECK_BIN ."
+      subctl_err "  or re-run: subctl install"
+      exit 1
+    fi
+    exec "$DECK_BIN" "$@"
     ;;
 
   session-preview)
