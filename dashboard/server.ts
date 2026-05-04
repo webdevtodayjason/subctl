@@ -606,29 +606,58 @@ function latestClaudeSessionId(cfgDir: string): string | null {
   return basename(best.file).replace(/\.jsonl$/, "");
 }
 
-// Best-effort ctx % from the last usage block in the jsonl.
+// Default context window per model. The 1M-context variants (opus-4-7[1m],
+// sonnet-4-6[1m], etc.) record the same model id in the API response as the
+// 200K default — Anthropic doesn't expose the variant in usage blocks. So we
+// auto-detect: if any turn in the session exceeded 90% of the default window,
+// the session is on the larger variant and we bump up accordingly.
+function defaultContextWindow(model: string): number {
+  const m = (model || "").toLowerCase();
+  if (m.startsWith("claude-haiku")) return 200_000;
+  if (m.startsWith("claude-sonnet")) return 200_000;
+  if (m.startsWith("claude-opus"))   return 200_000;
+  return 200_000;
+}
+
+// Best-effort ctx % from the last usage block in the jsonl. Walks the whole
+// file once: finds the latest turn (numerator) and the max turn-total
+// (used to detect the active context-window variant).
 function ctxPctForFile(jsonlPath: string): number {
   if (!existsSync(jsonlPath)) return 0;
   const raw = safeRead(jsonlPath);
   if (!raw) return 0;
-  const lines = raw.split("\n");
-  // Walk backwards to find the last non-empty line containing usage.
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const t = lines[i]!.trim();
+
+  let latestTotal = 0;
+  let latestModel = "";
+  let observedMax = 0;
+
+  for (const line of raw.split("\n")) {
+    const t = line.trim();
     if (!t || !t.includes('"usage"')) continue;
-    try {
-      const obj = JSON.parse(t);
-      const usage = obj?.message?.usage ?? obj?.usage ?? null;
-      if (!usage) continue;
-      const curr = (usage.input_tokens ?? 0)
-                 + (usage.cache_creation_input_tokens ?? 0)
-                 + (usage.cache_read_input_tokens ?? 0)
-                 + (usage.output_tokens ?? 0);
-      if (curr <= 0) return 0;
-      return Math.min(100, Math.floor(curr * 100 / 200000));
-    } catch { /* continue */ }
+    let obj: any;
+    try { obj = JSON.parse(t); } catch { continue; }
+    const usage = obj?.message?.usage ?? obj?.usage ?? null;
+    if (!usage) continue;
+    const curr = (usage.input_tokens ?? 0)
+               + (usage.cache_creation_input_tokens ?? 0)
+               + (usage.cache_read_input_tokens ?? 0)
+               + (usage.output_tokens ?? 0);
+    if (curr <= 0) continue;
+    if (curr > observedMax) observedMax = curr;
+    latestTotal = curr;
+    latestModel = obj?.message?.model ?? obj?.model ?? latestModel;
   }
-  return 0;
+  if (latestTotal <= 0) return 0;
+
+  let window = defaultContextWindow(latestModel);
+  // If any turn exceeded 90% of the default window, the session is clearly
+  // running on the 1M-context variant of the model.
+  if (observedMax > window * 0.9) {
+    window = observedMax <= 1_000_000
+      ? 1_000_000
+      : Math.ceil(observedMax / 100_000) * 100_000;
+  }
+  return Math.min(100, Math.floor(latestTotal * 100 / window));
 }
 
 // Age of a Claude session by parsing the first timestamp line of its jsonl.
