@@ -159,20 +159,98 @@ subctl_migrate_generate_aliases() {
     done < <(subctl_list_accounts)
     cat <<'FNS'
 
-# helpers
+# ── helpers ──────────────────────────────────────────────────────────────────
 claude-whoami() {
   if [[ -z "${CLAUDE_CONFIG_DIR:-}" ]]; then
     echo "default ($HOME/.claude)"
   else
-    echo "$CLAUDE_CONFIG_DIR"
+    # Resolve to alias when possible
+    local alias
+    alias=$(subctl config show 2>/dev/null | awk -F'|' -v c="$CLAUDE_CONFIG_DIR" '
+      !/^#/ && NF >= 4 {
+        d=$4; gsub(/[ \t]/, "", d)
+        gsub("~", ENVIRON["HOME"], d)
+        if (d == c) { a=$1; gsub(/[ \t]/, "", a); print a; exit }
+      }')
+    if [[ -n "$alias" ]]; then
+      echo "$alias  ($CLAUDE_CONFIG_DIR)"
+    else
+      echo "custom  ($CLAUDE_CONFIG_DIR)"
+    fi
   fi
 }
+
 claude-accounts() { subctl accounts; }
+
+# claude-use <alias> — switch the current shell's CLAUDE_CONFIG_DIR in place.
+# Affects every subsequent `claude` invocation in this shell. Existing tmux
+# sessions/processes are NOT affected (their env is locked at launch time).
+#
+# Usage:
+#   claude-use jason          # short form
+#   claude-use claude-jason   # full alias
+#   claude-use                # show current + list options
+#   claude-use default        # back to ~/.claude (unset)
+claude-use() {
+  local target="$1"
+  if [[ -z "$target" ]]; then
+    echo "Current: $(claude-whoami)"
+    echo
+    echo "Available accounts:"
+    subctl config show 2>/dev/null | awk -F'|' '
+      !/^#/ && NF >= 4 {
+        a=$1; e=$3; d=$4
+        gsub(/^[ \t]+|[ \t]+$/, "", a)
+        gsub(/^[ \t]+|[ \t]+$/, "", e)
+        gsub(/^[ \t]+|[ \t]+$/, "", d)
+        printf "  %-20s %s\n", a, e
+      }'
+    echo
+    echo "Switch with: claude-use <alias>"
+    echo "Reset with:  claude-use default"
+    return 0
+  fi
+
+  if [[ "$target" == "default" ]]; then
+    unset CLAUDE_CONFIG_DIR
+    echo "→ default ($HOME/.claude)"
+    return 0
+  fi
+
+  # Resolve alias (allow bare "jason" or full "claude-jason")
+  local cfg_dir
+  cfg_dir=$(subctl config show 2>/dev/null | awk -F'|' -v t="$target" '
+    !/^#/ && NF >= 4 {
+      a=$1; gsub(/[ \t]/, "", a)
+      d=$4; gsub(/[ \t]/, "", d)
+      gsub("~", ENVIRON["HOME"], d)
+      if (a == t || a == "claude-" t) { print d; exit }
+    }')
+
+  if [[ -z "$cfg_dir" ]]; then
+    echo "Unknown account: $target"
+    echo "Try: claude-use   (no args, lists available)"
+    return 1
+  fi
+
+  if [[ ! -d "$cfg_dir" ]]; then
+    echo "Config dir doesn't exist: $cfg_dir"
+    echo "Authenticate first: subctl auth claude $target"
+    return 1
+  fi
+
+  export CLAUDE_CONFIG_DIR="$cfg_dir"
+  echo "→ $target  ($CLAUDE_CONFIG_DIR)"
+}
 
 # safety net: bare `claude` reminds you to pick an account
 claude() {
-  echo "Use one of your aliases (subctl accounts) or run 'command claude' to bypass."
+  echo "Pick an account first:"
+  echo "  claude-use jason       # switch this shell"
+  echo "  claude-jason           # one-off (per-command env)"
+  echo
   echo "Current shell account: $(claude-whoami)"
+  echo "(or run 'command claude' to bypass this guard)"
   return 1
 }
 FNS
