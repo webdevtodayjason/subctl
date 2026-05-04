@@ -1330,43 +1330,171 @@ function renderMarkdown(src: string): string {
   return out.join("\n");
 }
 
+// Pre-parse the markdown for heading structure (H2 + nested H3) so we can
+// render a sidebar nav alongside the body. We don't try to be clever about
+// matching headings inside fenced code — we skip lines between ``` fences.
+interface OutlineItem { level: 2 | 3; text: string; slug: string; }
+function extractOutline(src: string): OutlineItem[] {
+  const out: OutlineItem[] = [];
+  let inFence = false;
+  for (const line of src.split("\n")) {
+    if (/^```/.test(line)) { inFence = !inFence; continue; }
+    if (inFence) continue;
+    const m = line.match(/^(#{2,3})\s+(.+?)\s*$/);
+    if (!m) continue;
+    const level = m[1]!.length === 2 ? 2 : 3;
+    const text = m[2]!.trim();
+    out.push({ level, text, slug: slugify(text) });
+  }
+  return out;
+}
+
+function renderSidebarNav(outline: OutlineItem[]): string {
+  const parts: string[] = [];
+  parts.push(`<nav class="docs-nav" aria-label="Sections">`);
+  parts.push(`<ul class="docs-nav-list">`);
+  for (let i = 0; i < outline.length; i++) {
+    const item = outline[i]!;
+    if (item.level === 2) {
+      // Open a new H2 group; collect any following H3 items as a nested ul.
+      const subs: OutlineItem[] = [];
+      let j = i + 1;
+      while (j < outline.length && outline[j]!.level === 3) {
+        subs.push(outline[j]!);
+        j++;
+      }
+      parts.push(`<li class="docs-nav-section">`);
+      parts.push(`  <a class="docs-nav-link docs-nav-h2" data-slug="${item.slug}" data-text="${escapeHtml(item.text.toLowerCase())}" href="#${item.slug}">${escapeHtml(item.text)}</a>`);
+      if (subs.length > 0) {
+        parts.push(`  <ul class="docs-nav-sublist">`);
+        for (const sub of subs) {
+          parts.push(`    <li><a class="docs-nav-link docs-nav-h3" data-slug="${sub.slug}" data-text="${escapeHtml(sub.text.toLowerCase())}" href="#${sub.slug}">${escapeHtml(sub.text)}</a></li>`);
+        }
+        parts.push(`  </ul>`);
+      }
+      parts.push(`</li>`);
+      i = j - 1; // skip the consumed H3s
+    }
+  }
+  parts.push(`</ul></nav>`);
+  return parts.join("\n");
+}
+
 function renderHelpPage(): string {
   let md: string;
   try { md = readFileSync(HELP_MD_PATH, "utf8"); }
   catch { return `<!doctype html><meta charset="utf-8"><title>help</title><pre>help.md not found at ${HELP_MD_PATH}</pre>`; }
 
   const body = renderMarkdown(md);
+  const outline = extractOutline(md);
+  const nav = renderSidebarNav(outline);
+
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>subctl · help</title>
+  <title>subctl · docs</title>
   <link rel="stylesheet" href="/style.css">
 </head>
-<body class="help-body">
-  <header class="topbar">
-    <div class="brand">
+<body class="docs-body">
+  <header class="docs-topbar">
+    <div class="docs-topbar-brand">
       <a href="/" class="brand-name">subctl</a>
       <span class="brand-version">v${VERSION}</span>
-      <span class="help-crumb">/ help</span>
+      <span class="docs-crumb">docs</span>
     </div>
-    <div class="topbar-right">
-      <a href="/" class="back-link">&larr; back to dashboard</a>
+    <div class="docs-topbar-right">
+      <a href="/" class="docs-back-link">← back to dashboard</a>
     </div>
   </header>
-  <main class="help-main">
-    <article class="help-doc">
-      ${body}
-    </article>
-  </main>
-  <footer class="footer">
-    <span>subctl v${VERSION}</span>
-    <span class="sep">/</span>
-    <a href="/">dashboard</a>
-    <span class="sep">/</span>
-    <a href="https://github.com/webdevtodayjason/subctl" target="_blank" rel="noopener">github</a>
-  </footer>
+  <div class="docs-shell">
+    <aside class="docs-sidebar" id="docs-sidebar">
+      <div class="docs-search">
+        <input type="search" id="docs-search-input" placeholder="Search docs (⌘K)" autocomplete="off" spellcheck="false">
+      </div>
+      ${nav}
+    </aside>
+    <main class="docs-content">
+      <article class="help-doc" id="docs-article">
+        ${body}
+      </article>
+      <footer class="docs-footer">
+        <a href="/">← dashboard</a>
+        <span class="sep">·</span>
+        <a href="https://github.com/webdevtodayjason/subctl" target="_blank" rel="noopener">github</a>
+        <span class="sep">·</span>
+        <span>subctl v${VERSION}</span>
+      </footer>
+    </main>
+  </div>
+  <script>
+  (function () {
+    "use strict";
+    var input = document.getElementById("docs-search-input");
+    var navLinks = Array.prototype.slice.call(document.querySelectorAll(".docs-nav-link"));
+    var navItems = Array.prototype.slice.call(document.querySelectorAll(".docs-nav-section"));
+
+    // ⌘K / Ctrl+K focuses the search.
+    document.addEventListener("keydown", function (e) {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        if (input) input.focus();
+      } else if (e.key === "Escape" && document.activeElement === input) {
+        input.value = "";
+        applyFilter("");
+        input.blur();
+      }
+    });
+
+    function applyFilter(q) {
+      q = (q || "").trim().toLowerCase();
+      if (!q) {
+        navItems.forEach(function (el) { el.style.display = ""; });
+        navLinks.forEach(function (el) {
+          el.style.display = "";
+          el.classList.remove("docs-search-hit");
+        });
+        return;
+      }
+      // Hide H2 groups whose H2 text and all nested H3s don't match.
+      navItems.forEach(function (section) {
+        var links = Array.prototype.slice.call(section.querySelectorAll(".docs-nav-link"));
+        var anyMatch = false;
+        links.forEach(function (link) {
+          var hay = link.dataset.text || link.textContent.toLowerCase();
+          var match = hay.indexOf(q) !== -1;
+          link.style.display = match ? "" : "none";
+          link.classList.toggle("docs-search-hit", match);
+          if (match) anyMatch = true;
+        });
+        section.style.display = anyMatch ? "" : "none";
+      });
+    }
+
+    if (input) input.addEventListener("input", function () { applyFilter(input.value); });
+
+    // Active-section highlight via IntersectionObserver.
+    var sections = Array.prototype.slice.call(document.querySelectorAll("h2[id], h3[id]"));
+    var byId = {};
+    navLinks.forEach(function (l) { byId[l.dataset.slug] = l; });
+    var visible = new Set();
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) visible.add(e.target.id);
+        else                  visible.delete(e.target.id);
+      });
+      // Choose topmost visible heading as "active".
+      var active = null;
+      for (var i = 0; i < sections.length; i++) {
+        if (visible.has(sections[i].id)) { active = sections[i].id; break; }
+      }
+      navLinks.forEach(function (l) { l.classList.remove("docs-nav-active"); });
+      if (active && byId[active]) byId[active].classList.add("docs-nav-active");
+    }, { rootMargin: "-80px 0px -70% 0px", threshold: 0 });
+    sections.forEach(function (s) { io.observe(s); });
+  })();
+  </script>
 </body>
 </html>`;
 }
@@ -1443,6 +1571,35 @@ const server = Bun.serve({
           "Cache-Control": "no-store",
         },
       });
+    }
+    // POST /api/sessions/<name>/kill — shells out to `subctl session-kill <name>`.
+    // Validates the session name against current tmux state to avoid arbitrary
+    // input being passed to the CLI. Reuses the existing safe code path.
+    {
+      const m = url.pathname.match(/^\/api\/sessions\/([^/]+)\/kill\/?$/);
+      if (m && req.method === "POST") {
+        const name = decodeURIComponent(m[1]!);
+        // Check the session actually exists in tmux right now.
+        const known = listTmuxSessions().some(s => s.name === name);
+        if (!known) {
+          return new Response(JSON.stringify({ ok: false, error: "session not found" }),
+            { status: 404, headers: { "Content-Type": "application/json" } });
+        }
+        const subctlBin = join(REPO_ROOT, "bin", "subctl");
+        const r = spawnSync(subctlBin, ["session-kill", name], { encoding: "utf8", timeout: 8_000 });
+        if (r.error || (typeof r.status === "number" && r.status !== 0)) {
+          return new Response(JSON.stringify({ ok: false, error: (r.stderr || r.stdout || String(r.error)).slice(0, 500) }),
+            { status: 500, headers: { "Content-Type": "application/json" } });
+        }
+        // Push a fresh state immediately so the row disappears in real-time.
+        const fresh = buildState();
+        for (const ws of sockets) {
+          try { ws.send(JSON.stringify(fresh)); } catch { /* ignore */ }
+        }
+        return new Response(JSON.stringify({ ok: true }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
     }
     const staticResp = serveStatic(url.pathname);
     if (staticResp) return staticResp;

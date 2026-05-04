@@ -310,6 +310,66 @@ case "$cmd" in
     echo "Accounts:"
     . "$SUBCTL_REPO_ROOT/lib/accounts.sh"
     subctl_accounts_status_table
+
+    # Per-account Keychain bearer probe — verify each cfg_dir resolves to an
+    # entry the OAuth usage endpoint can actually use. Doesn't print the token.
+    echo
+    echo "Keychain bearers:"
+    while IFS=$'\t' read -r alias provider email cfg_dir desc; do
+      [[ "$provider" != "claude" ]] && continue
+      hash=$(printf '%s' "$cfg_dir" | shasum -a 256 | cut -c1-8)
+      svc="Claude Code-credentials-$hash"
+      if security find-generic-password -s "$svc" >/dev/null 2>&1; then
+        printf "  ${C_GRN}✓${C_RST} %-20s service=%s\n" "$alias" "$svc"
+      else
+        printf "  ${C_YLW}!${C_RST} %-20s service=%s ${C_DIM}(no entry — re-run: subctl auth claude %s)${C_RST}\n" "$alias" "$svc" "$alias"
+      fi
+    done < <(subctl_list_accounts)
+
+    # Usage cache freshness — when did the bash poller last write per-account?
+    echo
+    echo "Usage cache:"
+    cache_dir="$SUBCTL_CONFIG_DIR/cache/usage"
+    if [[ -d "$cache_dir" ]]; then
+      now=$(date +%s)
+      shopt -s nullglob
+      cache_files=("$cache_dir"/*.json)
+      shopt -u nullglob
+      if [[ ${#cache_files[@]} -eq 0 ]]; then
+        printf "  ${C_DIM}-${C_RST} no cached snapshots yet (will populate on first 'subctl usage' or dashboard refresh)\n"
+      else
+        for f in "${cache_files[@]}"; do
+          mtime=$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo 0)
+          age=$(( now - mtime ))
+          name=$(basename "$f" .json)
+          if (( age < 600 )); then
+            printf "  ${C_GRN}✓${C_RST} %s ${C_DIM}(%ds ago)${C_RST}\n" "$name" "$age"
+          else
+            printf "  ${C_YLW}!${C_RST} %s ${C_DIM}(%ds ago — stale; dashboard polls every 5min)${C_RST}\n" "$name" "$age"
+          fi
+        done
+      fi
+    else
+      printf "  ${C_DIM}-${C_RST} %s does not exist yet\n" "$cache_dir"
+    fi
+
+    # Utilization history — append-only file written by the dashboard's 5min poller.
+    echo
+    echo "Utilization history:"
+    hist="$SUBCTL_CONFIG_DIR/cache/usage-history.jsonl"
+    if [[ -f "$hist" ]]; then
+      lines=$(wc -l < "$hist" | tr -d ' ')
+      mtime=$(stat -f %m "$hist" 2>/dev/null || stat -c %Y "$hist" 2>/dev/null || echo 0)
+      age=$(( $(date +%s) - mtime ))
+      first_ts=$(head -1 "$hist" 2>/dev/null | jq -r '.ts // empty' 2>/dev/null || echo "")
+      if (( age > 900 )); then
+        printf "  ${C_YLW}!${C_RST} %s ${C_DIM}(%d entries, last write %ds ago — poller may be stalled)${C_RST}\n" "$hist" "$lines" "$age"
+      else
+        printf "  ${C_GRN}✓${C_RST} %s ${C_DIM}(%d entries, last write %ds ago)${C_RST}\n" "$hist" "$lines" "$age"
+      fi
+    else
+      printf "  ${C_DIM}-${C_RST} %s not yet — start the dashboard to begin polling\n" "$hist"
+    fi
     ;;
 
   install)
