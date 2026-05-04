@@ -11,7 +11,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: No-secrets gate
         run: bash scripts/check-no-secrets.sh
@@ -20,19 +20,14 @@ jobs:
         run: brew install shellcheck
 
       - name: Shellcheck
+        # macOS runner uses /bin/bash 3.2 by default — avoid mapfile/globstar.
+        # find + xargs is portable across bash 3.2 and 5.x.
         run: |
-          shopt -s globstar nullglob
-          files=(
-            install.sh
-            uninstall.sh
-            bin/**/*.sh
-            lib/**/*.sh
-            providers/**/*.sh
-            scripts/**/*.sh
-          )
-          # bin/subctl is bash without an .sh extension — include it explicitly.
-          [ -f bin/subctl ] && files+=(bin/subctl)
-          shellcheck -x "${files[@]}"
+          find install.sh uninstall.sh bin lib providers scripts \
+            \( -name '*.sh' -o -path 'bin/subctl' \) -type f > /tmp/sh_files.txt
+          echo "Files to check:"
+          cat /tmp/sh_files.txt
+          xargs shellcheck -x --severity=error < /tmp/sh_files.txt
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
