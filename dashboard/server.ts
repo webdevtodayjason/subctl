@@ -68,6 +68,7 @@ import { readFileSync, readdirSync, statSync, existsSync, appendFileSync, mkdirS
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
+import { aggregateAll as aggregateCostAll, type AccountCostSummary } from "./lib/cost.ts";
 
 const PORT = Number(process.env.PORT ?? 8787);
 const STARTED_AT = Date.now();
@@ -406,6 +407,51 @@ function pruneUsageHistory(now: number) {
     mkdirSync(join(SUBCTL_CONFIG_DIR, "cache"), { recursive: true });
     Bun.write(HISTORY_FILE, kept.length > 0 ? kept.join("\n") + "\n" : "");
   } catch { /* ignore */ }
+}
+
+// ---------- cost summary (jsonl walk, API-rate cost) ----------
+//
+// Walking every account's transcript jsonls is expensive on large histories
+// (Jason has 80K+ turns in the default config). Cache aggressively.
+
+interface CostBundle {
+  this_month: AccountCostSummary[];
+  this_week:  AccountCostSummary[];
+  totals: {
+    api_cost_month_usd: number;
+    subscription_total_usd: number;
+    savings_month_usd: number;
+  };
+}
+
+let _costCache: { fetchedAt: number; data: CostBundle } | null = null;
+const COST_CACHE_TTL_MS = 5 * 60 * 1000; // 5min — same cadence as usage
+
+function buildCostBundle(now: number): CostBundle {
+  if (_costCache && now - _costCache.fetchedAt < COST_CACHE_TTL_MS) {
+    return _costCache.data;
+  }
+  const month = aggregateCostAll("month", now);
+  const week  = aggregateCostAll("week", now);
+  const totals = month.reduce(
+    (acc, r) => ({
+      api_cost_month_usd: acc.api_cost_month_usd + r.total_cost_usd,
+      subscription_total_usd: acc.subscription_total_usd + r.subscription_usd,
+      savings_month_usd: acc.savings_month_usd + r.savings_usd,
+    }),
+    { api_cost_month_usd: 0, subscription_total_usd: 0, savings_month_usd: 0 },
+  );
+  const data: CostBundle = {
+    this_month: month,
+    this_week: week,
+    totals: {
+      api_cost_month_usd: Number(totals.api_cost_month_usd.toFixed(2)),
+      subscription_total_usd: Number(totals.subscription_total_usd.toFixed(2)),
+      savings_month_usd: Number(totals.savings_month_usd.toFixed(2)),
+    },
+  };
+  _costCache = { fetchedAt: now, data };
+  return data;
 }
 
 let _pollerStarted = false;
@@ -1061,6 +1107,7 @@ function buildState() {
   };
 
   const dispatch = dispatchVerdict(accountSummaries, sessionsOut, rl);
+  const cost = buildCostBundle(now);
 
   const totals = {
     tmux_sessions: sessionsOut.length,
@@ -1080,6 +1127,7 @@ function buildState() {
     sessions: sessionsOut,
     rate_limits: rateLimits,
     dispatch,
+    cost,
     totals,
   };
   if (warning) state.warning = warning;
@@ -1152,6 +1200,7 @@ const server = Bun.serve({
     // the day uses the normal 5-min auto-cadence.
     if (url.pathname === "/api/refresh") {
       _usageCache = null;
+      _costCache = null;
       try {
         const cacheGlob = join(SUBCTL_CONFIG_DIR, "cache", "usage");
         if (existsSync(cacheGlob)) {

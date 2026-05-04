@@ -54,7 +54,10 @@ Usage:
                                       Kill all tmux sessions older than DUR
                                       (default 6h). Asks before killing.
   subctl usage [alias|all|--json]     Per-account Claude Max usage (5h, 7d,
-                                      7d-Sonnet, 7d-Opus). Cached 60s.
+                                      7d-Sonnet, 7d-Opus). Cached 5min.
+  subctl cost [alias|all] [--window today|week|month|all] [--json]
+                                      Token aggregation + API list-price cost
+                                      vs subscription savings, per account.
   subctl whoami                       Current shell's CLAUDE_CONFIG_DIR account
   subctl config edit                  Open accounts.conf
   subctl doctor                       Health check
@@ -221,6 +224,13 @@ case "$cmd" in
         subctl_usage_fetch "$cfg_dir" | jq .
         ;;
     esac
+    ;;
+
+  cost)
+    if ! command -v bun >/dev/null 2>&1; then
+      subctl_die "bun is required for 'subctl cost' (install: curl -fsSL https://bun.sh/install | bash)"
+    fi
+    exec bun run "$SUBCTL_REPO_ROOT/dashboard/lib/cost.ts" "$@"
     ;;
 
   whoami)

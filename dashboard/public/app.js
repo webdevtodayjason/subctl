@@ -194,6 +194,7 @@
     renderSessions(state.sessions ?? []);
 
     // Rate limits
+    renderCost(state.cost ?? { this_month: [], totals: { api_cost_month_usd: 0, subscription_total_usd: 0, savings_month_usd: 0 } });
     renderRateLimits(state.rate_limits ?? { today_total: 0, by_account: [] });
     renderEvents(state.rate_limits?.events_today ?? []);
   }
@@ -270,6 +271,91 @@
       const next = r.nextElementSibling;
       if (next && next.classList.contains("preview-row")) next.classList.toggle("open");
     });
+  }
+
+  function fmtUsd(n) {
+    if (n == null || !Number.isFinite(n)) return "—";
+    const sign = n < 0 ? "-" : "";
+    return `${sign}$${Math.abs(n).toFixed(2)}`;
+  }
+  function fmtTokens(n) {
+    if (!Number.isFinite(n) || n === 0) return "0";
+    if (n >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
+    if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
+    if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+    return String(n);
+  }
+
+  function renderCost(cost) {
+    const summary = $("cost-summary");
+    const tbody = $("cost-body");
+    const totals = cost.totals ?? {};
+    const rows = cost.this_month ?? [];
+
+    // Headline summary: big "you saved $X" number with subscription/API cost backing it up.
+    const apiCost = totals.api_cost_month_usd ?? 0;
+    const subTotal = totals.subscription_total_usd ?? 0;
+    const savings = totals.savings_month_usd ?? 0;
+    summary.replaceChildren();
+    if (rows.length === 0) {
+      summary.appendChild(textDiv("no transcript data yet", "empty"));
+    } else {
+      const head = document.createElement("div");
+      head.className = "cost-headline";
+      const big = document.createElement("span");
+      big.className = "cost-savings " + (savings >= 0 ? "positive" : "negative");
+      big.textContent = (savings >= 0 ? "+" : "") + fmtUsd(savings);
+      const label = document.createElement("span");
+      label.className = "cost-savings-label";
+      label.textContent = savings >= 0
+        ? "saved this month vs paying API list price"
+        : "subscription is more than retail this month — light usage";
+      head.append(big, label);
+      summary.appendChild(head);
+
+      const detail = document.createElement("div");
+      detail.className = "cost-detail";
+      detail.textContent = `${fmtUsd(apiCost)} retail · ${fmtUsd(subTotal)} subscription`;
+      summary.appendChild(detail);
+    }
+
+    // Per-account breakdown.
+    if (rows.length === 0) {
+      tbody.replaceChildren(emptyRow(8, "no transcript data yet"));
+      return;
+    }
+    tbody.replaceChildren(...rows.map(r => {
+      const tr = document.createElement("tr");
+      const isDefault = r.alias.startsWith("default");
+      const t = r.total_tokens ?? { input: 0, output: 0, cache_read: 0, cache_write: 0 };
+      const cacheRW = `${fmtTokens(t.cache_read)} / ${fmtTokens(t.cache_write)}`;
+      const aliasCell = isDefault
+        ? td(textDiv(r.alias, "ev-account-unknown"))
+        : td(acctPill(r.alias, "magenta"));
+      const savingsCell = (() => {
+        const span = document.createElement("span");
+        if (isDefault) {
+          span.className = "usage-na";
+          span.textContent = "—";
+          return span;
+        }
+        const v = r.savings_usd ?? 0;
+        span.className = "cost-cell-savings " + (v >= 0 ? "positive" : "negative");
+        span.textContent = (v >= 0 ? "+" : "") + fmtUsd(v);
+        return span;
+      })();
+      tr.append(
+        aliasCell,
+        td(String(r.total_turns ?? 0), "num"),
+        td(fmtTokens(t.input), "num"),
+        td(fmtTokens(t.output), "num"),
+        td(cacheRW, "num"),
+        td(fmtUsd(r.total_cost_usd), "num"),
+        td(isDefault ? "—" : fmtUsd(r.subscription_usd ?? 0), "num"),
+        td(savingsCell, "num"),
+      );
+      return tr;
+    }));
   }
 
   function renderRateLimits(rl) {

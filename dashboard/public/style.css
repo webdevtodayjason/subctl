@@ -599,3 +599,36 @@ main {
   transform: rotate(360deg);
   color: var(--green);
 }
+
+/* Cost analysis panel */
+.cost-summary {
+  margin-bottom: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.cost-headline {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.cost-savings {
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums;
+}
+.cost-savings.positive { color: var(--green); }
+.cost-savings.negative { color: var(--yellow); }
+.cost-savings-label {
+  color: var(--fg-mute);
+  font-size: 13px;
+}
+.cost-detail {
+  margin-top: 4px;
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+
+.cost-cell-savings.positive { color: var(--green); }
+.cost-cell-savings.negative { color: var(--yellow); }
