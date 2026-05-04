@@ -632,3 +632,212 @@ main {
 
 .cost-cell-savings.positive { color: var(--green); }
 .cost-cell-savings.negative { color: var(--yellow); }
+
+/* ── Help / Docs ──────────────────────────────────────────────────────────
+   Topbar link + the /help page itself. Link is intentionally text-labeled
+   ("Docs") rather than a bare "?" so first-time users find it. */
+
+.help-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--fg-mute);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-decoration: none;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+.help-link:hover {
+  color: var(--blue);
+  border-color: var(--blue);
+  background: rgba(88, 166, 255, 0.08);
+  text-decoration: none;
+}
+
+.help-crumb {
+  margin-left: 8px;
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+
+/* Back-to-dashboard nav at the top of the help page */
+.help-nav {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 14px 24px 0;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.help-nav .back-link {
+  color: var(--blue);
+  font-size: 13px;
+  text-decoration: none;
+}
+.help-nav .back-link:hover { text-decoration: underline; }
+.help-nav .help-crumb {
+  margin-left: auto;
+  color: var(--fg-dim);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.help-main {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 28px 24px 56px;
+}
+
+.help-doc {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 36px 44px;
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--fg);
+}
+
+/* Use a slightly more readable system stack for prose, keep mono inside code. */
+.help-doc {
+  font-family: "Inter", "SF Pro Text", -apple-system, BlinkMacSystemFont,
+               "Helvetica Neue", "Segoe UI", sans-serif;
+}
+
+.help-doc h1, .help-doc h2, .help-doc h3, .help-doc h4 {
+  font-family: var(--mono);
+  color: var(--fg);
+  letter-spacing: 0.01em;
+  margin-top: 1.6em;
+  margin-bottom: 0.5em;
+  scroll-margin-top: 70px;
+}
+.help-doc h1 {
+  font-size: 26px;
+  border-bottom: 1px solid var(--border-strong);
+  padding-bottom: 10px;
+  margin-top: 0;
+}
+.help-doc h2 {
+  font-size: 19px;
+  color: var(--blue);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 6px;
+  margin-top: 2.2em;
+}
+.help-doc h3 {
+  font-size: 15px;
+  color: var(--accent);
+}
+.help-doc h4 {
+  font-size: 13.5px;
+  color: var(--fg-mute);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.help-doc .anchor {
+  color: var(--fg-dim);
+  text-decoration: none;
+  margin-right: 6px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.help-doc h1:hover .anchor,
+.help-doc h2:hover .anchor,
+.help-doc h3:hover .anchor,
+.help-doc h4:hover .anchor {
+  opacity: 1;
+}
+
+.help-doc p {
+  margin: 0.7em 0 1em;
+}
+
+.help-doc a { color: var(--blue); }
+
+.help-doc strong { color: var(--fg); font-weight: 600; }
+.help-doc em     { color: var(--fg); font-style: italic; }
+
+.help-doc code {
+  font-family: var(--mono);
+  background: var(--bg-row-alt);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 12.5px;
+  color: var(--accent);
+}
+
+.help-doc pre {
+  background: var(--bg-preview);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 12px 14px;
+  margin: 1em 0 1.4em;
+  overflow-x: auto;
+  line-height: 1.45;
+}
+.help-doc pre code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: var(--fg);
+  font-size: 12.5px;
+}
+
+/* Naive token-style coloring for code blocks: shell prompts + comments. */
+.help-doc pre code.lang-bash,
+.help-doc pre code.lang-sh,
+.help-doc pre code.lang-shell {
+  color: var(--fg);
+}
+
+.help-doc ul, .help-doc ol {
+  margin: 0.5em 0 1.1em;
+  padding-left: 1.6em;
+}
+.help-doc li { margin: 0.2em 0; }
+.help-doc li::marker { color: var(--fg-dim); }
+
+.help-doc hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 2em 0;
+}
+
+.help-doc table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1em 0 1.5em;
+  font-size: 13px;
+  font-family: var(--mono);
+}
+.help-doc table th,
+.help-doc table td {
+  text-align: left;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.help-doc table th {
+  font-weight: 500;
+  color: var(--fg-dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-bottom: 1px solid var(--border-strong);
+}
+.help-doc table tbody tr:nth-child(even) { background: var(--bg-row-alt); }
+
+.help-body .footer { font-family: var(--mono); }
+
+@media (max-width: 720px) {
+  .help-doc { padding: 24px 18px; }
+  .help-main { padding: 16px 12px 40px; }
+}

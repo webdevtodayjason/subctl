@@ -1154,6 +1154,223 @@ function serveStatic(pathname: string): Response | null {
   }
 }
 
+// ---------- /help — markdown -> HTML ----------
+//
+// Tiny in-house markdown renderer. We only need the subset our help.md uses:
+// H1-H4, paragraphs, fenced code, inline code, tables, lists, bold/italic,
+// links, and HR. No need for a 50KB dep — the file is ~400 lines of text and
+// the render runs once per page load.
+
+const HELP_MD_PATH = join(import.meta.dir, "help.md");
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+// Slugify "Setting up an account" -> "setting-up-an-account" for anchor IDs.
+function slugify(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, "")
+    .trim()
+    .replace(/\s+/g, "-");
+}
+
+// Render only inline-level constructs: code, bold, italic, links.
+// Order matters: extract code spans first so we don't mangle them.
+function renderInline(text: string): string {
+  // Pull out `code` spans into placeholders so escaping/bold/italic
+  // don't mutate them.
+  const codeSpans: string[] = [];
+  text = text.replace(/`([^`]+)`/g, (_m, code) => {
+    codeSpans.push(`<code>${escapeHtml(code)}</code>`);
+    return `\x00CODE${codeSpans.length - 1}\x00`;
+  });
+
+  text = escapeHtml(text);
+
+  // Links [text](url)
+  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, label, href) => {
+    const safeHref = href.replace(/"/g, "&quot;");
+    return `<a href="${safeHref}">${label}</a>`;
+  });
+
+  // Bold **x** then italic *x* (avoid clobbering the bold pair).
+  text = text.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  text = text.replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>");
+
+  // Restore code spans.
+  text = text.replace(/\x00CODE(\d+)\x00/g, (_m, i) => codeSpans[Number(i)] ?? "");
+  return text;
+}
+
+function renderMarkdown(src: string): string {
+  const lines = src.split("\n");
+  const out: string[] = [];
+  let i = 0;
+
+  const flushParagraph = (buf: string[]) => {
+    if (buf.length === 0) return;
+    out.push(`<p>${renderInline(buf.join(" ").trim())}</p>`);
+    buf.length = 0;
+  };
+
+  let paraBuf: string[] = [];
+
+  while (i < lines.length) {
+    const line = lines[i]!;
+
+    // Fenced code block
+    if (/^```/.test(line)) {
+      flushParagraph(paraBuf);
+      const langMatch = line.match(/^```(\w*)\s*$/);
+      const lang = langMatch?.[1] ?? "";
+      const codeLines: string[] = [];
+      i++;
+      while (i < lines.length && !/^```\s*$/.test(lines[i]!)) {
+        codeLines.push(lines[i]!);
+        i++;
+      }
+      i++; // skip closing fence
+      const cls = lang ? ` class="lang-${lang}"` : "";
+      out.push(`<pre><code${cls}>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+      continue;
+    }
+
+    // Headings
+    const h = line.match(/^(#{1,4})\s+(.+?)\s*$/);
+    if (h) {
+      flushParagraph(paraBuf);
+      const level = h[1]!.length;
+      const text = h[2]!;
+      const id = slugify(text);
+      out.push(`<h${level} id="${id}"><a href="#${id}" class="anchor">#</a> ${renderInline(text)}</h${level}>`);
+      i++;
+      continue;
+    }
+
+    // Horizontal rule
+    if (/^---+\s*$/.test(line) || /^\*\*\*+\s*$/.test(line)) {
+      flushParagraph(paraBuf);
+      out.push("<hr>");
+      i++;
+      continue;
+    }
+
+    // Table — simple GFM. Detected by a header line + a separator like |---|---|
+    if (/^\|.+\|\s*$/.test(line) && i + 1 < lines.length && /^\|[\s:|-]+\|\s*$/.test(lines[i + 1]!)) {
+      flushParagraph(paraBuf);
+      const headerCells = line.replace(/^\||\|$/g, "").split("|").map(s => s.trim());
+      i += 2; // skip header + separator
+      const rows: string[][] = [];
+      while (i < lines.length && /^\|.+\|\s*$/.test(lines[i]!)) {
+        const cells = lines[i]!.replace(/^\||\|$/g, "").split("|").map(s => s.trim());
+        rows.push(cells);
+        i++;
+      }
+      const thead = "<thead><tr>" + headerCells.map(c => `<th>${renderInline(c)}</th>`).join("") + "</tr></thead>";
+      const tbody = "<tbody>" + rows.map(r => "<tr>" + r.map(c => `<td>${renderInline(c)}</td>`).join("") + "</tr>").join("") + "</tbody>";
+      out.push(`<table>${thead}${tbody}</table>`);
+      continue;
+    }
+
+    // Unordered list
+    if (/^[\-\*]\s+/.test(line)) {
+      flushParagraph(paraBuf);
+      const items: string[] = [];
+      while (i < lines.length && /^[\-\*]\s+/.test(lines[i]!)) {
+        // Collect continuation lines (next line indented OR not empty/non-list)
+        let item = lines[i]!.replace(/^[\-\*]\s+/, "");
+        i++;
+        while (i < lines.length && /^\s{2,}\S/.test(lines[i]!)) {
+          item += " " + lines[i]!.trim();
+          i++;
+        }
+        items.push(`<li>${renderInline(item)}</li>`);
+      }
+      out.push(`<ul>${items.join("")}</ul>`);
+      continue;
+    }
+
+    // Ordered list
+    if (/^\d+\.\s+/.test(line)) {
+      flushParagraph(paraBuf);
+      const items: string[] = [];
+      while (i < lines.length && /^\d+\.\s+/.test(lines[i]!)) {
+        let item = lines[i]!.replace(/^\d+\.\s+/, "");
+        i++;
+        while (i < lines.length && /^\s{2,}\S/.test(lines[i]!)) {
+          item += " " + lines[i]!.trim();
+          i++;
+        }
+        items.push(`<li>${renderInline(item)}</li>`);
+      }
+      out.push(`<ol>${items.join("")}</ol>`);
+      continue;
+    }
+
+    // Blank line — paragraph boundary
+    if (/^\s*$/.test(line)) {
+      flushParagraph(paraBuf);
+      i++;
+      continue;
+    }
+
+    // Default — accumulate into a paragraph
+    paraBuf.push(line);
+    i++;
+  }
+  flushParagraph(paraBuf);
+
+  return out.join("\n");
+}
+
+function renderHelpPage(): string {
+  let md: string;
+  try { md = readFileSync(HELP_MD_PATH, "utf8"); }
+  catch { return `<!doctype html><meta charset="utf-8"><title>help</title><pre>help.md not found at ${HELP_MD_PATH}</pre>`; }
+
+  const body = renderMarkdown(md);
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>subctl · help</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body class="help-body">
+  <header class="topbar">
+    <div class="brand">
+      <a href="/" class="brand-name">subctl</a>
+      <span class="brand-version">v${VERSION}</span>
+      <span class="help-crumb">/ help</span>
+    </div>
+    <div class="topbar-right">
+      <a href="/" class="back-link">&larr; back to dashboard</a>
+    </div>
+  </header>
+  <main class="help-main">
+    <article class="help-doc">
+      ${body}
+    </article>
+  </main>
+  <footer class="footer">
+    <span>subctl v${VERSION}</span>
+    <span class="sep">/</span>
+    <a href="/">dashboard</a>
+    <span class="sep">/</span>
+    <a href="https://github.com/webdevtodayjason/subctl" target="_blank" rel="noopener">github</a>
+  </footer>
+</body>
+</html>`;
+}
+
 // ---------- WebSocket fan-out ----------
 
 const sockets = new Set<any>();
@@ -1212,12 +1429,19 @@ const server = Bun.serve({
         }
       } catch { /* best-effort */ }
       const fresh = buildState();
-      // Push to all open WebSockets so other tabs update too.
       for (const ws of sockets) {
         try { ws.send(JSON.stringify(fresh)); } catch { /* ignore */ }
       }
       return new Response(JSON.stringify(fresh), {
         headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
+      });
+    }
+    if (url.pathname === "/help" || url.pathname === "/help/") {
+      return new Response(renderHelpPage(), {
+        headers: {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "no-store",
+        },
       });
     }
     const staticResp = serveStatic(url.pathname);

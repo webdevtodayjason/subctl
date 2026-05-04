@@ -276,7 +276,7 @@
   function fmtUsd(n) {
     if (n == null || !Number.isFinite(n)) return "—";
     const sign = n < 0 ? "-" : "";
-    return `${sign}$${Math.abs(n).toFixed(2)}`;
+    return `${sign}$${Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   }
   function fmtTokens(n) {
     if (!Number.isFinite(n) || n === 0) return "0";
