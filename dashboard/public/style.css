@@ -189,6 +189,55 @@ main {
 .dispatch-verdict.yellow { color: var(--yellow); }
 .dispatch-verdict.red    { color: var(--red); }
 
+/* Per-account verdict pill (Accounts table) */
+.verdict-pill {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  border: 1px solid transparent;
+}
+.verdict-pill.verdict-green  { color: var(--green);  border-color: var(--green); }
+.verdict-pill.verdict-yellow { color: var(--yellow); border-color: var(--yellow); }
+.verdict-pill.verdict-red    { color: var(--red);    border-color: var(--red); }
+
+/* Per-account usage cells */
+.usage-cell.green  { color: var(--green); }
+.usage-cell.yellow { color: var(--yellow); }
+.usage-cell.red    { color: var(--red); }
+.usage-na          { color: var(--fg-dim); }
+
+.usage-bar-wrap {
+  position: relative;
+  display: inline-block;
+  width: 110px;
+  height: 16px;
+  background: var(--bg-row-alt);
+  border-radius: 2px;
+  overflow: hidden;
+  vertical-align: middle;
+}
+.usage-bar {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  opacity: 0.55;
+}
+.usage-bar-green  { background: var(--green); }
+.usage-bar-yellow { background: var(--yellow); }
+.usage-bar-red    { background: var(--red); }
+.usage-bar-text {
+  position: relative;
+  display: block;
+  text-align: center;
+  font-size: 10px;
+  line-height: 16px;
+  color: var(--fg);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
 .dispatch-summary {
   flex: 1;
   display: flex;

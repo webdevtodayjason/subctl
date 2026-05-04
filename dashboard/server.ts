@@ -95,23 +95,20 @@ function readSubctlVersion(): string {
 }
 const VERSION = readSubctlVersion();
 
-// ---------- thresholds (mirror lib/radar.sh) ----------
+// ---------- thresholds for session-row coloring ----------
+//
+// These drive the visual color tags in the sessions table only. The dispatch
+// verdict is computed elsewhere from per-account usage (see
+// computeAccountVerdict) and intentionally does NOT consider session-level
+// signals — a fresh session in another folder has 0% ctx and is a moment old,
+// regardless of what's happening in any other tmux pane.
 
-const THRESH_PARALLEL_RED    = 4;
-const THRESH_PARALLEL_YELLOW = 2;
-const THRESH_AGE_RED         = 21600; // 6h
-const THRESH_AGE_YELLOW      = 7200;  // 2h
-const THRESH_CTX_RED         = 80;
-const THRESH_CTX_ORANGE      = 60;
-const THRESH_CTX_YELLOW      = 30;
-const THRESH_RL_RED          = 3;
-const THRESH_RL_YELLOW       = 1;
+const THRESH_AGE_RED    = 21600; // 6h — session row turns red
+const THRESH_AGE_YELLOW = 7200;  // 2h — session row turns yellow
+const THRESH_CTX_RED    = 80;
+const THRESH_CTX_ORANGE = 60;
+const THRESH_CTX_YELLOW = 30;
 
-function classifyParallel(n: number): "green" | "yellow" | "red" {
-  if (n >= THRESH_PARALLEL_RED)    return "red";
-  if (n >= THRESH_PARALLEL_YELLOW) return "yellow";
-  return "green";
-}
 function classifyAge(s: number): "green" | "yellow" | "red" {
   if (s >= THRESH_AGE_RED)    return "red";
   if (s >= THRESH_AGE_YELLOW) return "yellow";
@@ -121,11 +118,6 @@ function classifyCtx(p: number): "green" | "yellow" | "orange" | "red" {
   if (p >= THRESH_CTX_RED)    return "red";
   if (p >= THRESH_CTX_ORANGE) return "orange";
   if (p >= THRESH_CTX_YELLOW) return "yellow";
-  return "green";
-}
-function classifyRl(n: number): "green" | "yellow" | "red" {
-  if (n >= THRESH_RL_RED)    return "red";
-  if (n >= THRESH_RL_YELLOW) return "yellow";
   return "green";
 }
 
@@ -258,6 +250,110 @@ function resolveBinary(name: string): string {
 
 const TMUX_BIN = resolveBinary("tmux");
 const GIT_BIN = resolveBinary("git");
+const SUBCTL_BIN = join(REPO_ROOT, "bin", "subctl");
+
+// ---------- per-account usage (Anthropic /api/oauth/usage) ----------
+
+interface UsageEntry {
+  five_hour?:        { utilization: number; resets_at: string | null } | null;
+  seven_day?:        { utilization: number; resets_at: string | null } | null;
+  seven_day_sonnet?: { utilization: number; resets_at: string | null } | null;
+  seven_day_opus?:   { utilization: number; resets_at: string | null } | null;
+  extra_usage?:      { is_enabled: boolean; monthly_limit?: number; used_credits?: number; currency?: string } | null;
+  [key: string]: unknown;
+}
+
+interface AccountUsageResult {
+  alias: string;
+  cfg_dir: string;
+  ok: boolean;
+  usage?: UsageEntry;
+  error?: string;
+}
+
+let _usageCache: { fetchedAt: number; data: AccountUsageResult[] } | null = null;
+const USAGE_CACHE_TTL_MS = 30_000;
+
+// Shells out to `subctl usage --json` once per TTL window. The bash impl has
+// its own 60s on-disk cache; this in-process cache just avoids spawning a
+// subprocess on every WebSocket tick.
+function subctlUsageFetchAll(now: number): AccountUsageResult[] {
+  if (_usageCache && now - _usageCache.fetchedAt < USAGE_CACHE_TTL_MS) {
+    return _usageCache.data;
+  }
+  try {
+    const r = spawnSync(SUBCTL_BIN, ["usage", "--json"], {
+      encoding: "utf8",
+      timeout: 12_000,
+    });
+    if (r.error || (typeof r.status === "number" && r.status !== 0)) {
+      _usageCache = { fetchedAt: now, data: [] };
+      return [];
+    }
+    const parsed = JSON.parse(r.stdout || "[]") as AccountUsageResult[];
+    _usageCache = { fetchedAt: now, data: parsed };
+    return parsed;
+  } catch {
+    _usageCache = { fetchedAt: now, data: [] };
+    return [];
+  }
+}
+
+function usageForAlias(alias: string, all: AccountUsageResult[]): UsageEntry | null {
+  const hit = all.find(u => u.alias === alias && u.ok);
+  return hit?.usage ?? null;
+}
+
+// Verdict thresholds for usage signals. Yellow flags "be aware"; red flags
+// "you're about to hit a wall and a fresh dispatch may run out mid-task".
+const THRESH_7D_YELLOW = 70; // ≥70% weekly used → yellow
+const THRESH_7D_RED    = 90; // ≥90% weekly used → red
+const THRESH_5H_YELLOW = 80; // ≥80% session used → yellow
+const THRESH_5H_RED    = 95; // ≥95% session used → red
+
+interface AccountVerdict {
+  verdict: "green" | "yellow" | "red";
+  reasons: string[];
+}
+
+function computeAccountVerdict(args: {
+  alias: string;
+  authReady: boolean;
+  usage: UsageEntry | null;
+  recent429: number;
+  parallelOnAccount: number;
+}): AccountVerdict {
+  const reasons: string[] = [];
+  let level: "green" | "yellow" | "red" = "green";
+  const bump = (l: "yellow" | "red") => {
+    if (l === "red") level = "red";
+    else if (level !== "red") level = "yellow";
+  };
+
+  if (!args.authReady) {
+    return { verdict: "red", reasons: ["account not authenticated"] };
+  }
+
+  const wkly = args.usage?.seven_day?.utilization;
+  if (typeof wkly === "number") {
+    if (wkly >= THRESH_7D_RED)         { bump("red");    reasons.push(`weekly ${wkly}% (red ≥${THRESH_7D_RED}%)`); }
+    else if (wkly >= THRESH_7D_YELLOW) { bump("yellow"); reasons.push(`weekly ${wkly}%`); }
+  }
+
+  const sess = args.usage?.five_hour?.utilization;
+  if (typeof sess === "number") {
+    if (sess >= THRESH_5H_RED)         { bump("red");    reasons.push(`5h ${sess}% (red ≥${THRESH_5H_RED}%)`); }
+    else if (sess >= THRESH_5H_YELLOW) { bump("yellow"); reasons.push(`5h ${sess}%`); }
+  }
+
+  if (args.recent429 >= 3)      { bump("red");    reasons.push(`${args.recent429} RL hits today`); }
+  else if (args.recent429 >= 1) { bump("yellow"); reasons.push(`${args.recent429} RL hit${args.recent429 === 1 ? "" : "s"} today`); }
+
+  if (args.parallelOnAccount >= 5)      { bump("red");    reasons.push(`${args.parallelOnAccount} parallel sessions on this account`); }
+  else if (args.parallelOnAccount >= 3) { bump("yellow"); reasons.push(`${args.parallelOnAccount} parallel sessions on this account`); }
+
+  return { verdict: level, reasons };
+}
 
 function tmuxRun(args: string[]): { stdout: string; ok: boolean } {
   try {
@@ -679,90 +775,41 @@ function enrichSessions(
 // Mirror lib/radar.sh's classification but emit human-readable reasons that
 // reference the actual offending session/account, not just aggregate numbers.
 
+// Global verdict = best-of any account's verdict. The user can dispatch fresh
+// work to any account that's GREEN, so as long as one is, the global state is
+// "you have somewhere to go." Reasons for non-green accounts surface below
+// the banner so it's still obvious which accounts are constrained.
+//
+// Session-level signals (ctx %, age) are intentionally NOT considered here:
+// they describe state of an EXISTING session and have no bearing on whether a
+// fresh dispatch in another folder can run.
 function dispatchVerdict(
   accounts: ReturnType<typeof buildAccountSummaries>,
-  sessions: SessionRecord[],
-  rl: RLData,
+  _sessions: SessionRecord[],
+  _rl: RLData,
 ): { verdict: "green" | "yellow" | "red"; reasons: string[] } {
-  const reasons: string[] = [];
-  let level: "green" | "yellow" | "red" = "green";
-  const bump = (l: "yellow" | "red") => {
-    if (l === "red") level = "red";
-    else if (level !== "red") level = "yellow";
-  };
-
   if (accounts.length === 0) {
     return { verdict: "red", reasons: ["No accounts configured"] };
   }
 
-  const unauth = accounts.filter(a => a.auth_status !== "ready");
-  if (unauth.length === accounts.length) {
-    return { verdict: "red", reasons: ["All accounts unauthenticated"] };
-  }
-  if (unauth.length > 0) {
-    bump("yellow");
-    reasons.push(`${unauth.length} account(s) not authenticated`);
+  const order = { green: 0, yellow: 1, red: 2 } as const;
+  let bestLevel: "green" | "yellow" | "red" = "red";
+  for (const a of accounts) {
+    if (order[a.dispatch.verdict] < order[bestLevel]) bestLevel = a.dispatch.verdict;
+    if (bestLevel === "green") break;
   }
 
-  // Parallel sessions across all accounts.
-  const parallelClass = classifyParallel(sessions.length);
-  if (parallelClass === "red") {
-    bump("red");
-    reasons.push(`⚡ ${sessions.length} parallel sessions across all accounts (red ≥${THRESH_PARALLEL_RED})`);
-  } else if (parallelClass === "yellow") {
-    bump("yellow");
-    reasons.push(`⚡ ${sessions.length} parallel sessions (yellow ≥${THRESH_PARALLEL_YELLOW})`);
-  }
-
-  // Per-session age.
-  for (const s of sessions) {
-    if (s.age_color === "red") {
-      bump("red");
-      reasons.push(`⏱ session ${formatAge(s.age_seconds)} old in ${s.project} (red ≥6h)`);
-    } else if (s.age_color === "yellow") {
-      bump("yellow");
-      reasons.push(`⏱ session ${formatAge(s.age_seconds)} old in ${s.project} (yellow ≥2h)`);
+  const reasons: string[] = [];
+  for (const a of accounts) {
+    if (a.dispatch.verdict === "green") {
+      reasons.push(`${a.alias}: GO`);
+    } else {
+      const why = a.dispatch.reasons.join(", ");
+      reasons.push(`${a.alias}: ${a.dispatch.verdict.toUpperCase()}${why ? ` — ${why}` : ""}`);
     }
   }
 
-  // Per-session ctx.
-  for (const s of sessions) {
-    if (s.ctx_color === "red") {
-      bump("red");
-      reasons.push(`ctx ${s.ctx_pct}% in ${s.project} (red ≥${THRESH_CTX_RED}%)`);
-    } else if (s.ctx_color === "orange") {
-      bump("yellow");
-      reasons.push(`ctx ${s.ctx_pct}% in ${s.project} (orange ${THRESH_CTX_ORANGE}-${THRESH_CTX_RED-1}%)`);
-    } else if (s.ctx_color === "yellow") {
-      bump("yellow");
-      reasons.push(`ctx ${s.ctx_pct}% in ${s.project} (yellow ≥${THRESH_CTX_YELLOW}%)`);
-    }
-  }
-
-  // Rate-limits — only RECENT 429s drive the verdict.
-  // 529s are Anthropic-side overload (not your fault); aged-out hits are stale.
-  // Today's totals (including 529s) are still surfaced informationally below
-  // the verdict, but they don't bump the level.
-  const recentClass = classifyRl(rl.recent_429_count);
-  if (recentClass === "red") {
-    bump("red");
-    reasons.push(`⚠ ${rl.recent_429_count} rate-limit (429) hits in last 2h (red ≥${THRESH_RL_RED})`);
-  } else if (recentClass === "yellow") {
-    bump("yellow");
-    reasons.push(
-      `⚠ ${rl.recent_429_count} rate-limit (429) hit${rl.recent_429_count === 1 ? "" : "s"} in last 2h`,
-    );
-  }
-
-  return { verdict: level, reasons };
-}
-
-function formatAge(s: number): string {
-  if (s < 60) return `${s}s`;
-  if (s < 3600) return `${Math.floor(s / 60)}m`;
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  return m > 0 ? `${h}h${String(m).padStart(2, "0")}m` : `${h}h`;
+  return { verdict: bestLevel, reasons };
 }
 
 // ---------- account summaries ----------
@@ -771,6 +818,7 @@ function buildAccountSummaries(
   accounts: Account[],
   sessions: SessionRecord[],
   rl: RLData,
+  usageAll: AccountUsageResult[],
   now: number,
 ) {
   return accounts.map(acc => {
@@ -780,16 +828,27 @@ function buildAccountSummaries(
       Number.POSITIVE_INFINITY,
     );
     const rlEntry = rl.by_account.get(acc.alias);
+    const auth = authStatus(acc);
+    const usage = usageForAlias(acc.alias, usageAll);
+    const verdict = computeAccountVerdict({
+      alias: acc.alias,
+      authReady: auth === "ready",
+      usage,
+      recent429: rlEntry?.count_today ?? 0,
+      parallelOnAccount: mySessions.length,
+    });
     return {
       alias: acc.alias,
       provider: acc.provider,
       email: acc.email,
       config_dir: acc.config_dir,
-      auth_status: authStatus(acc),
+      auth_status: auth,
       active_sessions: mySessions.length,
       rl_hits_today: rlEntry?.count_today ?? 0,
       last_activity_seconds_ago: Number.isFinite(lastSec) ? lastSec : null,
       color_class: colorClassFor(acc.alias),
+      usage,
+      dispatch: verdict,
     };
   });
 }
@@ -815,7 +874,8 @@ function buildState() {
     rawSessions, panesBySession, rawAccounts, now, rl,
   );
 
-  const accountSummaries = buildAccountSummaries(rawAccounts, sessions, rl, now);
+  const usageAll = subctlUsageFetchAll(now);
+  const accountSummaries = buildAccountSummaries(rawAccounts, sessions, rl, usageAll, now);
 
   const sessionsOut = sessions
     .slice()

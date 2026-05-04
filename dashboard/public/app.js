@@ -133,14 +133,20 @@
     const accountsBody = $("accounts-body");
     const accounts = state.accounts ?? [];
     if (accounts.length === 0) {
-      accountsBody.replaceChildren(emptyRow(6, "no accounts configured"));
+      accountsBody.replaceChildren(emptyRow(9, "no accounts configured"));
     } else {
       accountsBody.replaceChildren(...accounts.map((a) => {
         const tr = document.createElement("tr");
+        const fiveH = a.usage?.five_hour?.utilization;
+        const sevenD = a.usage?.seven_day?.utilization;
+        const sonnetD = a.usage?.seven_day_sonnet?.utilization;
         tr.append(
           td(acctPill(a.alias, a.color_class)),
           td(a.provider),
           td(authCell(a.auth_status)),
+          td(verdictPill(a.dispatch?.verdict, a.dispatch?.reasons)),
+          td(usagePctCell(fiveH, [80, 95]), "num"),
+          td(usageBarCell(sevenD, sonnetD), "num"),
           td(String(a.active_sessions), "num"),
           td(String(a.rl_hits_today), "num"),
           td(fmtAge(a.last_activity_seconds_ago)),
@@ -374,6 +380,55 @@
     name.textContent = alias;
     span.append(dot, name);
     return span;
+  }
+
+  function verdictPill(verdict, reasons) {
+    const span = document.createElement("span");
+    const v = verdict || "red";
+    span.className = `verdict-pill verdict-${v}`;
+    span.textContent = `${VERDICT_GLYPH[v] || ""} ${VERDICT_TEXT[v] || "—"}`.trim();
+    if (Array.isArray(reasons) && reasons.length > 0) span.title = reasons.join("\n");
+    return span;
+  }
+
+  function usagePctCell(pct, [yellow, red]) {
+    const span = document.createElement("span");
+    if (typeof pct !== "number") { span.className = "usage-na"; span.textContent = "—"; return span; }
+    let cls = "green";
+    if (pct >= red) cls = "red";
+    else if (pct >= yellow) cls = "yellow";
+    span.className = `usage-cell ${cls}`;
+    span.textContent = `${pct}%`;
+    return span;
+  }
+
+  // Weekly bar with primary (all-models) fill plus a dim overlay marking
+  // the Sonnet-only slice. Mirrors the visual language of `/usage` in Claude
+  // Code's TUI.
+  function usageBarCell(pctAll, pctSonnet) {
+    if (typeof pctAll !== "number") {
+      const s = document.createElement("span");
+      s.className = "usage-na";
+      s.textContent = "—";
+      return s;
+    }
+    const wrap = document.createElement("span");
+    wrap.className = "usage-bar-wrap";
+    let cls = "green";
+    if (pctAll >= 90) cls = "red";
+    else if (pctAll >= 70) cls = "yellow";
+    const bar = document.createElement("span");
+    bar.className = `usage-bar usage-bar-${cls}`;
+    bar.style.width = `${Math.min(100, pctAll)}%`;
+    const txt = document.createElement("span");
+    txt.className = "usage-bar-text";
+    if (typeof pctSonnet === "number" && pctSonnet > 0) {
+      txt.textContent = `${pctAll}% (S ${pctSonnet}%)`;
+    } else {
+      txt.textContent = `${pctAll}%`;
+    }
+    wrap.append(bar, txt);
+    return wrap;
   }
 
   function authCell(status) {

@@ -53,6 +53,8 @@ Usage:
   subctl session-prune [--older-than 6h] [--yes]
                                       Kill all tmux sessions older than DUR
                                       (default 6h). Asks before killing.
+  subctl usage [alias|all|--json]     Per-account Claude Max usage (5h, 7d,
+                                      7d-Sonnet, 7d-Opus). Cached 60s.
   subctl whoami                       Current shell's CLAUDE_CONFIG_DIR account
   subctl config edit                  Open accounts.conf
   subctl doctor                       Health check
@@ -200,6 +202,25 @@ case "$cmd" in
   session-prune|prune)
     . "$SUBCTL_REPO_ROOT/lib/session-preview.sh"
     subctl_session_prune "$@"
+    ;;
+
+  usage)
+    . "$SUBCTL_REPO_ROOT/lib/usage.sh"
+    target="${1:-all}"
+    case "$target" in
+      --json)
+        subctl_usage_fetch_all | jq -s .
+        ;;
+      all|"")
+        subctl_usage_print_table
+        ;;
+      *)
+        canonical=$(subctl_resolve_alias "$target") || subctl_die "unknown alias: $target (try: subctl accounts)"
+        cfg_dir=$(subctl_account_field "$canonical" 4)
+        [[ -z "$cfg_dir" ]] && subctl_die "no config_dir for $canonical"
+        subctl_usage_fetch "$cfg_dir" | jq .
+        ;;
+    esac
     ;;
 
   whoami)
