@@ -19,6 +19,26 @@ offsets="$HOME/.claude/rate-limit-offsets"
 mkdir -p "$(dirname "$log")"
 touch "$log" "$offsets"
 
+# Resolve active account so events attribute to the right alias on the dashboard.
+# The dashboard parser accepts an explicit "account" field; without it, events
+# can only be back-attributed via session UUID lookup, which fails for any
+# session that isn't currently in tmux ("unknown — older event").
+cfg_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+cfg_dir="${cfg_dir%/}"
+accounts_conf="${SUBCTL_ACCOUNTS_CONF:-${XDG_CONFIG_HOME:-$HOME/.config}/subctl/accounts.conf}"
+account=""
+if [[ -f "$accounts_conf" ]]; then
+  account=$(awk -F'|' -v c="$cfg_dir" -v home="$HOME" '
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*$/ { next }
+    {
+      a=$1; gsub(/^[[:space:]]+|[[:space:]]+$/, "", a)
+      d=$4; gsub(/^[[:space:]]+|[[:space:]]+$/, "", d)
+      gsub("~", home, d)
+      if (d == c) { print a; exit }
+    }' "$accounts_conf")
+fi
+
 prev_offset=$(grep "^${sid} " "$offsets" 2>/dev/null | tail -1 | awk '{print $2}')
 prev_offset=${prev_offset:-0}
 
@@ -44,8 +64,13 @@ while IFS= read -r line; do
 
   ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   today=$(date +%Y-%m-%d)
-  printf '{"ts":"%s","date":"%s","session":"%s","type":"%s"}\n' \
-    "$ts" "$today" "$sid" "$type" >> "$log"
+  if [[ -n "$account" ]]; then
+    printf '{"ts":"%s","date":"%s","session":"%s","account":"%s","cfg_dir":"%s","type":"%s"}\n' \
+      "$ts" "$today" "$sid" "$account" "$cfg_dir" "$type" >> "$log"
+  else
+    printf '{"ts":"%s","date":"%s","session":"%s","cfg_dir":"%s","type":"%s"}\n' \
+      "$ts" "$today" "$sid" "$cfg_dir" "$type" >> "$log"
+  fi
   hit_count=$((hit_count + 1))
 done <<< "$new_bytes"
 

@@ -480,6 +480,22 @@ main {
 .rl-bar.grey    > span { background: var(--fg-mute); }
 .rl-bar.zero    > span { background: var(--border-strong); height: 4px !important; }
 
+/* Utilization-driven bar colors (5h-window peak that hour). */
+.rl-bar.ok    > span { background: var(--green);  opacity: 0.55; }
+.rl-bar.warm  > span { background: var(--green);  opacity: 0.85; }
+.rl-bar.yellow > span { background: var(--yellow); }
+.rl-bar.red   > span { background: var(--red); }
+
+/* 429/529 event marker — small dot pinned to the top of an hour cell. */
+.rl-event-dot {
+  position: absolute;
+  top: 1px; right: 1px;
+  width: 4px; height: 4px;
+  border-radius: 50%;
+  background: var(--red);
+  box-shadow: 0 0 3px var(--red);
+}
+
 .rl-count {
   color: var(--fg-mute);
   font-variant-numeric: tabular-nums;

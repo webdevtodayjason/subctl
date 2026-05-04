@@ -64,7 +64,7 @@
 //   }
 // }
 
-import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
+import { readFileSync, readdirSync, statSync, existsSync, appendFileSync, mkdirSync } from "node:fs";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
@@ -302,6 +302,123 @@ function subctlUsageFetchAll(now: number): AccountUsageResult[] {
 function usageForAlias(alias: string, all: AccountUsageResult[]): UsageEntry | null {
   const hit = all.find(u => u.alias === alias && u.ok);
   return hit?.usage ?? null;
+}
+
+// ---------- utilization history (24h sparkline) ----------
+//
+// Polls /api/oauth/usage every POLL_INTERVAL_MS and appends a snapshot per
+// account to a JSONL file. The Accounts table renders 24 hourly buckets
+// per account, each colored by the MAX five_hour utilization observed that
+// hour. Empty hours (no poll, or no auth at the time) render dim.
+//
+// 429 events on the local hook log remain orthogonal — they record actual
+// blocking outcomes; this records the upstream signal (utilization curve)
+// that drives whether 429s fire.
+
+const SUBCTL_CONFIG_DIR = process.env.SUBCTL_CONFIG_DIR
+  ?? join(process.env.XDG_CONFIG_HOME ?? join(HOME, ".config"), "subctl");
+const HISTORY_FILE = join(SUBCTL_CONFIG_DIR, "cache", "usage-history.jsonl");
+const HISTORY_RETAIN_MS = 7 * 24 * 60 * 60 * 1000;
+const POLL_INTERVAL_MS = 5 * 60 * 1000;
+
+interface HistoryEntry {
+  ts: number;
+  alias: string;
+  five_hour: number | null;
+  seven_day: number | null;
+  seven_day_sonnet: number | null;
+}
+
+function recordUsageSnapshot(now: number, all: AccountUsageResult[]) {
+  const lines: string[] = [];
+  for (const u of all) {
+    if (!u.ok || !u.usage) continue;
+    const entry: HistoryEntry = {
+      ts: now,
+      alias: u.alias,
+      five_hour: u.usage.five_hour?.utilization ?? null,
+      seven_day: u.usage.seven_day?.utilization ?? null,
+      seven_day_sonnet: u.usage.seven_day_sonnet?.utilization ?? null,
+    };
+    lines.push(JSON.stringify(entry));
+  }
+  if (lines.length === 0) return;
+  try {
+    mkdirSync(join(SUBCTL_CONFIG_DIR, "cache"), { recursive: true });
+    appendFileSync(HISTORY_FILE, lines.join("\n") + "\n");
+  } catch { /* best-effort */ }
+}
+
+// Read all snapshots within the last 24 hours, bucket by alias and hour-of-day-relative-to-now.
+// Returns Map<alias, Array<{maxFiveHour, maxSevenDay, sampleCount}>> with 24 entries per alias
+// (oldest hour first, current hour last).
+function readUsageHistory24h(now: number) {
+  const cutoff = now - 24 * 60 * 60 * 1000;
+  const currentHour = Math.floor(now / (60 * 60 * 1000));
+  const buckets = new Map<string, Array<{ five_hour_max: number | null; seven_day_max: number | null; samples: number }>>();
+  const init = () => Array.from({ length: 24 }, () => ({ five_hour_max: null as number | null, seven_day_max: null as number | null, samples: 0 }));
+  if (!existsSync(HISTORY_FILE)) return buckets;
+
+  let raw: string;
+  try { raw = readFileSync(HISTORY_FILE, "utf8"); } catch { return buckets; }
+
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    let entry: HistoryEntry;
+    try { entry = JSON.parse(line); } catch { continue; }
+    if (typeof entry.ts !== "number" || entry.ts < cutoff) continue;
+    // Bucket by absolute hour (each entry's clock hour) so a poll at 17:42
+    // lands in the same bucket whether read at 17:43 or 17:59.
+    const entryHour = Math.floor(entry.ts / (60 * 60 * 1000));
+    const hoursAgo = currentHour - entryHour;
+    if (hoursAgo < 0 || hoursAgo >= 24) continue;
+    const idx = 23 - hoursAgo;
+    if (!buckets.has(entry.alias)) buckets.set(entry.alias, init());
+    const slot = buckets.get(entry.alias)![idx]!;
+    slot.samples += 1;
+    if (typeof entry.five_hour === "number") {
+      slot.five_hour_max = slot.five_hour_max === null ? entry.five_hour : Math.max(slot.five_hour_max, entry.five_hour);
+    }
+    if (typeof entry.seven_day === "number") {
+      slot.seven_day_max = slot.seven_day_max === null ? entry.seven_day : Math.max(slot.seven_day_max, entry.seven_day);
+    }
+  }
+  return buckets;
+}
+
+// One-time housekeeping at startup: drop entries older than HISTORY_RETAIN_MS.
+function pruneUsageHistory(now: number) {
+  if (!existsSync(HISTORY_FILE)) return;
+  const cutoff = now - HISTORY_RETAIN_MS;
+  let raw: string;
+  try { raw = readFileSync(HISTORY_FILE, "utf8"); } catch { return; }
+  const kept: string[] = [];
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const e = JSON.parse(line);
+      if (typeof e.ts === "number" && e.ts >= cutoff) kept.push(line);
+    } catch { /* drop malformed */ }
+  }
+  try {
+    mkdirSync(join(SUBCTL_CONFIG_DIR, "cache"), { recursive: true });
+    Bun.write(HISTORY_FILE, kept.length > 0 ? kept.join("\n") + "\n" : "");
+  } catch { /* ignore */ }
+}
+
+let _pollerStarted = false;
+function ensureUsagePoller() {
+  if (_pollerStarted) return;
+  _pollerStarted = true;
+  pruneUsageHistory(Date.now());
+  // Snapshot once at startup, then on a 5-minute cadence.
+  const tick = () => {
+    const now = Date.now();
+    const all = subctlUsageFetchAll(now);
+    recordUsageSnapshot(now, all);
+  };
+  tick();
+  setInterval(tick, POLL_INTERVAL_MS);
 }
 
 // Verdict thresholds for usage signals. Yellow flags "be aware"; red flags
@@ -819,6 +936,7 @@ function buildAccountSummaries(
   sessions: SessionRecord[],
   rl: RLData,
   usageAll: AccountUsageResult[],
+  history24h: ReturnType<typeof readUsageHistory24h>,
   now: number,
 ) {
   return accounts.map(acc => {
@@ -837,6 +955,7 @@ function buildAccountSummaries(
       recent429: rlEntry?.count_today ?? 0,
       parallelOnAccount: mySessions.length,
     });
+    const hist = history24h.get(acc.alias) ?? Array.from({ length: 24 }, () => ({ five_hour_max: null, seven_day_max: null, samples: 0 }));
     return {
       alias: acc.alias,
       provider: acc.provider,
@@ -849,6 +968,7 @@ function buildAccountSummaries(
       color_class: colorClassFor(acc.alias),
       usage,
       dispatch: verdict,
+      usage_history_24h: hist,
     };
   });
 }
@@ -874,8 +994,10 @@ function buildState() {
     rawSessions, panesBySession, rawAccounts, now, rl,
   );
 
+  ensureUsagePoller();
   const usageAll = subctlUsageFetchAll(now);
-  const accountSummaries = buildAccountSummaries(rawAccounts, sessions, rl, usageAll, now);
+  const history24h = readUsageHistory24h(now);
+  const accountSummaries = buildAccountSummaries(rawAccounts, sessions, rl, usageAll, history24h, now);
 
   const sessionsOut = sessions
     .slice()
@@ -889,6 +1011,9 @@ function buildState() {
       color_class: colorClassFor(account),
       count_today: data.count_today,
       buckets_24h: data.buckets_24h,
+      // Utilization curve from /api/oauth/usage polling — much richer signal
+      // than 429 event counts. Each entry is a 1h bucket, oldest→newest.
+      usage_history_24h: history24h.get(account) ?? Array.from({ length: 24 }, () => ({ five_hour_max: null, seven_day_max: null, samples: 0 })),
     })),
     // Last 20 events today, newest-first, with full detail so the dashboard
     // can show what actually happened (time, type, account, severity).

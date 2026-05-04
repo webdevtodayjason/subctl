@@ -259,17 +259,41 @@
 
         const bars = document.createElement("div");
         bars.className = "rl-bars";
-        const max = Math.max(1, ...(r.buckets_24h ?? []));
-        for (const v of (r.buckets_24h ?? new Array(24).fill(0))) {
+
+        // Each cell = 1 hour of trailing 24h, oldest → newest.
+        // Height/color = max five_hour utilization observed that hour from
+        // /api/oauth/usage polling. Empty hours render dim. A 429 event in
+        // an hour overlays a small red dot on top of that hour's cell.
+        const hist = r.usage_history_24h ?? new Array(24).fill({ five_hour_max: null, samples: 0 });
+        const events = r.buckets_24h ?? new Array(24).fill(0);
+        for (let i = 0; i < 24; i++) {
+          const slot = hist[i] ?? { five_hour_max: null, samples: 0 };
+          const evCount = events[i] ?? 0;
           const cell = document.createElement("div");
-          cell.className = "rl-bar " + (r.color_class || "grey");
-          if (v === 0) cell.classList.add("zero");
+          cell.className = "rl-bar";
+          let pct = 0;
+          let cls = "zero";
+          if (typeof slot.five_hour_max === "number") {
+            pct = Math.max(8, Math.min(100, Math.round(slot.five_hour_max)));
+            if (slot.five_hour_max >= 95)      cls = "red";
+            else if (slot.five_hour_max >= 80) cls = "yellow";
+            else if (slot.five_hour_max >= 50) cls = "warm";
+            else                               cls = "ok";
+          }
+          cell.classList.add(cls);
           const bar = document.createElement("span");
-          // 8% baseline so non-zero is always visible above the dim baseline.
-          const pct = v === 0 ? 0 : Math.max(15, Math.round((v / max) * 100));
           bar.style.height = `${pct}%`;
           cell.appendChild(bar);
-          cell.title = `${v} hit${v === 1 ? "" : "s"}`;
+          if (evCount > 0) {
+            const dot = document.createElement("span");
+            dot.className = "rl-event-dot";
+            cell.appendChild(dot);
+          }
+          if (typeof slot.five_hour_max === "number") {
+            cell.title = `5h util max: ${slot.five_hour_max}%${evCount > 0 ? `  ·  ${evCount} RL event${evCount === 1 ? "" : "s"}` : ""}  ·  ${slot.samples} sample${slot.samples === 1 ? "" : "s"}`;
+          } else {
+            cell.title = evCount > 0 ? `${evCount} RL event${evCount === 1 ? "" : "s"} (no util sample)` : "no data";
+          }
           bars.appendChild(cell);
         }
 
