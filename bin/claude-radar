@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# claude-radar — convenience shim for `subctl radar`.
+# Prints the dispatch-readiness verdict + cross-account signals.
+# Provided by subctl (https://github.com/webdevtodayjason/subctl).
+exec subctl radar "$@"

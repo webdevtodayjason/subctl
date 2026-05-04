@@ -47,22 +47,29 @@ fi
 # 4. Remove generated aliases
 [[ -f "$SUBCTL_CONFIG_DIR/shell-aliases.sh" ]] && rm -f "$SUBCTL_CONFIG_DIR/shell-aliases.sh"
 
-# 5. Remove CLI symlinks
-for path in /usr/local/bin/subctl "$HOME/bin/subctl" "$HOME/.subctl"; do
-  if [[ -L "$path" ]]; then
-    rm -f "$path"
-    subctl_info "removed $path"
-  fi
+# 5. Remove CLI + shim symlinks. If the shim was a backup-replacing symlink,
+#    restore the most recent backup file in its place (so users with a
+#    pre-subctl claude-teams get their original back).
+for shim in subctl claude-teams claude-radar claude-dash; do
+  for dir in /usr/local/bin "$HOME/bin"; do
+    path="$dir/$shim"
+    if [[ -L "$path" ]]; then
+      rm -f "$path"
+      subctl_info "removed $path"
+      # Look for a pre-subctl backup of this specific shim
+      backup=$(find "$HOME/code" -maxdepth 1 -name "${shim}.pre-subctl.*.bak" \
+                 -type f 2>/dev/null | sort | tail -1)
+      if [[ -n "$backup" ]] && [[ -w "$dir" ]]; then
+        cp "$backup" "$path"
+        chmod +x "$path"
+        subctl_ok "restored $path from $backup"
+      fi
+    fi
+  done
 done
 
-# 6. Restore claude-teams from latest backup if present
-backup=$(ls -t "$HOME"/code/claude-teams.pre-subctl.*.bak 2>/dev/null | head -1 || true)
-if [[ -n "$backup" ]] && [[ -f "/usr/local/bin/claude-teams" ]]; then
-  if grep -q "subctl teams claude" "/usr/local/bin/claude-teams" 2>/dev/null; then
-    cp "$backup" "/usr/local/bin/claude-teams"
-    subctl_ok "restored /usr/local/bin/claude-teams from $backup"
-  fi
-fi
+# 6. Remove ~/.subctl convenience symlink
+[[ -L "$HOME/.subctl" ]] && rm -f "$HOME/.subctl"
 
 echo
 subctl_ok "subctl uninstalled"

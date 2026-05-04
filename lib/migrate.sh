@@ -104,32 +104,11 @@ subctl_migrate_import_accounts() {
   subctl_ok "imported $(grep -cv -E '^\s*#|^\s*$' "$SUBCTL_ACCOUNTS_CONF") accounts"
 }
 
-# ── replace claude-teams shim ────────────────────────────────────────────────
-# Replace /usr/local/bin/claude-teams with a thin wrapper that delegates to
-# `subctl teams claude`. Backup the existing one first.
+# NOTE: as of v0.2.0, the claude-teams shim is a first-class deliverable
+# at bin/claude-teams in the repo. install.sh symlinks it into the right
+# place automatically. This function is kept as a no-op for legacy callers.
 subctl_migrate_claude_teams_shim() {
-  local target="/usr/local/bin/claude-teams"
-  if [[ ! -f "$target" ]]; then
-    subctl_info "no /usr/local/bin/claude-teams to replace"
-    return 0
-  fi
-
-  if [[ ! -w "$target" ]]; then
-    subctl_warn "$target not writable — skipping. Manually update if desired."
-    return 0
-  fi
-
-  local backup="$HOME/code/claude-teams.pre-subctl.$(date +%Y%m%d-%H%M%S).bak"
-  cp "$target" "$backup"
-
-  cat > "$target" <<'SHIM'
-#!/usr/bin/env bash
-# claude-teams — thin shim that delegates to `subctl teams claude`.
-# Original script archived to ~/code/claude-teams.pre-subctl.*.bak
-exec subctl teams claude "$@"
-SHIM
-  chmod +x "$target"
-  subctl_ok "replaced /usr/local/bin/claude-teams with subctl shim (backup: $backup)"
+  subctl_info "claude-teams shim is now installed via install.sh step 3 (no-op here)"
 }
 
 # ── update zshrc managed block ──────────────────────────────────────────────

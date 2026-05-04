@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# claude-teams — convenience shim for `subctl teams claude`.
+# Provided by subctl (https://github.com/webdevtodayjason/subctl).
+# All flags are passed through verbatim. Run `subctl teams claude --help` for options.
+exec subctl teams claude "$@"

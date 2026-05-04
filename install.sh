@@ -59,20 +59,35 @@ if $DO_MIGRATE; then
   subctl_migrate_import_accounts
 fi
 
-# ── 3. symlink subctl into /usr/local/bin (if writable) ─────────────────────
-subctl_info "linking subctl CLI"
-TARGET_BIN="/usr/local/bin/subctl"
-if [[ -w "$(dirname "$TARGET_BIN")" ]]; then
-  run ln -sfn "$REPO_ROOT/bin/subctl" "$TARGET_BIN"
-  subctl_ok "subctl → $TARGET_BIN"
+# ── 3. symlink subctl + convenience shims into /usr/local/bin (if writable) ─
+subctl_info "linking subctl CLI + shorthand shims"
+
+SHIMS=(subctl claude-teams claude-radar claude-dash)
+SYS_BIN="/usr/local/bin"
+USER_BIN="$HOME/bin"
+
+if [[ -w "$SYS_BIN" ]]; then
+  TARGET_BIN_DIR="$SYS_BIN"
 else
-  # Fall back to user-writable location
-  USER_BIN="$HOME/bin"
   run mkdir -p "$USER_BIN"
-  run ln -sfn "$REPO_ROOT/bin/subctl" "$USER_BIN/subctl"
-  subctl_warn "$(dirname "$TARGET_BIN") not writable — linked into $USER_BIN/subctl"
+  TARGET_BIN_DIR="$USER_BIN"
+  subctl_warn "$SYS_BIN not writable — linking into $USER_BIN"
   subctl_warn "  add to PATH: export PATH=\"\$HOME/bin:\$PATH\""
 fi
+
+for shim in "${SHIMS[@]}"; do
+  src="$REPO_ROOT/bin/$shim"
+  dst="$TARGET_BIN_DIR/$shim"
+  # If existing target is a regular file (e.g. user's old claude-teams),
+  # back it up before replacing.
+  if [[ -f "$dst" && ! -L "$dst" ]]; then
+    backup="$HOME/code/${shim}.pre-subctl.$(date +%Y%m%d-%H%M%S).bak"
+    run cp "$dst" "$backup"
+    subctl_info "backed up existing $dst → $backup"
+  fi
+  run ln -sfn "$src" "$dst"
+  subctl_ok "$shim → $dst"
+done
 
 # Convenience: also create ~/.subctl pointing at repo root
 run ln -sfn "$REPO_ROOT" "$HOME/.subctl"
@@ -90,12 +105,7 @@ if ! $NO_SHELL; then
   $DRY_RUN || subctl_migrate_zshrc
 fi
 
-# ── 6. claude-teams shim ────────────────────────────────────────────────────
-if $DO_MIGRATE; then
-  subctl_info "replacing /usr/local/bin/claude-teams with shim"
-  . "$REPO_ROOT/lib/migrate.sh"
-  $DRY_RUN || subctl_migrate_claude_teams_shim
-fi
+# ── 6. (claude-teams shim is now installed in step 3 — first-class deliverable)
 
 # ── 7. dashboard service (opt-in) ───────────────────────────────────────────
 if ! $NO_SERVICE && command -v bun >/dev/null 2>&1; then

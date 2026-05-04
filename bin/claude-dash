@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# claude-dash — convenience shim for `subctl dashboard`.
+# Ensures the dashboard service is running, then opens it in your browser.
+# Provided by subctl (https://github.com/webdevtodayjason/subctl).
+exec subctl dashboard "$@"

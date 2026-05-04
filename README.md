@@ -105,6 +105,22 @@ $ subctl                                # opens the TUI
 
 ---
 
+## Convenience shims
+
+Every subctl install drops three short-form binaries alongside `subctl` itself, for muscle-memory parity with how you've probably been working:
+
+| Shim          | Equivalent           | What it does |
+|---------------|----------------------|--------------|
+| `claude-teams [opts]` | `subctl teams claude [opts]` | Launch a tmux session pinned to a specific Claude account. |
+| `claude-radar`        | `subctl radar`              | Print the dispatch-readiness verdict + cross-account signals. |
+| `claude-dash`         | `subctl dashboard`          | Ensure the dashboard service is running, open the browser. |
+
+All four binaries (`subctl`, `claude-teams`, `claude-radar`, `claude-dash`) are symlinks into the repo, so `git pull && ./install.sh` is the only update path.
+
+If `claude-teams` already exists at `/usr/local/bin/claude-teams` (e.g. a hand-rolled script you wrote previously), the installer backs it up to `~/code/claude-teams.pre-subctl.<timestamp>.bak` before replacing it. Uninstall restores the backup.
+
+---
+
 ## Concepts
 
 **Accounts.** An account is a `(provider, alias)` pair plus a `CLAUDE_CONFIG_DIR`-style isolation root. Configured in `~/.config/subctl/accounts.conf`. Aliases (`claude-personal`, `claude-work`) are generated into your shell's rc file so `claude-personal` always means the same account regardless of which directory you're in.
