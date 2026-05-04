@@ -1,0 +1,26 @@
+# subctl accounts — copy this to ~/.config/subctl/accounts.conf and edit.
+#
+# Format:  alias | provider | email | config_dir | description
+#
+# Fields:
+#   alias       short name used by the CLI (e.g. claude-personal). No spaces.
+#   provider    one of: claude, gemini, openai
+#               (gemini and openai are stubs in v0.1 — claude is fully wired.)
+#   email       account email. Stored locally only; never transmitted by subctl.
+#   config_dir  per-account isolation directory. Use ~/ to mean $HOME.
+#   description free text shown in the TUI and dashboard.
+#
+# Lines starting with # are ignored. Whitespace around | is OK and gets trimmed.
+
+# ── Example Anthropic Claude accounts ───────────────────────────────────────
+claude-personal | claude | you@example.com         | ~/.claude-personal | Personal Max
+claude-work     | claude | you@company.com         | ~/.claude-work     | Work account
+claude-overflow | claude | you+overflow@gmail.com  | ~/.claude-overflow | Burst capacity
+
+# ── Phase 2: Gemini (not yet implemented) ───────────────────────────────────
+# gemini-personal | gemini | you@example.com | ~/.gemini-personal | Personal Gemini
+# gemini-work     | gemini | you@company.com | ~/.gemini-work     | Work Gemini
+
+# ── Phase 3: OpenAI (not yet implemented) ───────────────────────────────────
+# openai-personal | openai | you@example.com | ~/.config/openai-personal | Personal ChatGPT/API
+# openai-work     | openai | you@company.com | ~/.config/openai-work     | Work OpenAI

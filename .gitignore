@@ -1,0 +1,31 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Backups + archives never enter the repo
+*.bak.*
+*.archived-*
+*.tmp
+
+# Node/Bun
+node_modules/
+dist/
+.bun/
+
+# subctl local config (user's real accounts.conf lives in ~/.config/subctl/, never here)
+config/accounts.conf
+config/accounts.conf.local
+
+# Secrets (defensive — we never write them, but block by name)
+.env
+.env.*
+credentials.json
+.credentials.json
+*.pem
+*.key

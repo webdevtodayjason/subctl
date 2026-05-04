@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>subctl</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-name">subctl</span>
+      <span class="brand-version" id="version">v0.0.0</span>
+    </div>
+    <div class="topbar-right">
+      <span class="clock" id="clock">--:--:--</span>
+      <span class="status-pill" id="status-pill">
+        <span class="dot dim"></span>
+        <span class="status-text">connecting</span>
+      </span>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel dispatch" id="dispatch-panel">
+      <div class="dispatch-verdict" id="dispatch-verdict">--</div>
+      <div class="dispatch-reasons" id="dispatch-reasons"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Accounts</h2>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>alias</th>
+            <th>provider</th>
+            <th>auth</th>
+            <th class="num">active</th>
+            <th class="num">RL today</th>
+            <th>last activity</th>
+          </tr>
+        </thead>
+        <tbody id="accounts-body">
+          <tr><td colspan="6" class="empty">no data yet</td></tr>
+        </tbody>
+      </table>
+      <div class="warning" id="accounts-warning" hidden></div>
+    </section>
+
+    <section class="panel">
+      <h2>Active sessions</h2>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>id</th>
+            <th>account</th>
+            <th>repo</th>
+            <th>branch</th>
+            <th class="num">ctx</th>
+            <th class="num">age</th>
+            <th>model</th>
+          </tr>
+        </thead>
+        <tbody id="sessions-body">
+          <tr><td colspan="7" class="empty">no active sessions</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel">
+      <h2>Rate limits (24h)</h2>
+      <div id="rate-limits-body" class="rl-list">
+        <div class="empty">no data yet</div>
+      </div>
+      <div class="rl-total" id="rl-total"></div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span>subctl <span id="footer-version">v0.0.0</span></span>
+    <span class="sep">/</span>
+    <a href="https://github.com/REPLACE_WITH_OWNER/subctl" target="_blank" rel="noopener">github</a>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>

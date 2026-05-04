@@ -1,0 +1,265 @@
+#!/usr/bin/env bash
+# subctl — Subscription Central for AI subscriptions you're paying for.
+# Top-level CLI dispatcher. With no args, launches the TUI menu.
+
+set -uo pipefail
+
+# Resolve repo root (handles being symlinked from /usr/local/bin)
+_self="${BASH_SOURCE[0]}"
+while [[ -L "$_self" ]]; do _self="$(readlink "$_self")"; done
+SUBCTL_REPO_ROOT="$(cd "$(dirname "$_self")/.." && pwd)"
+export SUBCTL_REPO_ROOT
+
+. "$SUBCTL_REPO_ROOT/lib/core.sh"
+
+usage() {
+  cat <<EOF
+subctl v$SUBCTL_VERSION — Subscription Central
+
+Usage:
+  subctl                              Launch TUI menu
+
+  subctl accounts                     Show account status table
+  subctl accounts add <provider> <alias> <email> [config_dir] [description]
+  subctl accounts remove <alias> [--purge]
+  subctl accounts edit                Open accounts.conf in \$EDITOR
+
+  subctl auth <provider> <alias>      OAuth into the right config dir
+  subctl auth all                     Walk every account that needs auth
+
+  subctl teams <provider> [opts]      tmux launcher (claude only in v0.1)
+  subctl teams claude -a <alias> [-y -c -o -p TEXT -f FILE --dry-run]
+
+  subctl radar                        /dispatch-check verdict + signals
+  subctl radar log [--tail]           Inspect rate-limit events log
+
+  subctl service status               Dashboard service state
+  subctl service start                Start service (must be enabled)
+  subctl service stop
+  subctl service restart
+  subctl service enable               Install launchd plist (auto-starts at login)
+  subctl service disable              Uninstall plist
+  subctl service logs [N]             Show last N log lines (default 50)
+  subctl service foreground           Run dashboard in current shell
+
+  subctl dashboard                    Ensure service is running, open browser
+  subctl whoami                       Current shell's CLAUDE_CONFIG_DIR account
+  subctl config edit                  Open accounts.conf
+  subctl doctor                       Health check
+  subctl install [--migrate]          Install / re-install (interactive)
+  subctl uninstall                    Remove subctl
+  subctl version                      Print version
+  subctl help                         Show this help
+
+Repo:    https://github.com/webdevtodayjason/subctl
+License: MIT
+EOF
+}
+
+# ── command dispatch ─────────────────────────────────────────────────────────
+cmd="${1:-}"
+[[ $# -gt 0 ]] && shift
+
+case "$cmd" in
+  ""|menu|tui)
+    . "$SUBCTL_REPO_ROOT/lib/tui.sh"
+    subctl_ensure_config_dir
+    subctl_tui_main
+    ;;
+
+  accounts)
+    . "$SUBCTL_REPO_ROOT/lib/accounts.sh"
+    sub="${1:-status}"; [[ $# -gt 0 ]] && shift
+    case "$sub" in
+      status|list|"")  subctl_accounts_status_table ;;
+      add)             subctl_accounts_add "$@" ;;
+      remove|rm)       subctl_accounts_remove "$@" ;;
+      edit)            subctl_accounts_edit ;;
+      *) subctl_die "unknown accounts subcommand: $sub" ;;
+    esac
+    ;;
+
+  auth)
+    . "$SUBCTL_REPO_ROOT/lib/core.sh"
+    target="${1:-}"
+    case "$target" in
+      all)
+        . "$SUBCTL_REPO_ROOT/providers/claude/auth.sh"
+        provider_claude_auth_all
+        ;;
+      claude)
+        alias="${2:-}"
+        [[ -z "$alias" ]] && subctl_die "usage: subctl auth claude <alias>"
+        . "$SUBCTL_REPO_ROOT/providers/claude/auth.sh"
+        cfg_dir=$(subctl_account_field "$alias" 4)
+        email=$(subctl_account_field "$alias" 3)
+        [[ -z "$cfg_dir" ]] && subctl_die "unknown alias: $alias"
+        provider_claude_auth "$alias" "$cfg_dir" "$email"
+        ;;
+      gemini|openai)
+        subctl_warn "$target provider not yet implemented (phase 2/3)"
+        exit 1
+        ;;
+      *) subctl_die "usage: subctl auth <claude|gemini|openai|all> [alias]" ;;
+    esac
+    ;;
+
+  teams)
+    target="${1:-}"; [[ $# -gt 0 ]] && shift
+    case "$target" in
+      claude)
+        . "$SUBCTL_REPO_ROOT/providers/claude/teams.sh"
+        provider_claude_teams "$@"
+        ;;
+      gemini|openai)
+        subctl_warn "$target teams not yet implemented (phase 2/3)"
+        exit 1
+        ;;
+      *) subctl_die "usage: subctl teams <claude|gemini|openai> [opts]" ;;
+    esac
+    ;;
+
+  radar)
+    sub="${1:-verdict}"
+    case "$sub" in
+      verdict|"")
+        bash "$SUBCTL_REPO_ROOT/providers/claude/dispatch-check.sh"
+        ;;
+      log)
+        shift || true
+        log="$HOME/.claude/rate-limit-events.log"
+        if [[ "${1:-}" == "--tail" ]]; then
+          [[ -f "$log" ]] && tail -f "$log" || subctl_die "no log at $log"
+        else
+          [[ -f "$log" ]] && tail -50 "$log" || echo "(no events)"
+        fi
+        ;;
+      *) subctl_die "usage: subctl radar [verdict|log [--tail]]" ;;
+    esac
+    ;;
+
+  service)
+    . "$SUBCTL_REPO_ROOT/lib/service.sh"
+    sub="${1:-status}"; [[ $# -gt 0 ]] && shift
+    case "$sub" in
+      status)     subctl_service_status ;;
+      start)      subctl_service_start ;;
+      stop)       subctl_service_stop ;;
+      restart)    subctl_service_restart ;;
+      enable)     subctl_service_enable ;;
+      disable)    subctl_service_disable ;;
+      logs)       subctl_service_logs "${1:-50}" ;;
+      foreground) subctl_service_foreground ;;
+      *) subctl_die "unknown service subcommand: $sub" ;;
+    esac
+    ;;
+
+  dashboard)
+    . "$SUBCTL_REPO_ROOT/lib/service.sh"
+    state=$(subctl_service_state)
+    [[ "$state" != "running" ]] && subctl_service_start
+    open "http://127.0.0.1:$SUBCTL_SERVICE_PORT"
+    ;;
+
+  whoami)
+    if [[ -n "${CLAUDE_CONFIG_DIR:-}" ]]; then
+      alias=$(subctl_list_accounts | awk -F'\t' -v c="$CLAUDE_CONFIG_DIR" '$4==c {print $1; exit}')
+      if [[ -n "$alias" ]]; then
+        printf "%s  (%s)\n" "$alias" "$CLAUDE_CONFIG_DIR"
+      else
+        printf "custom: %s\n" "$CLAUDE_CONFIG_DIR"
+      fi
+    else
+      printf "default (\$HOME/.claude)\n"
+    fi
+    ;;
+
+  config)
+    . "$SUBCTL_REPO_ROOT/lib/accounts.sh"
+    sub="${1:-show}"
+    case "$sub" in
+      edit)        subctl_accounts_edit ;;
+      show|"")     [[ -f "$SUBCTL_ACCOUNTS_CONF" ]] && cat "$SUBCTL_ACCOUNTS_CONF" || subctl_warn "no $SUBCTL_ACCOUNTS_CONF" ;;
+      path)        echo "$SUBCTL_ACCOUNTS_CONF" ;;
+      *) subctl_die "usage: subctl config [show|edit|path]" ;;
+    esac
+    ;;
+
+  doctor)
+    echo "subctl v$SUBCTL_VERSION doctor"
+    echo
+    printf "  Repo:           %s\n" "$SUBCTL_REPO_ROOT"
+    printf "  Config dir:     %s\n" "$SUBCTL_CONFIG_DIR"
+    printf "  Accounts file:  %s " "$SUBCTL_ACCOUNTS_CONF"
+    [[ -f "$SUBCTL_ACCOUNTS_CONF" ]] && printf "${C_GRN}✓${C_RST}\n" || printf "${C_RED}missing${C_RST}\n"
+    echo
+    echo "Required tools:"
+    for tool in jq tmux git; do
+      if command -v "$tool" >/dev/null 2>&1; then
+        printf "  ${C_GRN}✓${C_RST} %-8s %s\n" "$tool" "$(command -v "$tool")"
+      else
+        printf "  ${C_RED}✗${C_RST} %-8s missing\n" "$tool"
+      fi
+    done
+    echo
+    echo "Optional tools:"
+    for tool in gum bun launchctl; do
+      if command -v "$tool" >/dev/null 2>&1; then
+        printf "  ${C_GRN}✓${C_RST} %-10s %s\n" "$tool" "$(command -v "$tool")"
+      else
+        printf "  ${C_DIM}-${C_RST} %-10s missing (some features unavailable)\n" "$tool"
+      fi
+    done
+    echo
+    echo "Claude Code integration:"
+    for f in \
+      "$HOME/.claude/scripts/statusline.sh" \
+      "$HOME/.claude/scripts/dispatch-check.sh" \
+      "$HOME/.claude/hooks/log-rate-limits.sh" \
+      "$HOME/.claude/commands/dispatch-check.md"; do
+      if [[ -L "$f" ]]; then
+        target=$(readlink "$f")
+        if [[ "$target" == "$SUBCTL_REPO_ROOT"/* ]]; then
+          printf "  ${C_GRN}✓${C_RST} %s → repo\n" "$f"
+        else
+          printf "  ${C_YLW}!${C_RST} %s → %s (not subctl)\n" "$f" "$target"
+        fi
+      elif [[ -f "$f" ]]; then
+        printf "  ${C_YLW}!${C_RST} %s (regular file, not a subctl symlink)\n" "$f"
+      else
+        printf "  ${C_DIM}-${C_RST} %s (not installed)\n" "$f"
+      fi
+    done
+    echo
+    echo "Service:"
+    . "$SUBCTL_REPO_ROOT/lib/service.sh"
+    subctl_service_status
+    echo
+    echo "Accounts:"
+    . "$SUBCTL_REPO_ROOT/lib/accounts.sh"
+    subctl_accounts_status_table
+    ;;
+
+  install)
+    bash "$SUBCTL_REPO_ROOT/install.sh" "$@"
+    ;;
+
+  uninstall)
+    bash "$SUBCTL_REPO_ROOT/uninstall.sh" "$@"
+    ;;
+
+  version|--version|-v)
+    echo "subctl v$SUBCTL_VERSION"
+    ;;
+
+  help|--help|-h)
+    usage
+    ;;
+
+  *)
+    subctl_err "unknown command: $cmd"
+    echo
+    usage
+    exit 1
+    ;;
+esac

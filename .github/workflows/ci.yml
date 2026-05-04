@@ -1,0 +1,41 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: No-secrets gate
+        run: bash scripts/check-no-secrets.sh
+
+      - name: Install shellcheck
+        run: brew install shellcheck
+
+      - name: Shellcheck
+        run: |
+          shopt -s globstar nullglob
+          files=(
+            install.sh
+            uninstall.sh
+            bin/**/*.sh
+            lib/**/*.sh
+            providers/**/*.sh
+            scripts/**/*.sh
+          )
+          # bin/subctl is bash without an .sh extension — include it explicitly.
+          [ -f bin/subctl ] && files+=(bin/subctl)
+          shellcheck -x "${files[@]}"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Type-check dashboard
+        run: bun --check dashboard/server.ts
