@@ -58,8 +58,22 @@ subctl_migrate_import_accounts() {
     return 0
   fi
 
-  # If subctl's accounts.conf already has user data (not just example), skip.
-  if grep -q -v -E '^\s*#|^\s*$|@example\.com|@company\.com' "$SUBCTL_ACCOUNTS_CONF" 2>/dev/null; then
+  # If subctl's accounts.conf already has user data (not just example seed), skip.
+  # Heuristic: if every non-comment alias is one of the example seed names
+  # (claude-personal, claude-work, claude-overflow) AND every email is a
+  # known placeholder, we treat the file as un-edited.
+  local non_example_lines
+  non_example_lines=$(awk -F'|' '
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*$/ { next }
+    {
+      a=$1; gsub(/[[:space:]]/, "", a)
+      e=$3; gsub(/[[:space:]]/, "", e)
+      if (a != "claude-personal" && a != "claude-work" && a != "claude-overflow") { print; next }
+      if (e != "you@example.com" && e != "you@company.com" && e != "you+overflow@gmail.com") { print }
+    }' "$SUBCTL_ACCOUNTS_CONF" 2>/dev/null)
+
+  if [[ -n "$non_example_lines" ]]; then
     subctl_info "subctl accounts.conf already has user entries — skipping import (edit manually if you want to merge)"
     return 0
   fi

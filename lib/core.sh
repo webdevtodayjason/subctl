@@ -39,18 +39,25 @@ subctl_die()  { subctl_err "$@"; exit 1; }
 
 # ── accounts.conf parsing ────────────────────────────────────────────────────
 # Each non-comment line: alias | provider | email | config_dir | description
-# Spaces around `|` are trimmed. Tilde in config_dir expands to $HOME.
+# All whitespace around `|` is trimmed. Tilde in config_dir expands to $HOME.
 #
 # Output format (TAB-separated): alias\tprovider\temail\tconfig_dir\tdescription
+_subctl_trim() {
+  local s="$1"
+  # Strip leading and trailing whitespace (any amount).
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf "%s" "$s"
+}
+
 subctl_list_accounts() {
   [[ -f "$SUBCTL_ACCOUNTS_CONF" ]] || return 0
   while IFS='|' read -r alias provider email cfg_dir desc; do
-    # strip whitespace from each field
-    alias="${alias## }"; alias="${alias%% }"
-    provider="${provider## }"; provider="${provider%% }"
-    email="${email## }"; email="${email%% }"
-    cfg_dir="${cfg_dir## }"; cfg_dir="${cfg_dir%% }"
-    desc="${desc## }"; desc="${desc%% }"
+    alias=$(_subctl_trim "$alias")
+    provider=$(_subctl_trim "$provider")
+    email=$(_subctl_trim "$email")
+    cfg_dir=$(_subctl_trim "$cfg_dir")
+    desc=$(_subctl_trim "$desc")
     [[ -z "$alias" || "${alias:0:1}" == "#" ]] && continue
     cfg_dir="${cfg_dir/#\~/$HOME}"
     printf "%s\t%s\t%s\t%s\t%s\n" "$alias" "$provider" "$email" "$cfg_dir" "$desc"
