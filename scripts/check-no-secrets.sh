@@ -22,7 +22,10 @@ cd "$REPO_ROOT"
 
 EXCLUDE_DIRS=(--exclude-dir=.git --exclude-dir=node_modules --exclude-dir=dist \
               --exclude-dir=.bun --exclude-dir=.archived-)
-EXCLUDE_FILES=(--exclude=check-no-secrets.sh)
+# Excluded files: this script itself (regex patterns above), and
+# bin/subctl-deck (compiled Go binary; gitignored, but live in working tree
+# and its embedded debug info contains absolute build paths).
+EXCLUDE_FILES=(--exclude=check-no-secrets.sh --exclude=subctl-deck)
 
 # Patterns
 FORBIDDEN=(

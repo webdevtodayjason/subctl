@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# claude-deck — convenience shim for `subctl deck`.
+# Launches the Bubble Tea TUI session manager. Provided by subctl.
+exec subctl deck "$@"

@@ -107,17 +107,50 @@ $ subctl                                # opens the TUI
 
 ## Convenience shims
 
-Every subctl install drops three short-form binaries alongside `subctl` itself, for muscle-memory parity with how you've probably been working:
+Every subctl install drops short-form binaries alongside `subctl` itself, for muscle-memory parity with how you've probably been working:
 
 | Shim          | Equivalent           | What it does |
 |---------------|----------------------|--------------|
 | `claude-teams [opts]` | `subctl teams claude [opts]` | Launch a tmux session pinned to a specific Claude account. |
 | `claude-radar`        | `subctl radar`              | Print the dispatch-readiness verdict + cross-account signals. |
 | `claude-dash`         | `subctl dashboard`          | Ensure the dashboard service is running, open the browser. |
+| `claude-deck`         | `subctl deck`               | Open the TUI session manager (live grid of all your sessions). |
 
-All four binaries (`subctl`, `claude-teams`, `claude-radar`, `claude-dash`) are symlinks into the repo, so `git pull && ./install.sh` is the only update path.
+All five binaries (`subctl`, `claude-teams`, `claude-radar`, `claude-dash`, `claude-deck`) are symlinks into the repo, so `git pull && ./install.sh` is the only update path.
 
 If `claude-teams` already exists at `/usr/local/bin/claude-teams` (e.g. a hand-rolled script you wrote previously), the installer backs it up to `~/code/claude-teams.pre-subctl.<timestamp>.bak` before replacing it. Uninstall restores the backup.
+
+---
+
+## The deck — live session manager
+
+`subctl deck` (or `claude-deck`) opens a Go + Bubble Tea TUI showing every tmux session on the machine — grouped by project, color-coded by account, with a live ANSI preview of the focused session's pane.
+
+```
+╔══════════════════════════════════════════════════════════════════════════╗
+║  subctl deck                                            v0.3.0 · 09:42   ║
+╠══════════════════════════════════════════════════════════════════════════╣
+║  ▾ ampcortex.ai                          ║  ───── claude-titanium ────── ║
+║      ● claude-titanium  16% ctx  4 panes ║                                ║
+║       ├ orchestrator        ctx 65%      ║   > /usage                     ║
+║       ├ worker:auth         ctx 12%      ║   ...                          ║
+║       └ worker:tests        ctx 23%      ║                                ║
+║      working                              ║                                ║
+║                                          ║                                ║
+║    holace                                ║                                ║
+║      ● claude-jason     7% ctx   2 panes ║                                ║
+║      idle 3m                              ║                                ║
+║  ─                                       ║                                ║
+║  [n] new   [k] kill  [a] attach  [r] ↻   ║  ↑↓ scroll preview             ║
+║  [s] split  [q] quit                     ║  ←→ switch session             ║
+╚══════════════════════════════════════════════════════════════════════════╝
+```
+
+Status badges: `working` · `idle` · `waiting` (e.g. permission prompt). Detected by parsing the live pane content.
+
+Press `n` to spawn a new session — pick an account, a folder, a name, opt into orchestrator/-c/-y, hit enter. The deck shells out to `subctl teams claude` underneath, so the launch path is identical to the CLI.
+
+**Requires Go 1.21+** at install time (the binary builds during `./install.sh`). If `go` isn't installed, the rest of subctl works fine; install Go later (`brew install go`) and re-run `subctl install`.
 
 ---
 

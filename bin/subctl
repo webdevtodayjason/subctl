@@ -43,6 +43,7 @@ Usage:
   subctl service foreground           Run dashboard in current shell
 
   subctl dashboard                    Ensure service is running, open browser
+  subctl deck                         Launch the TUI session manager (Go binary)
   subctl whoami                       Current shell's CLAUDE_CONFIG_DIR account
   subctl config edit                  Open accounts.conf
   subctl doctor                       Health check
@@ -159,6 +160,17 @@ case "$cmd" in
     state=$(subctl_service_state)
     [[ "$state" != "running" ]] && subctl_service_start
     open "http://127.0.0.1:$SUBCTL_SERVICE_PORT"
+    ;;
+
+  deck)
+    DECK_BIN="$SUBCTL_REPO_ROOT/bin/subctl-deck"
+    if [[ ! -x "$DECK_BIN" ]]; then
+      subctl_err "subctl-deck binary not built yet"
+      subctl_err "  build:  cd $SUBCTL_REPO_ROOT/deck && go build -o $DECK_BIN ."
+      subctl_err "  or re-run: subctl install"
+      exit 1
+    fi
+    exec "$DECK_BIN" "$@"
     ;;
 
   whoami)

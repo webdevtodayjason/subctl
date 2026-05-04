@@ -50,7 +50,7 @@ fi
 # 5. Remove CLI + shim symlinks. If the shim was a backup-replacing symlink,
 #    restore the most recent backup file in its place (so users with a
 #    pre-subctl claude-teams get their original back).
-for shim in subctl claude-teams claude-radar claude-dash; do
+for shim in subctl claude-teams claude-radar claude-dash claude-deck; do
   for dir in /usr/local/bin "$HOME/bin"; do
     path="$dir/$shim"
     if [[ -L "$path" ]]; then
@@ -70,6 +70,10 @@ done
 
 # 6. Remove ~/.subctl convenience symlink
 [[ -L "$HOME/.subctl" ]] && rm -f "$HOME/.subctl"
+
+# 7. Remove compiled deck binary (source in deck/ stays — repo-tracked)
+[[ -f "$REPO_ROOT/bin/subctl-deck" ]] && rm -f "$REPO_ROOT/bin/subctl-deck" \
+  && subctl_info "removed bin/subctl-deck"
 
 echo
 subctl_ok "subctl uninstalled"

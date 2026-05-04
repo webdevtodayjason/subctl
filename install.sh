@@ -62,7 +62,7 @@ fi
 # ── 3. symlink subctl + convenience shims into /usr/local/bin (if writable) ─
 subctl_info "linking subctl CLI + shorthand shims"
 
-SHIMS=(subctl claude-teams claude-radar claude-dash)
+SHIMS=(subctl claude-teams claude-radar claude-dash claude-deck)
 SYS_BIN="/usr/local/bin"
 USER_BIN="$HOME/bin"
 
@@ -106,6 +106,22 @@ if ! $NO_SHELL; then
 fi
 
 # ── 6. (claude-teams shim is now installed in step 3 — first-class deliverable)
+
+# ── 6b. build the Go deck TUI binary ─────────────────────────────────────────
+if [[ -d "$REPO_ROOT/deck" ]]; then
+  if command -v go >/dev/null 2>&1; then
+    subctl_info "building subctl-deck (Go TUI session manager)"
+    if $DRY_RUN; then
+      echo "[dry-run] cd $REPO_ROOT/deck && go build -o $REPO_ROOT/bin/subctl-deck ."
+    else
+      (cd "$REPO_ROOT/deck" && go build -o "$REPO_ROOT/bin/subctl-deck" . 2>&1) \
+        && subctl_ok "built bin/subctl-deck" \
+        || subctl_warn "go build failed — deck unavailable. Check: cd $REPO_ROOT/deck && go build ./..."
+    fi
+  else
+    subctl_warn "go not installed — deck binary skipped. Install: brew install go && re-run subctl install"
+  fi
+fi
 
 # ── 7. dashboard service (opt-in) ───────────────────────────────────────────
 if ! $NO_SERVICE && command -v bun >/dev/null 2>&1; then
