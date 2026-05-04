@@ -13,6 +13,8 @@
       <span class="brand-version" id="version">v0.0.0</span>
     </div>
     <div class="topbar-right">
+      <span class="pulse-dot" id="pulse-dot" aria-hidden="true"></span>
+      <span class="uptime" id="uptime">running --</span>
       <span class="clock" id="clock">--:--:--</span>
       <span class="status-pill" id="status-pill">
         <span class="dot dim"></span>
@@ -23,8 +25,20 @@
 
   <main>
     <section class="panel dispatch" id="dispatch-panel">
-      <div class="dispatch-verdict" id="dispatch-verdict">--</div>
-      <div class="dispatch-reasons" id="dispatch-reasons"></div>
+      <div class="dispatch-row">
+        <div class="dispatch-verdict" id="dispatch-verdict">--</div>
+        <div class="dispatch-summary">
+          <div class="dispatch-tagline" id="dispatch-tagline">--</div>
+          <ul class="dispatch-reasons" id="dispatch-reasons"></ul>
+        </div>
+      </div>
+      <div class="info-strip" id="info-strip">
+        <span class="info-cell"><span class="info-num" id="info-tmux">0</span> tmux</span>
+        <span class="info-sep">·</span>
+        <span class="info-cell"><span class="info-num" id="info-ready">0</span> ready accounts</span>
+        <span class="info-sep">·</span>
+        <span class="info-cell"><span class="info-num" id="info-rl">0</span> RL today</span>
+      </div>
     </section>
 
     <section class="panel">
@@ -48,21 +62,23 @@
     </section>
 
     <section class="panel">
-      <h2>Active sessions</h2>
-      <table class="data-table">
+      <h2>Active sessions <span class="panel-hint">click row to expand preview</span></h2>
+      <table class="data-table sessions-table">
         <thead>
           <tr>
-            <th>id</th>
+            <th class="expander-col"></th>
+            <th>session</th>
             <th>account</th>
-            <th>repo</th>
+            <th>project</th>
             <th>branch</th>
             <th class="num">ctx</th>
             <th class="num">age</th>
-            <th>model</th>
+            <th>status</th>
+            <th>cmd</th>
           </tr>
         </thead>
         <tbody id="sessions-body">
-          <tr><td colspan="7" class="empty">no active sessions</td></tr>
+          <tr><td colspan="9" class="empty">no tmux sessions</td></tr>
         </tbody>
       </table>
     </section>

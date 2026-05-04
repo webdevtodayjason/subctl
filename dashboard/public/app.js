@@ -1,11 +1,20 @@
 // subctl dashboard frontend
+//
 // Connects to /api/live (WebSocket); on failure falls back to polling /api/state.
+// On WebSocket message, flashes the refresh pulse dot.
+// If WS is closed > 5 seconds, surfaces a RECONNECTING… pill in the header.
+
 (() => {
   "use strict";
 
-  const SPARK_CHARS = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
-  const VERDICT_TEXT = { green: "GO", yellow: "HOLD", red: "STOP" };
-  const VERDICT_DOT  = { green: "green", yellow: "yellow", red: "red" };
+  const VERDICT_TEXT     = { green: "GO",   yellow: "HOLD",  red: "STOP"  };
+  const VERDICT_TAGLINE  = {
+    green:  "all clear — dispatch normally",
+    yellow: "proceed with caution",
+    red:    "do not dispatch this wave",
+  };
+  const VERDICT_GLYPH    = { green: "🟢", yellow: "🟡", red: "🔴" };
+  const VERDICT_DOT      = { green: "green", yellow: "yellow", red: "red" };
 
   const $ = (id) => document.getElementById(id);
 
@@ -13,23 +22,17 @@
     if (seconds == null) return "—";
     if (seconds < 60) return `${seconds}s`;
     if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
-    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
+    if (seconds < 86400) {
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      return m > 0 ? `${h}h${String(m).padStart(2, "0")}m` : `${h}h`;
+    }
     return `${Math.floor(seconds / 86400)}d`;
   }
 
-  function sparkline(buckets) {
-    if (!buckets || buckets.length === 0) return "";
-    const max = Math.max(...buckets);
-    if (max === 0) return SPARK_CHARS[0].repeat(buckets.length);
-    return buckets.map((v) => {
-      if (v === 0) return SPARK_CHARS[0];
-      const idx = Math.min(SPARK_CHARS.length - 1,
-        Math.max(1, Math.round((v / max) * (SPARK_CHARS.length - 1))));
-      return SPARK_CHARS[idx];
-    }).join("");
-  }
+  function setText(el, text) { if (el && el.textContent !== text) el.textContent = text; }
 
-  function setText(el, text) { if (el.textContent !== text) el.textContent = text; }
+  // ----- Clock -----
 
   function renderClock() {
     const d = new Date();
@@ -41,13 +44,42 @@
   setInterval(renderClock, 1000);
   renderClock();
 
+  // ----- Status pill -----
+
+  let reconnectingTimer = null;
+
   function setStatus(kind, text) {
     const pill = $("status-pill");
     const dot = pill.querySelector(".dot");
     const label = pill.querySelector(".status-text");
+    pill.classList.remove("reconnecting");
     dot.className = `dot ${kind}`;
     setText(label, text);
   }
+
+  function setReconnecting() {
+    const pill = $("status-pill");
+    pill.classList.add("reconnecting");
+    const dot = pill.querySelector(".dot");
+    const label = pill.querySelector(".status-text");
+    dot.className = "dot yellow";
+    setText(label, "reconnecting…");
+  }
+
+  // Refresh pulse — flash on every WS message.
+  let pulseClearTimer = null;
+  function flashPulse() {
+    const dot = $("pulse-dot");
+    if (!dot) return;
+    dot.classList.add("flash");
+    if (pulseClearTimer) clearTimeout(pulseClearTimer);
+    pulseClearTimer = setTimeout(() => dot.classList.remove("flash"), 200);
+  }
+
+  // ----- Render -----
+
+  // Track expanded sessions across renders so toggling state survives re-paints.
+  const expandedSessions = new Set();
 
   function render(state) {
     if (!state) return;
@@ -55,24 +87,46 @@
     setText($("version"), `v${state.version}`);
     setText($("footer-version"), `v${state.version}`);
 
+    // Header uptime
+    if (state.service?.uptime_seconds != null) {
+      setText($("uptime"), `running ${fmtAge(state.service.uptime_seconds)}`);
+    }
+
+    // Info strip totals
+    const totals = state.totals ?? {};
+    setText($("info-tmux"),  String(totals.tmux_sessions   ?? 0));
+    setText($("info-ready"), String(totals.ready_accounts  ?? 0));
+    setText($("info-rl"),    String(totals.rl_today        ?? 0));
+
     // Dispatch verdict
     const verdict = state.dispatch?.verdict ?? "red";
     const verdictEl = $("dispatch-verdict");
     verdictEl.className = `dispatch-verdict ${verdict}`;
-    setText(verdictEl, VERDICT_TEXT[verdict] ?? "—");
+    setText(verdictEl, `${VERDICT_GLYPH[verdict] ?? ""} ${VERDICT_TEXT[verdict] ?? "—"}`.trim());
+    setText($("dispatch-tagline"), VERDICT_TAGLINE[verdict] ?? "");
+
     const reasons = state.dispatch?.reasons ?? [];
     const reasonsEl = $("dispatch-reasons");
-    reasonsEl.replaceChildren(
-      ...(reasons.length === 0
-        ? [textRow("all systems clear")]
-        : reasons.map(textRow))
-    );
-
-    // Service status pill
-    if (state.service?.running) {
-      setStatus(VERDICT_DOT[verdict] ?? "green", `running · ${fmtAge(state.service.uptime_seconds)}`);
+    if (reasons.length === 0) {
+      const li = document.createElement("li");
+      li.className = "clear";
+      li.textContent = "all systems clear";
+      reasonsEl.replaceChildren(li);
     } else {
-      setStatus("red", "service down");
+      reasonsEl.replaceChildren(...reasons.map(r => {
+        const li = document.createElement("li");
+        li.textContent = r;
+        return li;
+      }));
+    }
+
+    // Service status pill (only if not currently in reconnecting state)
+    if (state.service?.running) {
+      const pill = $("status-pill");
+      if (!pill.classList.contains("reconnecting")) {
+        setStatus(VERDICT_DOT[verdict] ?? "green",
+                  `live · ${fmtAge(state.service.uptime_seconds)}`);
+      }
     }
 
     // Accounts table
@@ -84,7 +138,7 @@
       accountsBody.replaceChildren(...accounts.map((a) => {
         const tr = document.createElement("tr");
         tr.append(
-          td(a.alias),
+          td(acctPill(a.alias, a.color_class)),
           td(a.provider),
           td(authCell(a.auth_status)),
           td(String(a.active_sessions), "num"),
@@ -103,51 +157,127 @@
     }
 
     // Sessions table
-    const sessionsBody = $("sessions-body");
-    const sessions = state.sessions ?? [];
-    if (sessions.length === 0) {
-      sessionsBody.replaceChildren(emptyRow(7, "no active sessions"));
-    } else {
-      sessionsBody.replaceChildren(...sessions.map((s) => {
-        const tr = document.createElement("tr");
-        tr.append(
-          td(s.id),
-          td(s.account),
-          td(s.repo),
-          td(s.branch),
-          td(`${s.ctx_pct}%`, "num"),
-          td(fmtAge(s.age_seconds), "num"),
-          td(s.model),
-        );
-        return tr;
-      }));
-    }
+    renderSessions(state.sessions ?? []);
 
     // Rate limits
+    renderRateLimits(state.rate_limits ?? { today_total: 0, by_account: [] });
+  }
+
+  function renderSessions(sessions) {
+    const sessionsBody = $("sessions-body");
+    if (sessions.length === 0) {
+      sessionsBody.replaceChildren(emptyRow(9, "no tmux sessions"));
+      return;
+    }
+
+    const rows = [];
+    for (const s of sessions) {
+      const isOpen = expandedSessions.has(s.name);
+
+      // Session main row
+      const tr = document.createElement("tr");
+      tr.className = "session-row" + (isOpen ? " open" : "");
+      tr.dataset.session = s.name;
+      tr.addEventListener("click", () => toggleSession(s.name));
+
+      const exp = document.createElement("span");
+      exp.className = "expander";
+      exp.textContent = "▶";
+
+      tr.append(
+        td(exp),
+        td(sessionNameCell(s)),
+        td(acctPill(s.account, s.color_class)),
+        td(s.project),
+        td(s.branch),
+        td(ctxCell(s.ctx_pct, s.ctx_color), "num"),
+        td(ageCell(s.age_seconds, s.age_color), "num"),
+        td(statusCell(s.status)),
+        td(s.command || "—"),
+      );
+      rows.push(tr);
+
+      // Preview row (always present, hidden by default)
+      const prevTr = document.createElement("tr");
+      prevTr.className = "preview-row" + (isOpen ? " open" : "");
+      const prevTd = document.createElement("td");
+      prevTd.colSpan = 9;
+      const meta = document.createElement("div");
+      meta.className = "preview-meta";
+      meta.append(
+        metaItem("session", s.name),
+        metaItem("path", s.path || "—"),
+        metaItem("panes", `${s.panes}${s.attached ? " (attached)" : ""}`),
+        metaItem("RL today", String(s.rl_today)),
+        metaItem("email", s.account_email || "—"),
+      );
+      const pre = document.createElement("pre");
+      pre.className = "preview-block";
+      pre.textContent = s.preview && s.preview.trim().length > 0
+        ? s.preview
+        : "(no recent output captured)";
+      prevTd.append(meta, pre);
+      prevTr.appendChild(prevTd);
+      rows.push(prevTr);
+    }
+    sessionsBody.replaceChildren(...rows);
+  }
+
+  function toggleSession(name) {
+    if (expandedSessions.has(name)) expandedSessions.delete(name);
+    else expandedSessions.add(name);
+    // Targeted DOM update to avoid full re-render flicker.
+    const rows = document.querySelectorAll(
+      `.session-row[data-session="${CSS.escape(name)}"]`
+    );
+    rows.forEach(r => {
+      r.classList.toggle("open");
+      const next = r.nextElementSibling;
+      if (next && next.classList.contains("preview-row")) next.classList.toggle("open");
+    });
+  }
+
+  function renderRateLimits(rl) {
     const rlBody = $("rate-limits-body");
-    const rl = state.rate_limits?.by_account ?? [];
-    if (rl.length === 0) {
-      rlBody.replaceChildren(textDiv("no data yet", "empty"));
+    const rows = rl.by_account ?? [];
+    if (rows.length === 0) {
+      rlBody.replaceChildren(textDiv("no accounts to track", "empty"));
     } else {
-      rlBody.replaceChildren(...rl.map((r) => {
+      rlBody.replaceChildren(...rows.map((r) => {
         const row = document.createElement("div");
         row.className = "rl-row";
-        const acct = document.createElement("span");
-        acct.className = "rl-account";
-        acct.textContent = r.account;
-        const spark = document.createElement("span");
-        const spk = sparkline(r.buckets_24h);
-        spark.className = "rl-spark" + (r.count_today === 0 ? " zero" : "");
-        spark.textContent = spk;
+
+        const acct = acctPill(r.account, r.color_class);
+        acct.classList.add("rl-account");
+
+        const bars = document.createElement("div");
+        bars.className = "rl-bars";
+        const max = Math.max(1, ...(r.buckets_24h ?? []));
+        for (const v of (r.buckets_24h ?? new Array(24).fill(0))) {
+          const cell = document.createElement("div");
+          cell.className = "rl-bar " + (r.color_class || "grey");
+          if (v === 0) cell.classList.add("zero");
+          const bar = document.createElement("span");
+          // 8% baseline so non-zero is always visible above the dim baseline.
+          const pct = v === 0 ? 0 : Math.max(15, Math.round((v / max) * 100));
+          bar.style.height = `${pct}%`;
+          cell.appendChild(bar);
+          cell.title = `${v} hit${v === 1 ? "" : "s"}`;
+          bars.appendChild(cell);
+        }
+
         const count = document.createElement("span");
         count.className = "rl-count" + (r.count_today > 0 ? " hot" : "");
         count.textContent = `${r.count_today} today`;
-        row.append(acct, spark, count);
+
+        row.append(acct, bars, count);
         return row;
       }));
     }
-    setText($("rl-total"), `Total today: ${state.rate_limits?.today_total ?? 0}`);
+    setText($("rl-total"), `Total today: ${rl.today_total ?? 0}`);
   }
+
+  // ----- Cell builders -----
 
   function td(content, cls) {
     const cell = document.createElement("td");
@@ -155,6 +285,17 @@
     if (content instanceof Node) cell.appendChild(content);
     else cell.textContent = content;
     return cell;
+  }
+
+  function acctPill(alias, colorClass) {
+    const span = document.createElement("span");
+    span.className = `acct-pill acct-${colorClass || "grey"}`;
+    const dot = document.createElement("span");
+    dot.className = "acct-dot";
+    const name = document.createElement("span");
+    name.textContent = alias;
+    span.append(dot, name);
+    return span;
   }
 
   function authCell(status) {
@@ -169,6 +310,50 @@
     return span;
   }
 
+  function ctxCell(pct, color) {
+    const span = document.createElement("span");
+    span.className = `ctx-cell ${color || "green"}`;
+    span.textContent = `${pct}%`;
+    return span;
+  }
+
+  function ageCell(seconds, color) {
+    const span = document.createElement("span");
+    span.className = `age-cell ${color || "green"}`;
+    span.textContent = fmtAge(seconds);
+    return span;
+  }
+
+  function statusCell(status) {
+    const span = document.createElement("span");
+    span.className = `status-cell ${status || "unknown"}`;
+    const glyph = status === "working" ? "● " : status === "waiting" ? "◔ " : status === "idle" ? "◌ " : "· ";
+    span.textContent = `${glyph}${status || "unknown"}`;
+    return span;
+  }
+
+  function sessionNameCell(s) {
+    const span = document.createElement("span");
+    span.textContent = s.name;
+    if (s.attached) {
+      const a = document.createElement("span");
+      a.className = "attached-mark";
+      a.textContent = "•";
+      a.title = "attached";
+      span.appendChild(a);
+    }
+    return span;
+  }
+
+  function metaItem(label, value) {
+    const s = document.createElement("span");
+    const k = document.createElement("strong");
+    k.textContent = `${label}: `;
+    s.appendChild(k);
+    s.appendChild(document.createTextNode(value));
+    return s;
+  }
+
   function emptyRow(cols, msg) {
     const tr = document.createElement("tr");
     const cell = document.createElement("td");
@@ -179,11 +364,6 @@
     return tr;
   }
 
-  function textRow(text) {
-    const div = document.createElement("div");
-    div.textContent = text;
-    return div;
-  }
   function textDiv(text, cls) {
     const div = document.createElement("div");
     if (cls) div.className = cls;
@@ -191,7 +371,7 @@
     return div;
   }
 
-  // ----- transport: WS with polling fallback -----
+  // ----- transport: WS with polling fallback + reconnect -----
 
   let ws = null;
   let pollTimer = null;
@@ -202,9 +382,12 @@
       try {
         const r = await fetch("/api/state", { cache: "no-store" });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        flashPulse();
         render(await r.json());
-      } catch (e) {
-        setStatus("red", "offline");
+      } catch {
+        if (!$("status-pill").classList.contains("reconnecting")) {
+          setStatus("red", "offline");
+        }
       }
     };
     tick();
@@ -215,27 +398,49 @@
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   }
 
+  function scheduleReconnectingBadge() {
+    if (reconnectingTimer) clearTimeout(reconnectingTimer);
+    reconnectingTimer = setTimeout(() => {
+      // Only show if WS still hasn't reconnected.
+      if (!ws || ws.readyState !== 1) setReconnecting();
+    }, 5000);
+  }
+
+  function clearReconnectingBadge() {
+    if (reconnectingTimer) { clearTimeout(reconnectingTimer); reconnectingTimer = null; }
+    $("status-pill").classList.remove("reconnecting");
+  }
+
   function connectWS() {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     try {
       ws = new WebSocket(`${proto}//${location.host}/api/live`);
     } catch {
       startPolling();
+      scheduleReconnectingBadge();
       return;
     }
-    ws.addEventListener("open",  () => stopPolling());
+    ws.addEventListener("open", () => {
+      stopPolling();
+      clearReconnectingBadge();
+    });
     ws.addEventListener("message", (ev) => {
+      flashPulse();
       try { render(JSON.parse(ev.data)); } catch { /* ignore malformed */ }
     });
     ws.addEventListener("close", () => {
-      // Fall back to polling and try to re-establish WS in 5s.
+      // Fall back to polling and try to re-establish WS in 3s.
       startPolling();
-      setTimeout(connectWS, 5000);
+      scheduleReconnectingBadge();
+      setTimeout(connectWS, 3000);
     });
     ws.addEventListener("error", () => {
       try { ws.close(); } catch { /* swallow */ }
     });
   }
 
+  // Kick off — also try polling immediately so first paint isn't blocked
+  // on the WS handshake.
+  startPolling();
   connectWS();
 })();
