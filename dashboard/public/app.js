@@ -161,6 +161,7 @@
 
     // Rate limits
     renderRateLimits(state.rate_limits ?? { today_total: 0, by_account: [] });
+    renderEvents(state.rate_limits?.events_today ?? []);
   }
 
   function renderSessions(sessions) {
@@ -274,7 +275,84 @@
         return row;
       }));
     }
-    setText($("rl-total"), `Total today: ${rl.today_total ?? 0}`);
+    const recent429 = rl.recent_429_count ?? 0;
+    const total = rl.today_total ?? 0;
+    let label = `Total today: ${total}`;
+    if (total > 0) {
+      label += `  ·  ${recent429} actionable in last 2h (429s only — 529s are server overload, informational)`;
+    }
+    setText($("rl-total"), label);
+  }
+
+  function renderEvents(events) {
+    const tbody = $("events-body");
+    if (!events || events.length === 0) {
+      tbody.replaceChildren(rowEmpty(5, "no rate-limit events today"));
+      return;
+    }
+    tbody.replaceChildren(...events.map(ev => {
+      const tr = document.createElement("tr");
+      tr.className = "event-row";
+
+      // WHEN — relative time, with ISO on hover.
+      const whenCell = td(formatAge(ev.age_seconds) + " ago", "ev-when");
+      whenCell.title = ev.ts || "";
+      tr.appendChild(whenCell);
+
+      // TYPE
+      tr.appendChild(td(ev.type || "unknown", "ev-type"));
+
+      // SEVERITY badge
+      const sevCell = document.createElement("td");
+      const sev = document.createElement("span");
+      if (ev.is_user_rate_limit) {
+        sev.className = "ev-sev sev-warn";
+        sev.textContent = "your limit";
+        sev.title = "429 — your account hit a per-minute or daily cap. Worth slowing down.";
+      } else {
+        sev.className = "ev-sev sev-info";
+        sev.textContent = "server overload";
+        sev.title = "529 — Anthropic's servers were temporarily at capacity. Not your fault, retry usually succeeds.";
+      }
+      sevCell.appendChild(sev);
+      tr.appendChild(sevCell);
+
+      // ACCOUNT (color-coded)
+      const acctCell = document.createElement("td");
+      acctCell.className = "ev-account";
+      if (ev.account) {
+        acctCell.appendChild(acctPill(ev.account, ev.account_color_class || "grey"));
+      } else {
+        acctCell.appendChild(textDiv("(unknown — older event)", "ev-account-unknown"));
+      }
+      tr.appendChild(acctCell);
+
+      // SESSION — short hash, full on hover
+      const sidCell = td((ev.session || "").slice(0, 8), "ev-session");
+      sidCell.title = ev.session || "";
+      tr.appendChild(sidCell);
+
+      return tr;
+    }));
+  }
+
+  function rowEmpty(cols, text) {
+    const tr = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.colSpan = cols;
+    cell.className = "empty";
+    cell.textContent = text;
+    tr.appendChild(cell);
+    return tr;
+  }
+
+  function formatAge(s) {
+    if (!s) return "just now";
+    if (s < 60) return s + "s";
+    if (s < 3600) return Math.floor(s / 60) + "m";
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    return m > 0 ? h + "h" + (m < 10 ? "0" : "") + m + "m" : h + "h";
   }
 
   // ----- Cell builders -----

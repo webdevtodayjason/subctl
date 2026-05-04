@@ -465,3 +465,46 @@ main {
   .dispatch-verdict { font-size: 36px; min-width: 0; }
   .rl-row { grid-template-columns: 140px 1fr 70px; }
 }
+
+/* ── events table (rate-limit events today, with severity badges) ────────── */
+.events-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.events-table thead th {
+  text-align: left;
+  font-weight: normal;
+  color: #6c6c6c;
+  letter-spacing: 0.06em;
+  padding: 6px 12px 6px 0;
+  border-bottom: 1px solid #1f1f1f;
+}
+.events-table tbody td {
+  padding: 8px 12px 8px 0;
+  border-bottom: 1px solid #161616;
+}
+.events-table .empty { color: #6c6c6c; padding: 16px; text-align: center; }
+
+.ev-when    { color: #c4c4c4; white-space: nowrap; }
+.ev-type    { color: #c4c4c4; font-family: var(--mono, monospace); }
+.ev-session { color: #6c6c6c; font-family: var(--mono, monospace); }
+
+.ev-sev {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.ev-sev.sev-warn {
+  background: rgba(255, 191, 0, 0.15);
+  color: #ffbf00;
+  border: 1px solid rgba(255, 191, 0, 0.35);
+}
+.ev-sev.sev-info {
+  background: rgba(120, 120, 120, 0.15);
+  color: #9c9c9c;
+  border: 1px solid rgba(120, 120, 120, 0.35);
+}
+
+.ev-account-unknown { color: #6c6c6c; font-style: italic; }
+
+.panel-sub { color: #6c6c6c; font-size: 12px; font-weight: normal; margin-left: 8px; }

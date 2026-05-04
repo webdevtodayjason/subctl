@@ -440,26 +440,52 @@ function claudeSessionAgeSeconds(jsonlPath: string, now: number): number {
 
 // ---------- rate limits ----------
 
+interface RLEvent {
+  ts: string;                 // ISO8601 UTC
+  age_seconds: number;        // relative to now
+  type_code: number;          // 429 or 529 (parsed from .type string)
+  type_label: string;         // raw .type field, e.g. "529 (overload)"
+  is_user_rate_limit: boolean;// true for 429, false for 529 — only 429 reflects user behavior
+  account: string | null;     // resolved alias if known, else null
+  session: string;            // session UUID
+}
+
 interface RLData {
   today_total: number;
+  // Hits within the trailing 2h that are 429 (user rate limit). These are the
+  // only hits that should affect the dispatch verdict — 529 is server-side
+  // overload, unrelated to user behavior, and aged-out hits are stale.
+  recent_429_count: number;
+  recent_429_events: RLEvent[];
+  events_today: RLEvent[];     // all today's events, newest-first, with full detail
   by_account: Map<string, { count_today: number; buckets_24h: number[] }>;
   by_session_today: Map<string, number>;
 }
+
+const RL_RECENT_WINDOW_SEC = 2 * 60 * 60; // 2h — the window that drives verdict
 
 function buildRateLimits(accountAliases: string[], sidToAlias: Map<string, string>, now: number): RLData {
   const today = todayDateStr();
   const startOfHour = new Date(now);
   startOfHour.setMinutes(0, 0, 0);
   const currentHourMs = startOfHour.getTime();
+  const nowMs = now;
 
   const byAccount = new Map<string, { count_today: number; buckets_24h: number[] }>();
   for (const a of accountAliases) {
     byAccount.set(a, { count_today: 0, buckets_24h: new Array(24).fill(0) });
   }
   const bySession = new Map<string, number>();
+  const eventsToday: RLEvent[] = [];
+  const recent429s: RLEvent[] = [];
 
   const raw = safeRead(RL_LOG);
-  if (!raw) return { today_total: 0, by_account: byAccount, by_session_today: bySession };
+  if (!raw) {
+    return {
+      today_total: 0, recent_429_count: 0, recent_429_events: [],
+      events_today: [], by_account: byAccount, by_session_today: bySession,
+    };
+  }
 
   let total = 0;
   for (const line of raw.split("\n")) {
@@ -470,29 +496,67 @@ function buildRateLimits(accountAliases: string[], sidToAlias: Map<string, strin
     const explicitAcct: string | null = ev.account ?? ev.alias ?? null;
     const sid: string | null = ev.session ?? null;
     const date = ev.date ?? (typeof ev.ts === "string" ? ev.ts.slice(0, 10) : null);
+    const tsStr: string = ev.ts ?? "";
+    const typeLabel: string = ev.type ?? "unknown";
 
-    // Resolve account: explicit > session lookup
+    // Parse 429 vs 529 from the .type label. Format historically:
+    //   "429 (rate_limit)"  → 429, user's per-minute/daily cap
+    //   "529 (overload)"    → 529, Anthropic-side capacity, NOT the user's fault
+    let typeCode = 0;
+    if (typeLabel.startsWith("429")) typeCode = 429;
+    else if (typeLabel.startsWith("529")) typeCode = 529;
+
+    // Resolve account: explicit field > session-id lookup
     let acct = explicitAcct;
     if (!acct && sid && sidToAlias.has(sid)) acct = sidToAlias.get(sid)!;
 
+    const tsMs = tsStr ? Date.parse(tsStr) : NaN;
+    const ageSec = Number.isFinite(tsMs) ? Math.max(0, Math.floor((nowMs - tsMs) / 1000)) : 0;
+
+    const event: RLEvent = {
+      ts: tsStr,
+      age_seconds: ageSec,
+      type_code: typeCode,
+      type_label: typeLabel,
+      is_user_rate_limit: typeCode === 429,
+      account: acct,
+      session: sid ?? "",
+    };
+
     if (date === today) {
       total += 1;
+      eventsToday.push(event);
       if (acct && byAccount.has(acct)) byAccount.get(acct)!.count_today += 1;
       if (sid) bySession.set(sid, (bySession.get(sid) ?? 0) + 1);
     }
+
+    // Recent window: only 429 events within the last RL_RECENT_WINDOW_SEC
+    if (typeCode === 429 && ageSec <= RL_RECENT_WINDOW_SEC) {
+      recent429s.push(event);
+    }
+
     // Hourly buckets covering the trailing 24h, oldest -> newest.
-    if (typeof ev.ts === "string" && acct && byAccount.has(acct)) {
-      const evMs = Date.parse(ev.ts);
-      if (!Number.isNaN(evMs)) {
-        const hoursAgo = Math.floor((currentHourMs - evMs) / (60 * 60 * 1000));
-        if (hoursAgo >= 0 && hoursAgo < 24) {
-          const idx = 23 - hoursAgo;
-          byAccount.get(acct)!.buckets_24h[idx] += 1;
-        }
+    if (Number.isFinite(tsMs) && acct && byAccount.has(acct)) {
+      const hoursAgo = Math.floor((currentHourMs - tsMs) / (60 * 60 * 1000));
+      if (hoursAgo >= 0 && hoursAgo < 24) {
+        const idx = 23 - hoursAgo;
+        byAccount.get(acct)!.buckets_24h[idx] += 1;
       }
     }
   }
-  return { today_total: total, by_account: byAccount, by_session_today: bySession };
+
+  // Newest-first.
+  eventsToday.sort((a, b) => b.ts.localeCompare(a.ts));
+  recent429s.sort((a, b) => b.ts.localeCompare(a.ts));
+
+  return {
+    today_total: total,
+    recent_429_count: recent429s.length,
+    recent_429_events: recent429s,
+    events_today: eventsToday,
+    by_account: byAccount,
+    by_session_today: bySession,
+  };
 }
 
 // ---------- auth status ----------
@@ -675,14 +739,19 @@ function dispatchVerdict(
     }
   }
 
-  // Rate-limits today.
-  const rlClass = classifyRl(rl.today_total);
-  if (rlClass === "red") {
+  // Rate-limits — only RECENT 429s drive the verdict.
+  // 529s are Anthropic-side overload (not your fault); aged-out hits are stale.
+  // Today's totals (including 529s) are still surfaced informationally below
+  // the verdict, but they don't bump the level.
+  const recentClass = classifyRl(rl.recent_429_count);
+  if (recentClass === "red") {
     bump("red");
-    reasons.push(`⚠ ${rl.today_total} rate-limit hits today (red ≥${THRESH_RL_RED})`);
-  } else if (rlClass === "yellow") {
+    reasons.push(`⚠ ${rl.recent_429_count} rate-limit (429) hits in last 2h (red ≥${THRESH_RL_RED})`);
+  } else if (recentClass === "yellow") {
     bump("yellow");
-    reasons.push(`⚠ ${rl.today_total} rate-limit hit${rl.today_total === 1 ? "" : "s"} today`);
+    reasons.push(
+      `⚠ ${rl.recent_429_count} rate-limit (429) hit${rl.recent_429_count === 1 ? "" : "s"} in last 2h`,
+    );
   }
 
   return { verdict: level, reasons };
@@ -754,11 +823,24 @@ function buildState() {
 
   const rateLimits = {
     today_total: rl.today_total,
+    recent_429_count: rl.recent_429_count,
     by_account: Array.from(rl.by_account.entries()).map(([account, data]) => ({
       account,
       color_class: colorClassFor(account),
       count_today: data.count_today,
       buckets_24h: data.buckets_24h,
+    })),
+    // Last 20 events today, newest-first, with full detail so the dashboard
+    // can show what actually happened (time, type, account, severity).
+    events_today: rl.events_today.slice(0, 20).map(ev => ({
+      ts: ev.ts,
+      age_seconds: ev.age_seconds,
+      type: ev.type_label,
+      type_code: ev.type_code,
+      is_user_rate_limit: ev.is_user_rate_limit,
+      account: ev.account,
+      account_color_class: ev.account ? colorClassFor(ev.account) : "grey",
+      session: ev.session,
     })),
   };
 
