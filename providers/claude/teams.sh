@@ -115,6 +115,12 @@ When given a task, first outline your agent plan before proceeding."
     tmux send-keys -t "$SESSION_NAME" Enter
   fi
 
-  # Attach
-  tmux attach-session -t "$SESSION_NAME"
+  # Attach. If we're already inside a tmux session, attach-session fails
+  # with "open terminal failed: not a terminal" — switch-client is the
+  # right verb in that context.
+  if [[ -n "${TMUX:-}" ]]; then
+    tmux switch-client -t "$SESSION_NAME"
+  else
+    tmux attach-session -t "$SESSION_NAME"
+  fi
 }
