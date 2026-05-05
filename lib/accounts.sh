@@ -64,6 +64,17 @@ subctl_accounts_add() {
   printf "%-15s | %-7s | %-32s | %-25s | %s\n" \
     "$alias" "$provider" "$email" "$cfg_dir" "$desc" >> "$SUBCTL_ACCOUNTS_CONF"
   subctl_ok "added $alias → $cfg_dir"
+
+  # Wire statusline + Stop hook into the new account's cfg_dir so the radar
+  # bar shows up the first time it's used — no re-run of `subctl install`
+  # required. Only meaningful for claude (others don't have a Claude Code
+  # statusline contract).
+  if [[ "$provider" == "claude" ]]; then
+    local expanded="${cfg_dir/#\~/$HOME}"
+    . "$(dirname "${BASH_SOURCE[0]}")/settings.sh"
+    subctl_settings_install_claude_dir "$expanded" || \
+      subctl_warn "could not wire statusline into $expanded — re-run \`subctl install\`"
+  fi
 }
 
 # ── remove ───────────────────────────────────────────────────────────────────

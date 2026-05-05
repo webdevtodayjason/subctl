@@ -334,24 +334,41 @@ case "$cmd" in
     done
     echo
     echo "Claude Code integration:"
-    for f in \
-      "$HOME/.claude/scripts/statusline.sh" \
-      "$HOME/.claude/scripts/dispatch-check.sh" \
-      "$HOME/.claude/hooks/log-rate-limits.sh" \
-      "$HOME/.claude/commands/dispatch-check.md"; do
-      if [[ -L "$f" ]]; then
-        target=$(readlink "$f")
-        if [[ "$target" == "$SUBCTL_REPO_ROOT"/* ]]; then
-          printf "  ${C_GRN}✓${C_RST} %s → repo\n" "$f"
+    . "$SUBCTL_REPO_ROOT/lib/settings.sh"
+    while IFS= read -r cfg_dir; do
+      [[ -z "$cfg_dir" ]] && continue
+      printf "  ${C_DIM}%s${C_RST}\n" "$cfg_dir"
+      # statusLine key in this dir's settings.json
+      if [[ -f "$cfg_dir/settings.json" ]]; then
+        _sl=$(jq -r '.statusLine.command // empty' "$cfg_dir/settings.json" 2>/dev/null)
+        if [[ -n "$_sl" ]]; then
+          printf "    ${C_GRN}✓${C_RST} statusLine → %s\n" "$_sl"
         else
-          printf "  ${C_YLW}!${C_RST} %s → %s (not subctl)\n" "$f" "$target"
+          printf "    ${C_YLW}!${C_RST} settings.json has no statusLine\n"
         fi
-      elif [[ -f "$f" ]]; then
-        printf "  ${C_YLW}!${C_RST} %s (regular file, not a subctl symlink)\n" "$f"
       else
-        printf "  ${C_DIM}-${C_RST} %s (not installed)\n" "$f"
+        printf "    ${C_DIM}-${C_RST} no settings.json yet\n"
       fi
-    done
+      # symlinks
+      for f in \
+        "$cfg_dir/scripts/statusline.sh" \
+        "$cfg_dir/scripts/dispatch-check.sh" \
+        "$cfg_dir/hooks/log-rate-limits.sh" \
+        "$cfg_dir/commands/dispatch-check.md"; do
+        if [[ -L "$f" ]]; then
+          target=$(readlink "$f")
+          if [[ "$target" == "$SUBCTL_REPO_ROOT"/* ]]; then
+            printf "    ${C_GRN}✓${C_RST} %s → repo\n" "${f#$cfg_dir/}"
+          else
+            printf "    ${C_YLW}!${C_RST} %s → %s (not subctl)\n" "${f#$cfg_dir/}" "$target"
+          fi
+        elif [[ -f "$f" ]]; then
+          printf "    ${C_YLW}!${C_RST} %s (regular file, not a subctl symlink)\n" "${f#$cfg_dir/}"
+        else
+          printf "    ${C_DIM}-${C_RST} %s (not installed)\n" "${f#$cfg_dir/}"
+        fi
+      done
+    done < <(subctl_settings_claude_dirs | awk '!seen[$0]++')
     echo
     echo "Service:"
     . "$SUBCTL_REPO_ROOT/lib/service.sh"
