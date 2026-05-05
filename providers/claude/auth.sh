@@ -7,6 +7,7 @@
 _SUBCTL_CLAUDE_AUTH_LOADED=1
 
 . "$(dirname "${BASH_SOURCE[0]}")/../../lib/core.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/../../lib/settings.sh"
 
 # Implements the provider interface: provider_auth <alias> <config_dir> <email>
 provider_claude_auth() {
@@ -17,6 +18,9 @@ provider_claude_auth() {
   fi
 
   mkdir -p "$cfg_dir"
+  # Seed the experimental teams keys before launching claude, so the very first
+  # session in this account already has Team*/SendMessage tools available.
+  subctl_settings_ensure_teams "$cfg_dir"
   local before_status
   before_status=$(subctl_auth_status "$cfg_dir")
 
