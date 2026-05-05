@@ -4,6 +4,8 @@
 
 One CLI + TUI + dashboard for the AI subscriptions you already pay for. Today it speaks Claude. Gemini and OpenAI are next.
 
+> **v1.0 is here.** See [CHANGELOG.md](./CHANGELOG.md) for what shipped. The 0.x series stabilized into a single coherent control plane for accounts, auth, sessions, projects, teams launcher, dashboard, radar, and statusline.
+
 > 🚀 **First time setting up on a new Mac?** Open a fresh Claude Code session
 > and paste [`START-HERE.md`](./START-HERE.md) as your first message. Claude
 > will walk you through clone → install → account auth → projects.conf
@@ -124,7 +126,7 @@ All four binaries (`subctl`, `claude-teams`, `claude-radar`, `claude-dash`) are 
 
 If `claude-teams` already exists at `/usr/local/bin/claude-teams` (e.g. a hand-rolled script you wrote previously), the installer backs it up to `~/code/claude-teams.pre-subctl.<timestamp>.bak` before replacing it. Uninstall restores the backup.
 
-> **v0.3 → v0.4 note:** v0.3 shipped a Go-based deck TUI; v0.4 drops it in favor of [sesh integration](docs/sesh-integration.md). subctl now provides `subctl session-preview` and `subctl session-list` that plug into sesh's preview pane to give you a session picker enriched with account + RL metadata. Sesh is mature, fast, and we'd rather not maintain a session picker. The dashboard remains the panoramic web view.
+> **Pickers, two of them.** subctl ships both [`subctl-deck`](docs/deck.md) (a Go + Bubble Tea live session manager) and [`sesh` integration](docs/sesh-integration.md) (`subctl session-preview` / `subctl session-list` plug into sesh's preview pane). Use whichever fits your workflow; they read the same filesystem state. The dashboard at `localhost:8787` remains the panoramic web view.
 
 ---
 
@@ -198,14 +200,13 @@ If you already use any of the predecessor projects, see [docs/migration.md](docs
 
 ## Roadmap
 
-| Version | Provider     | Status    |
-|---------|--------------|-----------|
-| 0.1     | Claude       | shipping  |
-| 0.2     | Gemini       | planned   |
-| 0.3     | OpenAI       | planned   |
-| 0.4+    | Plugin model | exploring |
+| Provider     | Status                |
+|--------------|-----------------------|
+| Claude       | **shipping (v1.0)**   |
+| Gemini       | planned               |
+| OpenAI       | planned               |
 
-The plugin model: a provider is a directory under `providers/`. See [docs/adding-a-provider.md](docs/adding-a-provider.md).
+Plugin model is the shape going forward — a provider is a directory under `providers/` implementing `auth.sh`, `signals.sh`, `teams.sh`. See [docs/adding-a-provider.md](docs/adding-a-provider.md). Per-release notes live in [CHANGELOG.md](./CHANGELOG.md).
 
 ---
 
