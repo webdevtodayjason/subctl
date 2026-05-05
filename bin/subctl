@@ -65,6 +65,13 @@ Usage:
                                       can pick it up.
   subctl sessions adopt-latest <alias> Adopt the most recent orphaned session.
   subctl sessions pick <alias>        Interactive picker (gum if installed).
+
+  subctl projects status              Show declared projects + which are running
+                                      in tmux right now.
+  subctl projects start <name>        Launch one project (account-bound tmux),
+                                      resuming the most recent claude session.
+  subctl projects start all           Launch every project not already running.
+  subctl projects edit                Open ~/.config/subctl/projects.conf.
   subctl usage [alias|all|--json]     Per-account Claude Max usage (5h, 7d,
                                       7d-Sonnet, 7d-Opus). Cached 5min.
   subctl cost [alias|all] [--window today|week|month|all] [--json]
@@ -228,6 +235,25 @@ case "$cmd" in
       adopt-latest)   subctl_sessions_adopt_latest "$@" ;;
       pick)           subctl_sessions_pick "$@" ;;
       *) subctl_die "usage: subctl sessions [list|adopt <alias> <sid>|adopt-latest <alias>|pick <alias>]" ;;
+    esac
+    ;;
+
+  projects)
+    . "$SUBCTL_REPO_ROOT/lib/projects.sh"
+    sub="${1:-status}"; [[ $# -gt 0 ]] && shift
+    case "$sub" in
+      status|list|"")  subctl_projects_status ;;
+      start)
+        target="${1:-all}"; [[ $# -gt 0 ]] && shift
+        if [[ "$target" == "all" ]]; then
+          subctl_projects_start_all "$@"
+        else
+          subctl_projects_start_one "$target" "$@"
+        fi
+        ;;
+      edit)            subctl_projects_edit ;;
+      path)            subctl_projects_path ;;
+      *) subctl_die "usage: subctl projects [status|start <name|all>|edit|path]" ;;
     esac
     ;;
 
