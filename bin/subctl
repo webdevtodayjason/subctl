@@ -53,6 +53,18 @@ Usage:
   subctl session-prune [--older-than 6h] [--yes]
                                       Kill all tmux sessions older than DUR
                                       (default 6h). Asks before killing.
+
+  subctl sessions list [--orphans|--account <alias>]
+                                      List Claude session transcripts across
+                                      every cfg_dir (newest first). --orphans
+                                      shows sessions in default ~/.claude that
+                                      no account has adopted yet.
+  subctl sessions adopt <alias> <sid> [--force]
+                                      Copy a session's jsonl into <alias>'s
+                                      cfg_dir so 'claude-<alias> --resume <sid>'
+                                      can pick it up.
+  subctl sessions adopt-latest <alias> Adopt the most recent orphaned session.
+  subctl sessions pick <alias>        Interactive picker (gum if installed).
   subctl usage [alias|all|--json]     Per-account Claude Max usage (5h, 7d,
                                       7d-Sonnet, 7d-Opus). Cached 5min.
   subctl cost [alias|all] [--window today|week|month|all] [--json]
@@ -205,6 +217,18 @@ case "$cmd" in
   session-prune|prune)
     . "$SUBCTL_REPO_ROOT/lib/session-preview.sh"
     subctl_session_prune "$@"
+    ;;
+
+  sessions)
+    . "$SUBCTL_REPO_ROOT/lib/sessions.sh"
+    sub="${1:-list}"; [[ $# -gt 0 ]] && shift
+    case "$sub" in
+      list|"")        subctl_sessions_list_table "$@" ;;
+      adopt)          subctl_sessions_adopt "$@" ;;
+      adopt-latest)   subctl_sessions_adopt_latest "$@" ;;
+      pick)           subctl_sessions_pick "$@" ;;
+      *) subctl_die "usage: subctl sessions [list|adopt <alias> <sid>|adopt-latest <alias>|pick <alias>]" ;;
+    esac
     ;;
 
   usage)
