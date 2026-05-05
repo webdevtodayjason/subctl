@@ -1,0 +1,18 @@
+{
+  "_comment": "Anthropic API list rates per million tokens. Used to compute the API-equivalent cost of subscription usage so the dashboard can show savings. Override per-install with $SUBCTL_PRICING_FILE pointing at a file with the same shape. Update when Anthropic publishes new rates.",
+  "updated": "2026-05-04",
+  "source": "https://platform.claude.com/docs (verified against Claude Code /usage output)",
+  "currency": "USD",
+  "models": {
+    "claude-opus-4-7":   { "input": 5.00, "output": 25.00, "cacheRead": 0.50, "cacheWrite": 6.25 },
+    "claude-opus-4-6":   { "input": 5.00, "output": 25.00, "cacheRead": 0.50, "cacheWrite": 6.25 },
+    "claude-opus-4-5":   { "input": 5.00, "output": 25.00, "cacheRead": 0.50, "cacheWrite": 6.25 },
+    "claude-sonnet-4-6": { "input": 3.00, "output": 15.00, "cacheRead": 0.30, "cacheWrite": 3.75 },
+    "claude-sonnet-4-5": { "input": 3.00, "output": 15.00, "cacheRead": 0.30, "cacheWrite": 3.75 },
+    "claude-haiku-4-5":  { "input": 1.00, "output":  5.00, "cacheRead": 0.10, "cacheWrite": 1.25 }
+  },
+  "subscription_usd_monthly": {
+    "_comment": "Default monthly subscription cost per provider. Lets the dashboard compute savings vs paying retail. User can override per account in accounts.conf description if needed.",
+    "claude": 200.00
+  }
+}

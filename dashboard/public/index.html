@@ -16,10 +16,12 @@
       <span class="pulse-dot" id="pulse-dot" aria-hidden="true"></span>
       <span class="uptime" id="uptime">running --</span>
       <span class="clock" id="clock">--:--:--</span>
+      <button class="refresh-btn" id="refresh-btn" title="Force a fresh /api/oauth/usage call (bypasses 5-min cache)" aria-label="Refresh usage">↻</button>
       <span class="status-pill" id="status-pill">
         <span class="dot dim"></span>
         <span class="status-text">connecting</span>
       </span>
+      <a href="/help" class="help-link" title="Documentation, signal reference, CLI commands">📖 Docs</a>
     </div>
   </header>
 
@@ -49,13 +51,17 @@
             <th>alias</th>
             <th>provider</th>
             <th>auth</th>
+            <th>dispatch</th>
+            <th class="copy-col">switch</th>
+            <th class="num">5h · resets</th>
+            <th class="num">week · resets</th>
             <th class="num">active</th>
             <th class="num">RL today</th>
             <th>last activity</th>
           </tr>
         </thead>
         <tbody id="accounts-body">
-          <tr><td colspan="6" class="empty">no data yet</td></tr>
+          <tr><td colspan="10" class="empty">no data yet</td></tr>
         </tbody>
       </table>
       <div class="warning" id="accounts-warning" hidden></div>
@@ -83,8 +89,30 @@
       </table>
     </section>
 
+    <section class="panel" id="cost-panel">
+      <h2>Cost analysis (this month) <span class="panel-hint">API list-price equivalent vs subscription · what you'd pay buying tokens at retail</span></h2>
+      <div class="cost-summary" id="cost-summary"></div>
+      <table class="data-table" id="cost-table">
+        <thead>
+          <tr>
+            <th>alias</th>
+            <th class="num">turns</th>
+            <th class="num">input</th>
+            <th class="num">output</th>
+            <th class="num">cache R/W</th>
+            <th class="num">API $</th>
+            <th class="num">subscription $</th>
+            <th class="num">savings</th>
+          </tr>
+        </thead>
+        <tbody id="cost-body">
+          <tr><td colspan="8" class="empty">scanning transcripts…</td></tr>
+        </tbody>
+      </table>
+    </section>
+
     <section class="panel">
-      <h2>Rate limits (24h)</h2>
+      <h2>Utilization (24h) <span class="panel-hint">5h-window peak per hour · red dot = 429/529 event</span></h2>
       <div id="rate-limits-body" class="rl-list">
         <div class="empty">no data yet</div>
       </div>

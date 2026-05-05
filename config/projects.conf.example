@@ -1,0 +1,19 @@
+# subctl projects — declarative per-account project bindings.
+#
+# Each non-comment line declares one project: a tmux session bound to a
+# specific Claude account, in a specific directory. `subctl projects start`
+# will launch all of them in parallel (or just one if you specify a name).
+#
+# Format:
+#   name | account_alias | project_dir | description
+#
+# - name:           short tmux-friendly slug (lowercase, no spaces)
+# - account_alias:  must exist in ~/.config/subctl/accounts.conf
+# - project_dir:    absolute path or ~/path; expanded at launch time
+# - description:    optional, free-form
+#
+# Example (delete the leading "# " to enable):
+#
+# argent     | claude-semfreak  | ~/code/argent-core         | ArgentOS work
+# holace     | claude-jason     | ~/code/holace              | personal-injury SaaS
+# titanium   | claude-titanium  | ~/code/titanium-thing      | Titanium MSP work

@@ -64,10 +64,11 @@
 //   }
 // }
 
-import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
+import { readFileSync, readdirSync, statSync, existsSync, appendFileSync, mkdirSync, rmSync } from "node:fs";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
+import { aggregateAll as aggregateCostAll, type AccountCostSummary } from "./lib/cost.ts";
 
 const PORT = Number(process.env.PORT ?? 8787);
 const STARTED_AT = Date.now();
@@ -95,23 +96,20 @@ function readSubctlVersion(): string {
 }
 const VERSION = readSubctlVersion();
 
-// ---------- thresholds (mirror lib/radar.sh) ----------
+// ---------- thresholds for session-row coloring ----------
+//
+// These drive the visual color tags in the sessions table only. The dispatch
+// verdict is computed elsewhere from per-account usage (see
+// computeAccountVerdict) and intentionally does NOT consider session-level
+// signals — a fresh session in another folder has 0% ctx and is a moment old,
+// regardless of what's happening in any other tmux pane.
 
-const THRESH_PARALLEL_RED    = 4;
-const THRESH_PARALLEL_YELLOW = 2;
-const THRESH_AGE_RED         = 21600; // 6h
-const THRESH_AGE_YELLOW      = 7200;  // 2h
-const THRESH_CTX_RED         = 80;
-const THRESH_CTX_ORANGE      = 60;
-const THRESH_CTX_YELLOW      = 30;
-const THRESH_RL_RED          = 3;
-const THRESH_RL_YELLOW       = 1;
+const THRESH_AGE_RED    = 21600; // 6h — session row turns red
+const THRESH_AGE_YELLOW = 7200;  // 2h — session row turns yellow
+const THRESH_CTX_RED    = 80;
+const THRESH_CTX_ORANGE = 60;
+const THRESH_CTX_YELLOW = 30;
 
-function classifyParallel(n: number): "green" | "yellow" | "red" {
-  if (n >= THRESH_PARALLEL_RED)    return "red";
-  if (n >= THRESH_PARALLEL_YELLOW) return "yellow";
-  return "green";
-}
 function classifyAge(s: number): "green" | "yellow" | "red" {
   if (s >= THRESH_AGE_RED)    return "red";
   if (s >= THRESH_AGE_YELLOW) return "yellow";
@@ -121,11 +119,6 @@ function classifyCtx(p: number): "green" | "yellow" | "orange" | "red" {
   if (p >= THRESH_CTX_RED)    return "red";
   if (p >= THRESH_CTX_ORANGE) return "orange";
   if (p >= THRESH_CTX_YELLOW) return "yellow";
-  return "green";
-}
-function classifyRl(n: number): "green" | "yellow" | "red" {
-  if (n >= THRESH_RL_RED)    return "red";
-  if (n >= THRESH_RL_YELLOW) return "yellow";
   return "green";
 }
 
@@ -258,6 +251,274 @@ function resolveBinary(name: string): string {
 
 const TMUX_BIN = resolveBinary("tmux");
 const GIT_BIN = resolveBinary("git");
+const SUBCTL_BIN = join(REPO_ROOT, "bin", "subctl");
+
+// ---------- per-account usage (Anthropic /api/oauth/usage) ----------
+
+interface UsageEntry {
+  five_hour?:        { utilization: number; resets_at: string | null } | null;
+  seven_day?:        { utilization: number; resets_at: string | null } | null;
+  seven_day_sonnet?: { utilization: number; resets_at: string | null } | null;
+  seven_day_opus?:   { utilization: number; resets_at: string | null } | null;
+  extra_usage?:      { is_enabled: boolean; monthly_limit?: number; used_credits?: number; currency?: string } | null;
+  [key: string]: unknown;
+}
+
+interface AccountUsageResult {
+  alias: string;
+  cfg_dir: string;
+  ok: boolean;
+  usage?: UsageEntry;
+  error?: string;
+}
+
+let _usageCache: { fetchedAt: number; data: AccountUsageResult[] } | null = null;
+// 5min — same cadence as the history poller. The /api/refresh endpoint
+// (POST or GET) clears this cache for an explicit on-demand fetch.
+const USAGE_CACHE_TTL_MS = 5 * 60 * 1000;
+
+// Shells out to `subctl usage --json` once per TTL window. The bash impl has
+// its own 60s on-disk cache; this in-process cache just avoids spawning a
+// subprocess on every WebSocket tick.
+function subctlUsageFetchAll(now: number): AccountUsageResult[] {
+  if (_usageCache && now - _usageCache.fetchedAt < USAGE_CACHE_TTL_MS) {
+    return _usageCache.data;
+  }
+  try {
+    const r = spawnSync(SUBCTL_BIN, ["usage", "--json"], {
+      encoding: "utf8",
+      timeout: 12_000,
+    });
+    if (r.error || (typeof r.status === "number" && r.status !== 0)) {
+      _usageCache = { fetchedAt: now, data: [] };
+      return [];
+    }
+    const parsed = JSON.parse(r.stdout || "[]") as AccountUsageResult[];
+    _usageCache = { fetchedAt: now, data: parsed };
+    return parsed;
+  } catch {
+    _usageCache = { fetchedAt: now, data: [] };
+    return [];
+  }
+}
+
+function usageForAlias(alias: string, all: AccountUsageResult[]): UsageEntry | null {
+  const hit = all.find(u => u.alias === alias && u.ok);
+  return hit?.usage ?? null;
+}
+
+// ---------- utilization history (24h sparkline) ----------
+//
+// Polls /api/oauth/usage every POLL_INTERVAL_MS and appends a snapshot per
+// account to a JSONL file. The Accounts table renders 24 hourly buckets
+// per account, each colored by the MAX five_hour utilization observed that
+// hour. Empty hours (no poll, or no auth at the time) render dim.
+//
+// 429 events on the local hook log remain orthogonal — they record actual
+// blocking outcomes; this records the upstream signal (utilization curve)
+// that drives whether 429s fire.
+
+const SUBCTL_CONFIG_DIR = process.env.SUBCTL_CONFIG_DIR
+  ?? join(process.env.XDG_CONFIG_HOME ?? join(HOME, ".config"), "subctl");
+const HISTORY_FILE = join(SUBCTL_CONFIG_DIR, "cache", "usage-history.jsonl");
+const HISTORY_RETAIN_MS = 7 * 24 * 60 * 60 * 1000;
+const POLL_INTERVAL_MS = 5 * 60 * 1000;
+
+interface HistoryEntry {
+  ts: number;
+  alias: string;
+  five_hour: number | null;
+  seven_day: number | null;
+  seven_day_sonnet: number | null;
+}
+
+function recordUsageSnapshot(now: number, all: AccountUsageResult[]) {
+  const lines: string[] = [];
+  for (const u of all) {
+    if (!u.ok || !u.usage) continue;
+    const entry: HistoryEntry = {
+      ts: now,
+      alias: u.alias,
+      five_hour: u.usage.five_hour?.utilization ?? null,
+      seven_day: u.usage.seven_day?.utilization ?? null,
+      seven_day_sonnet: u.usage.seven_day_sonnet?.utilization ?? null,
+    };
+    lines.push(JSON.stringify(entry));
+  }
+  if (lines.length === 0) return;
+  try {
+    mkdirSync(join(SUBCTL_CONFIG_DIR, "cache"), { recursive: true });
+    appendFileSync(HISTORY_FILE, lines.join("\n") + "\n");
+  } catch { /* best-effort */ }
+}
+
+// Read all snapshots within the last 24 hours, bucket by alias and hour-of-day-relative-to-now.
+// Returns Map<alias, Array<{maxFiveHour, maxSevenDay, sampleCount}>> with 24 entries per alias
+// (oldest hour first, current hour last).
+function readUsageHistory24h(now: number) {
+  const cutoff = now - 24 * 60 * 60 * 1000;
+  const currentHour = Math.floor(now / (60 * 60 * 1000));
+  const buckets = new Map<string, Array<{ five_hour_max: number | null; seven_day_max: number | null; samples: number }>>();
+  const init = () => Array.from({ length: 24 }, () => ({ five_hour_max: null as number | null, seven_day_max: null as number | null, samples: 0 }));
+  if (!existsSync(HISTORY_FILE)) return buckets;
+
+  let raw: string;
+  try { raw = readFileSync(HISTORY_FILE, "utf8"); } catch { return buckets; }
+
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    let entry: HistoryEntry;
+    try { entry = JSON.parse(line); } catch { continue; }
+    if (typeof entry.ts !== "number" || entry.ts < cutoff) continue;
+    // Bucket by absolute hour (each entry's clock hour) so a poll at 17:42
+    // lands in the same bucket whether read at 17:43 or 17:59.
+    const entryHour = Math.floor(entry.ts / (60 * 60 * 1000));
+    const hoursAgo = currentHour - entryHour;
+    if (hoursAgo < 0 || hoursAgo >= 24) continue;
+    const idx = 23 - hoursAgo;
+    if (!buckets.has(entry.alias)) buckets.set(entry.alias, init());
+    const slot = buckets.get(entry.alias)![idx]!;
+    slot.samples += 1;
+    if (typeof entry.five_hour === "number") {
+      slot.five_hour_max = slot.five_hour_max === null ? entry.five_hour : Math.max(slot.five_hour_max, entry.five_hour);
+    }
+    if (typeof entry.seven_day === "number") {
+      slot.seven_day_max = slot.seven_day_max === null ? entry.seven_day : Math.max(slot.seven_day_max, entry.seven_day);
+    }
+  }
+  return buckets;
+}
+
+// One-time housekeeping at startup: drop entries older than HISTORY_RETAIN_MS.
+function pruneUsageHistory(now: number) {
+  if (!existsSync(HISTORY_FILE)) return;
+  const cutoff = now - HISTORY_RETAIN_MS;
+  let raw: string;
+  try { raw = readFileSync(HISTORY_FILE, "utf8"); } catch { return; }
+  const kept: string[] = [];
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const e = JSON.parse(line);
+      if (typeof e.ts === "number" && e.ts >= cutoff) kept.push(line);
+    } catch { /* drop malformed */ }
+  }
+  try {
+    mkdirSync(join(SUBCTL_CONFIG_DIR, "cache"), { recursive: true });
+    Bun.write(HISTORY_FILE, kept.length > 0 ? kept.join("\n") + "\n" : "");
+  } catch { /* ignore */ }
+}
+
+// ---------- cost summary (jsonl walk, API-rate cost) ----------
+//
+// Walking every account's transcript jsonls is expensive on large histories
+// (Jason has 80K+ turns in the default config). Cache aggressively.
+
+interface CostBundle {
+  this_month: AccountCostSummary[];
+  this_week:  AccountCostSummary[];
+  totals: {
+    api_cost_month_usd: number;
+    subscription_total_usd: number;
+    savings_month_usd: number;
+  };
+}
+
+let _costCache: { fetchedAt: number; data: CostBundle } | null = null;
+const COST_CACHE_TTL_MS = 5 * 60 * 1000; // 5min — same cadence as usage
+
+function buildCostBundle(now: number): CostBundle {
+  if (_costCache && now - _costCache.fetchedAt < COST_CACHE_TTL_MS) {
+    return _costCache.data;
+  }
+  const month = aggregateCostAll("month", now);
+  const week  = aggregateCostAll("week", now);
+  const totals = month.reduce(
+    (acc, r) => ({
+      api_cost_month_usd: acc.api_cost_month_usd + r.total_cost_usd,
+      subscription_total_usd: acc.subscription_total_usd + r.subscription_usd,
+      savings_month_usd: acc.savings_month_usd + r.savings_usd,
+    }),
+    { api_cost_month_usd: 0, subscription_total_usd: 0, savings_month_usd: 0 },
+  );
+  const data: CostBundle = {
+    this_month: month,
+    this_week: week,
+    totals: {
+      api_cost_month_usd: Number(totals.api_cost_month_usd.toFixed(2)),
+      subscription_total_usd: Number(totals.subscription_total_usd.toFixed(2)),
+      savings_month_usd: Number(totals.savings_month_usd.toFixed(2)),
+    },
+  };
+  _costCache = { fetchedAt: now, data };
+  return data;
+}
+
+let _pollerStarted = false;
+function ensureUsagePoller() {
+  if (_pollerStarted) return;
+  _pollerStarted = true;
+  pruneUsageHistory(Date.now());
+  // Snapshot once at startup, then on a 5-minute cadence.
+  const tick = () => {
+    const now = Date.now();
+    const all = subctlUsageFetchAll(now);
+    recordUsageSnapshot(now, all);
+  };
+  tick();
+  setInterval(tick, POLL_INTERVAL_MS);
+}
+
+// Verdict thresholds for usage signals. Yellow flags "be aware"; red flags
+// "you're about to hit a wall and a fresh dispatch may run out mid-task".
+const THRESH_7D_YELLOW = 70; // ≥70% weekly used → yellow
+const THRESH_7D_RED    = 90; // ≥90% weekly used → red
+const THRESH_5H_YELLOW = 80; // ≥80% session used → yellow
+const THRESH_5H_RED    = 95; // ≥95% session used → red
+
+interface AccountVerdict {
+  verdict: "green" | "yellow" | "red";
+  reasons: string[];
+}
+
+function computeAccountVerdict(args: {
+  alias: string;
+  authReady: boolean;
+  usage: UsageEntry | null;
+  recent429: number;
+  parallelOnAccount: number;
+}): AccountVerdict {
+  const reasons: string[] = [];
+  let level: "green" | "yellow" | "red" = "green";
+  const bump = (l: "yellow" | "red") => {
+    if (l === "red") level = "red";
+    else if (level !== "red") level = "yellow";
+  };
+
+  if (!args.authReady) {
+    return { verdict: "red", reasons: ["account not authenticated"] };
+  }
+
+  const wkly = args.usage?.seven_day?.utilization;
+  if (typeof wkly === "number") {
+    if (wkly >= THRESH_7D_RED)         { bump("red");    reasons.push(`weekly ${wkly}% (red ≥${THRESH_7D_RED}%)`); }
+    else if (wkly >= THRESH_7D_YELLOW) { bump("yellow"); reasons.push(`weekly ${wkly}%`); }
+  }
+
+  const sess = args.usage?.five_hour?.utilization;
+  if (typeof sess === "number") {
+    if (sess >= THRESH_5H_RED)         { bump("red");    reasons.push(`5h ${sess}% (red ≥${THRESH_5H_RED}%)`); }
+    else if (sess >= THRESH_5H_YELLOW) { bump("yellow"); reasons.push(`5h ${sess}%`); }
+  }
+
+  if (args.recent429 >= 3)      { bump("red");    reasons.push(`${args.recent429} RL hits today`); }
+  else if (args.recent429 >= 1) { bump("yellow"); reasons.push(`${args.recent429} RL hit${args.recent429 === 1 ? "" : "s"} today`); }
+
+  if (args.parallelOnAccount >= 5)      { bump("red");    reasons.push(`${args.parallelOnAccount} parallel sessions on this account`); }
+  else if (args.parallelOnAccount >= 3) { bump("yellow"); reasons.push(`${args.parallelOnAccount} parallel sessions on this account`); }
+
+  return { verdict: level, reasons };
+}
 
 function tmuxRun(args: string[]): { stdout: string; ok: boolean } {
   try {
@@ -393,29 +654,58 @@ function latestClaudeSessionId(cfgDir: string): string | null {
   return basename(best.file).replace(/\.jsonl$/, "");
 }
 
-// Best-effort ctx % from the last usage block in the jsonl.
+// Default context window per model. The 1M-context variants (opus-4-7[1m],
+// sonnet-4-6[1m], etc.) record the same model id in the API response as the
+// 200K default — Anthropic doesn't expose the variant in usage blocks. So we
+// auto-detect: if any turn in the session exceeded 90% of the default window,
+// the session is on the larger variant and we bump up accordingly.
+function defaultContextWindow(model: string): number {
+  const m = (model || "").toLowerCase();
+  if (m.startsWith("claude-haiku")) return 200_000;
+  if (m.startsWith("claude-sonnet")) return 200_000;
+  if (m.startsWith("claude-opus"))   return 200_000;
+  return 200_000;
+}
+
+// Best-effort ctx % from the last usage block in the jsonl. Walks the whole
+// file once: finds the latest turn (numerator) and the max turn-total
+// (used to detect the active context-window variant).
 function ctxPctForFile(jsonlPath: string): number {
   if (!existsSync(jsonlPath)) return 0;
   const raw = safeRead(jsonlPath);
   if (!raw) return 0;
-  const lines = raw.split("\n");
-  // Walk backwards to find the last non-empty line containing usage.
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const t = lines[i]!.trim();
+
+  let latestTotal = 0;
+  let latestModel = "";
+  let observedMax = 0;
+
+  for (const line of raw.split("\n")) {
+    const t = line.trim();
     if (!t || !t.includes('"usage"')) continue;
-    try {
-      const obj = JSON.parse(t);
-      const usage = obj?.message?.usage ?? obj?.usage ?? null;
-      if (!usage) continue;
-      const curr = (usage.input_tokens ?? 0)
-                 + (usage.cache_creation_input_tokens ?? 0)
-                 + (usage.cache_read_input_tokens ?? 0)
-                 + (usage.output_tokens ?? 0);
-      if (curr <= 0) return 0;
-      return Math.min(100, Math.floor(curr * 100 / 200000));
-    } catch { /* continue */ }
+    let obj: any;
+    try { obj = JSON.parse(t); } catch { continue; }
+    const usage = obj?.message?.usage ?? obj?.usage ?? null;
+    if (!usage) continue;
+    const curr = (usage.input_tokens ?? 0)
+               + (usage.cache_creation_input_tokens ?? 0)
+               + (usage.cache_read_input_tokens ?? 0)
+               + (usage.output_tokens ?? 0);
+    if (curr <= 0) continue;
+    if (curr > observedMax) observedMax = curr;
+    latestTotal = curr;
+    latestModel = obj?.message?.model ?? obj?.model ?? latestModel;
   }
-  return 0;
+  if (latestTotal <= 0) return 0;
+
+  let window = defaultContextWindow(latestModel);
+  // If any turn exceeded 90% of the default window, the session is clearly
+  // running on the 1M-context variant of the model.
+  if (observedMax > window * 0.9) {
+    window = observedMax <= 1_000_000
+      ? 1_000_000
+      : Math.ceil(observedMax / 100_000) * 100_000;
+  }
+  return Math.min(100, Math.floor(latestTotal * 100 / window));
 }
 
 // Age of a Claude session by parsing the first timestamp line of its jsonl.
@@ -679,90 +969,41 @@ function enrichSessions(
 // Mirror lib/radar.sh's classification but emit human-readable reasons that
 // reference the actual offending session/account, not just aggregate numbers.
 
+// Global verdict = best-of any account's verdict. The user can dispatch fresh
+// work to any account that's GREEN, so as long as one is, the global state is
+// "you have somewhere to go." Reasons for non-green accounts surface below
+// the banner so it's still obvious which accounts are constrained.
+//
+// Session-level signals (ctx %, age) are intentionally NOT considered here:
+// they describe state of an EXISTING session and have no bearing on whether a
+// fresh dispatch in another folder can run.
 function dispatchVerdict(
   accounts: ReturnType<typeof buildAccountSummaries>,
-  sessions: SessionRecord[],
-  rl: RLData,
+  _sessions: SessionRecord[],
+  _rl: RLData,
 ): { verdict: "green" | "yellow" | "red"; reasons: string[] } {
-  const reasons: string[] = [];
-  let level: "green" | "yellow" | "red" = "green";
-  const bump = (l: "yellow" | "red") => {
-    if (l === "red") level = "red";
-    else if (level !== "red") level = "yellow";
-  };
-
   if (accounts.length === 0) {
     return { verdict: "red", reasons: ["No accounts configured"] };
   }
 
-  const unauth = accounts.filter(a => a.auth_status !== "ready");
-  if (unauth.length === accounts.length) {
-    return { verdict: "red", reasons: ["All accounts unauthenticated"] };
-  }
-  if (unauth.length > 0) {
-    bump("yellow");
-    reasons.push(`${unauth.length} account(s) not authenticated`);
+  const order = { green: 0, yellow: 1, red: 2 } as const;
+  let bestLevel: "green" | "yellow" | "red" = "red";
+  for (const a of accounts) {
+    if (order[a.dispatch.verdict] < order[bestLevel]) bestLevel = a.dispatch.verdict;
+    if (bestLevel === "green") break;
   }
 
-  // Parallel sessions across all accounts.
-  const parallelClass = classifyParallel(sessions.length);
-  if (parallelClass === "red") {
-    bump("red");
-    reasons.push(`⚡ ${sessions.length} parallel sessions across all accounts (red ≥${THRESH_PARALLEL_RED})`);
-  } else if (parallelClass === "yellow") {
-    bump("yellow");
-    reasons.push(`⚡ ${sessions.length} parallel sessions (yellow ≥${THRESH_PARALLEL_YELLOW})`);
-  }
-
-  // Per-session age.
-  for (const s of sessions) {
-    if (s.age_color === "red") {
-      bump("red");
-      reasons.push(`⏱ session ${formatAge(s.age_seconds)} old in ${s.project} (red ≥6h)`);
-    } else if (s.age_color === "yellow") {
-      bump("yellow");
-      reasons.push(`⏱ session ${formatAge(s.age_seconds)} old in ${s.project} (yellow ≥2h)`);
+  const reasons: string[] = [];
+  for (const a of accounts) {
+    if (a.dispatch.verdict === "green") {
+      reasons.push(`${a.alias}: GO`);
+    } else {
+      const why = a.dispatch.reasons.join(", ");
+      reasons.push(`${a.alias}: ${a.dispatch.verdict.toUpperCase()}${why ? ` — ${why}` : ""}`);
     }
   }
 
-  // Per-session ctx.
-  for (const s of sessions) {
-    if (s.ctx_color === "red") {
-      bump("red");
-      reasons.push(`ctx ${s.ctx_pct}% in ${s.project} (red ≥${THRESH_CTX_RED}%)`);
-    } else if (s.ctx_color === "orange") {
-      bump("yellow");
-      reasons.push(`ctx ${s.ctx_pct}% in ${s.project} (orange ${THRESH_CTX_ORANGE}-${THRESH_CTX_RED-1}%)`);
-    } else if (s.ctx_color === "yellow") {
-      bump("yellow");
-      reasons.push(`ctx ${s.ctx_pct}% in ${s.project} (yellow ≥${THRESH_CTX_YELLOW}%)`);
-    }
-  }
-
-  // Rate-limits — only RECENT 429s drive the verdict.
-  // 529s are Anthropic-side overload (not your fault); aged-out hits are stale.
-  // Today's totals (including 529s) are still surfaced informationally below
-  // the verdict, but they don't bump the level.
-  const recentClass = classifyRl(rl.recent_429_count);
-  if (recentClass === "red") {
-    bump("red");
-    reasons.push(`⚠ ${rl.recent_429_count} rate-limit (429) hits in last 2h (red ≥${THRESH_RL_RED})`);
-  } else if (recentClass === "yellow") {
-    bump("yellow");
-    reasons.push(
-      `⚠ ${rl.recent_429_count} rate-limit (429) hit${rl.recent_429_count === 1 ? "" : "s"} in last 2h`,
-    );
-  }
-
-  return { verdict: level, reasons };
-}
-
-function formatAge(s: number): string {
-  if (s < 60) return `${s}s`;
-  if (s < 3600) return `${Math.floor(s / 60)}m`;
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  return m > 0 ? `${h}h${String(m).padStart(2, "0")}m` : `${h}h`;
+  return { verdict: bestLevel, reasons };
 }
 
 // ---------- account summaries ----------
@@ -771,6 +1012,8 @@ function buildAccountSummaries(
   accounts: Account[],
   sessions: SessionRecord[],
   rl: RLData,
+  usageAll: AccountUsageResult[],
+  history24h: ReturnType<typeof readUsageHistory24h>,
   now: number,
 ) {
   return accounts.map(acc => {
@@ -780,16 +1023,29 @@ function buildAccountSummaries(
       Number.POSITIVE_INFINITY,
     );
     const rlEntry = rl.by_account.get(acc.alias);
+    const auth = authStatus(acc);
+    const usage = usageForAlias(acc.alias, usageAll);
+    const verdict = computeAccountVerdict({
+      alias: acc.alias,
+      authReady: auth === "ready",
+      usage,
+      recent429: rlEntry?.count_today ?? 0,
+      parallelOnAccount: mySessions.length,
+    });
+    const hist = history24h.get(acc.alias) ?? Array.from({ length: 24 }, () => ({ five_hour_max: null, seven_day_max: null, samples: 0 }));
     return {
       alias: acc.alias,
       provider: acc.provider,
       email: acc.email,
       config_dir: acc.config_dir,
-      auth_status: authStatus(acc),
+      auth_status: auth,
       active_sessions: mySessions.length,
       rl_hits_today: rlEntry?.count_today ?? 0,
       last_activity_seconds_ago: Number.isFinite(lastSec) ? lastSec : null,
       color_class: colorClassFor(acc.alias),
+      usage,
+      dispatch: verdict,
+      usage_history_24h: hist,
     };
   });
 }
@@ -815,7 +1071,10 @@ function buildState() {
     rawSessions, panesBySession, rawAccounts, now, rl,
   );
 
-  const accountSummaries = buildAccountSummaries(rawAccounts, sessions, rl, now);
+  ensureUsagePoller();
+  const usageAll = subctlUsageFetchAll(now);
+  const history24h = readUsageHistory24h(now);
+  const accountSummaries = buildAccountSummaries(rawAccounts, sessions, rl, usageAll, history24h, now);
 
   const sessionsOut = sessions
     .slice()
@@ -829,6 +1088,9 @@ function buildState() {
       color_class: colorClassFor(account),
       count_today: data.count_today,
       buckets_24h: data.buckets_24h,
+      // Utilization curve from /api/oauth/usage polling — much richer signal
+      // than 429 event counts. Each entry is a 1h bucket, oldest→newest.
+      usage_history_24h: history24h.get(account) ?? Array.from({ length: 24 }, () => ({ five_hour_max: null, seven_day_max: null, samples: 0 })),
     })),
     // Last 20 events today, newest-first, with full detail so the dashboard
     // can show what actually happened (time, type, account, severity).
@@ -845,6 +1107,7 @@ function buildState() {
   };
 
   const dispatch = dispatchVerdict(accountSummaries, sessionsOut, rl);
+  const cost = buildCostBundle(now);
 
   const totals = {
     tmux_sessions: sessionsOut.length,
@@ -864,6 +1127,7 @@ function buildState() {
     sessions: sessionsOut,
     rate_limits: rateLimits,
     dispatch,
+    cost,
     totals,
   };
   if (warning) state.warning = warning;
@@ -888,6 +1152,351 @@ function serveStatic(pathname: string): Response | null {
   } catch {
     return new Response("Not Found", { status: 404 });
   }
+}
+
+// ---------- /help — markdown -> HTML ----------
+//
+// Tiny in-house markdown renderer. We only need the subset our help.md uses:
+// H1-H4, paragraphs, fenced code, inline code, tables, lists, bold/italic,
+// links, and HR. No need for a 50KB dep — the file is ~400 lines of text and
+// the render runs once per page load.
+
+const HELP_MD_PATH = join(import.meta.dir, "help.md");
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+// Slugify "Setting up an account" -> "setting-up-an-account" for anchor IDs.
+function slugify(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, "")
+    .trim()
+    .replace(/\s+/g, "-");
+}
+
+// Render only inline-level constructs: code, bold, italic, links.
+// Order matters: extract code spans first so we don't mangle them.
+function renderInline(text: string): string {
+  // Pull out `code` spans into placeholders so escaping/bold/italic
+  // don't mutate them.
+  const codeSpans: string[] = [];
+  text = text.replace(/`([^`]+)`/g, (_m, code) => {
+    codeSpans.push(`<code>${escapeHtml(code)}</code>`);
+    return `\x00CODE${codeSpans.length - 1}\x00`;
+  });
+
+  text = escapeHtml(text);
+
+  // Links [text](url)
+  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, label, href) => {
+    const safeHref = href.replace(/"/g, "&quot;");
+    return `<a href="${safeHref}">${label}</a>`;
+  });
+
+  // Bold **x** then italic *x* (avoid clobbering the bold pair).
+  text = text.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  text = text.replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>");
+
+  // Restore code spans.
+  text = text.replace(/\x00CODE(\d+)\x00/g, (_m, i) => codeSpans[Number(i)] ?? "");
+  return text;
+}
+
+function renderMarkdown(src: string): string {
+  const lines = src.split("\n");
+  const out: string[] = [];
+  let i = 0;
+
+  const flushParagraph = (buf: string[]) => {
+    if (buf.length === 0) return;
+    out.push(`<p>${renderInline(buf.join(" ").trim())}</p>`);
+    buf.length = 0;
+  };
+
+  let paraBuf: string[] = [];
+
+  while (i < lines.length) {
+    const line = lines[i]!;
+
+    // Fenced code block
+    if (/^```/.test(line)) {
+      flushParagraph(paraBuf);
+      const langMatch = line.match(/^```(\w*)\s*$/);
+      const lang = langMatch?.[1] ?? "";
+      const codeLines: string[] = [];
+      i++;
+      while (i < lines.length && !/^```\s*$/.test(lines[i]!)) {
+        codeLines.push(lines[i]!);
+        i++;
+      }
+      i++; // skip closing fence
+      const cls = lang ? ` class="lang-${lang}"` : "";
+      out.push(`<pre><code${cls}>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+      continue;
+    }
+
+    // Headings
+    const h = line.match(/^(#{1,4})\s+(.+?)\s*$/);
+    if (h) {
+      flushParagraph(paraBuf);
+      const level = h[1]!.length;
+      const text = h[2]!;
+      const id = slugify(text);
+      out.push(`<h${level} id="${id}"><a href="#${id}" class="anchor">#</a> ${renderInline(text)}</h${level}>`);
+      i++;
+      continue;
+    }
+
+    // Horizontal rule
+    if (/^---+\s*$/.test(line) || /^\*\*\*+\s*$/.test(line)) {
+      flushParagraph(paraBuf);
+      out.push("<hr>");
+      i++;
+      continue;
+    }
+
+    // Table — simple GFM. Detected by a header line + a separator like |---|---|
+    if (/^\|.+\|\s*$/.test(line) && i + 1 < lines.length && /^\|[\s:|-]+\|\s*$/.test(lines[i + 1]!)) {
+      flushParagraph(paraBuf);
+      const headerCells = line.replace(/^\||\|$/g, "").split("|").map(s => s.trim());
+      i += 2; // skip header + separator
+      const rows: string[][] = [];
+      while (i < lines.length && /^\|.+\|\s*$/.test(lines[i]!)) {
+        const cells = lines[i]!.replace(/^\||\|$/g, "").split("|").map(s => s.trim());
+        rows.push(cells);
+        i++;
+      }
+      const thead = "<thead><tr>" + headerCells.map(c => `<th>${renderInline(c)}</th>`).join("") + "</tr></thead>";
+      const tbody = "<tbody>" + rows.map(r => "<tr>" + r.map(c => `<td>${renderInline(c)}</td>`).join("") + "</tr>").join("") + "</tbody>";
+      out.push(`<table>${thead}${tbody}</table>`);
+      continue;
+    }
+
+    // Unordered list
+    if (/^[\-\*]\s+/.test(line)) {
+      flushParagraph(paraBuf);
+      const items: string[] = [];
+      while (i < lines.length && /^[\-\*]\s+/.test(lines[i]!)) {
+        // Collect continuation lines (next line indented OR not empty/non-list)
+        let item = lines[i]!.replace(/^[\-\*]\s+/, "");
+        i++;
+        while (i < lines.length && /^\s{2,}\S/.test(lines[i]!)) {
+          item += " " + lines[i]!.trim();
+          i++;
+        }
+        items.push(`<li>${renderInline(item)}</li>`);
+      }
+      out.push(`<ul>${items.join("")}</ul>`);
+      continue;
+    }
+
+    // Ordered list
+    if (/^\d+\.\s+/.test(line)) {
+      flushParagraph(paraBuf);
+      const items: string[] = [];
+      while (i < lines.length && /^\d+\.\s+/.test(lines[i]!)) {
+        let item = lines[i]!.replace(/^\d+\.\s+/, "");
+        i++;
+        while (i < lines.length && /^\s{2,}\S/.test(lines[i]!)) {
+          item += " " + lines[i]!.trim();
+          i++;
+        }
+        items.push(`<li>${renderInline(item)}</li>`);
+      }
+      out.push(`<ol>${items.join("")}</ol>`);
+      continue;
+    }
+
+    // Blank line — paragraph boundary
+    if (/^\s*$/.test(line)) {
+      flushParagraph(paraBuf);
+      i++;
+      continue;
+    }
+
+    // Default — accumulate into a paragraph
+    paraBuf.push(line);
+    i++;
+  }
+  flushParagraph(paraBuf);
+
+  return out.join("\n");
+}
+
+// Pre-parse the markdown for heading structure (H2 + nested H3) so we can
+// render a sidebar nav alongside the body. We don't try to be clever about
+// matching headings inside fenced code — we skip lines between ``` fences.
+interface OutlineItem { level: 2 | 3; text: string; slug: string; }
+function extractOutline(src: string): OutlineItem[] {
+  const out: OutlineItem[] = [];
+  let inFence = false;
+  for (const line of src.split("\n")) {
+    if (/^```/.test(line)) { inFence = !inFence; continue; }
+    if (inFence) continue;
+    const m = line.match(/^(#{2,3})\s+(.+?)\s*$/);
+    if (!m) continue;
+    const level = m[1]!.length === 2 ? 2 : 3;
+    const text = m[2]!.trim();
+    out.push({ level, text, slug: slugify(text) });
+  }
+  return out;
+}
+
+function renderSidebarNav(outline: OutlineItem[]): string {
+  const parts: string[] = [];
+  parts.push(`<nav class="docs-nav" aria-label="Sections">`);
+  parts.push(`<ul class="docs-nav-list">`);
+  for (let i = 0; i < outline.length; i++) {
+    const item = outline[i]!;
+    if (item.level === 2) {
+      // Open a new H2 group; collect any following H3 items as a nested ul.
+      const subs: OutlineItem[] = [];
+      let j = i + 1;
+      while (j < outline.length && outline[j]!.level === 3) {
+        subs.push(outline[j]!);
+        j++;
+      }
+      parts.push(`<li class="docs-nav-section">`);
+      parts.push(`  <a class="docs-nav-link docs-nav-h2" data-slug="${item.slug}" data-text="${escapeHtml(item.text.toLowerCase())}" href="#${item.slug}">${escapeHtml(item.text)}</a>`);
+      if (subs.length > 0) {
+        parts.push(`  <ul class="docs-nav-sublist">`);
+        for (const sub of subs) {
+          parts.push(`    <li><a class="docs-nav-link docs-nav-h3" data-slug="${sub.slug}" data-text="${escapeHtml(sub.text.toLowerCase())}" href="#${sub.slug}">${escapeHtml(sub.text)}</a></li>`);
+        }
+        parts.push(`  </ul>`);
+      }
+      parts.push(`</li>`);
+      i = j - 1; // skip the consumed H3s
+    }
+  }
+  parts.push(`</ul></nav>`);
+  return parts.join("\n");
+}
+
+function renderHelpPage(): string {
+  let md: string;
+  try { md = readFileSync(HELP_MD_PATH, "utf8"); }
+  catch { return `<!doctype html><meta charset="utf-8"><title>help</title><pre>help.md not found at ${HELP_MD_PATH}</pre>`; }
+
+  const body = renderMarkdown(md);
+  const outline = extractOutline(md);
+  const nav = renderSidebarNav(outline);
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>subctl · docs</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body class="docs-body">
+  <header class="docs-topbar">
+    <div class="docs-topbar-brand">
+      <a href="/" class="brand-name">subctl</a>
+      <span class="brand-version">v${VERSION}</span>
+      <span class="docs-crumb">docs</span>
+    </div>
+    <div class="docs-topbar-right">
+      <a href="/" class="docs-back-link">← back to dashboard</a>
+    </div>
+  </header>
+  <div class="docs-shell">
+    <aside class="docs-sidebar" id="docs-sidebar">
+      <div class="docs-search">
+        <input type="search" id="docs-search-input" placeholder="Search docs (⌘K)" autocomplete="off" spellcheck="false">
+      </div>
+      ${nav}
+    </aside>
+    <main class="docs-content">
+      <article class="help-doc" id="docs-article">
+        ${body}
+      </article>
+      <footer class="docs-footer">
+        <a href="/">← dashboard</a>
+        <span class="sep">·</span>
+        <a href="https://github.com/webdevtodayjason/subctl" target="_blank" rel="noopener">github</a>
+        <span class="sep">·</span>
+        <span>subctl v${VERSION}</span>
+      </footer>
+    </main>
+  </div>
+  <script>
+  (function () {
+    "use strict";
+    var input = document.getElementById("docs-search-input");
+    var navLinks = Array.prototype.slice.call(document.querySelectorAll(".docs-nav-link"));
+    var navItems = Array.prototype.slice.call(document.querySelectorAll(".docs-nav-section"));
+
+    // ⌘K / Ctrl+K focuses the search.
+    document.addEventListener("keydown", function (e) {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        if (input) input.focus();
+      } else if (e.key === "Escape" && document.activeElement === input) {
+        input.value = "";
+        applyFilter("");
+        input.blur();
+      }
+    });
+
+    function applyFilter(q) {
+      q = (q || "").trim().toLowerCase();
+      if (!q) {
+        navItems.forEach(function (el) { el.style.display = ""; });
+        navLinks.forEach(function (el) {
+          el.style.display = "";
+          el.classList.remove("docs-search-hit");
+        });
+        return;
+      }
+      // Hide H2 groups whose H2 text and all nested H3s don't match.
+      navItems.forEach(function (section) {
+        var links = Array.prototype.slice.call(section.querySelectorAll(".docs-nav-link"));
+        var anyMatch = false;
+        links.forEach(function (link) {
+          var hay = link.dataset.text || link.textContent.toLowerCase();
+          var match = hay.indexOf(q) !== -1;
+          link.style.display = match ? "" : "none";
+          link.classList.toggle("docs-search-hit", match);
+          if (match) anyMatch = true;
+        });
+        section.style.display = anyMatch ? "" : "none";
+      });
+    }
+
+    if (input) input.addEventListener("input", function () { applyFilter(input.value); });
+
+    // Active-section highlight via IntersectionObserver.
+    var sections = Array.prototype.slice.call(document.querySelectorAll("h2[id], h3[id]"));
+    var byId = {};
+    navLinks.forEach(function (l) { byId[l.dataset.slug] = l; });
+    var visible = new Set();
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) visible.add(e.target.id);
+        else                  visible.delete(e.target.id);
+      });
+      // Choose topmost visible heading as "active".
+      var active = null;
+      for (var i = 0; i < sections.length; i++) {
+        if (visible.has(sections[i].id)) { active = sections[i].id; break; }
+      }
+      navLinks.forEach(function (l) { l.classList.remove("docs-nav-active"); });
+      if (active && byId[active]) byId[active].classList.add("docs-nav-active");
+    }, { rootMargin: "-80px 0px -70% 0px", threshold: 0 });
+    sections.forEach(function (s) { io.observe(s); });
+  })();
+  </script>
+</body>
+</html>`;
 }
 
 // ---------- WebSocket fan-out ----------
@@ -929,6 +1538,68 @@ const server = Bun.serve({
       return new Response(JSON.stringify({ version: VERSION }), {
         headers: { "Content-Type": "application/json; charset=utf-8" },
       });
+    }
+    // POST or GET /api/refresh — bypass usage caches (in-process AND on-disk)
+    // and return a fresh state snapshot. Clicked from the dashboard "↻" button
+    // or invoked by scripts. Costs one API call per claude account; rest of
+    // the day uses the normal 5-min auto-cadence.
+    if (url.pathname === "/api/refresh") {
+      _usageCache = null;
+      _costCache = null;
+      try {
+        const cacheGlob = join(SUBCTL_CONFIG_DIR, "cache", "usage");
+        if (existsSync(cacheGlob)) {
+          for (const f of readdirSync(cacheGlob)) {
+            if (f.endsWith(".json")) {
+              try { rmSync(join(cacheGlob, f)); } catch { /* ignore */ }
+            }
+          }
+        }
+      } catch { /* best-effort */ }
+      const fresh = buildState();
+      for (const ws of sockets) {
+        try { ws.send(JSON.stringify(fresh)); } catch { /* ignore */ }
+      }
+      return new Response(JSON.stringify(fresh), {
+        headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
+      });
+    }
+    if (url.pathname === "/help" || url.pathname === "/help/") {
+      return new Response(renderHelpPage(), {
+        headers: {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "no-store",
+        },
+      });
+    }
+    // POST /api/sessions/<name>/kill — shells out to `subctl session-kill <name>`.
+    // Validates the session name against current tmux state to avoid arbitrary
+    // input being passed to the CLI. Reuses the existing safe code path.
+    {
+      const m = url.pathname.match(/^\/api\/sessions\/([^/]+)\/kill\/?$/);
+      if (m && req.method === "POST") {
+        const name = decodeURIComponent(m[1]!);
+        // Check the session actually exists in tmux right now.
+        const known = listTmuxSessions().some(s => s.name === name);
+        if (!known) {
+          return new Response(JSON.stringify({ ok: false, error: "session not found" }),
+            { status: 404, headers: { "Content-Type": "application/json" } });
+        }
+        const subctlBin = join(REPO_ROOT, "bin", "subctl");
+        const r = spawnSync(subctlBin, ["session-kill", name], { encoding: "utf8", timeout: 8_000 });
+        if (r.error || (typeof r.status === "number" && r.status !== 0)) {
+          return new Response(JSON.stringify({ ok: false, error: (r.stderr || r.stdout || String(r.error)).slice(0, 500) }),
+            { status: 500, headers: { "Content-Type": "application/json" } });
+        }
+        // Push a fresh state immediately so the row disappears in real-time.
+        const fresh = buildState();
+        for (const ws of sockets) {
+          try { ws.send(JSON.stringify(fresh)); } catch { /* ignore */ }
+        }
+        return new Response(JSON.stringify({ ok: true }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
     }
     const staticResp = serveStatic(url.pathname);
     if (staticResp) return staticResp;

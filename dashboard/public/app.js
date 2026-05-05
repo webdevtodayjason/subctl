@@ -18,6 +18,33 @@
 
   const $ = (id) => document.getElementById(id);
 
+  // ----- Manual refresh button -----
+  // Calls /api/refresh which clears the in-process + on-disk usage caches and
+  // pushes a fresh state to all open WebSocket clients. Disabled briefly after
+  // each click to discourage rapid mashing (auto-poll runs every 5min).
+  function wireRefreshButton() {
+    const btn = $("refresh-btn");
+    if (!btn) return;
+    btn.addEventListener("click", async () => {
+      if (btn.disabled) return;
+      btn.disabled = true;
+      btn.classList.add("spinning");
+      try {
+        const r = await fetch("/api/refresh", { method: "POST" });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        // The server pushes the fresh state via WS; nothing else to do.
+      } catch (err) {
+        // Visual nudge on failure: brief red flash via title.
+        btn.title = `refresh failed: ${err}; will retry on next 5-min poll`;
+      } finally {
+        setTimeout(() => {
+          btn.disabled = false;
+          btn.classList.remove("spinning");
+        }, 1500);
+      }
+    });
+  }
+
   function fmtAge(seconds) {
     if (seconds == null) return "—";
     if (seconds < 60) return `${seconds}s`;
@@ -29,6 +56,93 @@
     }
     return `${Math.floor(seconds / 86400)}d`;
   }
+
+  // Live countdown: "1d 16h 22m" or "2h 14m" or "47s". Negative or invalid → "—".
+  function fmtCountdown(targetMs) {
+    if (!Number.isFinite(targetMs)) return "—";
+    const diff = Math.max(0, Math.floor((targetMs - Date.now()) / 1000));
+    if (diff <= 0) return "now";
+    const d = Math.floor(diff / 86400);
+    const h = Math.floor((diff % 86400) / 3600);
+    const m = Math.floor((diff % 3600) / 60);
+    const s = diff % 60;
+    if (d > 0) return `${d}d ${h}h ${m}m`;
+    if (h > 0) return `${h}h ${m}m`;
+    if (m > 0) return `${m}m ${String(s).padStart(2, "0")}s`;
+    return `${s}s`;
+  }
+
+  // Format absolute reset time as a friendly local string: "May 6, 8:59am"
+  function fmtResetAbs(iso) {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    if (!Number.isFinite(d.getTime())) return "—";
+    const month = d.toLocaleString("en-US", { month: "short" });
+    const day = d.getDate();
+    let h = d.getHours();
+    const mins = String(d.getMinutes()).padStart(2, "0");
+    const ampm = h >= 12 ? "pm" : "am";
+    h = h % 12; if (h === 0) h = 12;
+    return `${month} ${day}, ${h}:${mins}${ampm}`;
+  }
+
+  // Two-line cell: utilization % on top, "resets in 2h 14m" countdown beneath.
+  // The countdown auto-updates every second via the global timer.
+  function usagePctCellWithReset(pct, resetIso, [yellow, red]) {
+    const wrap = document.createElement("span");
+    wrap.className = "usage-cell-stack";
+    const top = document.createElement("span");
+    if (typeof pct !== "number") {
+      top.className = "usage-na";
+      top.textContent = "—";
+    } else {
+      let cls = "green";
+      if (pct >= red) cls = "red";
+      else if (pct >= yellow) cls = "yellow";
+      top.className = `usage-cell ${cls}`;
+      top.textContent = `${pct}%`;
+    }
+    wrap.appendChild(top);
+    if (resetIso) {
+      const t = Date.parse(resetIso);
+      if (Number.isFinite(t)) {
+        const sub = document.createElement("span");
+        sub.className = "reset-countdown";
+        sub.dataset.resetMs = String(t);
+        sub.textContent = fmtCountdown(t);
+        sub.title = `Resets ${fmtResetAbs(resetIso)}`;
+        wrap.appendChild(sub);
+      }
+    }
+    return wrap;
+  }
+
+  function usageBarCellWithReset(pctAll, pctSonnet, resetIso) {
+    const wrap = document.createElement("span");
+    wrap.className = "usage-cell-stack";
+    wrap.appendChild(usageBarCell(pctAll, pctSonnet));
+    if (resetIso) {
+      const t = Date.parse(resetIso);
+      if (Number.isFinite(t)) {
+        const sub = document.createElement("span");
+        sub.className = "reset-countdown";
+        sub.dataset.resetMs = String(t);
+        sub.textContent = fmtCountdown(t);
+        sub.title = `Resets ${fmtResetAbs(resetIso)}`;
+        wrap.appendChild(sub);
+      }
+    }
+    return wrap;
+  }
+
+  // Per-second tick that updates every visible reset-countdown element.
+  setInterval(() => {
+    const els = document.querySelectorAll(".reset-countdown");
+    for (const el of els) {
+      const t = Number(el.dataset.resetMs);
+      if (Number.isFinite(t)) el.textContent = fmtCountdown(t);
+    }
+  }, 1000);
 
   function setText(el, text) { if (el && el.textContent !== text) el.textContent = text; }
 
@@ -43,6 +157,60 @@
   }
   setInterval(renderClock, 1000);
   renderClock();
+  wireRefreshButton();
+
+  // ----- Verdict-transition notifications -----
+  // Track the previous global + per-account verdicts. When any flip from green
+  // to yellow/red (or vice-versa), fire a desktop notification so the user
+  // knows even with the tab in the background. Permission is requested once
+  // on first state arrival.
+
+  let _notifyAsked = false;
+  let _prevGlobalVerdict = null;
+  const _prevAccountVerdicts = new Map();
+
+  function maybeRequestNotifyPermission() {
+    if (_notifyAsked) return;
+    _notifyAsked = true;
+    if (typeof Notification === "undefined") return;
+    if (Notification.permission === "default") {
+      Notification.requestPermission().catch(() => {});
+    }
+  }
+  function fireNotify(title, body) {
+    if (typeof Notification === "undefined") return;
+    if (Notification.permission !== "granted") return;
+    try { new Notification(`subctl · ${title}`, { body, silent: false, tag: "subctl-verdict" }); } catch { /* ignore */ }
+  }
+  function severity(v) { return ({ green: 0, yellow: 1, red: 2 }[v] ?? -1); }
+  function notifyOnVerdictChange(state) {
+    maybeRequestNotifyPermission();
+    const newGlobal = state?.dispatch?.verdict;
+    if (newGlobal && _prevGlobalVerdict && newGlobal !== _prevGlobalVerdict) {
+      const worse = severity(newGlobal) > severity(_prevGlobalVerdict);
+      fireNotify(
+        `${_prevGlobalVerdict.toUpperCase()} → ${newGlobal.toUpperCase()}`,
+        worse ? "Dispatch readiness degraded — check the dashboard."
+              : "Dispatch readiness recovered — clear to dispatch.",
+      );
+    }
+    _prevGlobalVerdict = newGlobal ?? _prevGlobalVerdict;
+    for (const a of (state?.accounts ?? [])) {
+      const newV = a.dispatch?.verdict;
+      if (!newV) continue;
+      const prevV = _prevAccountVerdicts.get(a.alias);
+      if (prevV && newV !== prevV) {
+        const worse = severity(newV) > severity(prevV);
+        fireNotify(
+          `${a.alias}: ${prevV.toUpperCase()} → ${newV.toUpperCase()}`,
+          worse
+            ? `Account ${a.alias} entered ${newV}. ${(a.dispatch.reasons || []).join("; ")}`
+            : `Account ${a.alias} recovered to ${newV}.`,
+        );
+      }
+      _prevAccountVerdicts.set(a.alias, newV);
+    }
+  }
 
   // ----- Status pill -----
 
@@ -98,12 +266,32 @@
     setText($("info-ready"), String(totals.ready_accounts  ?? 0));
     setText($("info-rl"),    String(totals.rl_today        ?? 0));
 
+    // Verdict transition notifications (no-op until permission granted).
+    notifyOnVerdictChange(state);
+
     // Dispatch verdict
     const verdict = state.dispatch?.verdict ?? "red";
     const verdictEl = $("dispatch-verdict");
     verdictEl.className = `dispatch-verdict ${verdict}`;
     setText(verdictEl, `${VERDICT_GLYPH[verdict] ?? ""} ${VERDICT_TEXT[verdict] ?? "—"}`.trim());
-    setText($("dispatch-tagline"), VERDICT_TAGLINE[verdict] ?? "");
+
+    // Best-account hint when the global verdict is GO: surface which account
+    // has the most headroom so the user doesn't have to scan the table.
+    let tagline = VERDICT_TAGLINE[verdict] ?? "";
+    if (verdict === "green") {
+      const greenAccts = (state.accounts ?? []).filter(a => a.dispatch?.verdict === "green");
+      if (greenAccts.length > 0) {
+        const best = greenAccts.reduce((b, a) => {
+          const bw = b.usage?.seven_day?.utilization ?? 0;
+          const aw = a.usage?.seven_day?.utilization ?? 0;
+          return aw < bw ? a : b;
+        });
+        const bw = best.usage?.seven_day?.utilization;
+        const wkly = (typeof bw === "number") ? `${bw}% weekly` : "wide open";
+        tagline = `all clear · ${best.alias} has the most headroom (${wkly})`;
+      }
+    }
+    setText($("dispatch-tagline"), tagline);
 
     const reasons = state.dispatch?.reasons ?? [];
     const reasonsEl = $("dispatch-reasons");
@@ -133,14 +321,23 @@
     const accountsBody = $("accounts-body");
     const accounts = state.accounts ?? [];
     if (accounts.length === 0) {
-      accountsBody.replaceChildren(emptyRow(6, "no accounts configured"));
+      accountsBody.replaceChildren(emptyRow(10, "no accounts configured"));
     } else {
       accountsBody.replaceChildren(...accounts.map((a) => {
         const tr = document.createElement("tr");
+        const fiveH = a.usage?.five_hour?.utilization;
+        const sevenD = a.usage?.seven_day?.utilization;
+        const sonnetD = a.usage?.seven_day_sonnet?.utilization;
+        const fiveResetIso = a.usage?.five_hour?.resets_at;
+        const weekResetIso = a.usage?.seven_day?.resets_at;
         tr.append(
           td(acctPill(a.alias, a.color_class)),
           td(a.provider),
           td(authCell(a.auth_status)),
+          td(verdictPill(a.dispatch?.verdict, a.dispatch?.reasons)),
+          td(copyAliasButton(a.alias)),
+          td(usagePctCellWithReset(fiveH, fiveResetIso, [80, 95]), "num"),
+          td(usageBarCellWithReset(sevenD, sonnetD, weekResetIso), "num"),
           td(String(a.active_sessions), "num"),
           td(String(a.rl_hits_today), "num"),
           td(fmtAge(a.last_activity_seconds_ago)),
@@ -160,6 +357,7 @@
     renderSessions(state.sessions ?? []);
 
     // Rate limits
+    renderCost(state.cost ?? { this_month: [], totals: { api_cost_month_usd: 0, subscription_total_usd: 0, savings_month_usd: 0 } });
     renderRateLimits(state.rate_limits ?? { today_total: 0, by_account: [] });
     renderEvents(state.rate_limits?.events_today ?? []);
   }
@@ -238,6 +436,91 @@
     });
   }
 
+  function fmtUsd(n) {
+    if (n == null || !Number.isFinite(n)) return "—";
+    const sign = n < 0 ? "-" : "";
+    return `${sign}$${Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }
+  function fmtTokens(n) {
+    if (!Number.isFinite(n) || n === 0) return "0";
+    if (n >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
+    if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
+    if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+    return String(n);
+  }
+
+  function renderCost(cost) {
+    const summary = $("cost-summary");
+    const tbody = $("cost-body");
+    const totals = cost.totals ?? {};
+    const rows = cost.this_month ?? [];
+
+    // Headline summary: big "you saved $X" number with subscription/API cost backing it up.
+    const apiCost = totals.api_cost_month_usd ?? 0;
+    const subTotal = totals.subscription_total_usd ?? 0;
+    const savings = totals.savings_month_usd ?? 0;
+    summary.replaceChildren();
+    if (rows.length === 0) {
+      summary.appendChild(textDiv("no transcript data yet", "empty"));
+    } else {
+      const head = document.createElement("div");
+      head.className = "cost-headline";
+      const big = document.createElement("span");
+      big.className = "cost-savings " + (savings >= 0 ? "positive" : "negative");
+      big.textContent = (savings >= 0 ? "+" : "") + fmtUsd(savings);
+      const label = document.createElement("span");
+      label.className = "cost-savings-label";
+      label.textContent = savings >= 0
+        ? "saved this month vs paying API list price"
+        : "subscription is more than retail this month — light usage";
+      head.append(big, label);
+      summary.appendChild(head);
+
+      const detail = document.createElement("div");
+      detail.className = "cost-detail";
+      detail.textContent = `${fmtUsd(apiCost)} retail · ${fmtUsd(subTotal)} subscription`;
+      summary.appendChild(detail);
+    }
+
+    // Per-account breakdown.
+    if (rows.length === 0) {
+      tbody.replaceChildren(emptyRow(8, "no transcript data yet"));
+      return;
+    }
+    tbody.replaceChildren(...rows.map(r => {
+      const tr = document.createElement("tr");
+      const isDefault = r.alias.startsWith("default");
+      const t = r.total_tokens ?? { input: 0, output: 0, cache_read: 0, cache_write: 0 };
+      const cacheRW = `${fmtTokens(t.cache_read)} / ${fmtTokens(t.cache_write)}`;
+      const aliasCell = isDefault
+        ? td(textDiv(r.alias, "ev-account-unknown"))
+        : td(acctPill(r.alias, "magenta"));
+      const savingsCell = (() => {
+        const span = document.createElement("span");
+        if (isDefault) {
+          span.className = "usage-na";
+          span.textContent = "—";
+          return span;
+        }
+        const v = r.savings_usd ?? 0;
+        span.className = "cost-cell-savings " + (v >= 0 ? "positive" : "negative");
+        span.textContent = (v >= 0 ? "+" : "") + fmtUsd(v);
+        return span;
+      })();
+      tr.append(
+        aliasCell,
+        td(String(r.total_turns ?? 0), "num"),
+        td(fmtTokens(t.input), "num"),
+        td(fmtTokens(t.output), "num"),
+        td(cacheRW, "num"),
+        td(fmtUsd(r.total_cost_usd), "num"),
+        td(isDefault ? "—" : fmtUsd(r.subscription_usd ?? 0), "num"),
+        td(savingsCell, "num"),
+      );
+      return tr;
+    }));
+  }
+
   function renderRateLimits(rl) {
     const rlBody = $("rate-limits-body");
     const rows = rl.by_account ?? [];
@@ -253,17 +536,41 @@
 
         const bars = document.createElement("div");
         bars.className = "rl-bars";
-        const max = Math.max(1, ...(r.buckets_24h ?? []));
-        for (const v of (r.buckets_24h ?? new Array(24).fill(0))) {
+
+        // Each cell = 1 hour of trailing 24h, oldest → newest.
+        // Height/color = max five_hour utilization observed that hour from
+        // /api/oauth/usage polling. Empty hours render dim. A 429 event in
+        // an hour overlays a small red dot on top of that hour's cell.
+        const hist = r.usage_history_24h ?? new Array(24).fill({ five_hour_max: null, samples: 0 });
+        const events = r.buckets_24h ?? new Array(24).fill(0);
+        for (let i = 0; i < 24; i++) {
+          const slot = hist[i] ?? { five_hour_max: null, samples: 0 };
+          const evCount = events[i] ?? 0;
           const cell = document.createElement("div");
-          cell.className = "rl-bar " + (r.color_class || "grey");
-          if (v === 0) cell.classList.add("zero");
+          cell.className = "rl-bar";
+          let pct = 0;
+          let cls = "zero";
+          if (typeof slot.five_hour_max === "number") {
+            pct = Math.max(8, Math.min(100, Math.round(slot.five_hour_max)));
+            if (slot.five_hour_max >= 95)      cls = "red";
+            else if (slot.five_hour_max >= 80) cls = "yellow";
+            else if (slot.five_hour_max >= 50) cls = "warm";
+            else                               cls = "ok";
+          }
+          cell.classList.add(cls);
           const bar = document.createElement("span");
-          // 8% baseline so non-zero is always visible above the dim baseline.
-          const pct = v === 0 ? 0 : Math.max(15, Math.round((v / max) * 100));
           bar.style.height = `${pct}%`;
           cell.appendChild(bar);
-          cell.title = `${v} hit${v === 1 ? "" : "s"}`;
+          if (evCount > 0) {
+            const dot = document.createElement("span");
+            dot.className = "rl-event-dot";
+            cell.appendChild(dot);
+          }
+          if (typeof slot.five_hour_max === "number") {
+            cell.title = `5h util max: ${slot.five_hour_max}%${evCount > 0 ? `  ·  ${evCount} RL event${evCount === 1 ? "" : "s"}` : ""}  ·  ${slot.samples} sample${slot.samples === 1 ? "" : "s"}`;
+          } else {
+            cell.title = evCount > 0 ? `${evCount} RL event${evCount === 1 ? "" : "s"} (no util sample)` : "no data";
+          }
           bars.appendChild(cell);
         }
 
@@ -376,6 +683,111 @@
     return span;
   }
 
+  function verdictPill(verdict, reasons) {
+    const span = document.createElement("span");
+    const v = verdict || "red";
+    span.className = `verdict-pill verdict-${v}`;
+    span.textContent = `${VERDICT_GLYPH[v] || ""} ${VERDICT_TEXT[v] || "—"}`.trim();
+    if (Array.isArray(reasons) && reasons.length > 0) span.title = reasons.join("\n");
+    return span;
+  }
+
+  function usagePctCell(pct, [yellow, red]) {
+    const span = document.createElement("span");
+    if (typeof pct !== "number") { span.className = "usage-na"; span.textContent = "—"; return span; }
+    let cls = "green";
+    if (pct >= red) cls = "red";
+    else if (pct >= yellow) cls = "yellow";
+    span.className = `usage-cell ${cls}`;
+    span.textContent = `${pct}%`;
+    return span;
+  }
+
+  // Weekly bar with primary (all-models) fill plus a dim overlay marking
+  // the Sonnet-only slice. Mirrors the visual language of `/usage` in Claude
+  // Code's TUI.
+  function usageBarCell(pctAll, pctSonnet) {
+    if (typeof pctAll !== "number") {
+      const s = document.createElement("span");
+      s.className = "usage-na";
+      s.textContent = "—";
+      return s;
+    }
+    const wrap = document.createElement("span");
+    wrap.className = "usage-bar-wrap";
+    let cls = "green";
+    if (pctAll >= 90) cls = "red";
+    else if (pctAll >= 70) cls = "yellow";
+    const bar = document.createElement("span");
+    bar.className = `usage-bar usage-bar-${cls}`;
+    bar.style.width = `${Math.min(100, pctAll)}%`;
+    const txt = document.createElement("span");
+    txt.className = "usage-bar-text";
+    if (typeof pctSonnet === "number" && pctSonnet > 0) {
+      txt.textContent = `${pctAll}% (S ${pctSonnet}%)`;
+    } else {
+      txt.textContent = `${pctAll}%`;
+    }
+    wrap.append(bar, txt);
+    return wrap;
+  }
+
+  // Small "copy claude-use <alias>" button per account row. Clicking puts the
+  // shell command on the clipboard so the user can paste it into a terminal.
+  function copyAliasButton(alias) {
+    const btn = document.createElement("button");
+    btn.className = "copy-alias-btn";
+    btn.type = "button";
+    const cmd = `claude-use ${alias.replace(/^claude-/, "")}`;
+    btn.title = `Copy "${cmd}" to clipboard`;
+    btn.textContent = "⧉";
+    btn.addEventListener("click", async (ev) => {
+      ev.stopPropagation();
+      try {
+        await navigator.clipboard.writeText(cmd);
+        const original = btn.textContent;
+        btn.textContent = "✓";
+        btn.classList.add("copied");
+        setTimeout(() => {
+          btn.textContent = original;
+          btn.classList.remove("copied");
+        }, 1200);
+      } catch {
+        btn.title = "clipboard write blocked — copy manually: " + cmd;
+      }
+    });
+    return btn;
+  }
+
+  // Per-session kill button. POST /api/sessions/<name>/kill, dashboard refreshes
+  // via WebSocket on success.
+  function killSessionButton(sessionName) {
+    const btn = document.createElement("button");
+    btn.className = "kill-btn";
+    btn.type = "button";
+    btn.title = `Kill tmux session "${sessionName}" (subctl session-kill ${sessionName})`;
+    btn.textContent = "✕";
+    btn.addEventListener("click", async (ev) => {
+      ev.stopPropagation();
+      if (!confirm(`Kill tmux session "${sessionName}"?\n\nThis runs: subctl session-kill ${sessionName}`)) return;
+      btn.disabled = true;
+      btn.classList.add("loading");
+      try {
+        const r = await fetch(`/api/sessions/${encodeURIComponent(sessionName)}/kill`, { method: "POST" });
+        if (!r.ok) {
+          const body = await r.text().catch(() => "");
+          throw new Error(`HTTP ${r.status} ${body}`);
+        }
+      } catch (err) {
+        btn.disabled = false;
+        btn.classList.remove("loading");
+        btn.title = "kill failed: " + (err && err.message ? err.message : err);
+      }
+      // On success, the next WebSocket state push removes the row anyway.
+    });
+    return btn;
+  }
+
   function authCell(status) {
     const span = document.createElement("span");
     if (status === "ready") {
@@ -412,7 +824,10 @@
 
   function sessionNameCell(s) {
     const span = document.createElement("span");
-    span.textContent = s.name;
+    span.className = "session-name-cell";
+    const name = document.createElement("span");
+    name.textContent = s.name;
+    span.appendChild(name);
     if (s.attached) {
       const a = document.createElement("span");
       a.className = "attached-mark";
@@ -420,6 +835,7 @@
       a.title = "attached";
       span.appendChild(a);
     }
+    span.appendChild(killSessionButton(s.name));
     return span;
   }
 

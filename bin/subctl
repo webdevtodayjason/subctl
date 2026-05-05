@@ -53,6 +53,30 @@ Usage:
   subctl session-prune [--older-than 6h] [--yes]
                                       Kill all tmux sessions older than DUR
                                       (default 6h). Asks before killing.
+
+  subctl sessions list [--orphans|--account <alias>]
+                                      List Claude session transcripts across
+                                      every cfg_dir (newest first). --orphans
+                                      shows sessions in default ~/.claude that
+                                      no account has adopted yet.
+  subctl sessions adopt <alias> <sid> [--force]
+                                      Copy a session's jsonl into <alias>'s
+                                      cfg_dir so 'claude-<alias> --resume <sid>'
+                                      can pick it up.
+  subctl sessions adopt-latest <alias> Adopt the most recent orphaned session.
+  subctl sessions pick <alias>        Interactive picker (gum if installed).
+
+  subctl projects status              Show declared projects + which are running
+                                      in tmux right now.
+  subctl projects start <name>        Launch one project (account-bound tmux),
+                                      resuming the most recent claude session.
+  subctl projects start all           Launch every project not already running.
+  subctl projects edit                Open ~/.config/subctl/projects.conf.
+  subctl usage [alias|all|--json]     Per-account Claude Max usage (5h, 7d,
+                                      7d-Sonnet, 7d-Opus). Cached 5min.
+  subctl cost [alias|all] [--window today|week|month|all] [--json]
+                                      Token aggregation + API list-price cost
+                                      vs subscription savings, per account.
   subctl whoami                       Current shell's CLAUDE_CONFIG_DIR account
   subctl config edit                  Open accounts.conf
   subctl doctor                       Health check
@@ -202,6 +226,63 @@ case "$cmd" in
     subctl_session_prune "$@"
     ;;
 
+  sessions)
+    . "$SUBCTL_REPO_ROOT/lib/sessions.sh"
+    sub="${1:-list}"; [[ $# -gt 0 ]] && shift
+    case "$sub" in
+      list|"")        subctl_sessions_list_table "$@" ;;
+      adopt)          subctl_sessions_adopt "$@" ;;
+      adopt-latest)   subctl_sessions_adopt_latest "$@" ;;
+      pick)           subctl_sessions_pick "$@" ;;
+      *) subctl_die "usage: subctl sessions [list|adopt <alias> <sid>|adopt-latest <alias>|pick <alias>]" ;;
+    esac
+    ;;
+
+  projects)
+    . "$SUBCTL_REPO_ROOT/lib/projects.sh"
+    sub="${1:-status}"; [[ $# -gt 0 ]] && shift
+    case "$sub" in
+      status|list|"")  subctl_projects_status ;;
+      start)
+        target="${1:-all}"; [[ $# -gt 0 ]] && shift
+        if [[ "$target" == "all" ]]; then
+          subctl_projects_start_all "$@"
+        else
+          subctl_projects_start_one "$target" "$@"
+        fi
+        ;;
+      edit)            subctl_projects_edit ;;
+      path)            subctl_projects_path ;;
+      *) subctl_die "usage: subctl projects [status|start <name|all>|edit|path]" ;;
+    esac
+    ;;
+
+  usage)
+    . "$SUBCTL_REPO_ROOT/lib/usage.sh"
+    target="${1:-all}"
+    case "$target" in
+      --json)
+        subctl_usage_fetch_all | jq -s .
+        ;;
+      all|"")
+        subctl_usage_print_table
+        ;;
+      *)
+        canonical=$(subctl_resolve_alias "$target") || subctl_die "unknown alias: $target (try: subctl accounts)"
+        cfg_dir=$(subctl_account_field "$canonical" 4)
+        [[ -z "$cfg_dir" ]] && subctl_die "no config_dir for $canonical"
+        subctl_usage_fetch "$cfg_dir" | jq .
+        ;;
+    esac
+    ;;
+
+  cost)
+    if ! command -v bun >/dev/null 2>&1; then
+      subctl_die "bun is required for 'subctl cost' (install: curl -fsSL https://bun.sh/install | bash)"
+    fi
+    exec bun run "$SUBCTL_REPO_ROOT/dashboard/lib/cost.ts" "$@"
+    ;;
+
   whoami)
     if [[ -n "${CLAUDE_CONFIG_DIR:-}" ]]; then
       alias=$(subctl_list_accounts | awk -F'\t' -v c="$CLAUDE_CONFIG_DIR" '$4==c {print $1; exit}')
@@ -253,24 +334,41 @@ case "$cmd" in
     done
     echo
     echo "Claude Code integration:"
-    for f in \
-      "$HOME/.claude/scripts/statusline.sh" \
-      "$HOME/.claude/scripts/dispatch-check.sh" \
-      "$HOME/.claude/hooks/log-rate-limits.sh" \
-      "$HOME/.claude/commands/dispatch-check.md"; do
-      if [[ -L "$f" ]]; then
-        target=$(readlink "$f")
-        if [[ "$target" == "$SUBCTL_REPO_ROOT"/* ]]; then
-          printf "  ${C_GRN}✓${C_RST} %s → repo\n" "$f"
+    . "$SUBCTL_REPO_ROOT/lib/settings.sh"
+    while IFS= read -r cfg_dir; do
+      [[ -z "$cfg_dir" ]] && continue
+      printf "  ${C_DIM}%s${C_RST}\n" "$cfg_dir"
+      # statusLine key in this dir's settings.json
+      if [[ -f "$cfg_dir/settings.json" ]]; then
+        _sl=$(jq -r '.statusLine.command // empty' "$cfg_dir/settings.json" 2>/dev/null)
+        if [[ -n "$_sl" ]]; then
+          printf "    ${C_GRN}✓${C_RST} statusLine → %s\n" "$_sl"
         else
-          printf "  ${C_YLW}!${C_RST} %s → %s (not subctl)\n" "$f" "$target"
+          printf "    ${C_YLW}!${C_RST} settings.json has no statusLine\n"
         fi
-      elif [[ -f "$f" ]]; then
-        printf "  ${C_YLW}!${C_RST} %s (regular file, not a subctl symlink)\n" "$f"
       else
-        printf "  ${C_DIM}-${C_RST} %s (not installed)\n" "$f"
+        printf "    ${C_DIM}-${C_RST} no settings.json yet\n"
       fi
-    done
+      # symlinks
+      for f in \
+        "$cfg_dir/scripts/statusline.sh" \
+        "$cfg_dir/scripts/dispatch-check.sh" \
+        "$cfg_dir/hooks/log-rate-limits.sh" \
+        "$cfg_dir/commands/dispatch-check.md"; do
+        if [[ -L "$f" ]]; then
+          target=$(readlink "$f")
+          if [[ "$target" == "$SUBCTL_REPO_ROOT"/* ]]; then
+            printf "    ${C_GRN}✓${C_RST} %s → repo\n" "${f#$cfg_dir/}"
+          else
+            printf "    ${C_YLW}!${C_RST} %s → %s (not subctl)\n" "${f#$cfg_dir/}" "$target"
+          fi
+        elif [[ -f "$f" ]]; then
+          printf "    ${C_YLW}!${C_RST} %s (regular file, not a subctl symlink)\n" "${f#$cfg_dir/}"
+        else
+          printf "    ${C_DIM}-${C_RST} %s (not installed)\n" "${f#$cfg_dir/}"
+        fi
+      done
+    done < <(subctl_settings_claude_dirs | awk '!seen[$0]++')
     echo
     echo "Service:"
     . "$SUBCTL_REPO_ROOT/lib/service.sh"
@@ -279,6 +377,66 @@ case "$cmd" in
     echo "Accounts:"
     . "$SUBCTL_REPO_ROOT/lib/accounts.sh"
     subctl_accounts_status_table
+
+    # Per-account Keychain bearer probe — verify each cfg_dir resolves to an
+    # entry the OAuth usage endpoint can actually use. Doesn't print the token.
+    echo
+    echo "Keychain bearers:"
+    while IFS=$'\t' read -r alias provider email cfg_dir desc; do
+      [[ "$provider" != "claude" ]] && continue
+      hash=$(printf '%s' "$cfg_dir" | shasum -a 256 | cut -c1-8)
+      svc="Claude Code-credentials-$hash"
+      if security find-generic-password -s "$svc" >/dev/null 2>&1; then
+        printf "  ${C_GRN}✓${C_RST} %-20s service=%s\n" "$alias" "$svc"
+      else
+        printf "  ${C_YLW}!${C_RST} %-20s service=%s ${C_DIM}(no entry — re-run: subctl auth claude %s)${C_RST}\n" "$alias" "$svc" "$alias"
+      fi
+    done < <(subctl_list_accounts)
+
+    # Usage cache freshness — when did the bash poller last write per-account?
+    echo
+    echo "Usage cache:"
+    cache_dir="$SUBCTL_CONFIG_DIR/cache/usage"
+    if [[ -d "$cache_dir" ]]; then
+      now=$(date +%s)
+      shopt -s nullglob
+      cache_files=("$cache_dir"/*.json)
+      shopt -u nullglob
+      if [[ ${#cache_files[@]} -eq 0 ]]; then
+        printf "  ${C_DIM}-${C_RST} no cached snapshots yet (will populate on first 'subctl usage' or dashboard refresh)\n"
+      else
+        for f in "${cache_files[@]}"; do
+          mtime=$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo 0)
+          age=$(( now - mtime ))
+          name=$(basename "$f" .json)
+          if (( age < 600 )); then
+            printf "  ${C_GRN}✓${C_RST} %s ${C_DIM}(%ds ago)${C_RST}\n" "$name" "$age"
+          else
+            printf "  ${C_YLW}!${C_RST} %s ${C_DIM}(%ds ago — stale; dashboard polls every 5min)${C_RST}\n" "$name" "$age"
+          fi
+        done
+      fi
+    else
+      printf "  ${C_DIM}-${C_RST} %s does not exist yet\n" "$cache_dir"
+    fi
+
+    # Utilization history — append-only file written by the dashboard's 5min poller.
+    echo
+    echo "Utilization history:"
+    hist="$SUBCTL_CONFIG_DIR/cache/usage-history.jsonl"
+    if [[ -f "$hist" ]]; then
+      lines=$(wc -l < "$hist" | tr -d ' ')
+      mtime=$(stat -f %m "$hist" 2>/dev/null || stat -c %Y "$hist" 2>/dev/null || echo 0)
+      age=$(( $(date +%s) - mtime ))
+      first_ts=$(head -1 "$hist" 2>/dev/null | jq -r '.ts // empty' 2>/dev/null || echo "")
+      if (( age > 900 )); then
+        printf "  ${C_YLW}!${C_RST} %s ${C_DIM}(%d entries, last write %ds ago — poller may be stalled)${C_RST}\n" "$hist" "$lines" "$age"
+      else
+        printf "  ${C_GRN}✓${C_RST} %s ${C_DIM}(%d entries, last write %ds ago)${C_RST}\n" "$hist" "$lines" "$age"
+      fi
+    else
+      printf "  ${C_DIM}-${C_RST} %s not yet — start the dashboard to begin polling\n" "$hist"
+    fi
     ;;
 
   install)

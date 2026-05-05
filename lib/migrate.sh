@@ -243,8 +243,25 @@ claude-use() {
   echo "→ $target  ($CLAUDE_CONFIG_DIR)"
 }
 
-# safety net: bare `claude` reminds you to pick an account
+# safety net: bare `claude` (interactive REPL) reminds you to pick an account.
+# Subcommands and non-interactive flags pass through unguarded — they don't
+# touch credentials beyond what they always have, and blocking them breaks
+# routine maintenance like `claude update`, `claude doctor`, `claude --version`.
 claude() {
+  # Pass-through commands/flags. Interactive REPL is the ONLY thing we guard.
+  case "${1:-}" in
+    update|doctor|migrate-installer|setup-token|mcp|config|ultrareview|""|"") ;;
+  esac
+  if [[ $# -gt 0 ]]; then
+    case "$1" in
+      update|doctor|migrate-installer|setup-token|mcp|config|ultrareview \
+      |--version|-v|--help|-h|-p|--print|--resume|--continue|-c|-r)
+        command claude "$@"
+        return $?
+        ;;
+    esac
+  fi
+  # Bare `claude` with no args = interactive REPL → require explicit account.
   echo "Pick an account first:"
   echo "  claude-use jason       # switch this shell"
   echo "  claude-jason           # one-off (per-command env)"

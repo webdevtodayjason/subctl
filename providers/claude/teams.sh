@@ -6,6 +6,7 @@
 _SUBCTL_CLAUDE_TEAMS_LOADED=1
 
 . "$(dirname "${BASH_SOURCE[0]}")/../../lib/core.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/../../lib/settings.sh"
 
 # Implements the provider interface: provider_teams [opts]
 # Opts:
@@ -58,6 +59,11 @@ provider_claude_teams() {
     subctl_warn "$resolved shows no signs of prior login. Claude may prompt OAuth in-pane."
   fi
 
+  # Ensure the per-account settings.json has the experimental teams keys, so
+  # Team*/SendMessage tools surface no matter how this account is launched
+  # (teams subcommand, claude-<alias> alias, or anything else).
+  subctl_settings_ensure_teams "$cfg_dir"
+
   # Build claude command (use `command claude` to bypass shell function shadow)
   local CLAUDE_CMD="command claude"
   $SKIP_PERMS && CLAUDE_CMD="$CLAUDE_CMD --dangerously-skip-permissions"
@@ -101,7 +107,24 @@ When given a task, first outline your agent plan before proceeding."
 
   # Start new detached session, passing CLAUDE_CONFIG_DIR via tmux session env
   # so every pane (current and any future split) inherits it explicitly.
-  tmux new-session -d -s "$SESSION_NAME" -c "$PWD" -e "CLAUDE_CONFIG_DIR=$cfg_dir"
+  # CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 is what surfaces the Team*/SendMessage
+  # tools and the Agent(team_name=...) variant — without it /team is just a
+  # markdown skill with no runtime, which defeats the whole point of `teams`.
+  tmux new-session -d -s "$SESSION_NAME" -c "$PWD" \
+    -e "CLAUDE_CONFIG_DIR=$cfg_dir" \
+    -e "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1"
+
+  # Defensive tmux ergonomics for this server. Without these, Claude Code's
+  # mouse tracking eats wheel events, leaving tmux's scrollback unreachable
+  # and pane resize awkward. Idempotent — only writes WheelUp/Down bindings
+  # if not already present, so users with their own wheel mappings keep them.
+  tmux set-option -g mouse on 2>/dev/null || true
+  if ! tmux list-keys -T root 2>/dev/null | grep -q 'WheelUpPane'; then
+    tmux bind-key -T root WheelUpPane \
+      if-shell -F -t = "#{?pane_in_mode,1,#{alternate_on}}" \
+      "send-keys -M" "select-pane -t=; copy-mode -e; send-keys -M"
+    tmux bind-key -T root WheelDownPane select-pane -t= \\\; send-keys -M
+  fi
 
   # Launch Claude in the first pane
   tmux send-keys -t "$SESSION_NAME" "$CLAUDE_CMD" Enter
