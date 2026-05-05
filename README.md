@@ -4,6 +4,11 @@
 
 One CLI + TUI + dashboard for the AI subscriptions you already pay for. Today it speaks Claude. Gemini and OpenAI are next.
 
+> 🚀 **First time setting up on a new Mac?** Open a fresh Claude Code session
+> and paste [`START-HERE.md`](./START-HERE.md) as your first message. Claude
+> will walk you through clone → install → account auth → projects.conf
+> end-to-end, asking before any irreversible step.
+
 ---
 
 ## Why subctl exists
