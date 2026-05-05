@@ -200,13 +200,15 @@ If you already use any of the predecessor projects, see [docs/migration.md](docs
 
 ## Roadmap
 
-| Provider     | Status                |
-|--------------|-----------------------|
-| Claude       | **shipping (v1.0)**   |
-| Gemini       | planned               |
-| OpenAI       | planned               |
+| Provider           | CLI / surface           | Target | Status         |
+|--------------------|-------------------------|--------|----------------|
+| Claude Code        | `claude` (Anthropic)    | v1.0   | **shipping**   |
+| OpenAI Codex       | `codex` (OpenAI)        | v1.1   | planned (next) |
+| Gemini Code Assist | `gemini` (Google)       | v1.2   | planned        |
+| Z.AI Coding (GLM)  | tbd — likely IDE+API    | v1.3   | investigating  |
+| Minimax Coder      | tbd — likely IDE+API    | v1.4   | investigating  |
 
-Plugin model is the shape going forward — a provider is a directory under `providers/` implementing `auth.sh`, `signals.sh`, `teams.sh`. See [docs/adding-a-provider.md](docs/adding-a-provider.md). Per-release notes live in [CHANGELOG.md](./CHANGELOG.md).
+Full per-provider plan with auth flows, isolation knobs, and open questions: [ROADMAP.md](./ROADMAP.md). Plugin model is the shape going forward — a provider is a directory under `providers/` implementing `auth.sh`, `signals.sh`, `teams.sh`. See [docs/adding-a-provider.md](docs/adding-a-provider.md). Per-release notes live in [CHANGELOG.md](./CHANGELOG.md).
 
 ---
 
