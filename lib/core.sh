@@ -90,10 +90,10 @@ subctl_resolve_alias() {
 # Detects the provider by file shape so callers don't have to thread the
 # provider through. Today we know two shapes:
 #   - Claude:  $cfg_dir/.credentials.json  OR  non-empty $cfg_dir/projects/
-#   - Codex:   $cfg_dir/auth.json with auth_mode == "chatgpt"
-# An auth.json with a non-chatgpt auth_mode (e.g. apikey) is reported as
-# `empty` — subctl is the control plane for OAuth-via-subscription, not
-# API-key auth.
+#   - Codex:   $cfg_dir/auth.json with .tokens populated (OAuth tokens present)
+# We deliberately do NOT key off Codex's auth_mode field: the simplified
+# login flow (current default) doesn't write it at all, while older flows
+# did. Token presence is the durable signal across both schemas.
 subctl_auth_status() {
   local cfg_dir="$1"
   [[ -d "$cfg_dir" ]] || { echo missing; return; }
@@ -102,7 +102,8 @@ subctl_auth_status() {
     echo ready; return
   fi
   if [[ -f "$cfg_dir/auth.json" ]] \
-     && [[ "$(jq -r '.auth_mode // empty' "$cfg_dir/auth.json" 2>/dev/null)" == "chatgpt" ]]; then
+     && jq -e '(.tokens.id_token // .tokens.access_token // "") | length > 0' \
+              "$cfg_dir/auth.json" >/dev/null 2>&1; then
     echo ready; return
   fi
   echo empty

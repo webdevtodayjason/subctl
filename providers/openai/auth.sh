@@ -15,18 +15,25 @@ _SUBCTL_OPENAI_AUTH_LOADED=1
 # Codex-specific status. Returns: ready | empty | wrong-mode | missing.
 # Distinguishes the chatgpt-subscription OAuth mode from API-key auth, which
 # the cross-provider subctl_auth_status doesn't differentiate.
+#
+# We detect by what's actually populated, not by the auth_mode field: Codex's
+# simplified login flow (the current default) does NOT write auth_mode at
+# all, while older flows did. OAuth-token presence is the durable signal
+# across both schemas.
 _provider_openai_auth_mode_check() {
   local cfg_dir="$1"
   [[ -d "$cfg_dir" ]] || { echo missing; return; }
   local auth_file="$cfg_dir/auth.json"
   [[ -f "$auth_file" ]] || { echo empty; return; }
-  local mode
-  mode=$(jq -r '.auth_mode // empty' "$auth_file" 2>/dev/null)
-  case "$mode" in
-    chatgpt) echo ready ;;
-    "")      echo empty ;;
-    *)       echo wrong-mode ;;
-  esac
+  if jq -e '(.tokens.id_token // .tokens.access_token // "") | length > 0' \
+       "$auth_file" >/dev/null 2>&1; then
+    echo ready
+  elif jq -e '(.OPENAI_API_KEY // "") | length > 0' \
+            "$auth_file" >/dev/null 2>&1; then
+    echo wrong-mode
+  else
+    echo empty
+  fi
 }
 
 # Implements the provider interface: provider_auth <alias> <config_dir> <email>
@@ -76,13 +83,18 @@ provider_openai_auth() {
       return 0
       ;;
     wrong-mode)
-      subctl_warn "$alias finished login but auth_mode != 'chatgpt' — looks like an API key was provided instead of OAuth"
+      subctl_warn "$alias has auth.json but no OAuth tokens — looks like an API key was provided instead of completing OAuth"
       subctl_warn "  subctl tracks subscriptions, not API keys."
       subctl_warn "  to re-do: rm $cfg_dir/auth.json && subctl auth openai $alias"
       return 1
       ;;
+    empty)
+      subctl_warn "$alias has auth.json but no OAuth tokens — login may not have completed"
+      subctl_warn "  re-run: subctl auth openai $alias"
+      return 1
+      ;;
     *)
-      subctl_warn "$alias may not have completed login (no auth.json detected at $cfg_dir/auth.json)"
+      subctl_warn "$alias has no auth.json at $cfg_dir/auth.json"
       subctl_warn "  re-run: subctl auth openai $alias"
       return 1
       ;;
