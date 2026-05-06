@@ -46,10 +46,15 @@ subctl_accounts_add() {
     *) subctl_err "unknown provider: $provider (must be claude, gemini, openai)"; return 1 ;;
   esac
 
-  # Default config_dir
+  # Default config_dir. Each provider's CLI has its own natural per-user dir
+  # (Claude uses ~/.claude, Codex uses ~/.codex), so the default mirrors that
+  # rather than the subctl-internal provider name.
   if [[ -z "$cfg_dir" ]]; then
     local short="${alias#${provider}-}"
-    cfg_dir="~/.${provider}-${short}"
+    case "$provider" in
+      openai) cfg_dir="~/.codex-${short}" ;;   # Codex CLI's per-user dir is ~/.codex
+      *)      cfg_dir="~/.${provider}-${short}" ;;
+    esac
   fi
 
   # Default description

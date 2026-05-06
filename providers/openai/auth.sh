@@ -12,6 +12,45 @@ _SUBCTL_OPENAI_AUTH_LOADED=1
 
 . "$(dirname "${BASH_SOURCE[0]}")/../../lib/core.sh"
 
+# Classify the plan tier of an authenticated Codex account by examining the
+# rate_limits.primary.window_minutes field on any token_count event in this
+# account's transcripts. Codex hands us this number directly (no inference
+# needed) — Pro plans show a 300-minute (5 hour) primary window. Other plan
+# tiers have different windows or lack rate_limits entirely.
+#
+# Outputs one of:
+#   pro                 — 300min primary window observed (ChatGPT Pro)
+#   non-pro:<n>min      — primary window present but != 300; <n> is the value
+#   unverified          — no transcripts with rate_limits payload found yet
+#
+# Plan tier becomes verifiable once the user has run codex at least once
+# under this CODEX_HOME — it cannot be determined from the JWT alone.
+_provider_openai_classify_plan() {
+  local cfg_dir="$1"
+  local f window
+  # `find` is robust where glob expansion isn't: it silently returns nothing
+  # when starting points don't exist, vs zsh's "no matches found" error on
+  # unmatched globs. Order doesn't matter for classification: any transcript
+  # with rate_limits returns the same answer because window_minutes is stable
+  # per plan tier.
+  while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    window=$(jq -rs '
+      [.[] | select(.type=="event_msg" and .payload.type=="token_count" and (.payload.rate_limits != null))]
+      | last | .payload.rate_limits.primary.window_minutes // empty
+    ' "$f" 2>/dev/null)
+    [[ -n "$window" ]] && break
+  done < <(find "$cfg_dir/sessions" "$cfg_dir/archived_sessions" \
+                -maxdepth 1 -name '*.jsonl' -type f 2>/dev/null)
+  if [[ -z "$window" ]]; then
+    echo unverified
+  elif [[ "$window" == "300" ]]; then
+    echo pro
+  else
+    echo "non-pro:${window}min"
+  fi
+}
+
 # Codex-specific status. Returns: ready | empty | wrong-mode | missing.
 # Distinguishes the chatgpt-subscription OAuth mode from API-key auth, which
 # the cross-provider subctl_auth_status doesn't differentiate.
@@ -53,6 +92,23 @@ provider_openai_auth() {
     subctl_ok "$alias is already authenticated ($cfg_dir)"
     printf "  email expected: %s\n" "$email"
     printf "  to re-auth, run: CODEX_HOME=%s codex logout && subctl auth openai %s\n" "$cfg_dir" "$alias"
+    # Re-running auth on a ready account is also how you verify plan tier
+    # after the first codex session — re-classify so that flow works.
+    local plan
+    plan=$(_provider_openai_classify_plan "$cfg_dir")
+    case "$plan" in
+      pro)
+        subctl_ok "  plan tier: ChatGPT Pro (5h primary window detected)"
+        ;;
+      non-pro:*)
+        subctl_warn "  plan tier looks NON-Pro: primary window=${plan#non-pro:}"
+        subctl_warn "  if this should be a Pro account, re-auth picked the wrong identity:"
+        subctl_warn "  rm $cfg_dir/auth.json && subctl auth openai $alias"
+        ;;
+      unverified)
+        subctl_info "  plan tier unverified — run codex once in this account, then re-run this command."
+        ;;
+    esac
     return 0
   fi
 
@@ -80,6 +136,22 @@ provider_openai_auth() {
   case "$after_status" in
     ready)
       subctl_ok "$alias logged in (ChatGPT OAuth)"
+      local plan
+      plan=$(_provider_openai_classify_plan "$cfg_dir")
+      case "$plan" in
+        pro)
+          subctl_ok "  plan tier: ChatGPT Pro (5h primary window detected)"
+          ;;
+        non-pro:*)
+          subctl_warn "  plan tier looks NON-Pro: primary window=${plan#non-pro:}"
+          subctl_warn "  subctl tracks paid Pro subscriptions; if this is a Plus or Free account,"
+          subctl_warn "  remove with: subctl accounts remove $alias --purge"
+          ;;
+        unverified)
+          subctl_info "  plan tier unverified — run codex once in this account to populate rate_limits data,"
+          subctl_info "  then re-run 'subctl auth openai $alias' to classify."
+          ;;
+      esac
       return 0
       ;;
     wrong-mode)
