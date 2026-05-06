@@ -120,6 +120,8 @@ case "$cmd" in
       all)
         . "$SUBCTL_REPO_ROOT/providers/claude/auth.sh"
         provider_claude_auth_all
+        . "$SUBCTL_REPO_ROOT/providers/openai/auth.sh"
+        provider_openai_auth_all
         ;;
       claude)
         alias="${2:-}"
@@ -130,11 +132,20 @@ case "$cmd" in
         [[ -z "$cfg_dir" ]] && subctl_die "unknown alias: $alias"
         provider_claude_auth "$alias" "$cfg_dir" "$email"
         ;;
-      gemini|openai)
-        subctl_warn "$target provider not yet implemented (phase 2/3)"
+      openai)
+        alias="${2:-}"
+        [[ -z "$alias" ]] && subctl_die "usage: subctl auth openai <alias>"
+        . "$SUBCTL_REPO_ROOT/providers/openai/auth.sh"
+        cfg_dir=$(subctl_account_field "$alias" 4)
+        email=$(subctl_account_field "$alias" 3)
+        [[ -z "$cfg_dir" ]] && subctl_die "unknown alias: $alias (add it first: subctl accounts add openai $alias <email>)"
+        provider_openai_auth "$alias" "$cfg_dir" "$email"
+        ;;
+      gemini)
+        subctl_warn "gemini provider not yet implemented (planned for v1.2 — see ROADMAP.md)"
         exit 1
         ;;
-      *) subctl_die "usage: subctl auth <claude|gemini|openai|all> [alias]" ;;
+      *) subctl_die "usage: subctl auth <claude|openai|gemini|all> [alias]" ;;
     esac
     ;;
 

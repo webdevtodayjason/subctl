@@ -87,15 +87,25 @@ subctl_resolve_alias() {
 }
 
 # Auth status of an account by config_dir. Returns: ready | empty | missing
+# Detects the provider by file shape so callers don't have to thread the
+# provider through. Today we know two shapes:
+#   - Claude:  $cfg_dir/.credentials.json  OR  non-empty $cfg_dir/projects/
+#   - Codex:   $cfg_dir/auth.json with auth_mode == "chatgpt"
+# An auth.json with a non-chatgpt auth_mode (e.g. apikey) is reported as
+# `empty` — subctl is the control plane for OAuth-via-subscription, not
+# API-key auth.
 subctl_auth_status() {
   local cfg_dir="$1"
   [[ -d "$cfg_dir" ]] || { echo missing; return; }
   if [[ -f "$cfg_dir/.credentials.json" ]] \
      || { [[ -d "$cfg_dir/projects" ]] && [[ -n "$(ls -A "$cfg_dir/projects" 2>/dev/null)" ]]; }; then
-    echo ready
-  else
-    echo empty
+    echo ready; return
   fi
+  if [[ -f "$cfg_dir/auth.json" ]] \
+     && [[ "$(jq -r '.auth_mode // empty' "$cfg_dir/auth.json" 2>/dev/null)" == "chatgpt" ]]; then
+    echo ready; return
+  fi
+  echo empty
 }
 
 # Filter accounts by provider. Outputs same format as subctl_list_accounts.
