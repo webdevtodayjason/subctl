@@ -852,6 +852,8 @@ function buildRateLimits(accountAliases: string[], sidToAlias: Map<string, strin
 // ---------- auth status ----------
 
 function authStatus(account: Account): "ready" | "not_authenticated" {
+  // Claude shape: .credentials.json present, or projects/ has at least one
+  // session-keyed subdirectory.
   const credsPath = join(account.config_dir, ".credentials.json");
   if (existsSync(credsPath)) return "ready";
   const projectsDir = join(account.config_dir, "projects");
@@ -860,6 +862,20 @@ function authStatus(account: Account): "ready" | "not_authenticated" {
       const st = safeStat(join(projectsDir, entry));
       if (st && st.isDirectory()) return "ready";
     }
+  }
+  // Codex (OpenAI) shape: auth.json with .tokens populated. We key off token
+  // presence rather than .auth_mode because Codex's simplified login flow
+  // (current default) doesn't write auth_mode at all.
+  const codexAuthPath = join(account.config_dir, "auth.json");
+  if (existsSync(codexAuthPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(codexAuthPath, "utf8"));
+      const t = parsed?.tokens ?? {};
+      if ((typeof t.id_token === "string" && t.id_token.length > 0)
+          || (typeof t.access_token === "string" && t.access_token.length > 0)) {
+        return "ready";
+      }
+    } catch { /* fall through */ }
   }
   return "not_authenticated";
 }
