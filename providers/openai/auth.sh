@@ -41,7 +41,7 @@ _provider_openai_classify_plan() {
     ' "$f" 2>/dev/null)
     [[ -n "$window" ]] && break
   done < <(find "$cfg_dir/sessions" "$cfg_dir/archived_sessions" \
-                -maxdepth 1 -name '*.jsonl' -type f 2>/dev/null)
+                -name '*.jsonl' -type f 2>/dev/null)
   if [[ -z "$window" ]]; then
     echo unverified
   elif [[ "$window" == "300" ]]; then
@@ -49,6 +49,58 @@ _provider_openai_classify_plan() {
   else
     echo "non-pro:${window}min"
   fi
+}
+
+# Ensure the per-account dir's config.toml steers Codex to a model that
+# ChatGPT-subscription auth actually allows. Without this, codex falls back
+# to its hardcoded default `gpt-5` — which the OpenAI API rejects on a
+# ChatGPT-Pro account, so every turn dies with "model not supported when
+# using Codex with a ChatGPT account."
+#
+# Three cases:
+#   - no config.toml          → write a minimal one (model + reasoning)
+#   - config.toml with bad model (gpt-5, codex-mini, etc.) → patch the
+#                              model line in place; leave everything else
+#                              (plugins, projects, oh-my-codex stuff) alone
+#   - config.toml with anything else → leave alone (user-chosen)
+#
+# As of late 2026 OpenAI's coding-recommended model on ChatGPT Pro/Plus is
+# gpt-5.5 with intelligence levels (low|medium|high|extra-high). We default
+# to medium; users can switch via the TUI picker or by editing the file.
+_provider_openai_seed_config() {
+  local cfg_dir="$1"
+  local cfg_file="$cfg_dir/config.toml"
+  if [[ ! -f "$cfg_file" ]]; then
+    cat > "$cfg_file" <<'TOML'
+# Seeded by `subctl auth openai`. Safe to edit.
+# ChatGPT-subscription auth requires a model that the plan tier supports;
+# `gpt-5` (the CLI's hardcoded default) is rejected on Pro/Plus accounts.
+# As of late 2026 the recommended coding model is gpt-5.5 with one of the
+# reasoning levels (low|medium|high|extra-high).
+model = "gpt-5.5"
+model_reasoning_effort = "medium"
+TOML
+    subctl_info "  seeded $cfg_file (model=gpt-5.5, reasoning=medium)"
+    return 0
+  fi
+  # File exists. Detect known-bad model values and patch the model line only.
+  local current_model
+  current_model=$(grep -E '^[[:space:]]*model[[:space:]]*=' "$cfg_file" \
+                  | head -1 \
+                  | sed -E 's/.*=[[:space:]]*"([^"]+)".*/\1/')
+  case "$current_model" in
+    gpt-5|codex-mini|codex-mini-latest)
+      local tmp
+      tmp=$(mktemp)
+      sed -E 's|^([[:space:]]*model[[:space:]]*=[[:space:]]*).*$|\1"gpt-5.5"|' \
+        "$cfg_file" > "$tmp" && mv "$tmp" "$cfg_file"
+      subctl_info "  patched $cfg_file: model \"$current_model\" → \"gpt-5.5\" (ChatGPT-Pro compatible)"
+      ;;
+    "")
+      printf '\nmodel = "gpt-5.5"\n' >> "$cfg_file"
+      subctl_info "  appended model=\"gpt-5.5\" to $cfg_file (was missing)"
+      ;;
+  esac
 }
 
 # Codex-specific status. Returns: ready | empty | wrong-mode | missing.
@@ -92,6 +144,9 @@ provider_openai_auth() {
     subctl_ok "$alias is already authenticated ($cfg_dir)"
     printf "  email expected: %s\n" "$email"
     printf "  to re-auth, run: CODEX_HOME=%s codex logout && subctl auth openai %s\n" "$cfg_dir" "$alias"
+    # Backfill config.toml for accounts that were authed before this seeding
+    # logic existed.
+    _provider_openai_seed_config "$cfg_dir"
     # Re-running auth on a ready account is also how you verify plan tier
     # after the first codex session — re-classify so that flow works.
     local plan
@@ -136,6 +191,7 @@ provider_openai_auth() {
   case "$after_status" in
     ready)
       subctl_ok "$alias logged in (ChatGPT OAuth)"
+      _provider_openai_seed_config "$cfg_dir"
       local plan
       plan=$(_provider_openai_classify_plan "$cfg_dir")
       case "$plan" in
