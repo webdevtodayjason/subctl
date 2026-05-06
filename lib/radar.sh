@@ -33,12 +33,14 @@ subctl_radar_projects_dirs() {
 
 # How many active sessions on this machine right now (across ALL accounts).
 # Definition: session JSONL files modified within the last 2 minutes.
+# Claude stores transcripts at projects/<project-cwd-encoded>/<session-id>.jsonl,
+# so this needs to descend 2 levels (was -maxdepth 1, which always returned 0).
 subctl_radar_parallel_sessions() {
   local total=0 d
   while IFS= read -r d; do
     [[ -z "$d" ]] && continue
     local n
-    n=$(find "$d" -maxdepth 1 -name '*.jsonl' -type f -mmin -2 2>/dev/null | wc -l | tr -d ' ')
+    n=$(find "$d" -maxdepth 2 -name '*.jsonl' -type f -mmin -2 2>/dev/null | wc -l | tr -d ' ')
     total=$((total + n))
   done < <(subctl_radar_projects_dirs)
   echo "$total"
@@ -48,17 +50,17 @@ subctl_radar_parallel_sessions() {
 subctl_radar_parallel_sessions_for() {
   local cfg="$1"
   [[ -d "$cfg/projects" ]] || { echo 0; return; }
-  find "$cfg/projects" -maxdepth 1 -name '*.jsonl' -type f -mmin -2 2>/dev/null | wc -l | tr -d ' '
+  find "$cfg/projects" -maxdepth 2 -name '*.jsonl' -type f -mmin -2 2>/dev/null | wc -l | tr -d ' '
 }
 
 # Wall-clock age of a session in seconds, given session_id.
-# Searches all known projects dirs.
+# Searches all known projects dirs (projects/<cwd-encoded>/<sid>.jsonl).
 subctl_radar_session_age_seconds() {
   local sid="$1"
   [[ -z "$sid" ]] && { echo 0; return; }
   local file
   for d in $(subctl_radar_projects_dirs); do
-    file=$(find "$d" -maxdepth 1 -name "${sid}.jsonl" -type f 2>/dev/null | head -1)
+    file=$(find "$d" -maxdepth 2 -name "${sid}.jsonl" -type f 2>/dev/null | head -1)
     [[ -n "$file" ]] && break
   done
   [[ -z "$file" ]] && { echo 0; return; }
