@@ -1582,6 +1582,196 @@ function renderSidebarNav(outline: OutlineItem[]): string {
   return parts.join("\n");
 }
 
+function renderCheatsheetPage(): string {
+  // Single-page cheat sheet — every CLI verb, shim, slash command, dashboard
+  // action, and useful tmux shortcut grouped by category. Scannable, dense,
+  // dark-themed to match the dashboard.
+  const sections: Array<{ title: string; rows: Array<[string, string]> }> = [
+    {
+      title: "Account management",
+      rows: [
+        ["subctl accounts", "Show all configured accounts + auth status"],
+        ["subctl auth claude <alias>", "Run OAuth flow for one account"],
+        ["subctl auth all", "Auth every account that needs it"],
+        ["subctl accounts add <provider> <alias> <email>", "Add a new account row to accounts.conf"],
+        ["subctl accounts remove <alias> [--purge]", "Remove account; --purge also deletes the config dir"],
+        ["subctl accounts edit", "Open accounts.conf in $EDITOR"],
+      ],
+    },
+    {
+      title: "Per-shell account switching",
+      rows: [
+        ["claude-use", "List accounts; show current"],
+        ["claude-use jason", "Set CLAUDE_CONFIG_DIR for current shell (next claude uses jason)"],
+        ["claude-use default", "Back to ~/.claude (unset)"],
+        ["claude-jason / claude-titanium / claude-semfreak", "One-off: run claude with that account, current command only"],
+        ["claude-whoami", "Print which account this shell is using"],
+      ],
+    },
+    {
+      title: "Tmux team launcher",
+      rows: [
+        ["claude-teams -a <acct> -o -y", "Start orchestrator session, dangerous-skip-permissions"],
+        ["claude-teams -a <acct> -c", "Continue most recent session for that account"],
+        ["claude-teams -a <acct> --resume <sid>", "Resume a SPECIFIC session by id, in fresh tmux"],
+        ["claude-teams -a <acct> -p \"text\"", "Send an initial prompt after the session boots"],
+        ["claude-teams -a <acct> -f file.md", "Read initial prompt from a file"],
+        ["subctl teams claude [opts]", "Explicit form (claude-teams is a shim for this)"],
+      ],
+    },
+    {
+      title: "Find + resume sessions",
+      rows: [
+        ["claude-resume", "Picker: lists every session for current cwd across all accounts"],
+        ["claude-resume --latest", "Auto-resume newest, no prompt (claude --continue analog)"],
+        ["claude-resume --account jason", "Picker filtered to one account"],
+        ["claude-resume --cwd ~/code/holace --list", "Print candidates, don't resume"],
+        ["subctl session-resume [opts]", "Same thing without the shim"],
+      ],
+    },
+    {
+      title: "Kill + cleanup",
+      rows: [
+        ["claude-kill <name>", "Kill one tmux session"],
+        ["claude-kill <a> <b> <c>", "Kill multiple by name"],
+        ["subctl prune --older-than 6h", "Kill all tmux sessions older than 6h (asks before)"],
+        ["subctl prune --older-than 24h --yes", "Skip confirmation"],
+        ["subctl session-list", "List all tmux sessions enriched with account/ctx/branch"],
+        ["subctl session-list --format json", "Machine-readable output"],
+      ],
+    },
+    {
+      title: "Rate-limit radar",
+      rows: [
+        ["claude-radar", "Print dispatch readiness verdict + signals"],
+        ["subctl radar log", "Last 50 rate-limit events from the log"],
+        ["subctl radar log --tail", "Follow the log in real time"],
+        ["/dispatch-check", "Slash command inside any Claude Code session — same verdict"],
+      ],
+    },
+    {
+      title: "Web dashboard / service",
+      rows: [
+        ["claude-dash", "Open browser to http://127.0.0.1:8787 (starts service if needed)"],
+        ["subctl service status", "Show service state (running / stopped / not installed)"],
+        ["subctl service start | stop | restart", "Control the running service"],
+        ["subctl service enable | disable", "Install/remove the launchd plist (auto-start at login)"],
+        ["subctl service logs [N]", "Last N lines of stdout + stderr"],
+        ["subctl service foreground", "Run dashboard in current shell (debug mode)"],
+      ],
+    },
+    {
+      title: "Health + config",
+      rows: [
+        ["subctl doctor", "Full health check: tools, settings, integrations, accounts"],
+        ["subctl whoami", "Current shell's CLAUDE_CONFIG_DIR resolved to alias"],
+        ["subctl config show", "Print accounts.conf"],
+        ["subctl config edit", "Open accounts.conf"],
+        ["subctl config path", "Just the path"],
+        ["subctl version", "Print version"],
+        ["subctl install [--migrate]", "Re-install / re-link shims / regenerate aliases"],
+        ["subctl uninstall", "Remove subctl; restores backup of settings.json"],
+      ],
+    },
+    {
+      title: "Web dashboard UI",
+      rows: [
+        ["Dashboard tab", "Verdict + accounts + active tmux sessions + active conversations + cost + util + events"],
+        ["Sessions tab", "Search every session across all accounts; copy resume cmd or open in iTerm"],
+        ["Docs link", "Mintlify-style reference (this page → Cheat Sheet)"],
+        ["Hover row in Session Browser", "Loads first user-message preview lazily"],
+        ["[copy] button", "Puts CLAUDE_CONFIG_DIR=… claude --resume <sid> on clipboard"],
+        ["[open in iTerm] button", "Spawns a new iTerm window pre-running the resume cmd (macOS)"],
+        ["Click any session row", "Expands to show last 3 lines of that pane"],
+        ["⟳ button (top-right)", "Force-refresh /api/oauth/usage (bypasses 5min cache)"],
+      ],
+    },
+    {
+      title: "Useful tmux shortcuts",
+      rows: [
+        ["Ctrl-b d", "Detach from current tmux session (returns to outer shell)"],
+        ["Ctrl-b w", "Pick a window across sessions"],
+        ["Ctrl-b s", "Pick a session"],
+        ["Ctrl-b , (comma)", "Rename current window"],
+        ["Ctrl-b $", "Rename current session"],
+        ["tmux attach -t <name>", "Attach to a session by name (outside tmux)"],
+        ["tmux switch-client -t <name>", "Switch to another session (inside tmux)"],
+        ["tmux kill-server", "Nuclear — kill ALL sessions (use sparingly)"],
+      ],
+    },
+    {
+      title: "Inside Claude Code",
+      rows: [
+        ["/dispatch-check", "Pre-dispatch radar verdict"],
+        ["/help", "Built-in command reference"],
+        ["/clear", "Reset conversation context"],
+        ["/exit", "Leave the session"],
+        ["/usage", "Show your subscription usage / quota"],
+        ["/compact", "Compress conversation history"],
+      ],
+    },
+  ];
+
+  let body = "";
+  // TOC
+  body += '<nav class="cheat-toc"><ul>';
+  for (const s of sections) {
+    const id = s.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    body += `<li><a href="#${id}">${escapeHtml(s.title)}</a></li>`;
+  }
+  body += "</ul></nav>";
+
+  // Sections
+  for (const s of sections) {
+    const id = s.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    body += `<section class="cheat-section" id="${id}"><h2>${escapeHtml(s.title)}</h2><table class="cheat-table"><tbody>`;
+    for (const [cmd, desc] of s.rows) {
+      body += `<tr><td class="cheat-cmd"><code>${escapeHtml(cmd)}</code></td><td class="cheat-desc">${escapeHtml(desc)}</td></tr>`;
+    }
+    body += "</tbody></table></section>";
+  }
+
+  return `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>subctl cheat sheet</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  body { background: #0a0a0a; color: #c4c4c4; font-family: ui-monospace, "SF Mono", Menlo, monospace; padding: 24px; max-width: 1100px; margin: 0 auto; }
+  .cheat-header { display: flex; align-items: baseline; justify-content: space-between; border-bottom: 1px solid #1f1f1f; padding-bottom: 12px; margin-bottom: 24px; }
+  .cheat-header h1 { margin: 0; font-size: 22px; color: #ffffff; letter-spacing: 0.04em; }
+  .cheat-header a { color: #5fd7ff; text-decoration: none; font-size: 13px; }
+  .cheat-header a:hover { text-decoration: underline; }
+  .cheat-toc { background: #0f0f0f; border: 1px solid #1f1f1f; border-radius: 4px; padding: 12px 16px; margin-bottom: 28px; }
+  .cheat-toc ul { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px 16px; }
+  .cheat-toc a { color: #9c9c9c; text-decoration: none; font-size: 12px; }
+  .cheat-toc a:hover { color: #5fd7ff; }
+  .cheat-section { margin-bottom: 32px; }
+  .cheat-section h2 { color: #ffffff; font-size: 14px; letter-spacing: 0.08em; text-transform: uppercase; border-bottom: 1px solid #1a1a1a; padding-bottom: 6px; margin: 0 0 10px; }
+  .cheat-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  .cheat-table tr { border-bottom: 1px solid #141414; }
+  .cheat-table tr:last-child { border-bottom: none; }
+  .cheat-table td { padding: 7px 10px; vertical-align: top; }
+  .cheat-cmd { width: 42%; }
+  .cheat-cmd code { background: #161616; padding: 2px 8px; border-radius: 3px; color: #5fd7ff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: inline-block; max-width: 100%; }
+  .cheat-desc { color: #9c9c9c; }
+</style>
+</head><body>
+<div class="cheat-header">
+  <h1>subctl cheat sheet</h1>
+  <div><a href="/">← dashboard</a> &nbsp; <a href="/help">full docs →</a></div>
+</div>
+${body}
+</body></html>`;
+}
+
+function escapeHtml(s: string): string {
+  return String(s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
 function renderHelpPage(): string {
   let md: string;
   try { md = readFileSync(HELP_MD_PATH, "utf8"); }
@@ -1764,6 +1954,14 @@ const server = Bun.serve({
       }
       return new Response(JSON.stringify(fresh), {
         headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
+      });
+    }
+    if (url.pathname === "/cheat" || url.pathname === "/cheatsheet" || url.pathname === "/cheat/") {
+      return new Response(renderCheatsheetPage(), {
+        headers: {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "no-store",
+        },
       });
     }
     if (url.pathname === "/help" || url.pathname === "/help/") {
