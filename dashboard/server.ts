@@ -931,7 +931,7 @@ function findActiveClaudeConversations(accounts: Account[], now: number): Active
         const mtimeMs = st.mtime.getTime();
         if (mtimeMs < cutoffMs) continue;
 
-        // Decode cwd from project dir name: "-Users-sem-code-foo" → "/Users/sem/code/foo"
+        // Decode cwd from project dir name: "-path-to-project" → "/path/to/project"
         const cwd = "/" + pd.replace(/^-/, "").replace(/-/g, "/");
         const sid = f.replace(/\.jsonl$/, "");
 
