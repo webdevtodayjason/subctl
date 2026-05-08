@@ -97,6 +97,16 @@ subctl_info "wiring Claude statusline + hook + slash command"
 . "$REPO_ROOT/lib/settings.sh"
 $DRY_RUN || subctl_settings_install_claude
 
+# ── 4a. apply autonomy patches (defaultMode + CLAUDE_AUTONOMY) ──────────────
+# Runs AFTER step 4 because settings.sh is sourced there. Idempotent — re-run
+# any time to re-apply. Each settings.json gets a .bak before merge.
+subctl_info "applying autonomy patches to settings.json (per-account)"
+$DRY_RUN || subctl_settings_apply_autonomy_all
+
+# ── 4b. install autonomy skill ──────────────────────────────────────────────
+subctl_info "linking autonomy skill into ~/.claude/skills/"
+$DRY_RUN || subctl_settings_install_autonomy_skill
+
 # ── 5. generate shell aliases + update zshrc ────────────────────────────────
 if ! $NO_SHELL; then
   subctl_info "shell aliases"

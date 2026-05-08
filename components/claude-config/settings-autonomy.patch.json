@@ -1,0 +1,9 @@
+{
+  "_comment": "Autonomy patch — applied to ~/.claude/settings.json + each ~/.claude-<account>/settings.json by subctl install. jq-merged on top of existing keys; permissions.deny etc. are preserved.",
+  "permissions": {
+    "defaultMode": "bypassPermissions"
+  },
+  "env": {
+    "CLAUDE_AUTONOMY": "full"
+  }
+}

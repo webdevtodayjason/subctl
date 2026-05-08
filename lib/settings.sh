@@ -166,3 +166,47 @@ subctl_settings_uninstall_claude() {
     subctl_settings_uninstall_claude_dir "$cfg_dir"
   done < <(subctl_settings_claude_dirs | awk '!seen[$0]++')
 }
+
+# ── autonomy helpers (Phase 1: defaultMode + CLAUDE_AUTONOMY) ────────────────
+
+# Apply the autonomy patch (defaultMode bypassPermissions + CLAUDE_AUTONOMY=full)
+# to a single settings.json. Backs up first. Idempotent — re-running is safe.
+subctl_settings_apply_autonomy_patch() {
+  local settings="$1"
+  local patch="$SUBCTL_REPO_ROOT/components/claude-config/settings-autonomy.patch.json"
+  [[ ! -f "$patch" ]] && { subctl_warn "autonomy patch missing: $patch"; return 1; }
+  if [[ ! -f "$settings" ]]; then
+    mkdir -p "$(dirname "$settings")"
+    echo '{}' > "$settings"
+  fi
+  local backup="$settings.bak.autonomy.$(date +%Y%m%d-%H%M%S)"
+  cp "$settings" "$backup"
+  jq -s '
+    (.[1] | del(._comment)) as $p
+    | .[0]
+    | .permissions = ((.permissions // {}) + ($p.permissions // {}))
+    | .env         = ((.env         // {}) + ($p.env         // {}))
+  ' "$settings" "$patch" > "$settings.tmp" && mv "$settings.tmp" "$settings"
+  subctl_ok "autonomy patch applied → $(basename "$(dirname "$settings")")/settings.json (backup: $(basename "$backup"))"
+}
+
+# Apply autonomy patch to default + every per-account settings.json.
+subctl_settings_apply_autonomy_all() {
+  subctl_require jq "install: brew install jq" || return 1
+  subctl_settings_apply_autonomy_patch "$HOME/.claude/settings.json"
+  for dir in "$HOME"/.claude-*; do
+    [[ -d "$dir" && ! -L "$dir" ]] || continue
+    subctl_settings_apply_autonomy_patch "$dir/settings.json"
+  done
+}
+
+# Symlink the autonomy skill into ~/.claude/skills/ (peer to user's
+# orchestrator-mode; overrides ask-leakage when activated).
+subctl_settings_install_autonomy_skill() {
+  local src="$SUBCTL_REPO_ROOT/components/skills/autonomy/SKILL.md"
+  [[ ! -f "$src" ]] && { subctl_warn "autonomy skill missing: $src"; return 1; }
+  local dst_dir="$HOME/.claude/skills/autonomy"
+  mkdir -p "$dst_dir"
+  ln -sfn "$src" "$dst_dir/SKILL.md"
+  subctl_ok "autonomy skill linked → $dst_dir/SKILL.md"
+}
