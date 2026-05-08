@@ -118,10 +118,14 @@
     <section class="panel" data-tab="sessions" id="search-panel">
       <h2>Session browser <span class="panel-hint">search every claude code session across all accounts · copy the resume command</span></h2>
       <div class="search-controls">
-        <input type="text" id="search-input" placeholder="filter by project name, account, or session id…" />
+        <input type="text" id="search-input" placeholder="filter by project name, account, session id, or preview…" />
         <select id="search-account">
           <option value="">all accounts</option>
         </select>
+        <label class="search-toggle" title="Workers are sessions spawned by an orchestrator via Team* / SendMessage tools — usually NOT what you want to resume.">
+          <input type="checkbox" id="search-show-workers" />
+          show team-agent workers
+        </label>
         <span id="search-count" class="search-count"></span>
       </div>
       <table class="data-table" id="search-table">

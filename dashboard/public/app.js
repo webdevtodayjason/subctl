@@ -976,16 +976,22 @@
   let allSessionsCache = null;
   let allSessionsCacheTs = 0;
 
-  async function loadAllSessions(force) {
+  // Cache key includes workers flag — switching the toggle invalidates.
+  let allSessionsCacheKey = null;
+  async function loadAllSessions(force, includeWorkers) {
     const SIX_MIN = 6 * 60 * 1000;
-    if (!force && allSessionsCache && (Date.now() - allSessionsCacheTs) < SIX_MIN) {
+    const key = includeWorkers ? "with-workers" : "no-workers";
+    if (!force && allSessionsCache && allSessionsCacheKey === key && (Date.now() - allSessionsCacheTs) < SIX_MIN) {
       return allSessionsCache;
     }
     try {
-      const r = await fetch("/api/sessions/list?limit=200", { cache: "no-store" });
+      const params = new URLSearchParams({ limit: "1500" });
+      if (includeWorkers) params.set("workers", "1");
+      const r = await fetch(`/api/sessions/list?${params}`, { cache: "no-store" });
       if (!r.ok) return [];
       const j = await r.json();
       allSessionsCache = j.sessions || [];
+      allSessionsCacheKey = key;
       allSessionsCacheTs = Date.now();
       return allSessionsCache;
     } catch {
@@ -1010,11 +1016,12 @@
   }
 
   function wireSearchUI() {
-    const input = $("search-input"), accSel = $("search-account");
+    const input = $("search-input"), accSel = $("search-account"), workersCb = $("search-show-workers");
     if (!input || !accSel) return;
     let debounce = null;
-    const trigger = async () => {
-      const sessions = await loadAllSessions();
+    const trigger = async (forceReload) => {
+      const includeWorkers = workersCb && workersCb.checked;
+      const sessions = await loadAllSessions(forceReload, includeWorkers);
       const q = input.value.trim().toLowerCase();
       const acc = accSel.value;
       const filtered = sessions.filter(s => {
@@ -1025,12 +1032,13 @@
             || (s.sid || "").toLowerCase().includes(q)
             || (s.first_message_preview || "").toLowerCase().includes(q);
       });
-      renderSearchResults(filtered.slice(0, 100), filtered.length);
+      renderSearchResults(filtered.slice(0, 200), filtered.length);
     };
-    input.addEventListener("input", () => { clearTimeout(debounce); debounce = setTimeout(trigger, 150); });
-    accSel.addEventListener("change", trigger);
-    // Auto-load on first interaction with input or selector. Also try once after first state.
-    setTimeout(trigger, 800);
+    input.addEventListener("input", () => { clearTimeout(debounce); debounce = setTimeout(() => trigger(false), 150); });
+    accSel.addEventListener("change", () => trigger(false));
+    if (workersCb) workersCb.addEventListener("change", () => trigger(true)); // forceReload — different cache key
+    // Auto-load on first interaction. Also try once after first state.
+    setTimeout(() => trigger(false), 800);
   }
 
   function renderSearchResults(rows, totalMatching) {
@@ -1053,9 +1061,15 @@
       sidCell.title = s.sid || "";
       sidCell.classList.add("ev-session");
       tr.appendChild(sidCell);
-      const prev = td("(hover to load)");
+      // Bulk list now includes preview for free (we read it server-side
+      // for is_worker detection anyway). Fall back to lazy load if the
+      // server returned an empty preview (e.g. unreadable file).
+      const prev = td(s.first_message_preview || "(hover to load)");
       prev.classList.add("conv-preview");
-      attachLazyPreview(prev, s.account, s.sid);
+      prev.title = s.first_message_preview || "";
+      if (!s.first_message_preview) {
+        attachLazyPreview(prev, s.account, s.sid);
+      }
       tr.appendChild(prev);
       tr.appendChild(td(resumeButton({ sid: s.sid, account: s.account, config_dir: s.config_dir, cwd: s.cwd })));
       return tr;

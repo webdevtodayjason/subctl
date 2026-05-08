@@ -901,6 +901,7 @@ interface ActiveConversation {
   last_activity_seconds_ago: number;  // since last jsonl write
   size_kb: number;
   first_message_preview: string;
+  is_worker: boolean;           // orchestrator-spawned team agent
 }
 
 function findActiveClaudeConversations(accounts: Account[], now: number): ActiveConversation[] {
@@ -1008,6 +1009,54 @@ interface SessionCatalogRow {
   mtime_ts: number;        // ms since epoch
   size_kb: number;
   first_message_preview: string;
+  is_worker: boolean;      // true for orchestrator-spawned team agents
+}
+
+// Reads the first ~64KB of a transcript and extracts:
+//   - cwd: the canonical working dir (so 'argent-core' decodes correctly,
+//     not the lossy "decode every dash to /" of the encoded directory name)
+//   - first user message + isWorker flag (`<teammate-message teammate_id="..."`
+//     means orchestrator-spawned worker; user typically wants to resume the
+//     operator session, not these)
+function detectSessionMeta(jsonlPath: string): { cwd: string; preview: string; isWorker: boolean } {
+  let cwd = "", preview = "", isWorker = false;
+  try {
+    const fs = require("node:fs");
+    const fd = fs.openSync(jsonlPath, "r");
+    const buf = Buffer.alloc(65536);
+    const n = fs.readSync(fd, buf, 0, 65536, 0);
+    fs.closeSync(fd);
+    const head = buf.subarray(0, n).toString("utf8");
+    for (const line of head.split("\n")) {
+      if (!line) continue;
+      try {
+        const ev = JSON.parse(line);
+        // Capture cwd from any event that exposes it (first line wins).
+        if (!cwd && typeof ev.cwd === "string" && ev.cwd) {
+          cwd = ev.cwd;
+        }
+        if (!preview && ev.type === "user") {
+          const c = ev.message?.content;
+          let text = "";
+          if (typeof c === "string") text = c;
+          else if (Array.isArray(c)) {
+            const t = c.find((x: any) => x && typeof x.text === "string" && x.text);
+            text = t?.text ?? "";
+            if (!text && c[0]?.type) {
+              text = `(${c.map((x: any) => x?.type).filter(Boolean).slice(0, 3).join(", ")})`;
+            }
+          }
+          if (text) {
+            const trimmed = text.trim();
+            isWorker = /^<teammate-message\s+teammate_id="/i.test(trimmed);
+            preview = trimmed.slice(0, 240).replace(/\s+/g, " ");
+          }
+        }
+      } catch { /* skip bad line */ }
+      if (cwd && preview) break;
+    }
+  } catch { /* unreadable */ }
+  return { cwd, preview, isWorker };
 }
 
 function listAllClaudeSessions(limit: number): SessionCatalogRow[] {
@@ -1037,8 +1086,12 @@ function listAllClaudeSessions(limit: number): SessionCatalogRow[] {
         const jpath = join(projectPath, f);
         const st = safeStat(jpath);
         if (!st || !st.isFile()) continue;
-        const cwd = "/" + pd.replace(/^-/, "").replace(/-/g, "/");
         const sid = f.replace(/\.jsonl$/, "");
+        const meta2 = detectSessionMeta(jpath);
+        // Prefer the canonical cwd from inside the transcript (handles
+        // dashes-in-project-names correctly, e.g. argent-core).
+        // Fall back to the lossy decode if first-line cwd is missing.
+        const cwd = meta2.cwd || ("/" + pd.replace(/^-/, "").replace(/-/g, "/"));
         rows.push({
           sid,
           account: meta.alias,
@@ -1048,7 +1101,8 @@ function listAllClaudeSessions(limit: number): SessionCatalogRow[] {
           project: basename(cwd),
           mtime_ts: st.mtime.getTime(),
           size_kb: Math.round(st.size / 1024),
-          first_message_preview: "",  // skipped on the bulk list — too expensive
+          first_message_preview: meta2.preview,
+          is_worker: meta2.isWorker,
         });
       }
     }
@@ -2146,9 +2200,15 @@ const server = Bun.serve({
     // GET /api/sessions/list — enumerate every Claude Code session across all
     // accounts. Used by the dashboard's session browser for search/copy-resume.
     if (url.pathname === "/api/sessions/list" && req.method === "GET") {
-      const limit = Math.min(Number(url.searchParams.get("limit") ?? 200), 1000);
-      const sessions = listAllClaudeSessions(limit);
-      return new Response(JSON.stringify({ sessions }), {
+      // Default 1500 (we have ~5K sessions on heavy users — bigger limit so
+      // search can hit deep history). Cap at 5000.
+      const limit = Math.min(Number(url.searchParams.get("limit") ?? 1500), 5000);
+      const includeWorkers = url.searchParams.get("workers") === "1";
+      let sessions = listAllClaudeSessions(limit);
+      if (!includeWorkers) {
+        sessions = sessions.filter(s => !s.is_worker);
+      }
+      return new Response(JSON.stringify({ sessions, total: sessions.length }), {
         headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
       });
     }

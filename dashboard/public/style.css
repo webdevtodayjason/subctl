@@ -1186,3 +1186,20 @@ body[data-active-tab="sessions"] section[data-tab="dashboard"] { display: none; 
   cursor: wait;
 }
 .preview-loading { color: #5fd7ff; font-style: italic; }
+
+/* Search toggle (show-workers checkbox) */
+.search-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #9c9c9c;
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+.search-toggle input[type="checkbox"] {
+  accent-color: #5fd7ff;
+  cursor: pointer;
+}
+.search-toggle:hover { color: #c4c4c4; }
