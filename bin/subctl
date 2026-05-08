@@ -92,6 +92,13 @@ Usage:
   subctl install [--migrate]          Install / re-install (file copy + symlinks)
   subctl setup                        First-run setup / reconfigure (TUI menu)
   subctl setup --wizard               Linear walk: deps → accounts → auth → service
+
+  subctl notify <msg>                 Send Telegram message (escalation channel
+                                      for orchestrators when operator is AFK).
+  subctl notify --setup               Store bot token + chat id (one-time)
+  subctl notify --test                Send a test message
+  subctl notify --status              Show current config
+
   subctl uninstall                    Remove subctl
   subctl version                      Print version
   subctl help                         Show this help
@@ -478,6 +485,11 @@ case "$cmd" in
   setup)
     . "$SUBCTL_REPO_ROOT/lib/setup.sh"
     subctl_setup "$@"
+    ;;
+
+  notify)
+    . "$SUBCTL_REPO_ROOT/components/notify/notify.sh"
+    subctl_notify "$@"
     ;;
 
   uninstall)
