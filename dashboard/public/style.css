@@ -1133,3 +1133,40 @@ tr:hover .kill-btn { opacity: 1; }
   font-size: 11px;
   white-space: nowrap;
 }
+
+/* ── tab nav ──────────────────────────────────────────────────────────────── */
+.tab-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  padding-left: 16px;
+  border-left: 1px solid #1a1a1a;
+}
+.tab-btn {
+  background: transparent;
+  border: 1px solid #1a1a1a;
+  color: #9c9c9c;
+  font-family: var(--mono, monospace);
+  font-size: 12px;
+  padding: 4px 14px;
+  border-radius: 3px;
+  cursor: pointer;
+  text-decoration: none;
+  letter-spacing: 0.04em;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.tab-btn:hover {
+  background: #161616;
+  color: #c4c4c4;
+  border-color: #2a2a2a;
+}
+.tab-btn.active {
+  background: #1f1f1f;
+  color: #ffffff;
+  border-color: #5fd7ff;
+}
+
+/* Hide panels not matching the active tab. */
+body[data-active-tab="dashboard"] section[data-tab="sessions"] { display: none; }
+body[data-active-tab="sessions"] section[data-tab="dashboard"] { display: none; }

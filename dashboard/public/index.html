@@ -21,7 +21,6 @@
         <span class="dot dim"></span>
         <span class="status-text">connecting</span>
       </span>
-      <a href="/help" class="help-link" title="Documentation, signal reference, CLI commands">📖 Docs</a>
     </div>
   </header>
 
@@ -40,10 +39,15 @@
         <span class="info-cell"><span class="info-num" id="info-ready">0</span> ready accounts</span>
         <span class="info-sep">·</span>
         <span class="info-cell"><span class="info-num" id="info-rl">0</span> RL today</span>
+        <nav class="tab-nav" id="tab-nav">
+          <button type="button" class="tab-btn active" data-tab="dashboard">Dashboard</button>
+          <button type="button" class="tab-btn" data-tab="sessions">Sessions</button>
+          <a class="tab-btn" href="/help" title="Documentation, signal reference, CLI commands">Docs</a>
+        </nav>
       </div>
     </section>
 
-    <section class="panel">
+    <section class="panel" data-tab="dashboard">
       <h2>Accounts</h2>
       <table class="data-table">
         <thead>
@@ -67,8 +71,8 @@
       <div class="warning" id="accounts-warning" hidden></div>
     </section>
 
-    <section class="panel">
-      <h2>Active sessions <span class="panel-hint">click row to expand preview</span></h2>
+    <section class="panel" data-tab="dashboard">
+      <h2>Active TMUX sessions <span class="panel-hint">click row to expand preview</span></h2>
       <table class="data-table sessions-table">
         <thead>
           <tr>
@@ -89,7 +93,7 @@
       </table>
     </section>
 
-    <section class="panel" id="conversations-panel">
+    <section class="panel" data-tab="dashboard" id="conversations-panel">
       <h2>Active conversations <span class="panel-hint">claude code sessions with file activity in the last 5min — includes ones outside tmux (this dashboard tab counts!)</span></h2>
       <table class="data-table" id="conversations-table">
         <thead>
@@ -110,7 +114,7 @@
       </table>
     </section>
 
-    <section class="panel" id="search-panel">
+    <section class="panel" data-tab="sessions" id="search-panel">
       <h2>Session browser <span class="panel-hint">search every claude code session across all accounts · copy the resume command</span></h2>
       <div class="search-controls">
         <input type="text" id="search-input" placeholder="filter by project name, account, or session id…" />
@@ -137,7 +141,7 @@
       </table>
     </section>
 
-    <section class="panel" id="cost-panel">
+    <section class="panel" data-tab="dashboard" id="cost-panel">
       <h2>Cost analysis (this month) <span class="panel-hint">API list-price equivalent vs subscription · what you'd pay buying tokens at retail</span></h2>
       <div class="cost-summary" id="cost-summary"></div>
       <table class="data-table" id="cost-table">
@@ -159,7 +163,7 @@
       </table>
     </section>
 
-    <section class="panel">
+    <section class="panel" data-tab="dashboard">
       <h2>Utilization (24h) <span class="panel-hint">5h-window peak per hour · red dot = 429/529 event</span></h2>
       <div id="rate-limits-body" class="rl-list">
         <div class="empty">no data yet</div>
@@ -167,7 +171,7 @@
       <div class="rl-total" id="rl-total"></div>
     </section>
 
-    <section class="panel">
+    <section class="panel" data-tab="dashboard">
       <h2>Recent events <span class="panel-sub">today, newest first</span></h2>
       <table class="events-table">
         <thead>

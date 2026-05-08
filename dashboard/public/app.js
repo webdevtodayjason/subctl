@@ -1001,6 +1001,33 @@
   // wire search UI on load
   wireSearchUI();
 
+  // ----- Tab nav (Dashboard | Sessions | Docs) -----
+
+  function wireTabs() {
+    const TAB_STORAGE_KEY = "subctl.dashboard.tab";
+    const initial = (() => {
+      try { return localStorage.getItem(TAB_STORAGE_KEY) || "dashboard"; }
+      catch { return "dashboard"; }
+    })();
+    setActiveTab(initial);
+    const buttons = document.querySelectorAll(".tab-nav .tab-btn[data-tab]");
+    buttons.forEach(b => {
+      b.addEventListener("click", () => {
+        const tab = b.dataset.tab;
+        if (!tab) return;
+        setActiveTab(tab);
+        try { localStorage.setItem(TAB_STORAGE_KEY, tab); } catch { /* no localStorage */ }
+      });
+    });
+  }
+  function setActiveTab(tab) {
+    document.body.dataset.activeTab = tab;
+    document.querySelectorAll(".tab-nav .tab-btn[data-tab]").forEach(b => {
+      b.classList.toggle("active", b.dataset.tab === tab);
+    });
+  }
+  wireTabs();
+
   function emptyRow(cols, msg) {
     const tr = document.createElement("tr");
     const cell = document.createElement("td");
