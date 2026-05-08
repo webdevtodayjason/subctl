@@ -139,11 +139,36 @@ fi
 echo
 subctl_ok "subctl v$SUBCTL_VERSION installed"
 echo
-echo "Next steps:"
-echo "  1. Reload your shell:    source ~/.zshrc"
-echo "  2. Run TUI:              subctl"
-echo "  3. Health check:         subctl doctor"
-echo "  4. Authenticate:         subctl auth claude <alias>"
-echo "  5. Launch tmux session:  subctl teams claude -a <alias> -o -c -y"
+
+# Detect first-run: accounts.conf is missing OR is the unmodified example seed.
+_first_run=true
+if [[ -f "$SUBCTL_ACCOUNTS_CONF" ]]; then
+  # Has any non-example, non-comment line?
+  if awk -F'|' '
+      /^[[:space:]]*#/ { next }
+      /^[[:space:]]*$/ { next }
+      {
+        a=$1; gsub(/[[:space:]]/, "", a)
+        if (a != "claude-personal" && a != "claude-work" && a != "claude-overflow") { found=1 }
+      }
+      END { exit !found }
+    ' "$SUBCTL_ACCOUNTS_CONF" 2>/dev/null; then
+    _first_run=false
+  fi
+fi
+
+if $_first_run; then
+  echo "${C_CYN}First time?${C_RST} Run the setup wizard to add accounts + authenticate:"
+  echo "  ${C_BLD}subctl setup --wizard${C_RST}"
+  echo
+  echo "Or pick a single stage from the menu:"
+  echo "  ${C_BLD}subctl setup${C_RST}"
+else
+  echo "Next steps:"
+  echo "  1. Reload your shell:    source ~/.zshrc"
+  echo "  2. Run TUI:              subctl"
+  echo "  3. Health check:         subctl doctor"
+  echo "  4. Reconfigure anytime:  subctl setup"
+fi
 echo
 echo "Uninstall:                 subctl uninstall"

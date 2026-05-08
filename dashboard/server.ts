@@ -1661,6 +1661,17 @@ function renderCheatsheetPage(): string {
       ],
     },
     {
+      title: "Setup + reconfigure",
+      rows: [
+        ["subctl setup", "TUI menu — pick a stage to (re)configure"],
+        ["subctl setup --wizard", "Linear walk: deps → existing config → accounts → auth → service"],
+        ["subctl setup --reconfigure", "Backup current accounts.conf, then run wizard fresh"],
+        ["subctl setup --auth-only", "Walk OAuth for accounts that aren't authenticated yet"],
+        ["subctl setup --service-only", "Just the dashboard-service prompt"],
+        ["subctl setup --check", "Pre-flight only — what's installed, what's missing"],
+      ],
+    },
+    {
       title: "Health + config",
       rows: [
         ["subctl doctor", "Full health check: tools, settings, integrations, accounts"],

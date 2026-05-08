@@ -85,7 +85,9 @@ Usage:
   subctl whoami                       Current shell's CLAUDE_CONFIG_DIR account
   subctl config edit                  Open accounts.conf
   subctl doctor                       Health check
-  subctl install [--migrate]          Install / re-install (interactive)
+  subctl install [--migrate]          Install / re-install (file copy + symlinks)
+  subctl setup                        First-run setup / reconfigure (TUI menu)
+  subctl setup --wizard               Linear walk: deps → accounts → auth → service
   subctl uninstall                    Remove subctl
   subctl version                      Print version
   subctl help                         Show this help
@@ -462,6 +464,11 @@ case "$cmd" in
 
   install)
     bash "$SUBCTL_REPO_ROOT/install.sh" "$@"
+    ;;
+
+  setup)
+    . "$SUBCTL_REPO_ROOT/lib/setup.sh"
+    subctl_setup "$@"
     ;;
 
   uninstall)
