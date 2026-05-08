@@ -219,6 +219,16 @@ subctl auth claude personal
 | `subctl notify --setup` | One-time wizard: store bot token + chat id in `~/.config/subctl/notify.json`. |
 | `subctl notify --test` | Send a test message to verify the bot is wired up. |
 | `subctl notify --status` | Show the configured-credentials state without revealing the token. |
+| `subctl notify ask-yesno "q" --id Q42` | Send Yes/No buttons; reply lands in inbox. |
+| `subctl notify ask-choice "q" -o A:label -o B:label` | Multi-button question (2-8 options). |
+| `subctl notify ask-text "q" --id Q42` | Force-reply prompt for free-form text. |
+| `subctl notify inbox [--id Q42]` | Read inbox entries (operator's replies). |
+| `subctl notify inbox-ack Q42` | Mark a question's reply as consumed. |
+| `subctl orch list` | Show all running orchestrator tmux sessions. |
+| `subctl orch spawn -a <acct> -c <path> [-o -y -p "text"]` | Spawn detached orchestrator session. |
+| `subctl orch status <name>` | Live preview + panes for one session. |
+| `subctl orch msg <name> <text>` | Inject text into a session's pane. |
+| `subctl orch kill <name>` | Kill a session. |
 
 Example:
 

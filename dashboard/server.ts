@@ -1723,6 +1723,24 @@ function renderCheatsheetPage(): string {
       ],
     },
     {
+      title: "Orchestration control plane",
+      rows: [
+        ["subctl orch list", "List running orchestrator tmux sessions"],
+        ["subctl orch spawn -a <acct> -c <path> [-o] [-y] [-p text]", "Spawn detached orchestrator session"],
+        ["subctl orch status <name>", "Live preview + panes for one session"],
+        ["subctl orch msg <name> <text>", "Inject text into a session's pane"],
+        ["subctl orch kill <name>", "Kill a session"],
+        ["POST /api/orchestration/spawn", "HTTP API for external controllers (ArgentOS, scripts, MCP)"],
+        ["GET  /api/orchestration", "List active orchestrator sessions"],
+        ["GET  /api/orchestration/:name", "Status JSON for one session"],
+        ["POST /api/orchestration/:name/msg", "Inject text"],
+        ["POST /api/orchestration/:name/kill", "Kill"],
+        ["/sessions (in Telegram)", "List sessions from your phone"],
+        ["/msg <name> <text> (in Telegram)", "Send text to a session"],
+        ["/kill <name> (in Telegram)", "Kill a session"],
+      ],
+    },
+    {
       title: "Autonomy + escalation",
       rows: [
         ["subctl notify <message>", "Fire-and-forget Telegram message"],
@@ -2285,6 +2303,181 @@ const server = Bun.serve({
         headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
       });
     }
+    // ── orchestration control plane (v1.3.0) ──────────────────────────────
+    //
+    // Wraps `subctl teams claude` + tmux primitives behind HTTP so external
+    // controllers (ArgentOS, scripts, future bot commands) can manage tmux
+    // orchestrator sessions without shelling out per call.
+    //
+    //   POST /api/orchestration/spawn            body: {account, project, prompt?, orchestrator?, continue?, skip_perms?, resume?, name?}
+    //   GET  /api/orchestration                  list current orchestrator sessions
+    //   GET  /api/orchestration/:name            preview + status for one session
+    //   POST /api/orchestration/:name/msg        body: {text}  → injects into the active pane
+    //   POST /api/orchestration/:name/kill       same as /api/sessions/:name/kill (alias)
+    //
+    // No new launchd plist; runs inside the dashboard's Bun process.
+
+    if (url.pathname === "/api/orchestration/spawn" && req.method === "POST") {
+      let body: any = {};
+      try { body = await req.json(); } catch {}
+      const account = String(body.account ?? "").trim();
+      const project = String(body.project ?? "").trim();
+      if (!account || !project) {
+        return new Response(JSON.stringify({ ok: false, error: "account + project required" }),
+          { status: 400, headers: { "Content-Type": "application/json" } });
+      }
+      // Validate project dir exists.
+      if (!existsSync(project)) {
+        return new Response(JSON.stringify({ ok: false, error: `project dir not found: ${project}` }),
+          { status: 404, headers: { "Content-Type": "application/json" } });
+      }
+      // Build subctl teams claude args. Spawn-only mode (no attach).
+      const args: string[] = ["teams", "claude", "-a", account, "--no-attach"];
+      if (body.orchestrator) args.push("-o");
+      if (body.skip_perms) args.push("-y");
+      if (body.continue) args.push("-c");
+      if (typeof body.resume === "string" && body.resume) {
+        args.push("--resume", String(body.resume));
+      }
+      if (typeof body.prompt === "string" && body.prompt) {
+        args.push("-p", body.prompt);
+      }
+      const subctlBin = join(REPO_ROOT, "bin", "subctl");
+      const r = spawnSync(subctlBin, args, {
+        cwd: project,
+        encoding: "utf8",
+        timeout: 30_000,
+        env: { ...process.env, SUBCTL_NO_ATTACH: "1" },
+      });
+      if (r.error || (typeof r.status === "number" && r.status !== 0)) {
+        return new Response(JSON.stringify({
+          ok: false,
+          error: (r.stderr || r.stdout || String(r.error)).slice(0, 800),
+        }), { status: 500, headers: { "Content-Type": "application/json" } });
+      }
+      // Compute session name the same way claude-teams does (basename + sanitize).
+      const sessionName = "claude-" + project.split("/").pop()!.replace(/[.: ]/g, "_");
+      const tmuxSessions = listTmuxSessions();
+      const live = tmuxSessions.find(s => s.name === sessionName);
+      // Push fresh state to dashboard observers.
+      try {
+        const fresh = buildState();
+        for (const ws of sockets) { try { ws.send(JSON.stringify(fresh)); } catch {} }
+      } catch {}
+      return new Response(JSON.stringify({
+        ok: true,
+        session_name: sessionName,
+        spawned: !!live,
+        attached: live?.attached ?? false,
+        cwd: project,
+        account,
+        stdout: r.stdout?.slice(0, 600) ?? "",
+      }), { headers: { "Content-Type": "application/json" } });
+    }
+
+    if (url.pathname === "/api/orchestration" && req.method === "GET") {
+      // List sessions whose env contains CLAUDE_CONFIG_DIR (i.e. spawned by
+      // subctl teams claude) — separates orchestrator sessions from random
+      // tmux noise.
+      const rawSessions = listTmuxSessions();
+      const result = rawSessions.map(s => {
+        const cfg = tmuxShowEnv(s.name, "CLAUDE_CONFIG_DIR");
+        return {
+          name: s.name,
+          path: s.path,
+          attached: s.attached,
+          windows: s.windows,
+          claude_account_dir: cfg,
+          is_orchestrator: cfg !== null,
+        };
+      }).filter(x => x.is_orchestrator);
+      return new Response(JSON.stringify({ orchestrations: result }), {
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+      });
+    }
+
+    {
+      const m = url.pathname.match(/^\/api\/orchestration\/([^/]+)\/msg\/?$/);
+      if (m && req.method === "POST") {
+        const name = decodeURIComponent(m[1]!);
+        let body: any = {};
+        try { body = await req.json(); } catch {}
+        const text = String(body.text ?? "").trim();
+        if (!text) {
+          return new Response(JSON.stringify({ ok: false, error: "text required" }),
+            { status: 400, headers: { "Content-Type": "application/json" } });
+        }
+        const known = listTmuxSessions().some(s => s.name === name);
+        if (!known) {
+          return new Response(JSON.stringify({ ok: false, error: "session not found" }),
+            { status: 404, headers: { "Content-Type": "application/json" } });
+        }
+        // Use a tmux buffer so multi-line text injects safely (avoids escape chaos)
+        const r1 = spawnSync(TMUX_BIN, ["set-buffer", "-b", "subctl-msg", text], { encoding: "utf8" });
+        const r2 = spawnSync(TMUX_BIN, ["paste-buffer", "-t", name, "-b", "subctl-msg"], { encoding: "utf8" });
+        const r3 = spawnSync(TMUX_BIN, ["send-keys", "-t", name, "Enter"], { encoding: "utf8" });
+        const ok = !r1.error && !r2.error && !r3.error;
+        return new Response(JSON.stringify({ ok }), {
+          status: ok ? 200 : 500,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+    }
+
+    {
+      const m = url.pathname.match(/^\/api\/orchestration\/([^/]+)\/?$/);
+      if (m && req.method === "GET") {
+        const name = decodeURIComponent(m[1]!);
+        const all = listTmuxSessions();
+        const s = all.find(x => x.name === name);
+        if (!s) {
+          return new Response(JSON.stringify({ ok: false, error: "session not found" }),
+            { status: 404, headers: { "Content-Type": "application/json" } });
+        }
+        const cfgDir = tmuxShowEnv(name, "CLAUDE_CONFIG_DIR");
+        const preview = tmuxCapturePreview(name);
+        const panes = listAllPanes().get(name) ?? [];
+        return new Response(JSON.stringify({
+          ok: true,
+          session: {
+            name: s.name,
+            path: s.path,
+            attached: s.attached,
+            windows: s.windows,
+            created: s.created,
+            claude_account_dir: cfgDir,
+            preview: preview,
+            panes: panes,
+          },
+        }), { headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } });
+      }
+    }
+
+    {
+      const m = url.pathname.match(/^\/api\/orchestration\/([^/]+)\/kill\/?$/);
+      if (m && req.method === "POST") {
+        const name = decodeURIComponent(m[1]!);
+        const known = listTmuxSessions().some(s => s.name === name);
+        if (!known) {
+          return new Response(JSON.stringify({ ok: false, error: "session not found" }),
+            { status: 404, headers: { "Content-Type": "application/json" } });
+        }
+        const subctlBin = join(REPO_ROOT, "bin", "subctl");
+        const r = spawnSync(subctlBin, ["session-kill", name], { encoding: "utf8", timeout: 8_000 });
+        if (r.error || (typeof r.status === "number" && r.status !== 0)) {
+          return new Response(JSON.stringify({ ok: false, error: (r.stderr || r.stdout || String(r.error)).slice(0, 500) }),
+            { status: 500, headers: { "Content-Type": "application/json" } });
+        }
+        try {
+          const fresh = buildState();
+          for (const ws of sockets) { try { ws.send(JSON.stringify(fresh)); } catch {} }
+        } catch {}
+        return new Response(JSON.stringify({ ok: true }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+    }
+
     // POST /api/sessions/<name>/kill — shells out to `subctl session-kill <name>`.
     // Validates the session name against current tmux state to avoid arbitrary
     // input being passed to the CLI. Reuses the existing safe code path.

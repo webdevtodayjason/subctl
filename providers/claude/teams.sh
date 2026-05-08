@@ -22,6 +22,9 @@ _SUBCTL_CLAUDE_TEAMS_LOADED=1
 provider_claude_teams() {
   local ACCOUNT="" SKIP_PERMS=false CONTINUE=false ORCHESTRATOR=false DRY_RUN=false
   local INITIAL_PROMPT="" PROMPT_FILE="" RESUME_SID=""
+  # --no-attach is for HTTP-spawned sessions (dashboard's POST /api/orchestration/spawn).
+  # Skips the final tmux attach/switch-client so the caller process exits cleanly.
+  local NO_ATTACH="${SUBCTL_NO_ATTACH:-}"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -32,6 +35,7 @@ provider_claude_teams() {
       -f|--prompt-file)  PROMPT_FILE="$2"; shift 2 ;;
       -o|--orchestrator) ORCHESTRATOR=true; shift ;;
       --resume)          RESUME_SID="$2"; shift 2 ;;
+      --no-attach)       NO_ATTACH=1; shift ;;
       --dry-run)         DRY_RUN=true; shift ;;
       *) subctl_die "unknown teams option: $1" ;;
     esac
@@ -152,9 +156,13 @@ When given a task, first outline your agent plan before proceeding."
     tmux send-keys -t "$SESSION_NAME" Enter
   fi
 
-  # Attach. If we're already inside a tmux session, attach-session fails
-  # with "open terminal failed: not a terminal" — switch-client is the
-  # right verb in that context.
+  # Attach (unless --no-attach / SUBCTL_NO_ATTACH=1 was passed, which is the
+  # path HTTP-spawned sessions use — they need a clean exit, not a hanging
+  # tmux client).
+  if [[ -n "$NO_ATTACH" ]]; then
+    echo "  (--no-attach: session is detached. Use 'tmux attach -t $SESSION_NAME' to view.)"
+    return 0
+  fi
   if [[ -n "${TMUX:-}" ]]; then
     tmux switch-client -t "$SESSION_NAME"
   else

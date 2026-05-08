@@ -278,8 +278,9 @@ function appendInbox(entry: InboxEntry) {
 // ---------- bot command handler ----------
 
 async function handleBotCommand(text: string, chatId: string, token: string) {
-  const cmd = text.split(/\s+/)[0]!.toLowerCase().split("@")[0]!;
-  // (Telegram appends @botusername to commands in groups — strip it.)
+  const parts = text.split(/\s+/);
+  const cmd = (parts[0] || "").toLowerCase().split("@")[0]!;
+  const args = parts.slice(1);
   let reply = "";
   switch (cmd) {
     case "/stats":
@@ -293,10 +294,72 @@ async function handleBotCommand(text: string, chatId: string, token: string) {
     case "/inbox":
       reply = formatRecentInbox();
       break;
+    case "/sessions":
+      reply = await formatSessionsList();
+      break;
+    case "/kill":
+      reply = await execKill(args[0] || "");
+      break;
+    case "/msg":
+      reply = await execMsg(args[0] || "", args.slice(1).join(" "));
+      break;
     default:
-      reply = `Unknown command: ${cmd}\n\nTry /stats, /inbox, or /help`;
+      reply = `Unknown command: ${cmd}\n\nTry /stats, /sessions, /kill, /msg, /inbox, /help`;
   }
   await sendMessage(chatId, reply, token);
+}
+
+// ---------- new bot commands: /sessions /msg /kill ----------
+
+async function formatSessionsList(): Promise<string> {
+  // Reuse the dashboard's HTTP API rather than recomputing — single source of truth
+  try {
+    const r = await fetch("http://127.0.0.1:8787/api/orchestration");
+    const j = await r.json() as any;
+    const list = j?.orchestrations || [];
+    if (list.length === 0) return "📭 no orchestrator sessions running\n\n(spawn one with: subctl orch spawn --account ...)";
+    const lines = [`🧭 ${list.length} orchestrator session(s):`, ""];
+    for (const s of list) {
+      const att = s.attached ? "●" : "○";
+      const acct = (s.claude_account_dir || "").split("/").pop() || "—";
+      lines.push(`${att} ${s.name}`);
+      lines.push(`   account: ${acct}`);
+      lines.push(`   path:    ${(s.path || "").replace(process.env.HOME || "", "~")}`);
+    }
+    lines.push("");
+    lines.push("Commands: /msg <name> <text> · /kill <name>");
+    return lines.join("\n");
+  } catch (e: any) {
+    return `error listing sessions: ${e?.message || e}`;
+  }
+}
+
+async function execKill(name: string): Promise<string> {
+  if (!name) return "usage: /kill <session_name>\n\n(get names with /sessions)";
+  try {
+    const r = await fetch(`http://127.0.0.1:8787/api/orchestration/${encodeURIComponent(name)}/kill`, {
+      method: "POST",
+    });
+    const j = await r.json() as any;
+    return j?.ok ? `🔪 killed ${name}` : `kill failed: ${j?.error || "unknown"}`;
+  } catch (e: any) {
+    return `error: ${e?.message || e}`;
+  }
+}
+
+async function execMsg(name: string, text: string): Promise<string> {
+  if (!name || !text) return "usage: /msg <session_name> <text>\n\n(get names with /sessions)";
+  try {
+    const r = await fetch(`http://127.0.0.1:8787/api/orchestration/${encodeURIComponent(name)}/msg`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    const j = await r.json() as any;
+    return j?.ok ? `📝 injected into ${name}: ${text.slice(0, 80)}` : `msg failed: ${j?.error || "unknown"}`;
+  } catch (e: any) {
+    return `error: ${e?.message || e}`;
+  }
 }
 
 function formatStats(): string {
@@ -350,13 +413,16 @@ function formatHelp(): string {
   return [
     "🤖 subctl bot · commands",
     "",
-    "/stats   — verdict, accounts, 5h%, week%, RL hits, savings",
-    "/status  — alias for /stats",
-    "/inbox   — last 5 unacked inbox entries (replies, asks)",
-    "/help    — this message",
+    "/stats              verdict, accounts, 5h%, week%, RL hits, savings",
+    "/status             alias for /stats",
+    "/sessions           list running orchestrator tmux sessions",
+    "/msg <name> <text>  inject text into a specific session",
+    "/kill <name>        kill a specific session",
+    "/inbox              last 5 unacked inbox entries (replies, asks)",
+    "/help               this message",
     "",
-    "Plus: replies to ask-yesno/ask-choice messages from subctl notify",
-    "are routed to the orchestrator's inbox automatically.",
+    "Plus: replies to ask-yesno/ask-choice/ask-text messages from",
+    "subctl notify are routed to the orchestrator's inbox automatically.",
   ].join("\n");
 }
 

@@ -202,6 +202,69 @@ send outcome — auditable even if the bot is unreachable.
 
 ---
 
+## Orchestration control plane (v1.3.0+)
+
+Manage multiple tmux orchestrator sessions over HTTP. Any process can
+spawn, control, or kill a session — useful for external orchestration
+managers (e.g. ArgentOS), automation scripts, or your phone via
+Telegram bot commands.
+
+### CLI
+
+```bash
+subctl orch list                        # show all running orchestrator sessions
+subctl orch spawn -a claude-personal \
+                  -c ~/code/myproject \
+                  -o -y \
+                  -p "build feature X per ORCHESTRATION.md"
+subctl orch status claude-myproject     # live pane preview
+subctl orch msg claude-myproject "stop and commit current state"
+subctl orch kill claude-myproject
+```
+
+### HTTP endpoints
+
+| Method | Path | Body |
+|---|---|---|
+| `POST` | `/api/orchestration/spawn` | `{account, project, prompt?, orchestrator?, continue?, skip_perms?, resume?}` |
+| `GET`  | `/api/orchestration` | (list) |
+| `GET`  | `/api/orchestration/:name` | (status + preview) |
+| `POST` | `/api/orchestration/:name/msg` | `{text}` |
+| `POST` | `/api/orchestration/:name/kill` | (kill) |
+
+All endpoints bound to `127.0.0.1:8787` (no auth — localhost-only).
+
+### Telegram bot (mobile control)
+
+After `subctl notify --setup`, your phone can manage sessions too:
+
+```
+/sessions              list running orchestrators
+/msg <name> <text>     inject text
+/kill <name>           kill
+/stats                 verdict + accounts + 5h%/week% + RL + savings
+/inbox                 last 5 unacked replies
+```
+
+All sessions are name-addressable. Run 7 orchestrators at once and
+target each individually by name from CLI, HTTP, or Telegram.
+
+### How it routes
+
+When you spawn a session via `subctl orch spawn`, it uses the same code
+path as `claude-teams -a <account> -c <path>` but with `--no-attach`
+so the dashboard process doesn't get stuck in tmux. The session runs
+detached; the orchestrator does its work; reach it via:
+
+- `tmux attach -t <name>` from any terminal
+- `subctl orch status <name>` for non-attaching preview
+- Telegram `/sessions` from anywhere
+
+The orchestrator itself can `subctl notify ask-yesno`, etc., to escalate
+back to you. Bidirectional, async-by-default.
+
+---
+
 ## Pruning transcript history
 
 Heavy orchestrator-mode users accumulate thousands of Claude Code session

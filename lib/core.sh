@@ -143,5 +143,5 @@ subctl_ensure_config_dir() {
 }
 
 # ── version ──────────────────────────────────────────────────────────────────
-SUBCTL_VERSION="1.2.0"
+SUBCTL_VERSION="1.3.0"
 export SUBCTL_VERSION

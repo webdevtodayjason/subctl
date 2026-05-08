@@ -98,6 +98,17 @@ Usage:
   subctl notify --setup               Store bot token + chat id (one-time)
   subctl notify --test                Send a test message
   subctl notify --status              Show current config
+  subctl notify ask-yesno|ask-choice|ask-text "<q>" --id Q42
+                                      Structured Q&A — replies land in inbox.
+  subctl notify inbox [--id Q42]      Read operator replies from inbox.
+
+  subctl orch list                    List running orchestrator tmux sessions
+  subctl orch spawn -a <acct> -c <path> [-o] [-y] [-p "..."] [--resume sid]
+                                      Spawn a detached orchestrator session
+                                      (callable from any process / ArgentOS)
+  subctl orch status <name>           Live preview of one session
+  subctl orch msg <name> <text>       Inject text into a session's pane
+  subctl orch kill <name>             Kill a session
 
   subctl uninstall                    Remove subctl
   subctl version                      Print version
@@ -490,6 +501,11 @@ case "$cmd" in
   notify)
     . "$SUBCTL_REPO_ROOT/components/notify/notify.sh"
     subctl_notify "$@"
+    ;;
+
+  orch)
+    . "$SUBCTL_REPO_ROOT/components/orch/orch.sh"
+    subctl_orch "$@"
     ;;
 
   uninstall)
