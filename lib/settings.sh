@@ -208,13 +208,28 @@ subctl_settings_apply_autonomy_all() {
   done < <(subctl_list_accounts 2>/dev/null)
 }
 
-# Symlink the autonomy skill into ~/.claude/skills/ (peer to user's
-# orchestrator-mode; overrides ask-leakage when activated).
+# Symlink every subctl-shipped skill from components/skills/<name>/SKILL.md
+# into ~/.claude/skills/<name>/SKILL.md. Currently:
+#   - autonomy   (drive-forward + memory + vault + ask-protocol doctrine)
+#   - subctl     (full capability reference for any agent)
 subctl_settings_install_autonomy_skill() {
-  local src="$SUBCTL_REPO_ROOT/components/skills/autonomy/SKILL.md"
-  [[ ! -f "$src" ]] && { subctl_warn "autonomy skill missing: $src"; return 1; }
-  local dst_dir="$HOME/.claude/skills/autonomy"
-  mkdir -p "$dst_dir"
-  ln -sfn "$src" "$dst_dir/SKILL.md"
-  subctl_ok "autonomy skill linked → $dst_dir/SKILL.md"
+  local skills_root="$SUBCTL_REPO_ROOT/components/skills"
+  [[ ! -d "$skills_root" ]] && { subctl_warn "no components/skills/ in repo"; return 1; }
+  local dst_root="$HOME/.claude/skills"
+  mkdir -p "$dst_root"
+  local linked=0
+  for skill_dir in "$skills_root"/*; do
+    [[ -d "$skill_dir" ]] || continue
+    local name src dst
+    name=$(basename "$skill_dir")
+    src="$skill_dir/SKILL.md"
+    [[ -f "$src" ]] || continue
+    dst="$dst_root/$name"
+    mkdir -p "$dst"
+    ln -sfn "$src" "$dst/SKILL.md"
+    subctl_ok "skill linked → $dst/SKILL.md"
+    linked=$((linked + 1))
+  done
+  [[ $linked -eq 0 ]] && subctl_warn "no skills linked from $skills_root"
+  return 0
 }
