@@ -135,6 +135,158 @@ These overrides apply ONLY when this autonomy skill is active.
 When `CLAUDE_AUTONOMY` is unset AND no autonomous-mode phrase has been used,
 the existing skills behave normally (ask-first).
 
+## Memory protocol — REQUIRED
+
+`claude-mem` captures observations from every session automatically. The
+orchestrator's job is NOT to re-discover what's already in memory — it's
+to leverage it. **Memory queries are MANDATORY at specific points.**
+
+### Required queries
+
+**ON SESSION START** (any orchestrator session):
+
+1. Call `mcp__plugin_claude-mem_mcp-search__search` with `orderBy: "newest"`
+   and a small `limit` (5–10) to surface recent context.
+2. If the user's first message names a project, repeat with that project as
+   the query string.
+3. If the user references "the X from earlier" / "where we left off" / "the
+   audit / decision / plan", use `mcp__plugin_claude-mem_mcp-search__timeline`
+   to find the right thread.
+4. Read the returned observations BEFORE responding. They are the cheapest
+   way to catch up; re-reading source files comes second.
+
+**BEFORE STARTING A NEW TASK:**
+
+- Search memory for prior work on this domain / file / decision.
+- If the search returns observations, read them before re-reading code.
+- If memory is silent, that itself is a signal — proceed but expect to
+  surface fresh observations during the work.
+
+**AFTER COMPLETING A NON-TRIVIAL TASK:**
+
+- Verify the auto-capture worked (a fresh search should return your work).
+- If it didn't, the observation isn't in memory — flag this. The
+  orchestrator's job is to ensure the next session can find this work.
+
+### Anti-pattern: re-reading without querying
+
+If a file you're about to read has been touched by another session in the
+last few hours, its analysis is likely in memory. **Query memory FIRST**,
+then re-read only if:
+- Memory is stale (file mtime newer than the observation),
+- OR memory has a different analytical angle than what you need,
+- OR you're checking that current state matches what memory says was true
+  at observation time.
+
+### Memory vs current state
+
+A memory record is a snapshot of "what was true when written." Before
+acting on a memory record:
+- If the action depends on a specific function/file/flag mentioned in
+  memory, **verify it still exists** (file present, grep finds the symbol).
+- If the user is about to act on your recommendation, verify first.
+- If recalled memory conflicts with current observable state, **trust
+  what you observe now** — and update or remove the stale memory.
+
+## Vault protocol — REQUIRED
+
+The Obsidian Vault at `~/Documents/Obsidian Vault/` is the **canonical
+state-of-the-portfolio**. The top-level `Portfolio.md` is the hub; each
+active project has a `<Project>/Portfolio.md` (e.g. `HoLaCe/Portfolio.md`,
+`Subctl/Portfolio.md`).
+
+These notes are the source of truth for:
+
+- Current project status / phase
+- Active decisions log
+- Blockers + their owners
+- Ship target / due date
+- Last-touched timestamp
+
+**Vault reads/writes are MANDATORY at specific points.**
+
+### Required reads
+
+**ON ORCHESTRATOR START (any project work):**
+
+1. Read the project's vault note: `~/Documents/Obsidian Vault/<project>/Portfolio.md`
+   (try title-cased variants if exact doesn't match: `HoLaCe`, not `holace`).
+2. If no project-folder note exists, search vault root for the project name:
+   `grep -l '<project>' ~/Documents/Obsidian\ Vault/*.md` and read top hits.
+3. If still no match, the project is not yet tracked — flag this and offer
+   to create the note as part of the orchestrator's setup work.
+
+**BEFORE PROPOSING A WAVE/DISPATCH PLAN:**
+
+- Cross-check the plan against the vault note's blockers list.
+- If a blocker matches what you're about to dispatch, surface it explicitly
+  and either resolve it first or note it in ORCHESTRATION.md.
+
+**ON RESUMING WORK** (continuing a prior session):
+
+- Compare vault note's last-touched timestamp against your last
+  ORCHESTRATION.md entry. If vault is newer, someone else (you in another
+  session, or the user) updated it — read those changes first.
+
+### Required writes
+
+**ON IRREVERSIBLE DECISION:**
+
+Write to `<project>/Portfolio.md` under a "Decisions" section:
+
+```markdown
+- **2026-05-08T19:42-CDT** — Used Prisma migrate over manual SQL for column
+  rename. Rationale: simple change, prefer toolchain. Reversible: yes.
+```
+
+**Skipping is not optional.** This is how the operator catches up when they
+return from being AFK.
+
+**ON TASK COMPLETION** (if it affects ship-readiness):
+
+- Update the project note's status field
+- Update the percent-complete if tracked
+- Update last-touched timestamp
+
+**ON HANDOFF / SESSION END:**
+
+- Append a brief "what just happened" summary to the project note
+- Update last-touched timestamp
+- If the next session needs context the current session has, ALSO write a
+  fresh observation (the auto-capture may not be detailed enough)
+
+### Vault is the source of truth (with caveats)
+
+For project METADATA (status, decisions, blockers, owner, ship target):
+**vault wins** when memory and vault disagree.
+
+For RECENT activity (last few hours): memory is fresher than vault and
+likely more accurate.
+
+If both are silent on a question: ask the operator (this is one of the
+rare legitimate escalations under autonomy mode).
+
+## Cross-system protocol (memory + vault + ledger)
+
+Three records exist for any meaningful work:
+
+| System | Lifetime | Update cadence | Write authority |
+|---|---|---|---|
+| **claude-mem** | Forever (auto-captured) | Every observation Claude makes | Auto |
+| **ORCHESTRATION.md** (per-project, in repo) | Project lifetime | Per task / per dispatch / per decision | Orchestrator |
+| **Vault `<Project>/Portfolio.md`** | Forever, source of truth | Per status-change / per decision / per session-end | Orchestrator |
+
+The orchestrator's job is to keep these in sync:
+
+- Memory carries the GRANULAR observation stream
+- ORCHESTRATION.md carries the IN-FLIGHT task ledger
+- Vault carries the STABLE project state
+
+If you ever notice the three are out of sync, that's a tell that the
+last orchestrator skipped a write. Reconcile in this order:
+**vault > ORCHESTRATION.md > memory** for project state;
+**memory > ORCHESTRATION.md > vault** for recent activity.
+
 ## Decision log format
 
 When you make a non-trivial autonomous call, log it to `ORCHESTRATION.md`
