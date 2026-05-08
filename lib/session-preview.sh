@@ -486,10 +486,21 @@ EOF
     sd=$(echo "$row" | cut -f4)
     sz=$(echo "$row" | cut -f5)
     fm=$(echo "$row" | cut -f7)
-    local mt_disp
+    local mt_disp ac_color al_padded
     mt_disp=$(date -r "$mt" '+%m-%d %H:%M' 2>/dev/null)
-    printf "  %-3d  %-15s  %-16s  %-7s  %-8s  %s\n" \
-      "$i" "$al" "$mt_disp" "$((sz/1024))KB" "${sd:0:8}" "${fm:-(no user message yet)}"
+    # Account color (matches statusline + dashboard convention).
+    case "$al" in
+      *personal*|*jason*)   ac_color="$C_CYN" ;;
+      *work*|*titanium*)    ac_color="$C_BLU" ;;
+      *overflow*|*semfreak*)ac_color="$C_MAG" ;;
+      default)              ac_color="$C_DIM" ;;
+      *)                    ac_color="$C_RST" ;;
+    esac
+    # Pad-then-color so column alignment isn't broken by ANSI escape bytes.
+    al_padded=$(printf '%-15s' "$al")
+    printf "  %-3d  %s%s%s  %-16s  %-7s  %-8s  %s\n" \
+      "$i" "$ac_color" "$al_padded" "$C_RST" \
+      "$mt_disp" "$((sz/1024))KB" "${sd:0:8}" "${fm:-(no user message yet)}"
     i=$((i + 1))
   done
 
