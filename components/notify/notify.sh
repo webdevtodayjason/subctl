@@ -34,7 +34,7 @@ subctl_notify() {
       --setup)        subctl_notify_setup; return $? ;;
       --test)         subctl_notify_test; return $? ;;
       --status)       subctl_notify_status; return $? ;;
-      --diagnose)     subctl_notify_diagnose; return $? ;;
+      --diagnose)     shift; subctl_notify_diagnose "$@"; return $? ;;
       -h|--help)
         cat <<EOF
 subctl notify <message> [opts]
