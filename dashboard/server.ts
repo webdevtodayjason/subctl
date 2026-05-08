@@ -1688,10 +1688,15 @@ function renderCheatsheetPage(): string {
       rows: [
         ["claude-kill <name>", "Kill one tmux session"],
         ["claude-kill <a> <b> <c>", "Kill multiple by name"],
-        ["subctl prune --older-than 6h", "Kill all tmux sessions older than 6h (asks before)"],
+        ["subctl prune --older-than 6h", "Kill tmux sessions older than 6h (asks before)"],
         ["subctl prune --older-than 24h --yes", "Skip confirmation"],
         ["subctl session-list", "List all tmux sessions enriched with account/ctx/branch"],
         ["subctl session-list --format json", "Machine-readable output"],
+        ["subctl prune-transcripts", "Delete worker transcript JSONLs >30d (default safe)"],
+        ["subctl prune-transcripts --dry-run", "Preview what would be deleted, no changes"],
+        ["subctl prune-transcripts --older-than 7d --yes", "Aggressive: workers >7d, no prompt"],
+        ["subctl prune-transcripts --all --older-than 90d", "Includes OPERATOR sessions older than 90d"],
+        ["subctl prune-transcripts --archive ~/archive", "Move instead of delete"],
       ],
     },
     {

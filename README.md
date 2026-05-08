@@ -150,6 +150,43 @@ Then `sesh connect` shows every session with subctl's account + ctx % + status +
 
 ---
 
+## Pruning transcript history
+
+Heavy orchestrator-mode users accumulate thousands of Claude Code session
+JSONLs — every team-agent worker spawned by `Team*`/`SendMessage` writes
+its own transcript file. The orchestrator's `tool_result` blocks already
+contain the synthesized worker output, so the worker JSONLs are
+functionally redundant past a few days and safe to delete.
+
+```bash
+# Default: workers older than 30 days, with confirmation
+subctl prune-transcripts
+
+# Preview only — see what would go, no changes
+subctl prune-transcripts --dry-run
+
+# Aggressive: workers >7 days, no prompt
+subctl prune-transcripts --older-than 7d --yes
+
+# Include OPERATOR sessions, not just workers (CAREFUL — these may be
+# resume-worthy)
+subctl prune-transcripts --all --older-than 90d
+
+# Move instead of delete — keep an off-disk archive you can restore from
+subctl prune-transcripts --archive ~/.claude-archive/
+```
+
+Worker detection: a session is classified as a worker if its first user
+message starts with `<teammate-message teammate_id="…">`. The dashboard's
+Session Browser hides workers by default for the same reason — toggle
+the *show team-agent workers* checkbox to include them.
+
+Typical numbers on a heavy machine: ~4,700 total session JSONLs becomes
+~280 operator sessions after the worker filter. A 30-day prune typically
+reclaims a few hundred MB.
+
+---
+
 ## Concepts
 
 **Accounts.** An account is a `(provider, alias)` pair plus a `CLAUDE_CONFIG_DIR`-style isolation root. Configured in `~/.config/subctl/accounts.conf`. Aliases (`claude-personal`, `claude-work`) are generated into your shell's rc file so `claude-personal` always means the same account regardless of which directory you're in.

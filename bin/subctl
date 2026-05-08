@@ -53,6 +53,10 @@ Usage:
   subctl session-prune [--older-than 6h] [--yes]
                                       Kill all tmux sessions older than DUR
                                       (default 6h). Asks before killing.
+  subctl prune-transcripts [opts]     Delete OLD CLAUDE CODE TRANSCRIPT JSONLs
+                                      to reclaim disk. Default: workers >30d.
+                                      Flags: --older-than DUR, --all, --workers
+                                      --dry-run, --archive PATH, --yes
   subctl session-resume [--cwd PATH] [--account ALIAS] [--latest] [--list]
                                       Find Claude Code sessions for a cwd
                                       across all accounts. Picker by default;
@@ -242,6 +246,11 @@ case "$cmd" in
   session-prune|prune)
     . "$SUBCTL_REPO_ROOT/lib/session-preview.sh"
     subctl_session_prune "$@"
+    ;;
+
+  prune-transcripts|transcripts-prune)
+    . "$SUBCTL_REPO_ROOT/lib/session-preview.sh"
+    subctl_prune_transcripts "$@"
     ;;
 
   session-resume|resume)

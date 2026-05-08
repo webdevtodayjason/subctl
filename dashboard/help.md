@@ -214,12 +214,42 @@ subctl auth claude personal
 | `subctl session-preview <name>` | Render the metadata block + last activity for one session. |
 | `subctl session-kill <name> [name...]` | Kill one or more tmux sessions. |
 | `subctl session-prune [--older-than 6h] [--yes]` | Kill all tmux sessions older than DUR (default 6h). |
+| `subctl prune-transcripts [opts]` | Delete OLD CLAUDE CODE TRANSCRIPT JSONLs to reclaim disk. Default: workers >30d. |
 
 Example:
 
 ```bash
 subctl session-prune --older-than 6h --yes
 ```
+
+#### Pruning transcript history
+
+Heavy orchestrator-mode users accumulate thousands of transcript JSONLs
+(every team-agent worker spawned by the `Team*`/`SendMessage` tools writes
+its own session file). These are functionally redundant with the
+orchestrator's `tool_result` blocks and can safely be deleted.
+
+```bash
+# Defaults: workers older than 30 days, prompts before deleting
+subctl prune-transcripts
+
+# Preview only — show what would go, don't touch anything
+subctl prune-transcripts --dry-run
+
+# More aggressive: workers older than 7 days, no prompt
+subctl prune-transcripts --older-than 7d --yes
+
+# Include OPERATOR sessions, not just workers (CAREFUL — these may be
+# resume-worthy)
+subctl prune-transcripts --all --older-than 90d
+
+# Move instead of delete — keep an off-disk archive you can restore from
+subctl prune-transcripts --archive ~/.claude-archive/
+```
+
+Worker detection: a session is classified as a worker if its first user
+message begins with `<teammate-message teammate_id="…">` (the marker
+`Team*`/`SendMessage` injects when spawning team agents).
 
 ### Teams (tmux launcher)
 

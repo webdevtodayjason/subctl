@@ -370,6 +370,188 @@ EOF
   done
 }
 
+# ── public: subctl prune-transcripts ────────────────────────────────────────
+# Reclaim disk + speed up session lookups by deleting (or archiving) old
+# Claude Code transcript jsonls. Default scope: WORKER sessions older than
+# 30 days. Workers are sessions whose first user message begins with
+# `<teammate-message teammate_id="…">` — orchestrator-spawned team agents
+# whose audit trail is functionally redundant with the orchestrator's
+# tool_result blocks.
+subctl_prune_transcripts() {
+  local older_than="30d" workers_only=true auto_yes=false dry_run=false archive_path=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --older-than) older_than="$2"; shift 2 ;;
+      --workers)    workers_only=true;  shift ;;
+      --all)        workers_only=false; shift ;;
+      --yes|-y)     auto_yes=true;  shift ;;
+      --dry-run|-n) dry_run=true;   shift ;;
+      --archive)    archive_path="$2"; shift 2 ;;
+      -h|--help)
+        cat <<EOF
+subctl prune-transcripts [opts]
+
+  Delete (or archive) old Claude Code session transcripts to reclaim disk
+  and speed up session-list scans. Default: WORKER sessions older than 30d,
+  with confirmation prompt.
+
+  --older-than DUR  age threshold (default: 30d). Format: 7d, 24h, 30m
+  --workers         only worker sessions (default — safe scope)
+  --all             include operator/orchestrator sessions (CAREFUL)
+  --yes, -y         skip the confirmation prompt
+  --dry-run, -n     show what would be deleted; don't touch anything
+  --archive PATH    move instead of delete (e.g. ~/transcripts-archive/)
+
+Examples:
+  subctl prune-transcripts                          # workers >30d, prompts
+  subctl prune-transcripts --dry-run                # see what would go
+  subctl prune-transcripts --older-than 7d --yes    # workers >7d, no prompt
+  subctl prune-transcripts --all --older-than 90d   # everything >90d (incl. operators)
+  subctl prune-transcripts --archive ~/.claude-archive/  # move, don't delete
+EOF
+        return 0 ;;
+      *) subctl_die "unknown flag: $1" ;;
+    esac
+  done
+
+  # Parse duration → seconds.
+  local threshold_sec
+  case "$older_than" in
+    *d) threshold_sec=$(( ${older_than%d} * 86400 )) ;;
+    *h) threshold_sec=$(( ${older_than%h} * 3600 )) ;;
+    *m) threshold_sec=$(( ${older_than%m} * 60 )) ;;
+    *)  threshold_sec="$older_than" ;;
+  esac
+  local now cutoff
+  now=$(date +%s)
+  cutoff=$(( now - threshold_sec ))
+
+  subctl_info "scanning ~/.claude*/projects/... (older-than=$older_than, workers-only=$workers_only)"
+  echo
+
+  local -a candidates=()
+  local total_bytes=0 scanned=0 worker_filtered=0
+
+  # Find every jsonl older than the threshold. Filter by worker-status if
+  # workers_only is set. Track scanned/filtered for transparency.
+  while IFS= read -r jsonl; do
+    [[ -z "$jsonl" ]] && continue
+    scanned=$((scanned + 1))
+    local mtime sz
+    mtime=$(stat -f '%m' "$jsonl" 2>/dev/null) || continue
+    [[ "$mtime" -lt "$cutoff" ]] || continue   # not old enough
+
+    if $workers_only; then
+      if ! _subctl_is_worker_session "$jsonl"; then
+        worker_filtered=$((worker_filtered + 1))
+        continue
+      fi
+    fi
+
+    sz=$(stat -f '%z' "$jsonl" 2>/dev/null) || continue
+    candidates+=("$jsonl")
+    total_bytes=$(( total_bytes + sz ))
+  done < <(find "$HOME"/.claude*/projects -type f -name '*.jsonl' 2>/dev/null)
+
+  if [[ ${#candidates[@]} -eq 0 ]]; then
+    subctl_info "no transcripts match (scanned $scanned files, $worker_filtered filtered for being non-workers)"
+    return 0
+  fi
+
+  printf "Match: %d transcripts · %s on disk\n" "${#candidates[@]}" "$(_subctl_format_bytes "$total_bytes")"
+  printf "Scanned: %d total · %d skipped (newer than %s)\n" "$scanned" $((scanned - ${#candidates[@]} - worker_filtered)) "$older_than"
+  if $workers_only; then
+    printf "Filtered: %d non-worker sessions kept (use --all to include them)\n" "$worker_filtered"
+  fi
+  echo
+
+  # Top 5 biggest preview
+  echo "Top 5 by size:"
+  local i=0
+  for p in "${candidates[@]}"; do
+    [[ $i -ge 200 ]] && break
+    printf "%s\t%s\n" "$(stat -f '%z' "$p" 2>/dev/null)" "$p"
+    i=$((i + 1))
+  done | sort -rn | head -5 | while IFS=$'\t' read -r sz path; do
+    printf "  %10s  %s\n" "$(_subctl_format_bytes "$sz")" "$path"
+  done
+  echo
+
+  if $dry_run; then
+    subctl_info "dry-run — no files were touched"
+    return 0
+  fi
+
+  if ! $auto_yes; then
+    local action="delete"
+    [[ -n "$archive_path" ]] && action="move to $archive_path"
+    read -r -p "$action ${#candidates[@]} transcripts ($(_subctl_format_bytes "$total_bytes"))? [y/N]: " confirm
+    [[ "$confirm" == "y" || "$confirm" == "Y" ]] || { echo "aborted."; return 0; }
+  fi
+
+  local deleted=0 archived=0 errors=0
+  if [[ -n "$archive_path" ]]; then
+    mkdir -p "$archive_path"
+  fi
+  for p in "${candidates[@]}"; do
+    if [[ -n "$archive_path" ]]; then
+      # Preserve account context in the archive filename.
+      local rel="${p#$HOME/}"
+      local safe_rel="${rel//\//__}"
+      if mv "$p" "$archive_path/$safe_rel" 2>/dev/null; then
+        archived=$((archived + 1))
+      else
+        errors=$((errors + 1))
+      fi
+    else
+      if rm -f "$p" 2>/dev/null; then
+        deleted=$((deleted + 1))
+      else
+        errors=$((errors + 1))
+      fi
+    fi
+  done
+
+  echo
+  [[ $deleted -gt 0 ]]  && subctl_ok "deleted $deleted transcripts"
+  [[ $archived -gt 0 ]] && subctl_ok "archived $archived transcripts → $archive_path"
+  [[ $errors -gt 0 ]]   && subctl_err "errors: $errors files could not be removed"
+  printf "  Reclaimed: %s\n" "$(_subctl_format_bytes "$total_bytes")"
+}
+
+# Cheap worker-session test — first user line in head has the teammate-message
+# marker. False-positive rate is low (operator sessions don't typically open
+# with that exact pattern in their first user message).
+_subctl_is_worker_session() {
+  local jsonl="$1"
+  head -c 65536 "$jsonl" 2>/dev/null \
+    | awk '
+        /"type":"user"/ {
+          if (index($0, "<teammate-message teammate_id=")) {
+            print "yes"
+          } else {
+            print "no"
+          }
+          exit
+        }
+      ' \
+    | grep -q yes
+}
+
+# Pretty-print a byte count using simple integer math (no bc dependency).
+_subctl_format_bytes() {
+  local n=$1
+  if   [[ "$n" -ge 1073741824 ]]; then
+    printf "%d.%02d GB" $((n / 1073741824)) $(( (n * 100 / 1073741824) % 100 ))
+  elif [[ "$n" -ge 1048576 ]]; then
+    printf "%d.%02d MB" $((n / 1048576)) $(( (n * 100 / 1048576) % 100 ))
+  elif [[ "$n" -ge 1024 ]]; then
+    printf "%d KB" $((n / 1024))
+  else
+    printf "%d B" "$n"
+  fi
+}
+
 # Helper: count rate-limit hits today scoped to a specific session UUID.
 get_rl_for_session_today() {
   local sid="$1"
