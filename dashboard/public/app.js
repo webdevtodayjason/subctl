@@ -360,6 +360,8 @@
     renderCost(state.cost ?? { this_month: [], totals: { api_cost_month_usd: 0, subscription_total_usd: 0, savings_month_usd: 0 } });
     renderRateLimits(state.rate_limits ?? { today_total: 0, by_account: [] });
     renderEvents(state.rate_limits?.events_today ?? []);
+    renderConversations(state.active_conversations ?? []);
+    populateSearchAccountFilter(state.accounts ?? []);
   }
 
   function renderSessions(sessions) {
@@ -847,6 +849,157 @@
     s.appendChild(document.createTextNode(value));
     return s;
   }
+
+  // ----- Active conversations (jsonl mtime within last 5min, including non-tmux) -----
+
+  function renderConversations(convs) {
+    const tbody = $("conversations-body");
+    if (!tbody) return;
+    if (!convs || convs.length === 0) {
+      tbody.replaceChildren(emptyRow(8, "no active conversations"));
+      return;
+    }
+    tbody.replaceChildren(...convs.map(c => {
+      const tr = document.createElement("tr");
+      tr.appendChild(td(acctPill(c.account, c.account_color_class), "account"));
+      tr.appendChild(td(c.project));
+      tr.appendChild(td(fmtAge(c.last_activity_seconds_ago) + " ago"));
+      tr.appendChild(td(fmtAge(c.age_seconds), "num"));
+      tr.appendChild(td(c.size_kb + " KB", "num"));
+      const sidShort = (c.sid || "").slice(0, 8);
+      const sidCell = td(sidShort);
+      sidCell.title = c.sid || "";
+      sidCell.classList.add("ev-session");
+      tr.appendChild(sidCell);
+      const previewCell = td(c.first_message_preview || "");
+      previewCell.classList.add("conv-preview");
+      previewCell.title = c.first_message_preview || "";
+      tr.appendChild(previewCell);
+      tr.appendChild(td(resumeButton(c)));
+      return tr;
+    }));
+  }
+
+  function resumeButton(conv) {
+    const wrap = document.createElement("div");
+    wrap.className = "resume-actions";
+    const cmd = `CLAUDE_CONFIG_DIR=${conv.config_dir} command claude --resume ${conv.sid}`;
+    const btn = document.createElement("button");
+    btn.className = "btn-resume";
+    btn.textContent = "copy resume cmd";
+    btn.title = cmd;
+    btn.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(cmd);
+        btn.textContent = "✓ copied";
+        setTimeout(() => { btn.textContent = "copy resume cmd"; }, 1500);
+      } catch {
+        btn.textContent = "copy failed";
+      }
+    });
+    wrap.appendChild(btn);
+    return wrap;
+  }
+
+  // ----- Session browser (search across all sessions, all accounts) -----
+
+  let allSessionsCache = null;
+  let allSessionsCacheTs = 0;
+
+  async function loadAllSessions(force) {
+    const SIX_MIN = 6 * 60 * 1000;
+    if (!force && allSessionsCache && (Date.now() - allSessionsCacheTs) < SIX_MIN) {
+      return allSessionsCache;
+    }
+    try {
+      const r = await fetch("/api/sessions/list?limit=200", { cache: "no-store" });
+      if (!r.ok) return [];
+      const j = await r.json();
+      allSessionsCache = j.sessions || [];
+      allSessionsCacheTs = Date.now();
+      return allSessionsCache;
+    } catch {
+      return [];
+    }
+  }
+
+  function populateSearchAccountFilter(accounts) {
+    const sel = $("search-account");
+    if (!sel) return;
+    const current = sel.value;
+    sel.replaceChildren();
+    const all = document.createElement("option");
+    all.value = ""; all.textContent = "all accounts";
+    sel.appendChild(all);
+    sel.appendChild(makeOpt("default", "default (~/.claude)"));
+    for (const a of accounts) sel.appendChild(makeOpt(a.alias, a.alias));
+    sel.value = current;
+  }
+  function makeOpt(v, label) {
+    const o = document.createElement("option"); o.value = v; o.textContent = label; return o;
+  }
+
+  function wireSearchUI() {
+    const input = $("search-input"), accSel = $("search-account");
+    if (!input || !accSel) return;
+    let debounce = null;
+    const trigger = async () => {
+      const sessions = await loadAllSessions();
+      const q = input.value.trim().toLowerCase();
+      const acc = accSel.value;
+      const filtered = sessions.filter(s => {
+        if (acc && s.account !== acc) return false;
+        if (!q) return true;
+        return (s.project || "").toLowerCase().includes(q)
+            || (s.account || "").toLowerCase().includes(q)
+            || (s.sid || "").toLowerCase().includes(q)
+            || (s.first_message_preview || "").toLowerCase().includes(q);
+      });
+      renderSearchResults(filtered.slice(0, 100), filtered.length);
+    };
+    input.addEventListener("input", () => { clearTimeout(debounce); debounce = setTimeout(trigger, 150); });
+    accSel.addEventListener("change", trigger);
+    // Auto-load on first interaction with input or selector. Also try once after first state.
+    setTimeout(trigger, 800);
+  }
+
+  function renderSearchResults(rows, totalMatching) {
+    const tbody = $("search-body");
+    if (!tbody) return;
+    setText($("search-count"), `${rows.length} of ${totalMatching || rows.length} shown`);
+    if (!rows.length) {
+      tbody.replaceChildren(emptyRow(7, "no matches"));
+      return;
+    }
+    tbody.replaceChildren(...rows.map(s => {
+      const tr = document.createElement("tr");
+      tr.appendChild(td(acctPill(s.account, s.account_color_class), "account"));
+      tr.appendChild(td(s.project || "—"));
+      const mtime = td(fmtRelative(s.mtime_ts) + " ago", "num");
+      mtime.title = new Date(s.mtime_ts).toLocaleString();
+      tr.appendChild(mtime);
+      tr.appendChild(td(s.size_kb + " KB", "num"));
+      const sidCell = td((s.sid || "").slice(0, 8));
+      sidCell.title = s.sid || "";
+      sidCell.classList.add("ev-session");
+      tr.appendChild(sidCell);
+      const prev = td(s.first_message_preview || "");
+      prev.classList.add("conv-preview");
+      prev.title = s.first_message_preview || "";
+      tr.appendChild(prev);
+      tr.appendChild(td(resumeButton({ sid: s.sid, account: s.account, config_dir: s.config_dir })));
+      return tr;
+    }));
+  }
+
+  function fmtRelative(tsMs) {
+    if (!tsMs) return "?";
+    const sec = Math.floor((Date.now() - tsMs) / 1000);
+    return fmtAge(sec);
+  }
+
+  // wire search UI on load
+  wireSearchUI();
 
   function emptyRow(cols, msg) {
     const tr = document.createElement("tr");

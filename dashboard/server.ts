@@ -882,6 +882,174 @@ function authStatus(account: Account): "ready" | "not_authenticated" {
 
 // ---------- session enrichment ----------
 
+// Active Claude Code conversation (jsonl mtime within last 5 min), regardless
+// of whether it's inside a tmux pane. Surfaces the "I'm running claude in a
+// terminal tab outside tmux" case the tmux panel can't see.
+interface ActiveConversation {
+  sid: string;                  // full session UUID
+  account: string;              // alias if known, else "default"
+  account_color_class: "cyan" | "blue" | "magenta" | "grey";
+  config_dir: string;
+  project: string;              // basename of cwd
+  cwd: string;
+  age_seconds: number;          // wall clock since first message
+  last_activity_seconds_ago: number;  // since last jsonl write
+  size_kb: number;
+  first_message_preview: string;
+}
+
+function findActiveClaudeConversations(accounts: Account[], now: number): ActiveConversation[] {
+  const ACTIVE_WINDOW_MS = 5 * 60 * 1000;  // 5 min
+  const cutoffMs = now - ACTIVE_WINDOW_MS;
+
+  // Map config_dir -> {alias, color}
+  const cfgIndex = new Map<string, { alias: string; color: "cyan" | "blue" | "magenta" | "grey" }>();
+  for (const a of accounts) {
+    cfgIndex.set(a.config_dir, { alias: a.alias, color: colorClassFor(a.alias) });
+  }
+  // Default ~/.claude (no alias)
+  const defaultCfg = join(HOME, ".claude");
+  if (!cfgIndex.has(defaultCfg)) {
+    cfgIndex.set(defaultCfg, { alias: "default", color: "grey" });
+  }
+
+  const out: ActiveConversation[] = [];
+
+  for (const [cfgDir, meta] of cfgIndex.entries()) {
+    const projectsRoot = join(cfgDir, "projects");
+    const projectDirs = safeReaddir(projectsRoot);
+    for (const pd of projectDirs) {
+      const projectPath = join(projectsRoot, pd);
+      const projectStat = safeStat(projectPath);
+      if (!projectStat || !projectStat.isDirectory()) continue;
+      const files = safeReaddir(projectPath);
+      for (const f of files) {
+        if (!f.endsWith(".jsonl")) continue;
+        const jpath = join(projectPath, f);
+        const st = safeStat(jpath);
+        if (!st || !st.isFile()) continue;
+        const mtimeMs = st.mtime.getTime();
+        if (mtimeMs < cutoffMs) continue;
+
+        // Decode cwd from project dir name: "-Users-sem-code-foo" → "/Users/sem/code/foo"
+        const cwd = "/" + pd.replace(/^-/, "").replace(/-/g, "/");
+        const sid = f.replace(/\.jsonl$/, "");
+
+        // First message + first timestamp via head-of-file scan.
+        let firstTs = 0;
+        let firstMsg = "";
+        try {
+          // Read just the first ~64KB to find first user message + first timestamp.
+          const fd = require("node:fs").openSync(jpath, "r");
+          const buf = Buffer.alloc(65536);
+          const n = require("node:fs").readSync(fd, buf, 0, 65536, 0);
+          require("node:fs").closeSync(fd);
+          const head = buf.subarray(0, n).toString("utf8");
+          for (const line of head.split("\n")) {
+            if (!line) continue;
+            try {
+              const ev = JSON.parse(line);
+              if (firstTs === 0 && ev.timestamp) {
+                const t = Date.parse(ev.timestamp);
+                if (Number.isFinite(t)) firstTs = t;
+              }
+              if (!firstMsg && ev.type === "user") {
+                const c = ev.message?.content;
+                if (typeof c === "string") firstMsg = c.slice(0, 100);
+                else if (Array.isArray(c) && c[0]?.text) firstMsg = String(c[0].text).slice(0, 100);
+                if (firstMsg) firstMsg = firstMsg.replace(/\s+/g, " ").trim();
+              }
+            } catch { /* skip malformed line */ }
+            if (firstTs > 0 && firstMsg) break;
+          }
+        } catch { /* unreadable file */ }
+
+        const ageSec = firstTs > 0 ? Math.floor((now - firstTs) / 1000) : 0;
+        const lastActivitySec = Math.max(0, Math.floor((now - mtimeMs) / 1000));
+
+        out.push({
+          sid,
+          account: meta.alias,
+          account_color_class: meta.color,
+          config_dir: cfgDir,
+          project: basename(cwd),
+          cwd,
+          age_seconds: ageSec,
+          last_activity_seconds_ago: lastActivitySec,
+          size_kb: Math.round(st.size / 1024),
+          first_message_preview: firstMsg || "(no user message yet)",
+        });
+      }
+    }
+  }
+
+  // Sort: most-recently-active first
+  out.sort((a, b) => a.last_activity_seconds_ago - b.last_activity_seconds_ago);
+  return out;
+}
+
+// Catalog row for the session browser — every Claude Code session on the
+// machine, regardless of recency. Lazily computed on /api/sessions/list.
+interface SessionCatalogRow {
+  sid: string;
+  account: string;
+  account_color_class: "cyan" | "blue" | "magenta" | "grey";
+  config_dir: string;
+  cwd: string;
+  project: string;
+  mtime_ts: number;        // ms since epoch
+  size_kb: number;
+  first_message_preview: string;
+}
+
+function listAllClaudeSessions(limit: number): SessionCatalogRow[] {
+  // Same cfgIndex shape as findActiveClaudeConversations but no time filter.
+  const cfgIndex = new Map<string, { alias: string; color: "cyan" | "blue" | "magenta" | "grey" }>();
+  // Pull accounts.conf.
+  const { accounts } = parseAccountsConf();
+  for (const a of accounts) {
+    cfgIndex.set(a.config_dir, { alias: a.alias, color: colorClassFor(a.alias) });
+  }
+  const defaultCfg = join(HOME, ".claude");
+  if (!cfgIndex.has(defaultCfg)) {
+    cfgIndex.set(defaultCfg, { alias: "default", color: "grey" });
+  }
+
+  const rows: SessionCatalogRow[] = [];
+  for (const [cfgDir, meta] of cfgIndex.entries()) {
+    const projectsRoot = join(cfgDir, "projects");
+    const projectDirs = safeReaddir(projectsRoot);
+    for (const pd of projectDirs) {
+      const projectPath = join(projectsRoot, pd);
+      const projectStat = safeStat(projectPath);
+      if (!projectStat || !projectStat.isDirectory()) continue;
+      const files = safeReaddir(projectPath);
+      for (const f of files) {
+        if (!f.endsWith(".jsonl")) continue;
+        const jpath = join(projectPath, f);
+        const st = safeStat(jpath);
+        if (!st || !st.isFile()) continue;
+        const cwd = "/" + pd.replace(/^-/, "").replace(/-/g, "/");
+        const sid = f.replace(/\.jsonl$/, "");
+        rows.push({
+          sid,
+          account: meta.alias,
+          account_color_class: meta.color,
+          config_dir: cfgDir,
+          cwd,
+          project: basename(cwd),
+          mtime_ts: st.mtime.getTime(),
+          size_kb: Math.round(st.size / 1024),
+          first_message_preview: "",  // skipped on the bulk list — too expensive
+        });
+      }
+    }
+  }
+  // Sort newest-first.
+  rows.sort((a, b) => b.mtime_ts - a.mtime_ts);
+  return rows.slice(0, limit);
+}
+
 interface SessionRecord {
   name: string;
   path: string;
@@ -1125,10 +1293,19 @@ function buildState() {
   const dispatch = dispatchVerdict(accountSummaries, sessionsOut, rl);
   const cost = buildCostBundle(now);
 
+  // Active Claude Code conversations — scans every ~/.claude*/projects/*/*.jsonl
+  // for files modified in the last 5 minutes. These are CONVERSATIONS, not
+  // tmux sessions; many overlap with the tmux panel above, but some don't
+  // (e.g. claude run directly in a terminal tab, in iTerm, in a CLI host).
+  // The frontend can decide whether to show a unified "active everything"
+  // view or filter to non-tmux only.
+  const activeConversations = findActiveClaudeConversations(rawAccounts, now);
+
   const totals = {
     tmux_sessions: sessionsOut.length,
     ready_accounts: accountSummaries.filter(a => a.auth_status === "ready").length,
     rl_today: rl.today_total,
+    active_conversations_no_tmux: activeConversations.length,
   };
 
   const state: any = {
@@ -1141,6 +1318,7 @@ function buildState() {
     },
     accounts: accountSummaries,
     sessions: sessionsOut,
+    active_conversations: activeConversations,
     rate_limits: rateLimits,
     dispatch,
     cost,
@@ -1586,6 +1764,15 @@ const server = Bun.serve({
           "Content-Type": "text/html; charset=utf-8",
           "Cache-Control": "no-store",
         },
+      });
+    }
+    // GET /api/sessions/list — enumerate every Claude Code session across all
+    // accounts. Used by the dashboard's session browser for search/copy-resume.
+    if (url.pathname === "/api/sessions/list" && req.method === "GET") {
+      const limit = Math.min(Number(url.searchParams.get("limit") ?? 200), 1000);
+      const sessions = listAllClaudeSessions(limit);
+      return new Response(JSON.stringify({ sessions }), {
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
       });
     }
     // POST /api/sessions/<name>/kill — shells out to `subctl session-kill <name>`.

@@ -1072,3 +1072,64 @@ tr:hover .kill-btn { opacity: 1; }
   }
   .docs-content { padding: 24px 18px 48px; }
 }
+
+/* ── active conversations + session browser ───────────────────────────────── */
+#conversations-table .conv-preview,
+#search-table .conv-preview {
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #9c9c9c;
+  font-size: 12px;
+}
+
+.resume-actions { display: inline-flex; gap: 6px; }
+.btn-resume {
+  background: #1a1a1a;
+  color: #c4c4c4;
+  border: 1px solid #2a2a2a;
+  border-radius: 3px;
+  padding: 3px 9px;
+  font-family: var(--mono, monospace);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.btn-resume:hover { background: #232323; border-color: #3a3a3a; }
+.btn-resume:active { background: #0a0a0a; }
+
+.search-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 8px 0 12px 0;
+}
+.search-controls input[type="text"] {
+  flex: 1;
+  background: #0a0a0a;
+  color: #c4c4c4;
+  border: 1px solid #2a2a2a;
+  border-radius: 3px;
+  padding: 6px 10px;
+  font-family: var(--mono, monospace);
+  font-size: 12px;
+}
+.search-controls input[type="text"]:focus {
+  outline: none;
+  border-color: #5fd7ff;
+}
+.search-controls select {
+  background: #0a0a0a;
+  color: #c4c4c4;
+  border: 1px solid #2a2a2a;
+  border-radius: 3px;
+  padding: 6px 10px;
+  font-family: var(--mono, monospace);
+  font-size: 12px;
+}
+.search-count {
+  color: #6c6c6c;
+  font-size: 11px;
+  white-space: nowrap;
+}

@@ -89,6 +89,54 @@
       </table>
     </section>
 
+    <section class="panel" id="conversations-panel">
+      <h2>Active conversations <span class="panel-hint">claude code sessions with file activity in the last 5min — includes ones outside tmux (this dashboard tab counts!)</span></h2>
+      <table class="data-table" id="conversations-table">
+        <thead>
+          <tr>
+            <th>account</th>
+            <th>project</th>
+            <th>last activity</th>
+            <th class="num">age</th>
+            <th class="num">size</th>
+            <th>sid</th>
+            <th>preview</th>
+            <th>resume</th>
+          </tr>
+        </thead>
+        <tbody id="conversations-body">
+          <tr><td colspan="8" class="empty">no active conversations</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" id="search-panel">
+      <h2>Session browser <span class="panel-hint">search every claude code session across all accounts · copy the resume command</span></h2>
+      <div class="search-controls">
+        <input type="text" id="search-input" placeholder="filter by project name, account, or session id…" />
+        <select id="search-account">
+          <option value="">all accounts</option>
+        </select>
+        <span id="search-count" class="search-count"></span>
+      </div>
+      <table class="data-table" id="search-table">
+        <thead>
+          <tr>
+            <th>account</th>
+            <th>project</th>
+            <th class="num">modified</th>
+            <th class="num">size</th>
+            <th>sid</th>
+            <th>preview</th>
+            <th>actions</th>
+          </tr>
+        </thead>
+        <tbody id="search-body">
+          <tr><td colspan="7" class="empty">load sessions to start browsing</td></tr>
+        </tbody>
+      </table>
+    </section>
+
     <section class="panel" id="cost-panel">
       <h2>Cost analysis (this month) <span class="panel-hint">API list-price equivalent vs subscription · what you'd pay buying tokens at retail</span></h2>
       <div class="cost-summary" id="cost-summary"></div>
