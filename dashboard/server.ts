@@ -946,8 +946,11 @@ function findActiveClaudeConversations(accounts: Account[], now: number): Active
         try {
           // Read just the first ~64KB to find first user message + first timestamp.
           const fd = require("node:fs").openSync(jpath, "r");
-          const buf = Buffer.alloc(65536);
-          const n = require("node:fs").readSync(fd, buf, 0, 65536, 0);
+          // 512KB head — large enough to cover busy session preambles
+          // (system prompts, agent-setting events, etc.) before the first
+          // user message in long-running conversations.
+          const buf = Buffer.alloc(524288);
+          const n = require("node:fs").readSync(fd, buf, 0, 524288, 0);
           require("node:fs").closeSync(fd);
           const head = buf.subarray(0, n).toString("utf8");
           for (const line of head.split("\n")) {
@@ -1806,8 +1809,11 @@ const server = Bun.serve({
         if (!st || !st.isFile()) continue;
         try {
           const fd = require("node:fs").openSync(candidate, "r");
-          const buf = Buffer.alloc(65536);
-          const n = require("node:fs").readSync(fd, buf, 0, 65536, 0);
+          // 512KB head — large enough to cover busy session preambles
+          // (system prompts, agent-setting events, etc.) before the first
+          // user message in long-running conversations.
+          const buf = Buffer.alloc(524288);
+          const n = require("node:fs").readSync(fd, buf, 0, 524288, 0);
           require("node:fs").closeSync(fd);
           const head = buf.subarray(0, n).toString("utf8");
           for (const line of head.split("\n")) {
