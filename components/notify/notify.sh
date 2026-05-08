@@ -35,6 +35,11 @@ subctl_notify() {
       --test)         subctl_notify_test; return $? ;;
       --status)       subctl_notify_status; return $? ;;
       --diagnose)     shift; subctl_notify_diagnose "$@"; return $? ;;
+      ask-yesno)      shift; subctl_notify_ask_yesno "$@"; return $? ;;
+      ask-choice)     shift; subctl_notify_ask_choice "$@"; return $? ;;
+      ask-text)       shift; subctl_notify_ask_text "$@"; return $? ;;
+      inbox)          shift; subctl_notify_inbox "$@"; return $? ;;
+      inbox-ack)      shift; subctl_notify_inbox_ack "$@"; return $? ;;
       -h|--help)
         cat <<EOF
 subctl notify <message> [opts]
@@ -349,4 +354,343 @@ subctl_notify_status() {
   printf "  Chat id:     %s\n" "$chat_src"
   printf "  Log:         %s%s\n" "$NOTIFY_LOG" \
     "$([[ -f "$NOTIFY_LOG" ]] && printf " (%d lines)" "$(wc -l < "$NOTIFY_LOG" | tr -d ' ')" || echo "")"
+}
+
+# ── ask protocol — structured Q&A via Telegram inline keyboards ─────────────
+
+# Internal: read token + chat from env or config (DRY)
+_subctl_notify_creds() {
+  local token chat
+  token="${TELEGRAM_BOT_TOKEN:-}"
+  chat="${TELEGRAM_CHAT_ID:-}"
+  if [[ -f "$NOTIFY_CONFIG" ]]; then
+    [[ -z "$token" ]] && token=$(jq -r '.telegram_bot_token // empty' "$NOTIFY_CONFIG" 2>/dev/null)
+    [[ -z "$chat" ]]  && chat=$(jq -r '.telegram_chat_id // empty'   "$NOTIFY_CONFIG" 2>/dev/null)
+  fi
+  printf "%s\t%s\n" "$token" "$chat"
+}
+
+# Auto-generate a question id if not provided.
+_subctl_notify_genid() {
+  printf "Q%s\n" "$(date +%s)"
+}
+
+# Internal: send a message with an inline keyboard via Telegram bot API.
+# Args: $1 = chat_id, $2 = token, $3 = text, $4 = json keyboard array
+_subctl_notify_send_keyboard() {
+  local chat="$1" token="$2" text="$3" keyboard="$4"
+  local payload
+  payload=$(jq -nc \
+    --arg chat "$chat" \
+    --arg text "$text" \
+    --argjson kb "$keyboard" \
+    '{chat_id: $chat, text: $text, reply_markup: {inline_keyboard: $kb}}')
+  local resp
+  resp=$(curl -sS -X POST \
+    -H "Content-Type: application/json" \
+    --data "$payload" \
+    "https://api.telegram.org/bot${token}/sendMessage" 2>&1)
+  local ok
+  ok=$(echo "$resp" | jq -r '.ok // false' 2>/dev/null)
+  if [[ "$ok" == "true" ]]; then return 0; fi
+  echo "$resp" | head -c 400 >&2
+  return 1
+}
+
+# subctl notify ask-yesno "<question>" [--id Q42] [--timeout 30m] [--default yes|no] [--wait]
+subctl_notify_ask_yesno() {
+  local question="" qid="" timeout="" default="" wait=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --id)       qid="$2"; shift 2 ;;
+      --timeout)  timeout="$2"; shift 2 ;;
+      --default)  default="$2"; shift 2 ;;
+      --wait)     wait=true; shift ;;
+      -h|--help)
+        echo "subctl notify ask-yesno <question> [--id Q42] [--timeout DUR] [--default yes|no] [--wait]"
+        return 0 ;;
+      *) [[ -z "$question" ]] && question="$1" || question="$question $1"; shift ;;
+    esac
+  done
+  [[ -z "$question" ]] && { subctl_err "no question — usage: subctl notify ask-yesno <question>"; return 1; }
+  [[ -z "$qid" ]] && qid=$(_subctl_notify_genid)
+
+  local creds token chat
+  creds=$(_subctl_notify_creds)
+  token=$(echo "$creds" | cut -f1)
+  chat=$(echo "$creds" | cut -f2)
+  if [[ -z "$token" || -z "$chat" ]]; then
+    subctl_err "no token/chat configured — run: subctl notify --setup"
+    return 1
+  fi
+
+  local cwd_short
+  cwd_short=$(pwd | sed "s|$HOME|~|")
+  local text="🚨 subctl · ${cwd_short} · [${qid}]
+
+${question}"
+
+  # Inline keyboard: [Yes][No]. callback_data = "Q42:yes" / "Q42:no"
+  local keyboard
+  keyboard=$(jq -nc --arg q "$qid" '[[
+    {text: "✅ Yes", callback_data: ($q + ":yes")},
+    {text: "❌ No",  callback_data: ($q + ":no")}
+  ]]')
+
+  if _subctl_notify_send_keyboard "$chat" "$token" "$text" "$keyboard"; then
+    subctl_ok "ask-yesno sent · id=${qid}"
+  else
+    subctl_err "send failed"
+    return 1
+  fi
+
+  echo "$qid"  # printed to stdout so callers can capture it
+
+  if $wait; then
+    _subctl_notify_inbox_wait "$qid" "${timeout:-1h}" "$default"
+  fi
+}
+
+# subctl notify ask-choice "<question>" -o A:label1 -o B:label2 [--id Q42] [--wait] ...
+subctl_notify_ask_choice() {
+  local question="" qid="" timeout="" default="" wait=false
+  local -a options=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -o|--option) options+=("$2"); shift 2 ;;
+      --id)        qid="$2"; shift 2 ;;
+      --timeout)   timeout="$2"; shift 2 ;;
+      --default)   default="$2"; shift 2 ;;
+      --wait)      wait=true; shift ;;
+      -h|--help)
+        cat <<EOF
+subctl notify ask-choice <question> -o ID:label [-o ID:label …] [opts]
+
+Send a multi-button question to your Telegram bot. Each --option becomes
+a button; the user's tap is captured as 'choice_id' in the inbox.
+
+Options:
+  -o ID:label   button definition (label is what user sees, ID is the
+                short code returned in the inbox). Repeatable, 1-8 times.
+  --id Q42      explicit question id (default: Qts auto-generated)
+  --timeout DUR with --wait, time to block (e.g. 30m, 1h, 90s)
+  --default ID  fallback choice if --wait times out
+  --wait        block until reply arrives or timeout
+
+Example:
+  subctl notify ask-choice "Migration approach?" \\
+    -o A:drop-fk-recreate \\
+    -o B:migrate-and-backfill \\
+    -o C:defer \\
+    --id Q42 --wait --timeout 30m --default C
+EOF
+        return 0 ;;
+      *) [[ -z "$question" ]] && question="$1" || question="$question $1"; shift ;;
+    esac
+  done
+  [[ -z "$question" ]] && { subctl_err "no question"; return 1; }
+  [[ ${#options[@]} -lt 1 ]] && { subctl_err "no options — use -o ID:label at least once"; return 1; }
+  [[ ${#options[@]} -gt 8 ]] && { subctl_err "max 8 options (Telegram limit)"; return 1; }
+  [[ -z "$qid" ]] && qid=$(_subctl_notify_genid)
+
+  local creds token chat
+  creds=$(_subctl_notify_creds)
+  token=$(echo "$creds" | cut -f1)
+  chat=$(echo "$creds" | cut -f2)
+  if [[ -z "$token" || -z "$chat" ]]; then
+    subctl_err "no token/chat configured — run: subctl notify --setup"
+    return 1
+  fi
+
+  local cwd_short
+  cwd_short=$(pwd | sed "s|$HOME|~|")
+  local body="🚨 subctl · ${cwd_short} · [${qid}]\n\n${question}\n"
+  # Show the option mapping in the message body too
+  for opt in "${options[@]}"; do
+    body="${body}\n• ${opt}"
+  done
+  # printf-friendly text (escape -e style)
+  local text
+  text=$(printf "%b" "$body")
+
+  # Build keyboard JSON: one button per option, vertical stack
+  local kb_json
+  kb_json=$(printf '%s\n' "${options[@]}" | jq -R --arg q "$qid" '
+    split(":") as $p
+    | [{text: ($p[0] // "?") + ": " + ($p[1] // ""), callback_data: ($q + ":" + ($p[0] // "?") + ":" + ($p[1] // ""))}]
+  ' | jq -s '.')
+
+  if _subctl_notify_send_keyboard "$chat" "$token" "$text" "$kb_json"; then
+    subctl_ok "ask-choice sent · id=${qid} · ${#options[@]} options"
+  else
+    subctl_err "send failed"
+    return 1
+  fi
+  echo "$qid"
+
+  if $wait; then
+    _subctl_notify_inbox_wait "$qid" "${timeout:-1h}" "$default"
+  fi
+}
+
+# subctl notify ask-text "<question>" [--id Q42] [--wait] [--timeout DUR]
+# Telegram supports force_reply to prompt the user with a reply box.
+subctl_notify_ask_text() {
+  local question="" qid="" timeout="" wait=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --id)      qid="$2"; shift 2 ;;
+      --timeout) timeout="$2"; shift 2 ;;
+      --wait)    wait=true; shift ;;
+      -h|--help)
+        echo "subctl notify ask-text <question> [--id Q42] [--wait] [--timeout DUR]"
+        return 0 ;;
+      *) [[ -z "$question" ]] && question="$1" || question="$question $1"; shift ;;
+    esac
+  done
+  [[ -z "$question" ]] && { subctl_err "no question"; return 1; }
+  [[ -z "$qid" ]] && qid=$(_subctl_notify_genid)
+
+  local creds token chat
+  creds=$(_subctl_notify_creds)
+  token=$(echo "$creds" | cut -f1)
+  chat=$(echo "$creds" | cut -f2)
+  if [[ -z "$token" || -z "$chat" ]]; then
+    subctl_err "no token/chat configured — run: subctl notify --setup"
+    return 1
+  fi
+
+  local cwd_short
+  cwd_short=$(pwd | sed "s|$HOME|~|")
+  local text="🚨 subctl · ${cwd_short} · [${qid}]
+
+${question}
+
+Reply to this message with your answer."
+
+  local payload
+  payload=$(jq -nc \
+    --arg chat "$chat" \
+    --arg text "$text" \
+    '{chat_id: $chat, text: $text, reply_markup: {force_reply: true, selective: true}}')
+  local resp
+  resp=$(curl -sS -X POST \
+    -H "Content-Type: application/json" \
+    --data "$payload" \
+    "https://api.telegram.org/bot${token}/sendMessage" 2>&1)
+  local ok
+  ok=$(echo "$resp" | jq -r '.ok // false' 2>/dev/null)
+  if [[ "$ok" != "true" ]]; then
+    subctl_err "send failed"
+    echo "$resp" | head -c 200 >&2
+    return 1
+  fi
+  subctl_ok "ask-text sent · id=${qid}"
+  echo "$qid"
+
+  if $wait; then
+    _subctl_notify_inbox_wait "$qid" "${timeout:-1h}" ""
+  fi
+}
+
+# subctl notify inbox [--id Q42] [--unacked] [--limit 20] [--json]
+# Lists inbox entries from the listener (or empty if listener isn't running).
+subctl_notify_inbox() {
+  local qid="" unacked=false limit=20 json=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --id)       qid="$2"; shift 2 ;;
+      --unacked)  unacked=true; shift ;;
+      --limit)    limit="$2"; shift 2 ;;
+      --json)     json=true; shift ;;
+      *) shift ;;
+    esac
+  done
+
+  # Fetch from dashboard API if running; fall back to direct file read.
+  local source="(none)" data="[]"
+  if curl -sS --max-time 2 -o /tmp/_subctl_inbox.json \
+       "http://127.0.0.1:8787/api/notify/inbox?$(\
+         [[ -n "$qid" ]] && echo "question_id=$qid&"
+         [[ "$unacked" == "true" ]] && echo "unacked_only=1&"
+         echo "limit=$limit"
+       )" 2>/dev/null; then
+    source="dashboard-api"
+    data=$(jq '.entries // []' /tmp/_subctl_inbox.json)
+  elif [[ -f "$HOME/.config/subctl/inbox.jsonl" ]]; then
+    source="file"
+    data=$(tac "$HOME/.config/subctl/inbox.jsonl" 2>/dev/null \
+      | head -n "$limit" \
+      | jq -s '.')
+    if [[ -n "$qid" ]]; then
+      data=$(echo "$data" | jq --arg q "$qid" '[ .[] | select(.question_id == $q) ]')
+    fi
+    if $unacked; then
+      data=$(echo "$data" | jq '[ .[] | select(.acked != true) ]')
+    fi
+  fi
+
+  if $json; then
+    echo "$data"
+    return 0
+  fi
+
+  local count
+  count=$(echo "$data" | jq 'length')
+  if [[ "$count" == "0" ]]; then
+    subctl_info "📭 inbox empty (source: $source)"
+    return 0
+  fi
+  echo "$data" | jq -r '.[] | "  \(.ts | .[11:19])Z  \([.question_id // "—"][0])  \([.type])  \([.answer_label // .answer // .raw_text // ""])"'
+}
+
+# subctl notify inbox-ack <question_id>
+subctl_notify_inbox_ack() {
+  local qid="${1:-}"
+  [[ -z "$qid" ]] && { subctl_err "usage: subctl notify inbox-ack <question_id>"; return 1; }
+  if curl -sS --max-time 2 -X POST \
+       -o /dev/null -w "%{http_code}" \
+       "http://127.0.0.1:8787/api/notify/inbox/${qid}/ack" 2>/dev/null \
+       | grep -q '^200$'; then
+    subctl_ok "acked $qid"
+  else
+    subctl_err "ack failed (dashboard not running, or question not found)"
+    return 1
+  fi
+}
+
+# Internal: poll the inbox for an answer to a specific question id.
+# Args: $1 = qid, $2 = timeout (5m, 30m, 1h), $3 = default-on-timeout (or empty)
+_subctl_notify_inbox_wait() {
+  local qid="$1" timeout_str="$2" default="$3"
+  # Parse duration → seconds
+  local timeout_sec
+  case "$timeout_str" in
+    *h) timeout_sec=$(( ${timeout_str%h} * 3600 )) ;;
+    *m) timeout_sec=$(( ${timeout_str%m} * 60 )) ;;
+    *s) timeout_sec=${timeout_str%s} ;;
+    *)  timeout_sec=${timeout_str:-3600} ;;
+  esac
+  local deadline=$(( $(date +%s) + timeout_sec ))
+  echo "  waiting up to ${timeout_str} for reply to ${qid}..." >&2
+  while [[ $(date +%s) -lt $deadline ]]; do
+    sleep 5
+    local entries
+    entries=$(subctl_notify_inbox --id "$qid" --json 2>/dev/null)
+    if [[ -n "$entries" ]] && [[ "$entries" != "[]" ]]; then
+      # Got a reply — print the answer to stdout, ack it
+      local answer
+      answer=$(echo "$entries" | jq -r '.[0].answer_label // .[0].answer // .[0].raw_text // empty')
+      echo "$answer"
+      subctl_notify_inbox_ack "$qid" >/dev/null 2>&1 || true
+      return 0
+    fi
+  done
+  if [[ -n "$default" ]]; then
+    echo "$default"
+    subctl_warn "timeout — falling back to default: $default" >&2
+    return 0
+  fi
+  subctl_err "timeout — no reply received in ${timeout_str}, no default"
+  return 2
 }

@@ -1725,13 +1725,21 @@ function renderCheatsheetPage(): string {
     {
       title: "Autonomy + escalation",
       rows: [
-        ["subctl notify <message>", "Send Telegram message — escalation channel for orchestrators"],
-        ["subctl notify --setup", "One-time wizard: store bot token + chat id in ~/.config/subctl/notify.json"],
-        ["subctl notify --test", "Send a test message"],
-        ["subctl notify --status", "Show config presence (token redacted)"],
-        ["subctl notify --dry-run \"msg\"", "Print payload, don't send"],
+        ["subctl notify <message>", "Fire-and-forget Telegram message"],
+        ["subctl notify --setup", "Store bot token + chat id (one-time)"],
+        ["subctl notify --diagnose", "Passive bot health check (no live ping)"],
+        ["subctl notify --diagnose --send", "Same checks + send a real test message"],
+        ["subctl notify --test", "Send just the test message"],
+        ["subctl notify ask-yesno \"q\" --id Q42", "Send Yes/No buttons — reply lands in inbox"],
+        ["subctl notify ask-choice \"q\" -o A:label -o B:label", "Multi-button (2-8 options)"],
+        ["subctl notify ask-text \"q\" --id Q42", "Force-reply prompt for free-form text"],
+        ["subctl notify ... --wait --timeout 30m --default C", "Block until reply or fall back to default"],
+        ["subctl notify inbox [--id Q42] [--unacked]", "Show inbox entries (operator replies)"],
+        ["subctl notify inbox-ack Q42", "Mark a question's reply as consumed"],
+        ["/stats (in Telegram)", "Bot command — verdict + accounts + 5h%/week% + RL + savings"],
+        ["/help, /inbox (in Telegram)", "More bot commands"],
         ["CLAUDE_AUTONOMY=full", "Env var set by subctl install — triggers autonomy doctrine"],
-        ["~/.claude/skills/autonomy/SKILL.md", "Doctrine: drive-forward, stop only on irreversible, mem+vault required"],
+        ["~/.claude/skills/autonomy/SKILL.md", "Doctrine: drive-forward, ask-protocol, mem+vault required"],
       ],
     },
     {
@@ -1992,6 +2000,26 @@ function startPushLoop() {
   }, 2000);
 }
 
+// ---------- notify listener (Telegram poll loop, in-process) ----------
+//
+// Loads only when ~/.config/subctl/notify.json exists. Bundles into the
+// dashboard's Bun process: same lifecycle, single restart point. Bot
+// command /stats reads buildState() directly for live data.
+
+import {
+  startNotifyListener,
+  notifyListenerStatus,
+  readInbox,
+  ackInboxEntry,
+} from "./notify-listener";
+
+const _listener = startNotifyListener({ stateProvider: buildState });
+if (_listener.running) {
+  console.log("[server] notify-listener started");
+} else if (_listener.reason) {
+  console.log(`[server] notify-listener not started: ${_listener.reason}`);
+}
+
 // ---------- server ----------
 
 const server = Bun.serve({
@@ -2215,6 +2243,31 @@ const server = Bun.serve({
       return new Response(JSON.stringify({ ok: true }), {
         headers: { "Content-Type": "application/json" },
       });
+    }
+
+    // GET /api/notify/inbox?question_id=Q42&unacked_only=1&limit=50
+    // Returns inbox entries (newest first). Filterable by question_id and
+    // unacked-only for the orchestrator's "is my answer in?" check.
+    if (url.pathname === "/api/notify/inbox" && req.method === "GET") {
+      const qid = url.searchParams.get("question_id") ?? undefined;
+      const unackedOnly = url.searchParams.get("unacked_only") === "1";
+      const limit = Math.min(Number(url.searchParams.get("limit") ?? 50), 500);
+      const entries = readInbox({ question_id: qid, unacked_only: unackedOnly, limit });
+      return new Response(JSON.stringify({ entries, listener: notifyListenerStatus() }), {
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+      });
+    }
+
+    // POST /api/notify/inbox/:id/ack — mark a question's latest reply as acked
+    {
+      const m = url.pathname.match(/^\/api\/notify\/inbox\/([A-Za-z0-9_-]+)\/ack\/?$/);
+      if (m && req.method === "POST") {
+        const ok = ackInboxEntry(m[1]!);
+        return new Response(JSON.stringify({ ok }), {
+          status: ok ? 200 : 404,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
     }
 
     // GET /api/sessions/list — enumerate every Claude Code session across all

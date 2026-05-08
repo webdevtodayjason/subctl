@@ -135,6 +135,77 @@ These overrides apply ONLY when this autonomy skill is active.
 When `CLAUDE_AUTONOMY` is unset AND no autonomous-mode phrase has been used,
 the existing skills behave normally (ask-first).
 
+## Ask protocol — REQUIRED
+
+When the operator is AFK and an irreversible decision is needed, do NOT
+stop. Use the structured ask-protocol to get a decision while you keep
+working other lanes. The Telegram listener (running in the dashboard
+service) routes button taps and replies into the orchestrator's inbox.
+
+### Available verbs
+
+| Verb | When to use |
+|---|---|
+| `subctl notify ask-yesno "<q>" --id Q42` | Binary decision (force-push? proceed?) |
+| `subctl notify ask-choice "<q>" -o A:label -o B:label --id Q43` | 2-8 mutually exclusive options |
+| `subctl notify ask-text "<q>" --id Q44` | Free-form input (URL, password reset, name) |
+| `subctl notify "<msg>"` | Fire-and-forget status update (no answer expected) |
+
+### Async vs blocking
+
+**Default async** — fire the ask, get the question id, **continue working other lanes**:
+
+```bash
+qid=$(subctl notify ask-choice "Migration?" -o A:drop -o B:backfill --id Q42)
+# orchestrator returns immediately; tackles other tasks while user decides
+```
+
+**Optional blocking** — when the lane truly cannot proceed without an answer:
+
+```bash
+answer=$(subctl notify ask-choice "Migration?" \
+  -o A:drop -o B:backfill -o C:defer \
+  --wait --timeout 30m --default C)
+# blocks 30 minutes max; falls back to C if user doesn't reply
+```
+
+### Inbox polling pattern
+
+While other lanes are working:
+
+```bash
+# Periodic check (every 5-10 minutes) for the operator's reply
+reply=$(subctl notify inbox --id Q42 --json | jq -r '.[0].answer_label // empty')
+if [[ -n "$reply" ]]; then
+  # act on reply, then ack so we don't re-process
+  handle "$reply"
+  subctl notify inbox-ack Q42
+fi
+```
+
+### MUST-DO rules
+
+- **EVERY ask must have a unique `--id Q<n>`** so replies thread correctly
+- **EVERY async ask must be tracked in ORCHESTRATION.md** with: question_id,
+  question text, options offered, current state (pending / answered / timed out)
+- **EVERY blocking ask must have a `--default` fallback** unless the decision
+  is so critical that timing out is genuinely the right outcome
+- **Continue other-lane work while waiting** — the entire point of ask-async
+  is that the orchestrator does not idle on a single decision
+- **`subctl notify inbox-ack <qid>` after consuming a reply** — otherwise
+  `--unacked` queries keep returning the same answer
+
+### When NOT to use ask-protocol
+
+- Routine status updates → `subctl notify "<msg>"` (no answer expected)
+- Decision logged in `~/Documents/Obsidian Vault/<Project>/Portfolio.md` already → just read it
+- Memory has the answer (`mcp__plugin_claude-mem_mcp-search__search`) → use that
+- The decision is reversible AND non-destructive → make it autonomously, log
+  to ORCHESTRATION.md decision log, proceed
+
+The escalation channel is for **decisions that genuinely require operator
+judgment**, not for "should I keep going?" The operator hates that question.
+
 ## Memory protocol — REQUIRED
 
 `claude-mem` captures observations from every session automatically. The
