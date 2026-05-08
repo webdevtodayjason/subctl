@@ -22,13 +22,14 @@ NOTIFY_LOG="$HOME/.claude/notification.log"
 
 # ── public: subctl_notify <message> [--token X] [--chat Y] [--silent] ───────
 subctl_notify() {
-  local token="" chat="" silent=false dry_run=false
+  local token="" chat="" silent=false dry_run=false use_markdown=false
   local -a positional=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --token)        token="$2"; shift 2 ;;
       --chat)         chat="$2"; shift 2 ;;
       --silent)       silent=true; shift ;;
+      --markdown)     use_markdown=true; shift ;;
       --dry-run|-n)   dry_run=true; shift ;;
       --setup)        subctl_notify_setup; return $? ;;
       --test)         subctl_notify_test; return $? ;;
@@ -43,6 +44,8 @@ subctl notify <message> [opts]
   --token X        bot token (default: env TELEGRAM_BOT_TOKEN, then config)
   --chat  Y        chat id   (default: env TELEGRAM_CHAT_ID, then config)
   --silent         suppress Telegram's notification sound
+  --markdown       use Markdown parse_mode (default: plain text — safer for
+                   messages with paths, underscores, or special chars)
   --dry-run, -n    don't send; just print the payload + log line
   --setup          interactive: store token + chat id in config
   --test           send a test message
@@ -87,14 +90,26 @@ EOF
     return 1
   fi
 
-  # Build payload — prefix with cwd so messages are self-contained
-  local prefix="🚨 *subctl* · \`$cwd_short\`"
+  # Build payload — plain-text by default (Markdown is opt-in via --markdown
+  # because hostnames/paths frequently contain underscores or asterisks that
+  # break Telegram's Markdown parser with HTTP 400).
+  local prefix="🚨 subctl · ${cwd_short}"
   local payload
-  payload=$(jq -nc \
-    --arg chat "$chat" \
-    --arg text "$prefix\n\n$message" \
-    --argjson silent "$silent" \
-    '{chat_id: $chat, text: $text, parse_mode: "Markdown", disable_notification: $silent}')
+  if $use_markdown; then
+    # Best-effort markdown — caller is on the hook for clean syntax
+    prefix="🚨 *subctl* · \`${cwd_short}\`"
+    payload=$(jq -nc \
+      --arg chat "$chat" \
+      --arg text "$prefix"$'\n\n'"$message" \
+      --argjson silent "$silent" \
+      '{chat_id: $chat, text: $text, parse_mode: "Markdown", disable_notification: $silent}')
+  else
+    payload=$(jq -nc \
+      --arg chat "$chat" \
+      --arg text "$prefix"$'\n\n'"$message" \
+      --argjson silent "$silent" \
+      '{chat_id: $chat, text: $text, disable_notification: $silent}')
+  fi
 
   if $dry_run; then
     echo "→ would POST to https://api.telegram.org/bot<redacted>/sendMessage"
@@ -102,20 +117,27 @@ EOF
     return 0
   fi
 
-  local resp http_code
-  resp=$(curl -fsS -X POST \
+  # NOT using -f — we want the response body on errors so callers see what
+  # Telegram actually rejected (e.g. "can't parse entities at offset N").
+  local resp http_code body
+  resp=$(curl -sS -X POST \
     -H "Content-Type: application/json" \
     --data "$payload" \
-    -w "\n__HTTP_CODE__:%{http_code}" \
+    -w $'\n__HTTP_CODE__:%{http_code}' \
     "https://api.telegram.org/bot${token}/sendMessage" 2>&1)
   http_code=$(echo "$resp" | grep -oE '__HTTP_CODE__:[0-9]+' | cut -d: -f2)
+  body=$(echo "$resp" | sed '/__HTTP_CODE__:/d')
 
   if [[ "$http_code" == "200" ]]; then
     subctl_ok "notification sent (logged to $NOTIFY_LOG)"
     return 0
   else
     subctl_err "Telegram API returned HTTP $http_code"
-    echo "$resp" | head -c 400
+    # Print the description Telegram returned (helps debug)
+    local desc
+    desc=$(echo "$body" | jq -r '.description // empty' 2>/dev/null)
+    [[ -n "$desc" ]] && subctl_err "  $desc"
+    echo "$body" | head -c 400
     echo
     return 1
   fi
