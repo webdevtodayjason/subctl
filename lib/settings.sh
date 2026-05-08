@@ -190,14 +190,22 @@ subctl_settings_apply_autonomy_patch() {
   subctl_ok "autonomy patch applied → $(basename "$(dirname "$settings")")/settings.json (backup: $(basename "$backup"))"
 }
 
-# Apply autonomy patch to default + every per-account settings.json.
+# Apply autonomy patch to default + every claude-provider account in
+# accounts.conf. Avoids the wildcard ~/.claude-* trap (.claude-mem,
+# .claude-archive, .claude-code-router, etc. are unrelated tools that
+# shouldn't be patched — they have their own settings.json shapes).
 subctl_settings_apply_autonomy_all() {
   subctl_require jq "install: brew install jq" || return 1
+
+  # Default config dir
   subctl_settings_apply_autonomy_patch "$HOME/.claude/settings.json"
-  for dir in "$HOME"/.claude-*; do
-    [[ -d "$dir" && ! -L "$dir" ]] || continue
-    subctl_settings_apply_autonomy_patch "$dir/settings.json"
-  done
+
+  # Per-account dirs from accounts.conf — claude provider only
+  while IFS=$'\t' read -r alias provider email cfg_dir desc; do
+    [[ "$provider" != "claude" ]] && continue
+    [[ -d "$cfg_dir" ]] || continue
+    subctl_settings_apply_autonomy_patch "$cfg_dir/settings.json"
+  done < <(subctl_list_accounts 2>/dev/null)
 }
 
 # Symlink the autonomy skill into ~/.claude/skills/ (peer to user's
