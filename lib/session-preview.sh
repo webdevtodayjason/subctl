@@ -392,31 +392,34 @@ get_rl_for_session_today() {
 # `claude --continue` doesn't find anything because I'm in a different
 # CLAUDE_CONFIG_DIR. Help me find and resume the right one."
 subctl_session_resume() {
-  local target_cwd="$PWD" only_account="" limit=15 list_only=false
+  local target_cwd="$PWD" only_account="" limit=15 list_only=false latest_only=false
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --cwd)     target_cwd="$2"; shift 2 ;;
       --account) only_account="$2"; shift 2 ;;
       --limit)   limit="$2"; shift 2 ;;
       --list)    list_only=true; shift ;;
+      --latest)  latest_only=true; shift ;;
       -h|--help)
         cat <<EOF
-subctl session-resume [--cwd PATH] [--account ALIAS] [--limit N] [--list]
+subctl session-resume [--cwd PATH] [--account ALIAS] [--limit N] [--list] [--latest]
 
   Find Claude Code sessions for a given working directory across all
-  authenticated accounts, present a picker, and resume the chosen one
-  with the correct CLAUDE_CONFIG_DIR.
+  authenticated accounts. Default: present a picker. With --latest,
+  auto-resume the newest session without prompting.
 
   --cwd PATH       project directory (default: current pwd)
   --account ALIAS  filter to one account (jason, titanium, semfreak, ...)
-  --limit N        show at most N sessions (default: 15)
+  --limit N        show at most N sessions in the picker (default: 15)
   --list           print the candidates and exit (no picker, no resume)
+  --latest         resume the newest session immediately, no picker
 
 Examples:
   cd ~/code/holace
-  subctl session-resume                       # picker for ~/code/holace
-  subctl session-resume --account jason       # only jason's sessions here
-  subctl session-resume --cwd ~/code --list   # list, don't resume
+  subctl session-resume                       # picker
+  subctl session-resume --latest              # newest, no prompt (claude --continue analog)
+  subctl session-resume --account jason       # picker filtered to one account
+  subctl session-resume --cwd ~/code --list   # show all, don't resume
 EOF
         return 0 ;;
       *) subctl_die "unknown flag: $1" ;;
@@ -492,14 +495,19 @@ EOF
 
   $list_only && return 0
 
-  echo
-  read -r -p "Pick a session [1-${#sorted[@]}, or q to quit]: " pick
-  [[ "$pick" == "q" || -z "$pick" ]] && { echo "aborted."; return 0; }
-  if ! [[ "$pick" =~ ^[0-9]+$ ]] || [[ "$pick" -lt 1 ]] || [[ "$pick" -gt ${#sorted[@]} ]]; then
-    subctl_die "invalid selection: $pick"
+  local chosen
+  if $latest_only; then
+    # Auto-pick newest (#1).
+    chosen="${sorted[0]}"
+  else
+    echo
+    read -r -p "Pick a session [1-${#sorted[@]}, or q to quit]: " pick
+    [[ "$pick" == "q" || -z "$pick" ]] && { echo "aborted."; return 0; }
+    if ! [[ "$pick" =~ ^[0-9]+$ ]] || [[ "$pick" -lt 1 ]] || [[ "$pick" -gt ${#sorted[@]} ]]; then
+      subctl_die "invalid selection: $pick"
+    fi
+    chosen="${sorted[$((pick - 1))]}"
   fi
-
-  local chosen="${sorted[$((pick - 1))]}"
   local pick_alias pick_cfg pick_sid
   pick_alias=$(echo "$chosen" | cut -f2)
   pick_cfg=$(echo "$chosen" | cut -f3)
