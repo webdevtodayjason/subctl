@@ -1808,18 +1808,33 @@ const server = Bun.serve({
         const st = safeStat(candidate);
         if (!st || !st.isFile()) continue;
         try {
-          const fd = require("node:fs").openSync(candidate, "r");
-          // 512KB head — large enough to cover busy session preambles
-          // (system prompts, agent-setting events, etc.) before the first
-          // user message in long-running conversations.
-          const buf = Buffer.alloc(524288);
-          const n = require("node:fs").readSync(fd, buf, 0, 524288, 0);
-          require("node:fs").closeSync(fd);
-          const head = buf.subarray(0, n).toString("utf8");
-          for (const line of head.split("\n")) {
-            if (!line) continue;
-            try {
-              const ev = JSON.parse(line);
+          // Stream-read line by line until we find first_ts + first user
+          // text. Necessary because user messages with embedded base64
+          // images can produce multi-MB single lines that overflow any
+          // fixed head buffer.
+          const fs = require("node:fs");
+          const fd = fs.openSync(candidate, "r");
+          const CHUNK = 1024 * 1024;     // 1MB chunks
+          const MAX_BYTES = 8 * 1024 * 1024;  // bail after 8MB scanned
+          let bufStr = "";
+          let totalRead = 0;
+          let pos = 0;
+          let scanComplete = false;
+          while (!scanComplete && totalRead < MAX_BYTES) {
+            const tmp = Buffer.alloc(CHUNK);
+            const n = fs.readSync(fd, tmp, 0, CHUNK, pos);
+            if (n === 0) break;
+            pos += n;
+            totalRead += n;
+            bufStr += tmp.subarray(0, n).toString("utf8");
+            // Process complete lines; keep tail for next iteration.
+            let nl;
+            while ((nl = bufStr.indexOf("\n")) >= 0) {
+              const line = bufStr.slice(0, nl);
+              bufStr = bufStr.slice(nl + 1);
+              if (!line) continue;
+              try {
+                const ev = JSON.parse(line);
               if (!firstTs && ev.timestamp) firstTs = ev.timestamp;
               if (!preview && ev.type === "user") {
                 const c = ev.message?.content;
@@ -1839,9 +1854,11 @@ const server = Bun.serve({
                 }
                 if (preview) preview = preview.replace(/\s+/g, " ").trim();
               }
-            } catch { /* skip bad line */ }
-            if (firstTs && preview) break;
+              } catch { /* skip bad line */ }
+              if (firstTs && preview) { scanComplete = true; break; }
+            }
           }
+          fs.closeSync(fd);
         } catch { /* unreadable */ }
         break;
       }
