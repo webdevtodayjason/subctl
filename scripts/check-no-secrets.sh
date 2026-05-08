@@ -21,7 +21,10 @@ cd "$REPO_ROOT"
 # regex patterns. We exclude this file from the search.
 
 EXCLUDE_DIRS=(--exclude-dir=.git --exclude-dir=node_modules --exclude-dir=dist \
-              --exclude-dir=.bun --exclude-dir=.archived-)
+              --exclude-dir=.bun --exclude-dir=.archived- \
+              --exclude-dir=worktrees)
+# Note: .claude/worktrees/* is git-worktree metadata (with .git pointers
+# referencing absolute /Users/... paths). Scanner skips it by name.
 # Excluded files: this script itself (regex patterns above), and
 # bin/subctl-deck (compiled Go binary; gitignored, but live in working tree
 # and its embedded debug info contains absolute build paths).

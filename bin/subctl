@@ -53,6 +53,10 @@ Usage:
   subctl session-prune [--older-than 6h] [--yes]
                                       Kill all tmux sessions older than DUR
                                       (default 6h). Asks before killing.
+  subctl session-resume [--cwd PATH] [--account ALIAS] [--limit N] [--list]
+                                      Find Claude Code sessions for a cwd
+                                      across all accounts, pick one, resume
+                                      with the right CLAUDE_CONFIG_DIR.
 
   subctl sessions list [--orphans|--account <alias>]
                                       List Claude session transcripts across
@@ -235,6 +239,11 @@ case "$cmd" in
   session-prune|prune)
     . "$SUBCTL_REPO_ROOT/lib/session-preview.sh"
     subctl_session_prune "$@"
+    ;;
+
+  session-resume|resume)
+    . "$SUBCTL_REPO_ROOT/lib/session-preview.sh"
+    subctl_session_resume "$@"
     ;;
 
   sessions)

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# claude-resume — find + resume a Claude Code session for the current cwd
+# across all your authenticated accounts. Provided by subctl.
+exec subctl session-resume "$@"

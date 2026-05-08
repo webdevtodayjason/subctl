@@ -33,3 +33,4 @@ credentials.json
 .credentials.json
 *.pem
 *.key
+.claude/worktrees/

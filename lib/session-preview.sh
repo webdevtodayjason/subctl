@@ -382,3 +382,132 @@ get_rl_for_session_today() {
     | wc -l | tr -d ' ')
   echo "${n:-0}"
 }
+
+# ── public: subctl session-resume [--cwd PATH] [--account ALIAS] [--limit N] ─
+# Find Claude Code sessions across ALL ~/.claude*/projects/ for the given cwd
+# (default = current pwd), present a picker, then exec `claude --resume <sid>`
+# with the right CLAUDE_CONFIG_DIR set.
+#
+# This is THE answer to: "I ran claude-teams -a jason yesterday, and now
+# `claude --continue` doesn't find anything because I'm in a different
+# CLAUDE_CONFIG_DIR. Help me find and resume the right one."
+subctl_session_resume() {
+  local target_cwd="$PWD" only_account="" limit=15 list_only=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --cwd)     target_cwd="$2"; shift 2 ;;
+      --account) only_account="$2"; shift 2 ;;
+      --limit)   limit="$2"; shift 2 ;;
+      --list)    list_only=true; shift ;;
+      -h|--help)
+        cat <<EOF
+subctl session-resume [--cwd PATH] [--account ALIAS] [--limit N] [--list]
+
+  Find Claude Code sessions for a given working directory across all
+  authenticated accounts, present a picker, and resume the chosen one
+  with the correct CLAUDE_CONFIG_DIR.
+
+  --cwd PATH       project directory (default: current pwd)
+  --account ALIAS  filter to one account (jason, titanium, semfreak, ...)
+  --limit N        show at most N sessions (default: 15)
+  --list           print the candidates and exit (no picker, no resume)
+
+Examples:
+  cd ~/code/holace
+  subctl session-resume                       # picker for ~/code/holace
+  subctl session-resume --account jason       # only jason's sessions here
+  subctl session-resume --cwd ~/code --list   # list, don't resume
+EOF
+        return 0 ;;
+      *) subctl_die "unknown flag: $1" ;;
+    esac
+  done
+
+  subctl_require jq "install: brew install jq" || return 1
+  subctl_require claude "install: https://claude.com/claude-code" || return 1
+
+  # Claude Code encodes cwd by replacing / with - and stripping leading slash.
+  # e.g. /path/to/project becomes -path-to-project
+  local cwd_clean="${target_cwd%/}"
+  local cwd_encoded="${cwd_clean//\//-}"
+
+  # Walk every ~/.claude* dir; collect candidates.
+  local rows=()
+  for cfg in "$HOME"/.claude "$HOME"/.claude-*; do
+    [[ -d "$cfg/projects/$cwd_encoded" ]] || continue
+    local alias
+    alias=$(subctl_list_accounts | awk -F'\t' -v c="$cfg" '$4==c {print $1; exit}')
+    [[ -z "$alias" ]] && alias="default"
+    [[ -n "$only_account" ]] && [[ "$alias" != "$only_account" ]] \
+      && [[ "$alias" != "claude-${only_account}" ]] && continue
+
+    while IFS= read -r f; do
+      [[ -z "$f" ]] && continue
+      local sid mtime size first_msg last_ts
+      sid=$(basename "$f" .jsonl)
+      # Numeric mtime for sort, formatted mtime for display.
+      mtime=$(stat -f '%m' "$f" 2>/dev/null)
+      [[ -z "$mtime" ]] && continue
+      size=$(stat -f '%z' "$f" 2>/dev/null)
+      first_msg=$(grep -m1 '"type":"user"' "$f" 2>/dev/null \
+        | jq -r '.message.content // .message.content[0].text // empty' 2>/dev/null \
+        | tr -d '\n\r\t' | head -c 80)
+      last_ts=$(tail -50 "$f" 2>/dev/null | grep '"timestamp"' | tail -1 \
+        | jq -r '.timestamp // empty' 2>/dev/null)
+      # row format (TAB-separated, used for sort + parse):
+      # mtime  alias  cfg  sid  size  last_ts  first_msg
+      rows+=("$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+        "$mtime" "$alias" "$cfg" "$sid" "$size" "$last_ts" "$first_msg")")
+    done < <(ls -t "$cfg/projects/$cwd_encoded"/*.jsonl 2>/dev/null)
+  done
+
+  if [[ ${#rows[@]} -eq 0 ]]; then
+    subctl_warn "no Claude Code sessions for cwd: $target_cwd"
+    subctl_info "checked: $HOME/.claude*/projects/$cwd_encoded"
+    return 1
+  fi
+
+  # Sort newest-first by mtime, take top N.
+  local sorted=()
+  while IFS= read -r r; do sorted+=("$r"); done < <(printf "%s\n" "${rows[@]}" | sort -t$'\t' -k1,1nr | head -n "$limit")
+
+  echo "Sessions for $target_cwd (newest first, limit $limit):"
+  echo
+  printf "  %-3s  %-15s  %-16s  %-7s  %-8s  %s\n" "#" "ACCOUNT" "MTIME" "SIZE" "SID" "PREVIEW"
+  printf "  %-3s  %-15s  %-16s  %-7s  %-8s  %s\n" "-" "---------" "----------------" "-----" "--------" "--------"
+  local i=1
+  for row in "${sorted[@]}"; do
+    local mt al cf sd sz lt fm
+    mt=$(echo "$row" | cut -f1)
+    al=$(echo "$row" | cut -f2)
+    sd=$(echo "$row" | cut -f4)
+    sz=$(echo "$row" | cut -f5)
+    fm=$(echo "$row" | cut -f7)
+    local mt_disp
+    mt_disp=$(date -r "$mt" '+%m-%d %H:%M' 2>/dev/null)
+    printf "  %-3d  %-15s  %-16s  %-7s  %-8s  %s\n" \
+      "$i" "$al" "$mt_disp" "$((sz/1024))KB" "${sd:0:8}" "${fm:-(no user message yet)}"
+    i=$((i + 1))
+  done
+
+  $list_only && return 0
+
+  echo
+  read -r -p "Pick a session [1-${#sorted[@]}, or q to quit]: " pick
+  [[ "$pick" == "q" || -z "$pick" ]] && { echo "aborted."; return 0; }
+  if ! [[ "$pick" =~ ^[0-9]+$ ]] || [[ "$pick" -lt 1 ]] || [[ "$pick" -gt ${#sorted[@]} ]]; then
+    subctl_die "invalid selection: $pick"
+  fi
+
+  local chosen="${sorted[$((pick - 1))]}"
+  local pick_alias pick_cfg pick_sid
+  pick_alias=$(echo "$chosen" | cut -f2)
+  pick_cfg=$(echo "$chosen" | cut -f3)
+  pick_sid=$(echo "$chosen" | cut -f4)
+
+  subctl_ok "resuming $pick_sid on $pick_alias"
+  echo
+  echo "→ exec: CLAUDE_CONFIG_DIR=$pick_cfg claude --resume $pick_sid"
+  echo
+  exec env CLAUDE_CONFIG_DIR="$pick_cfg" command claude --resume "$pick_sid"
+}
