@@ -107,6 +107,10 @@ $DRY_RUN || subctl_settings_apply_autonomy_all
 subctl_info "linking autonomy skill into ~/.claude/skills/"
 $DRY_RUN || subctl_settings_install_autonomy_skill
 
+# ── 4c. install + register MCP server ───────────────────────────────────────
+subctl_info "installing MCP server (~/.claude/settings.json mcpServers.subctl)"
+$DRY_RUN || subctl_settings_install_mcp
+
 # ── 5. generate shell aliases + update zshrc ────────────────────────────────
 if ! $NO_SHELL; then
   subctl_info "shell aliases"

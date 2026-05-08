@@ -233,3 +233,40 @@ subctl_settings_install_autonomy_skill() {
   [[ $linked -eq 0 ]] && subctl_warn "no skills linked from $skills_root"
   return 0
 }
+
+# Install + register the subctl MCP server. Two steps:
+#   1. bun install in components/mcp/ (downloads @modelcontextprotocol/sdk)
+#   2. add an mcpServers.subctl entry to ~/.claude/settings.json
+#
+# Idempotent. Re-running upgrades the SDK and refreshes the settings entry.
+subctl_settings_install_mcp() {
+  local mcp_dir="$SUBCTL_REPO_ROOT/components/mcp"
+  local server_ts="$mcp_dir/server.ts"
+  [[ ! -f "$server_ts" ]] && { subctl_warn "MCP server.ts missing"; return 1; }
+
+  # Step 1 — install deps via bun
+  if ! command -v bun >/dev/null 2>&1; then
+    subctl_warn "bun missing — MCP server cannot run. Install: curl -fsSL https://bun.sh/install | bash"
+    return 1
+  fi
+  if [[ ! -d "$mcp_dir/node_modules" ]]; then
+    subctl_info "installing MCP SDK dependencies..."
+    (cd "$mcp_dir" && bun install >/dev/null 2>&1) \
+      && subctl_ok "MCP deps installed" \
+      || { subctl_err "bun install failed in $mcp_dir"; return 1; }
+  fi
+
+  # Step 2 — register in settings.json under mcpServers.subctl
+  local settings="$HOME/.claude/settings.json"
+  [[ -f "$settings" ]] || echo '{}' > "$settings"
+  local bun_path
+  bun_path=$(command -v bun)
+  jq --arg cmd "$bun_path" --arg server "$server_ts" '
+    .mcpServers = (.mcpServers // {}) |
+    .mcpServers.subctl = {
+      command: $cmd,
+      args: ["run", $server]
+    }
+  ' "$settings" > "$settings.tmp" && mv "$settings.tmp" "$settings"
+  subctl_ok "MCP server registered → settings.json (mcpServers.subctl)"
+}

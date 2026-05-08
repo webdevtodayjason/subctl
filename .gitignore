@@ -17,6 +17,8 @@ Thumbs.db
 node_modules/
 dist/
 .bun/
+components/mcp/bun.lockb
+components/mcp/bun.lock
 
 # Go: legacy v0.3 deck binary path (deck dropped in v0.4 in favor of sesh integration).
 # Kept here so any leftover binary on upgraders' machines doesn't get accidentally tracked.

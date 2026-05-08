@@ -1,0 +1,10 @@
+{
+  "name": "subctl-mcp",
+  "version": "1.4.0",
+  "type": "module",
+  "private": true,
+  "description": "MCP server exposing subctl's orchestration + notify + stats surface as Claude Code tools.",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}

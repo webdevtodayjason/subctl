@@ -1723,6 +1723,21 @@ function renderCheatsheetPage(): string {
       ],
     },
     {
+      title: "MCP server (Claude Code tools)",
+      rows: [
+        ["mcp__subctl__stats", "Live dashboard state — verdict, accounts, RL, savings"],
+        ["mcp__subctl__orch_list", "List running orchestrator sessions"],
+        ["mcp__subctl__orch_spawn", "Spawn a new orchestrator (typed inputs)"],
+        ["mcp__subctl__orch_status / msg / kill", "Per-session control"],
+        ["mcp__subctl__notify_send", "Fire-and-forget Telegram message"],
+        ["mcp__subctl__notify_ask_yesno / ask_choice", "Structured Q&A — replies in inbox"],
+        ["mcp__subctl__notify_inbox / inbox_ack", "Read + ack operator replies"],
+        ["mcp__subctl__session_list", "Browse session JSONLs across accounts"],
+        ["~/.claude/settings.json mcpServers.subctl", "Auto-registered by `subctl install`"],
+        ["bun ~/code/subctl/components/mcp/server.ts", "Manual run for debugging"],
+      ],
+    },
+    {
       title: "Orchestration control plane",
       rows: [
         ["subctl orch list", "List running orchestrator tmux sessions"],

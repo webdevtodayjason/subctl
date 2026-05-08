@@ -202,6 +202,38 @@ send outcome — auditable even if the bot is unreachable.
 
 ---
 
+## MCP server — subctl as Claude Code tools (v1.4.0+)
+
+Every Claude Code session — orchestrator, worker, anywhere — can call
+subctl as native MCP tools instead of shelling out via Bash:
+
+| Tool | What it does |
+|---|---|
+| `mcp__subctl__stats` | Live dashboard state (verdict, accounts, RL, savings) |
+| `mcp__subctl__orch_list` | Running orchestrator sessions |
+| `mcp__subctl__orch_spawn` | Spawn a new session (typed inputs) |
+| `mcp__subctl__orch_status` / `_msg` / `_kill` | Per-session control |
+| `mcp__subctl__notify_send` | Fire-and-forget Telegram |
+| `mcp__subctl__notify_ask_yesno` / `_ask_choice` | Structured Q&A |
+| `mcp__subctl__notify_inbox` / `_inbox_ack` | Read + ack operator replies |
+| `mcp__subctl__session_list` | Catalog of past sessions |
+
+Wired automatically by `subctl install`. The MCP server is a Bun stdio
+process that wraps the dashboard's HTTP API; each tool call is a single
+fetch round-trip.
+
+To verify it's registered:
+
+```bash
+jq '.mcpServers.subctl' ~/.claude/settings.json
+# → {"command": "bun", "args": ["run", "/Users/you/code/subctl/components/mcp/server.ts"]}
+```
+
+After install, restart Claude Code (settings.json is read at session
+start) — the new tools appear in the next session.
+
+---
+
 ## Orchestration control plane (v1.3.0+)
 
 Manage multiple tmux orchestrator sessions over HTTP. Any process can
