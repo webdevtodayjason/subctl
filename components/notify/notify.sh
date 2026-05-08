@@ -51,8 +51,9 @@ subctl notify <message> [opts]
   --setup          interactive: store token + chat id in config
   --test           send a test message
   --status         show current config (token redacted)
-  --diagnose       run end-to-end check: bot alive, chat history, identify
-                   what's wrong if --test fails
+  --diagnose       passive health check: bot alive + chat history + config
+                   sanity (does NOT send a ping by default)
+  --diagnose --send  same checks PLUS deliver a live test message
 
 Examples:
   subctl notify "Stuck: shannon prisma migration needs decision"
@@ -191,7 +192,16 @@ subctl_notify_test() {
 }
 
 # ── --diagnose: end-to-end health check ────────────────────────────────────
+# By default does NOT send a test message — just verifies bot + lists chats.
+# Pass --send to actually deliver a ping (use --test for that idiomatically).
 subctl_notify_diagnose() {
+  local should_send=false
+  for arg in "$@"; do
+    case "$arg" in
+      --send) should_send=true ;;
+    esac
+  done
+
   local token chat
   token="${TELEGRAM_BOT_TOKEN:-}"
   chat="${TELEGRAM_CHAT_ID:-}"
@@ -255,7 +265,23 @@ subctl_notify_diagnose() {
     | "    chat_id=\(.id)  type=\(.type)  name=\"\(.first)\"  @\(.username)"
   ' 2>/dev/null
 
-  # Step 3: try sending to the configured chat
+  # Step 3: optional live send (skip by default — diagnose is read-only).
+  if ! $should_send; then
+    echo
+    echo "[3/3] Skipping live send (use --send to ping, or 'subctl notify --test')"
+    # Sanity-check the chat_id matches a chat that's messaged the bot.
+    local known_ids
+    known_ids=$(echo "$updates_resp" | jq -r '.result[].message.chat.id' 2>/dev/null | sort -u)
+    if [[ -n "$known_ids" ]] && ! echo "$known_ids" | grep -qx "$chat"; then
+      subctl_warn "configured chat_id ($chat) doesn't match any chat that has messaged the bot"
+      echo "  Known chat ids: $(echo "$known_ids" | tr '\n' ' ')"
+      echo "  --test would likely fail until you fix the config or message the bot first."
+      return 1
+    fi
+    subctl_ok "configured chat_id matches a known chat — looks good"
+    return 0
+  fi
+
   echo
   echo "[3/3] Attempting send to configured chat_id (${chat})..."
   local send_resp send_ok
