@@ -884,21 +884,91 @@
     const wrap = document.createElement("div");
     wrap.className = "resume-actions";
     const cmd = `CLAUDE_CONFIG_DIR=${conv.config_dir} command claude --resume ${conv.sid}`;
-    const btn = document.createElement("button");
-    btn.className = "btn-resume";
-    btn.textContent = "copy resume cmd";
-    btn.title = cmd;
-    btn.addEventListener("click", async () => {
+
+    // copy
+    const btnCopy = document.createElement("button");
+    btnCopy.className = "btn-resume";
+    btnCopy.textContent = "copy";
+    btnCopy.title = cmd;
+    btnCopy.addEventListener("click", async (e) => {
+      e.stopPropagation();
       try {
         await navigator.clipboard.writeText(cmd);
-        btn.textContent = "✓ copied";
-        setTimeout(() => { btn.textContent = "copy resume cmd"; }, 1500);
+        btnCopy.textContent = "✓ copied";
+        setTimeout(() => { btnCopy.textContent = "copy"; }, 1500);
       } catch {
-        btn.textContent = "copy failed";
+        btnCopy.textContent = "copy failed";
       }
     });
-    wrap.appendChild(btn);
+    wrap.appendChild(btnCopy);
+
+    // open in iTerm (macOS only — server handles platform detection)
+    const btnITerm = document.createElement("button");
+    btnITerm.className = "btn-resume btn-iterm";
+    btnITerm.textContent = "open in iTerm";
+    btnITerm.title = "Spawn a new iTerm window with the resume command (macOS, requires Automation permission first time)";
+    btnITerm.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      btnITerm.disabled = true;
+      btnITerm.textContent = "opening…";
+      try {
+        const r = await fetch("/api/sessions/spawn", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ account: conv.account, sid: conv.sid, cwd: conv.cwd ?? "" }),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (j.ok) {
+          btnITerm.textContent = "✓ opened";
+        } else {
+          btnITerm.textContent = "✗ failed (see console)";
+          if (j.error) console.warn("iTerm spawn failed:", j.error);
+          if (j.fallback) console.info("Fallback command:", j.fallback);
+        }
+      } catch (err) {
+        btnITerm.textContent = "✗ error";
+        console.warn(err);
+      }
+      setTimeout(() => {
+        btnITerm.textContent = "open in iTerm";
+        btnITerm.disabled = false;
+      }, 2200);
+    });
+    wrap.appendChild(btnITerm);
     return wrap;
+  }
+
+  // Lazy-load preview for a Session Browser row when user hovers/focuses it.
+  // Caches per-session so re-hover is instant. Preview text replaces the
+  // empty cell content in place.
+  const previewCache = new Map();
+  async function fetchPreview(account, sid) {
+    const key = `${account}:${sid}`;
+    if (previewCache.has(key)) return previewCache.get(key);
+    try {
+      const r = await fetch(`/api/sessions/preview?account=${encodeURIComponent(account)}&sid=${encodeURIComponent(sid)}`);
+      const j = await r.json();
+      const txt = j?.preview || "(no user message)";
+      previewCache.set(key, txt);
+      return txt;
+    } catch {
+      return "(load failed)";
+    }
+  }
+  function attachLazyPreview(cell, account, sid) {
+    let loaded = false;
+    const load = async () => {
+      if (loaded) return;
+      loaded = true;
+      cell.classList.add("preview-loading");
+      const txt = await fetchPreview(account, sid);
+      cell.textContent = txt;
+      cell.title = txt;
+      cell.classList.remove("preview-loading");
+    };
+    cell.addEventListener("mouseenter", load, { once: false });
+    cell.addEventListener("focus", load, { once: false });
+    cell.tabIndex = 0;
   }
 
   // ----- Session browser (search across all sessions, all accounts) -----
@@ -983,11 +1053,11 @@
       sidCell.title = s.sid || "";
       sidCell.classList.add("ev-session");
       tr.appendChild(sidCell);
-      const prev = td(s.first_message_preview || "");
+      const prev = td("(hover to load)");
       prev.classList.add("conv-preview");
-      prev.title = s.first_message_preview || "";
+      attachLazyPreview(prev, s.account, s.sid);
       tr.appendChild(prev);
-      tr.appendChild(td(resumeButton({ sid: s.sid, account: s.account, config_dir: s.config_dir })));
+      tr.appendChild(td(resumeButton({ sid: s.sid, account: s.account, config_dir: s.config_dir, cwd: s.cwd })));
       return tr;
     }));
   }

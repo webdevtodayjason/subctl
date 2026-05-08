@@ -16,10 +16,12 @@ _SUBCTL_CLAUDE_TEAMS_LOADED=1
 #   -p, --prompt <text>     Send an initial prompt after launch
 #   -f, --prompt-file <f>   Read initial prompt from file
 #   -o, --orchestrator      Use built-in orchestrator prompt
+#   --resume <sid>          Resume a specific Claude Code session by ID
+#                           (mutually exclusive with -c/-o/-p/-f)
 #   --dry-run               Print what it would do, don't launch tmux
 provider_claude_teams() {
   local ACCOUNT="" SKIP_PERMS=false CONTINUE=false ORCHESTRATOR=false DRY_RUN=false
-  local INITIAL_PROMPT="" PROMPT_FILE=""
+  local INITIAL_PROMPT="" PROMPT_FILE="" RESUME_SID=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -29,10 +31,21 @@ provider_claude_teams() {
       -p|--prompt)       INITIAL_PROMPT="$2"; shift 2 ;;
       -f|--prompt-file)  PROMPT_FILE="$2"; shift 2 ;;
       -o|--orchestrator) ORCHESTRATOR=true; shift ;;
+      --resume)          RESUME_SID="$2"; shift 2 ;;
       --dry-run)         DRY_RUN=true; shift ;;
       *) subctl_die "unknown teams option: $1" ;;
     esac
   done
+
+  # --resume <sid> is mutually exclusive with --continue / --orchestrator /
+  # --prompt: claude rejects an initial prompt when resuming, and --continue
+  # is the broader 'just resume the latest' that --resume <sid> overrides.
+  if [[ -n "$RESUME_SID" ]]; then
+    if $CONTINUE || $ORCHESTRATOR || [[ -n "$INITIAL_PROMPT" ]] || [[ -n "$PROMPT_FILE" ]]; then
+      subctl_warn "--resume <sid> ignores --continue, --orchestrator, --prompt, and --prompt-file"
+      CONTINUE=false; ORCHESTRATOR=false; INITIAL_PROMPT=""; PROMPT_FILE=""
+    fi
+  fi
 
   [[ -z "$ACCOUNT" ]] && subctl_die "subctl teams claude requires -a <alias>. Run: subctl accounts"
 
@@ -68,6 +81,7 @@ provider_claude_teams() {
   local CLAUDE_CMD="command claude"
   $SKIP_PERMS && CLAUDE_CMD="$CLAUDE_CMD --dangerously-skip-permissions"
   $CONTINUE   && CLAUDE_CMD="$CLAUDE_CMD --continue"
+  [[ -n "$RESUME_SID" ]] && CLAUDE_CMD="$CLAUDE_CMD --resume $RESUME_SID"
 
   # Resolve initial prompt
   local ORCHESTRATOR_PROMPT="This session we will be using team agents. You are the orchestrator. Your role is to:

@@ -1170,3 +1170,19 @@ tr:hover .kill-btn { opacity: 1; }
 /* Hide panels not matching the active tab. */
 body[data-active-tab="dashboard"] section[data-tab="sessions"] { display: none; }
 body[data-active-tab="sessions"] section[data-tab="dashboard"] { display: none; }
+
+/* iTerm spawn button (secondary action; sits next to copy) */
+.btn-resume.btn-iterm {
+  background: #1f1f1f;
+  color: #5fd7ff;
+  border-color: #2a2a2a;
+}
+.btn-resume.btn-iterm:hover {
+  background: #2a2a2a;
+  border-color: #5fd7ff;
+}
+.btn-resume.btn-iterm:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+.preview-loading { color: #5fd7ff; font-style: italic; }

@@ -136,6 +136,11 @@ function safeStat(path: string) {
   try { return statSync(path); } catch { return null; }
 }
 
+// Single-quote a string for safe shell injection.
+function shellEscape(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
 function todayDateStr(): string {
   // Local YYYY-MM-DD — matches what the rate-limit log writes.
   const d = new Date();
@@ -1714,7 +1719,7 @@ function startPushLoop() {
 const server = Bun.serve({
   port: PORT,
   hostname: "127.0.0.1",
-  fetch(req, srv) {
+  async fetch(req, srv) {
     const url = new URL(req.url);
     if (url.pathname === "/api/live") {
       if (srv.upgrade(req)) return undefined as any;
@@ -1766,6 +1771,134 @@ const server = Bun.serve({
         },
       });
     }
+    // GET /api/sessions/preview?account=<alias>&sid=<uuid>
+    // Returns the first user-message preview for one session. Used by the
+    // browser to lazy-load previews on row hover (avoiding 200× file reads
+    // on the bulk list endpoint).
+    if (url.pathname === "/api/sessions/preview" && req.method === "GET") {
+      const account = url.searchParams.get("account") ?? "";
+      const sid = url.searchParams.get("sid") ?? "";
+      if (!account || !sid || !/^[a-zA-Z0-9_-]+$/.test(sid)) {
+        return new Response(JSON.stringify({ ok: false, error: "missing/invalid account or sid" }),
+          { status: 400, headers: { "Content-Type": "application/json" } });
+      }
+      // Resolve config_dir for this account.
+      const { accounts: accs } = parseAccountsConf();
+      let cfgDir: string | null = null;
+      if (account === "default") {
+        cfgDir = join(HOME, ".claude");
+      } else {
+        const a = accs.find(x => x.alias === account);
+        if (a) cfgDir = a.config_dir;
+      }
+      if (!cfgDir) {
+        return new Response(JSON.stringify({ ok: false, error: "unknown account" }),
+          { status: 404, headers: { "Content-Type": "application/json" } });
+      }
+      // Find the jsonl in any project dir under this account.
+      const projectsRoot = join(cfgDir, "projects");
+      const projects = safeReaddir(projectsRoot);
+      let preview = "";
+      let firstTs = "";
+      for (const pd of projects) {
+        const candidate = join(projectsRoot, pd, `${sid}.jsonl`);
+        const st = safeStat(candidate);
+        if (!st || !st.isFile()) continue;
+        try {
+          const fd = require("node:fs").openSync(candidate, "r");
+          const buf = Buffer.alloc(65536);
+          const n = require("node:fs").readSync(fd, buf, 0, 65536, 0);
+          require("node:fs").closeSync(fd);
+          const head = buf.subarray(0, n).toString("utf8");
+          for (const line of head.split("\n")) {
+            if (!line) continue;
+            try {
+              const ev = JSON.parse(line);
+              if (!firstTs && ev.timestamp) firstTs = ev.timestamp;
+              if (!preview && ev.type === "user") {
+                const c = ev.message?.content;
+                if (typeof c === "string") preview = c.slice(0, 240);
+                else if (Array.isArray(c) && c[0]?.text) preview = String(c[0].text).slice(0, 240);
+                if (preview) preview = preview.replace(/\s+/g, " ").trim();
+              }
+            } catch { /* skip bad line */ }
+            if (firstTs && preview) break;
+          }
+        } catch { /* unreadable */ }
+        break;
+      }
+      return new Response(JSON.stringify({ ok: true, sid, account, preview, first_ts: firstTs }), {
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+      });
+    }
+
+    // POST /api/sessions/spawn  body: {account, sid, cwd?}
+    // Opens a new iTerm window (macOS only) with the resume command pre-running.
+    // Falls back gracefully on Linux / non-iTerm environments — caller gets
+    // ok:false + a "fallback" field with the copy-paste command.
+    if (url.pathname === "/api/sessions/spawn" && req.method === "POST") {
+      let body: any = {};
+      try { body = await req.json(); } catch {}
+      const account = String(body.account ?? "");
+      const sid = String(body.sid ?? "");
+      const cwdRaw = String(body.cwd ?? "");
+      if (!account || !sid || !/^[a-zA-Z0-9_-]+$/.test(sid)) {
+        return new Response(JSON.stringify({ ok: false, error: "missing/invalid account or sid" }),
+          { status: 400, headers: { "Content-Type": "application/json" } });
+      }
+      const { accounts: accs } = parseAccountsConf();
+      let cfgDir: string | null = null;
+      if (account === "default") cfgDir = join(HOME, ".claude");
+      else {
+        const a = accs.find(x => x.alias === account);
+        if (a) cfgDir = a.config_dir;
+      }
+      if (!cfgDir) {
+        return new Response(JSON.stringify({ ok: false, error: "unknown account" }),
+          { status: 404, headers: { "Content-Type": "application/json" } });
+      }
+      // Sanitize cwd: must exist as a directory; default to $HOME.
+      const cwd = cwdRaw && existsSync(cwdRaw) ? cwdRaw : HOME;
+
+      // Build the shell command to inject into iTerm.
+      // Single-quote-safe by escaping inner single quotes.
+      const cmdParts = [
+        `cd ${shellEscape(cwd)}`,
+        `CLAUDE_CONFIG_DIR=${shellEscape(cfgDir)} command claude --resume ${shellEscape(sid)}`,
+      ];
+      const fallbackCmd = cmdParts.join(" && ");
+
+      // macOS osascript to spawn iTerm. Detect platform via process.platform.
+      if (process.platform !== "darwin") {
+        return new Response(JSON.stringify({
+          ok: false, error: "spawn requires macOS + iTerm",
+          fallback: fallbackCmd,
+        }), { status: 501, headers: { "Content-Type": "application/json" } });
+      }
+
+      const osascript = [
+        'tell application "iTerm"',
+        '  activate',
+        '  set newWin to (create window with default profile)',
+        `  tell current session of newWin to write text "${fallbackCmd.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`,
+        'end tell',
+      ].join("\n");
+
+      const r = spawnSync("/usr/bin/osascript", ["-e", osascript], {
+        encoding: "utf8", timeout: 5_000,
+      });
+      if (r.error || (typeof r.status === "number" && r.status !== 0)) {
+        return new Response(JSON.stringify({
+          ok: false,
+          error: (r.stderr || r.stdout || String(r.error)).slice(0, 500),
+          fallback: fallbackCmd,
+        }), { status: 500, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
     // GET /api/sessions/list — enumerate every Claude Code session across all
     // accounts. Used by the dashboard's session browser for search/copy-resume.
     if (url.pathname === "/api/sessions/list" && req.method === "GET") {
