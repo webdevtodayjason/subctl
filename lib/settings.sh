@@ -28,7 +28,7 @@ subctl_settings_claude_dirs() {
 }
 
 # Install symlinks + merge settings.json for ONE Claude config dir.
-# Args: $1 = cfg_dir (e.g. ~/.claude or ~/.claude-jason)
+# Args: $1 = cfg_dir (e.g. ~/.claude or ~/.claude-personal)
 subctl_settings_install_claude_dir() {
   local cfg_dir="$1"
   [[ -z "$cfg_dir" ]] && { subctl_warn "install_claude_dir: missing cfg_dir"; return 1; }
@@ -84,7 +84,7 @@ subctl_settings_install_claude() {
 # Idempotent: only adds keys that are missing; leaves user customizations alone.
 # Safe to call on every launch.
 #
-# Args: $1 = cfg_dir (e.g. ~/.claude-semfreak)
+# Args: $1 = cfg_dir (e.g. ~/.claude-overflow)
 subctl_settings_ensure_teams() {
   local cfg_dir="$1"
   [[ -z "$cfg_dir" ]] && { subctl_warn "ensure_teams: missing cfg_dir"; return 1; }

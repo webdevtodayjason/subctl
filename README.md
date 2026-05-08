@@ -150,6 +150,58 @@ Then `sesh connect` shows every session with subctl's account + ctx % + status +
 
 ---
 
+## Autonomy doctrine + Telegram escalation
+
+By default, `subctl install` flips `defaultMode: "bypassPermissions"` on every
+configured Claude account and drops an **autonomy skill** at
+`~/.claude/skills/autonomy/SKILL.md` that activates whenever
+`CLAUDE_AUTONOMY=full` is set (which the install also sets).
+
+### What the autonomy skill enforces
+
+When an orchestrator is running with autonomy mode active:
+
+- **Idle is failure** — if backlog is non-empty and no worker is dispatched,
+  the orchestrator dispatches the next item. No "should I proceed?"
+- **Bus consumer protocol** — reading a teammate's bus message MUST trigger
+  an action: take the next dependent task, clear the block, or escalate.
+  Read-then-idle is a doctrine violation.
+- **Stop conditions** — STOP only when the backlog is empty AND all workers
+  done AND no bus traffic, OR when an irreversible decision is needed.
+- **Memory + Vault required** — query `claude-mem` on session start; read
+  `~/Documents/Obsidian Vault/<Project>/Portfolio.md` before proposing a
+  plan; write decisions to vault and ledger.
+
+Full doctrine: see [`components/skills/autonomy/SKILL.md`](components/skills/autonomy/SKILL.md).
+
+### Telegram escalation: `subctl notify`
+
+The autonomy skill names `subctl notify` as the escalation channel for
+when the orchestrator hits an irreversible decision and the operator is
+AFK. Pure bash + curl, standalone (no Python deps, no external connector
+frameworks).
+
+```bash
+subctl notify --setup                    # one-time: store bot token + chat id
+subctl notify --test                     # send a test message
+subctl notify "Stuck on prisma migration — drop FK or backfill?"
+```
+
+To create a Telegram bot:
+
+1. Open Telegram, search `@BotFather`, send `/start` then `/newbot`
+2. Follow prompts, copy the token
+3. Send any message to your new bot
+4. Visit `https://api.telegram.org/bot<TOKEN>/getUpdates` and find your `chat.id`
+
+Stored at `~/.config/subctl/notify.json` (mode 600). Falls back to
+`TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` env vars if not configured.
+
+Always logs every call to `~/.claude/notification.log` regardless of
+send outcome — auditable even if the bot is unreachable.
+
+---
+
 ## Pruning transcript history
 
 Heavy orchestrator-mode users accumulate thousands of Claude Code session

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # components/notify/notify.sh — Telegram escalation hook for subctl.
 #
-# Pure bash + curl. Independent of argent-core/aos-telegram (which is the
-# AOS connector framework's heavier wrapper). Both layers can coexist —
-# this one is for fast in-session escalations from any agent.
+# Pure bash + curl. Standalone — no external connector frameworks
+# required, no Python deps, no external services beyond Telegram itself.
+# Anyone with a Telegram bot token + chat id can use this.
 #
 # Sends a POST to the Telegram Bot API's sendMessage endpoint. Reads token
 # + chat_id from (in order):

@@ -160,10 +160,13 @@ function stripAnsi(s: string): string {
 // Color class for an account alias — mirrors providers/claude/statusline.sh.
 // Uses substring rules consistent with the existing statusline classification.
 function colorClassFor(alias: string): "cyan" | "blue" | "magenta" | "grey" {
+  // Convention from config/accounts.conf.example: aliases follow
+  // claude-personal / claude-work / claude-overflow (any provider).
+  // Unmatched aliases fall through to grey.
   const a = alias.toLowerCase();
-  if (a.includes("personal") || a.includes("jason"))   return "cyan";
-  if (a.includes("work")     || a.includes("titanium"))return "blue";
-  if (a.includes("overflow") || a.includes("semfreak"))return "magenta";
+  if (a.includes("personal")) return "cyan";
+  if (a.includes("work"))     return "blue";
+  if (a.includes("overflow")) return "magenta";
   return "grey";
 }
 
@@ -1013,7 +1016,7 @@ interface SessionCatalogRow {
 }
 
 // Reads the first ~64KB of a transcript and extracts:
-//   - cwd: the canonical working dir (so 'argent-core' decodes correctly,
+//   - cwd: the canonical working dir (so e.g. 'my-project' decodes correctly,
 //     not the lossy "decode every dash to /" of the encoded directory name)
 //   - first user message + isWorker flag (`<teammate-message teammate_id="..."`
 //     means orchestrator-spawned worker; user typically wants to resume the
@@ -1089,7 +1092,7 @@ function listAllClaudeSessions(limit: number): SessionCatalogRow[] {
         const sid = f.replace(/\.jsonl$/, "");
         const meta2 = detectSessionMeta(jpath);
         // Prefer the canonical cwd from inside the transcript (handles
-        // dashes-in-project-names correctly, e.g. argent-core).
+        // dashes-in-project-names correctly, e.g. 'my-project' or 'multi-word-name').
         // Fall back to the lossy decode if first-line cwd is missing.
         const cwd = meta2.cwd || ("/" + pd.replace(/^-/, "").replace(/-/g, "/"));
         rows.push({
@@ -1658,7 +1661,7 @@ function renderCheatsheetPage(): string {
         ["claude-use", "List accounts; show current"],
         ["claude-use jason", "Set CLAUDE_CONFIG_DIR for current shell (next claude uses jason)"],
         ["claude-use default", "Back to ~/.claude (unset)"],
-        ["claude-jason / claude-titanium / claude-semfreak", "One-off: run claude with that account, current command only"],
+        ["claude-<alias> (e.g. claude-personal, claude-work)", "One-off: run claude with that account, current command only"],
         ["claude-whoami", "Print which account this shell is using"],
       ],
     },
@@ -1717,6 +1720,18 @@ function renderCheatsheetPage(): string {
         ["subctl service enable | disable", "Install/remove the launchd plist (auto-start at login)"],
         ["subctl service logs [N]", "Last N lines of stdout + stderr"],
         ["subctl service foreground", "Run dashboard in current shell (debug mode)"],
+      ],
+    },
+    {
+      title: "Autonomy + escalation",
+      rows: [
+        ["subctl notify <message>", "Send Telegram message — escalation channel for orchestrators"],
+        ["subctl notify --setup", "One-time wizard: store bot token + chat id in ~/.config/subctl/notify.json"],
+        ["subctl notify --test", "Send a test message"],
+        ["subctl notify --status", "Show config presence (token redacted)"],
+        ["subctl notify --dry-run \"msg\"", "Print payload, don't send"],
+        ["CLAUDE_AUTONOMY=full", "Env var set by subctl install — triggers autonomy doctrine"],
+        ["~/.claude/skills/autonomy/SKILL.md", "Doctrine: drive-forward, stop only on irreversible, mem+vault required"],
       ],
     },
     {

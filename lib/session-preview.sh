@@ -50,7 +50,7 @@ _account_for_session() {
   local sess="$1"
   local raw
   raw=$(tmux show-environment -t "$sess" CLAUDE_CONFIG_DIR 2>/dev/null) || return 0
-  # raw looks like: CLAUDE_CONFIG_DIR=/Users/you/.claude-titanium  or  -CLAUDE_CONFIG_DIR (unset)
+  # raw looks like: CLAUDE_CONFIG_DIR=/Users/you/.claude-work  or  -CLAUDE_CONFIG_DIR (unset)
   case "$raw" in
     -*) return 0 ;;
     *=*)
@@ -241,7 +241,7 @@ EOF
     *personal*) acc_color="$C_CYN" ;;
     *work*)     acc_color="$C_BLU" ;;
     *overflow*) acc_color="$C_MAG" ;;
-    *)          acc_color="$C_DIM" ;;
+    *)          acc_color="$C_DIM" ;;   # any other alias — fallback dim
   esac
 
   printf "%s%s%s" "$acc_color" "$alias" "$C_RST"
@@ -570,7 +570,7 @@ get_rl_for_session_today() {
 # (default = current pwd), present a picker, then exec `claude --resume <sid>`
 # with the right CLAUDE_CONFIG_DIR set.
 #
-# This is THE answer to: "I ran claude-teams -a jason yesterday, and now
+# This is THE answer to: "I ran claude-teams -a personal yesterday, and now
 # `claude --continue` doesn't find anything because I'm in a different
 # CLAUDE_CONFIG_DIR. Help me find and resume the right one."
 subctl_session_resume() {
@@ -591,7 +591,7 @@ subctl session-resume [--cwd PATH] [--account ALIAS] [--limit N] [--list] [--lat
   auto-resume the newest session without prompting.
 
   --cwd PATH       project directory (default: current pwd)
-  --account ALIAS  filter to one account (jason, titanium, semfreak, ...)
+  --account ALIAS  filter to one account (personal, work, overflow, …)
   --limit N        show at most N sessions in the picker (default: 15)
   --list           print the candidates and exit (no picker, no resume)
   --latest         resume the newest session immediately, no picker
@@ -600,7 +600,7 @@ Examples:
   cd ~/code/holace
   subctl session-resume                       # picker
   subctl session-resume --latest              # newest, no prompt (claude --continue analog)
-  subctl session-resume --account jason       # picker filtered to one account
+  subctl session-resume --account personal    # picker filtered to one account
   subctl session-resume --cwd ~/code --list   # show all, don't resume
 EOF
         return 0 ;;
@@ -672,9 +672,9 @@ EOF
     mt_disp=$(date -r "$mt" '+%m-%d %H:%M' 2>/dev/null)
     # Account color (matches statusline + dashboard convention).
     case "$al" in
-      *personal*|*jason*)   ac_color="$C_CYN" ;;
-      *work*|*titanium*)    ac_color="$C_BLU" ;;
-      *overflow*|*semfreak*)ac_color="$C_MAG" ;;
+      *personal*) ac_color="$C_CYN" ;;
+      *work*)     ac_color="$C_BLU" ;;
+      *overflow*) ac_color="$C_MAG" ;;
       default)              ac_color="$C_DIM" ;;
       *)                    ac_color="$C_RST" ;;
     esac

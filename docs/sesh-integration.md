@@ -18,7 +18,7 @@ claude-work · you@company.com
 ─────────────────────────────────────────────
 ctx        16%
 status     working
-branch     feat/admin-fix-pack*+
+branch     feat/your-branch*+
 panes      1 active / 4 total
 RL today   0
 path       /Users/you/code/myproject
@@ -86,15 +86,15 @@ subctl session-list --format json      # one JSON object per line — for script
 Plain format example:
 
 ```
-ampcortex.ai  ●claude-titanium ctx 16%  feat/admin-fix-pack  ampcortex.ai
-holace        ●claude-jason    ctx 7%   main                holace
-shannon       ●(none)          ctx 0%   main                 shannon
+myproject     ●claude-work     ctx 16%  feat/your-branch  myproject
+otherproject  ●claude-personal ctx 7%   main              otherproject
+scratch       ●(none)          ctx 0%   main              scratch
 ```
 
 JSON format example (one object per line):
 
 ```json
-{"session":"ampcortex.ai","path":"/Users/you/code/...","account":"claude-titanium","ctx_pct":16}
+{"session":"myproject","path":"/Users/you/code/...","account":"claude-work","ctx_pct":16}
 ```
 
 ## Why we did it this way

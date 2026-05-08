@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # lib/projects.sh — declarative per-account project bindings + bulk launcher.
 #
-# The user's stated workflow: "I want to run a tmux session for each of three
-# projects. One on semfreak, one on jason, one on titanium. Pick up where I
-# left off so I'm not rate limiting."
+# Common workflow: "I want to run a tmux session for each of N projects, each
+# pinned to a specific account (e.g. one on personal, one on work, one on
+# overflow), and pick up where I left off without burning per-account rate
+# limits."
 #
 # This module reads ~/.config/subctl/projects.conf and lets you launch all
 # (or one) project's tmux session in a single command. Each launch is just

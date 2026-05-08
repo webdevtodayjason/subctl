@@ -298,7 +298,7 @@ under a "Decision Log" section:
 | Time (UTC)        | Decision                                | Rationale                                      | Reversible? | Lane              |
 |-------------------|-----------------------------------------|------------------------------------------------|-------------|-------------------|
 | 2026-05-08 19:42  | Used Prisma migrate over manual SQL    | Simple column rename, prefer toolchain         | Yes         | shannon           |
-| 2026-05-08 20:07  | Picked option B (cache-then-API)       | Lane spec was ambiguous; B has lower-risk path | Yes         | argent-core       |
+| 2026-05-08 20:07  | Picked option B (cache-then-API)       | Lane spec was ambiguous; B has lower-risk path | Yes         | my-project        |
 ```
 
 This isn't busywork — it's how the operator catches up when they return.

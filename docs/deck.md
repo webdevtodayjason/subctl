@@ -19,8 +19,8 @@ The deck and the dashboard read the same data sources; they're just different pr
 ║  subctl deck                                            v0.3.0 · 09:42   ║
 ╠══════════════════════════════════════════════════════════════════════════╣
 ║                                          ║                                ║
-║  ▾ ampcortex.ai                          ║  ───── claude-titanium ────── ║
-║      ● claude-titanium  16% ctx  4 panes ║                                ║
+║  ▾ myproject                          ║  ───── claude-work ────── ║
+║      ● claude-work  16% ctx  4 panes ║                                ║
 ║       ├ orchestrator        ctx 65%      ║   > /usage                     ║
 ║       ├ worker:auth         ctx 12%      ║   Status                       ║
 ║       ├ worker:tests        ctx 23%      ║     Total cost: $73.19         ║
@@ -62,8 +62,8 @@ Same rule as the bash statusline (so cycling between surfaces keeps your visual 
 | Alias contains | Color |
 |---|---|
 | `personal` or `jason` | cyan |
-| `work` or `titanium` | blue |
-| `overflow` or `semfreak` | magenta |
+| `work` | blue |
+| `overflow` | magenta |
 | anything else | grey |
 
 ## Keymap
@@ -89,7 +89,7 @@ The deck refreshes every 2 seconds automatically; `r` is for impatience.
 ╔══════════════════════════════════════════════════╗
 ║  New session                                      ║
 ╠══════════════════════════════════════════════════╣
-║  Account:  [▾ claude-titanium]                   ║
+║  Account:  [▾ claude-work]                   ║
 ║  Folder:   [/Users/you/code/myproject]           ║
 ║  Name:     [claude-myproject]                    ║
 ║                                                  ║
@@ -101,7 +101,7 @@ The deck refreshes every 2 seconds automatically; `r` is for impatience.
 ╚══════════════════════════════════════════════════╝
 ```
 
-On enter the deck shells out to `subctl teams claude -a <alias>` with the selected flags. That's the same code path the CLI uses, so the launch is identical to typing `claude-teams -a titanium -o -c -y` in your shell.
+On enter the deck shells out to `subctl teams claude -a <alias>` with the selected flags. That's the same code path the CLI uses, so the launch is identical to typing `claude-teams -a work -o -c -y` in your shell.
 
 ## Requirements
 

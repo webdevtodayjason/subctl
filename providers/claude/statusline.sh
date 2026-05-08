@@ -72,11 +72,11 @@ out_str+="\033[38;5;51m\xef\x81\xbb $project\033[0m $bar "                      
 out_str+="\033[38;5;205m\xee\x9c\xa5 $branch$gstatus\033[0m $bar "                  # branch
 if [[ -n "$account_label" ]]; then
   case "$account_label" in
-    *personal*|*jason*) acc_color="\033[36m" ;;       # cyan
-    *work*|*titanium*)  acc_color="\033[34m" ;;       # blue
-    *overflow*|*semfreak*) acc_color="\033[35m" ;;    # magenta
-    custom)             acc_color="\033[31m" ;;       # red — unconfigured
-    *)                  acc_color="\033[37m" ;;
+    *personal*) acc_color="\033[36m" ;;       # cyan
+    *work*)     acc_color="\033[34m" ;;       # blue
+    *overflow*) acc_color="\033[35m" ;;       # magenta
+    custom)     acc_color="\033[31m" ;;       # red — unconfigured
+    *)          acc_color="\033[37m" ;;       # white — fallback for any other alias
   esac
   out_str+="${acc_color}\xf0\x9f\x91\xa4 $account_label\033[0m $bar "                # 👤
 fi

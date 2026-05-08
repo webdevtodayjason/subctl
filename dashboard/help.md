@@ -215,6 +215,10 @@ subctl auth claude personal
 | `subctl session-kill <name> [name...]` | Kill one or more tmux sessions. |
 | `subctl session-prune [--older-than 6h] [--yes]` | Kill all tmux sessions older than DUR (default 6h). |
 | `subctl prune-transcripts [opts]` | Delete OLD CLAUDE CODE TRANSCRIPT JSONLs to reclaim disk. Default: workers >30d. |
+| `subctl notify <message>` | Send a Telegram message — escalation channel for autonomous orchestrators when the operator is AFK. |
+| `subctl notify --setup` | One-time wizard: store bot token + chat id in `~/.config/subctl/notify.json`. |
+| `subctl notify --test` | Send a test message to verify the bot is wired up. |
+| `subctl notify --status` | Show the configured-credentials state without revealing the token. |
 
 Example:
 
