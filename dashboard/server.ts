@@ -1817,8 +1817,20 @@ const server = Bun.serve({
               if (!firstTs && ev.timestamp) firstTs = ev.timestamp;
               if (!preview && ev.type === "user") {
                 const c = ev.message?.content;
-                if (typeof c === "string") preview = c.slice(0, 240);
-                else if (Array.isArray(c) && c[0]?.text) preview = String(c[0].text).slice(0, 240);
+                if (typeof c === "string") {
+                  preview = c.slice(0, 240);
+                } else if (Array.isArray(c)) {
+                  // Find first part with a .text field (text or tool_result content).
+                  const textPart = c.find((x: any) => x && typeof x.text === "string" && x.text);
+                  if (textPart) {
+                    preview = String(textPart.text).slice(0, 240);
+                  } else if (c[0]?.type) {
+                    // Fall back to a marker like "(image)" or "(tool_use)" so
+                    // image-first or tool-first sessions still get something.
+                    const types = c.map((x: any) => x?.type).filter(Boolean).slice(0, 3).join(", ");
+                    preview = `(${types || "no text"})`;
+                  }
+                }
                 if (preview) preview = preview.replace(/\s+/g, " ").trim();
               }
             } catch { /* skip bad line */ }
