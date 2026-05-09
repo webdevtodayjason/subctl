@@ -27,7 +27,18 @@ import type {
   AgentToolResult,
 } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
+import { registerBuiltInApiProviders } from "@earendil-works/pi-ai";
 import type { TSchema } from "typebox";
+
+// pi-ai's stream factory keeps a registry keyed by `model.api`. Built-in
+// providers (anthropic-messages, openai-completions, openai-responses,
+// google-generative-ai, …) are registered ONLY when this function is
+// called — it's NOT a side-effect of `import`. Without this call, every
+// agent.prompt() returns an empty content array because the agent loop
+// looks up the api in the registry, finds nothing, and silently produces
+// a no-op stream. Diagnosed 2026-05-09 after the daemon's first boot
+// produced empty assistant responses while direct curl to LM Studio worked.
+registerBuiltInApiProviders();
 
 import { subctlOrchTools } from "./tools/subctl-orch";
 import { ghTools } from "./tools/gh";
