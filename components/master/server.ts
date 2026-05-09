@@ -10,9 +10,24 @@
 // Started by: launchd plist (com.subctl.master.plist) at boot
 // Logs to:    /Users/sem/Library/Logs/subctl/master.log
 
-import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import {
+  readFileSync,
+  existsSync,
+  mkdirSync,
+  writeFileSync,
+  appendFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+
+import { Agent } from "@earendil-works/pi-agent-core";
+import type {
+  AgentMessage,
+  AgentTool,
+  AgentToolResult,
+} from "@earendil-works/pi-agent-core";
+import type { Model } from "@earendil-works/pi-ai";
+import type { TSchema } from "typebox";
 
 import { subctlOrchTools } from "./tools/subctl-orch";
 import { ghTools } from "./tools/gh";
@@ -29,6 +44,7 @@ const MASTER_LOG = join(HOME, "Library", "Logs", "subctl", "master.log");
 const PROVIDERS_PATH = join(MASTER_STATE_DIR, "providers.json");
 const POLICY_PATH = join(MASTER_STATE_DIR, "policy.json");
 const STATE_PATH = join(MASTER_STATE_DIR, "state.json");
+const AGENT_STATE_PATH = join(MASTER_STATE_DIR, "agent-state.json");
 const DECISIONS_LOG = join(MASTER_STATE_DIR, "decisions.jsonl");
 const SKILL_PATH = join(COMPONENT_DIR, "..", "skills", "master", "SKILL.md");
 
@@ -156,26 +172,148 @@ function logDecision(entry: Omit<DecisionEntry, "ts">) {
   appendFileSync(DECISIONS_LOG, line + "\n");
 }
 
-import { appendFileSync } from "node:fs";
-
 // ─── tool registry ──────────────────────────────────────────────────────────
-// Aggregated for pi-agent-core. Final wiring happens once we have the agent
-// core SDK example open — for now this is the catalog of what's available.
+// Aggregated catalog of every tool the master can call, namespaced by source
+// module. The shape (`description` + raw JSON `schema` + `invoke`) is stable
+// across the four tool modules so workers in other slices can extend it.
 
-export const toolRegistry = {
+interface InternalTool {
+  description: string;
+  schema: Record<string, unknown>;
+  invoke: (args: Record<string, unknown>) => Promise<unknown>;
+}
+
+export const toolRegistry: Record<string, InternalTool> = {
   ...Object.fromEntries(
-    Object.entries(subctlOrchTools).map(([k, v]) => [`subctl_orch_${k}`, v]),
+    Object.entries(subctlOrchTools).map(([k, v]) => [
+      `subctl_orch_${k}`,
+      v as unknown as InternalTool,
+    ]),
   ),
   ...Object.fromEntries(
-    Object.entries(ghTools).map(([k, v]) => [`gh_${k}`, v]),
+    Object.entries(ghTools).map(([k, v]) => [
+      `gh_${k}`,
+      v as unknown as InternalTool,
+    ]),
   ),
   ...Object.fromEntries(
-    Object.entries(coderabbitTools).map(([k, v]) => [`coderabbit_${k}`, v]),
+    Object.entries(coderabbitTools).map(([k, v]) => [
+      `coderabbit_${k}`,
+      v as unknown as InternalTool,
+    ]),
   ),
   ...Object.fromEntries(
-    Object.entries(telegramTools).map(([k, v]) => [`telegram_${k}`, v]),
+    Object.entries(telegramTools).map(([k, v]) => [
+      `telegram_${k}`,
+      v as unknown as InternalTool,
+    ]),
   ),
 };
+
+// ─── SDK adapters ──────────────────────────────────────────────────────────
+// pi-agent-core wants AgentTool<TSchema> (typebox parameters + `execute`). Our
+// tools/*.ts modules export `{description, schema (raw JSON Schema), invoke}`.
+// The agent loop validates args with Value.Convert + a TypeBox/JsonSchema
+// fallback validator, so passing a plain JSON Schema as `parameters` is safe;
+// the Anthropic provider just reads `schema.properties` + `schema.required`.
+
+function adaptTool(name: string, tool: InternalTool): AgentTool {
+  return {
+    name,
+    label: name,
+    description: tool.description,
+    parameters: tool.schema as TSchema,
+    execute: async (
+      _toolCallId,
+      params,
+    ): Promise<AgentToolResult<unknown>> => {
+      const result = await tool.invoke(params as Record<string, unknown>);
+      const text =
+        typeof result === "string" ? result : JSON.stringify(result, null, 2);
+      return {
+        content: [{ type: "text", text }],
+        details: result,
+      };
+    },
+  };
+}
+
+// providers.json gives us `{provider, model, host?}` for each role. pi-ai's
+// `getModel(provider, modelId)` only resolves models in its built-in registry,
+// which doesn't cover local runtimes (mlx/ollama/lmstudio) or operator-pinned
+// custom IDs. We construct a Model<any> object directly — it's a structural
+// type and the provider/api fields drive dispatch in pi-ai's stream pipeline.
+const PROVIDER_API: Record<string, string> = {
+  anthropic: "anthropic-messages",
+  openai: "openai-responses",
+  "openai-codex": "openai-codex-responses",
+  google: "google-generative-ai",
+  "google-vertex": "google-vertex",
+  "amazon-bedrock": "bedrock-converse-stream",
+  mistral: "mistral-conversations",
+  // Local OpenAI-compatible runtimes (mlx, ollama, lmstudio, vllm…) all speak
+  // the OpenAI Chat Completions wire format.
+  mlx: "openai-completions",
+  ollama: "openai-completions",
+  lmstudio: "openai-completions",
+  vllm: "openai-completions",
+};
+
+function buildModel(cfg: {
+  provider: string;
+  model: string;
+  host?: string;
+}): Model<string> {
+  const api = PROVIDER_API[cfg.provider] ?? "openai-completions";
+  return {
+    id: cfg.model,
+    name: cfg.model,
+    api,
+    provider: cfg.provider,
+    baseUrl: cfg.host ?? "",
+    reasoning: false,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 128_000,
+    maxTokens: 4_096,
+  };
+}
+
+// ─── agent transcript persistence ──────────────────────────────────────────
+
+function loadAgentTranscript(): AgentMessage[] {
+  if (!existsSync(AGENT_STATE_PATH)) return [];
+  try {
+    const raw = readFileSync(AGENT_STATE_PATH, "utf8");
+    const parsed = JSON.parse(raw) as { messages?: AgentMessage[] };
+    return Array.isArray(parsed.messages) ? parsed.messages : [];
+  } catch (err) {
+    console.error(
+      `[master] WARN agent-state.json corrupt, starting fresh: ${(err as Error).message}`,
+    );
+    return [];
+  }
+}
+
+function saveAgentTranscript(messages: AgentMessage[]) {
+  writeFileSync(
+    AGENT_STATE_PATH,
+    JSON.stringify({ saved_at: new Date().toISOString(), messages }, null, 2),
+  );
+}
+
+function updateLastReviewTs() {
+  try {
+    const raw = readFileSync(STATE_PATH, "utf8");
+    const state = JSON.parse(raw) as Record<string, unknown>;
+    state.last_review_ts = new Date().toISOString();
+    writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
+  } catch (err) {
+    console.error(
+      `[master] WARN could not update state.json last_review_ts: ${(err as Error).message}`,
+    );
+  }
+}
 
 // ─── main ───────────────────────────────────────────────────────────────────
 
@@ -194,48 +332,120 @@ async function main() {
     `[master] loaded — operator=${policy.operator.name}, projects=${policy.projects.length}, models=${Object.keys(providers.models).length}`,
   );
 
-  // TODO(stage 1): wire pi-agent-core here.
-  //
-  //   import { createAgent } from "@earendil-works/pi-agent-core";
-  //   const agent = createAgent({
-  //     model: providers.models.supervisor,
-  //     systemPrompt: skill,
-  //     tools: toolRegistry,
-  //     state: { path: STATE_PATH },
-  //   });
-  //   const reviewLoop = setInterval(
-  //     () => agent.run("Walk the portfolio, decide next move, send digest if status changed."),
-  //     policy.global_defaults.review_interval_minutes * 60 * 1000,
-  //   );
-  //
-  // Until pi-agent-core is `npm install`'d into this component, the boot path
-  // above just verifies config + logs heartbeat. Once we install the SDK and
-  // confirm its API surface, we wire the real agent here.
+  // ── pi-agent-core wiring ────────────────────────────────────────────────
+  const supervisorCfg = providers.models.supervisor;
+  if (!supervisorCfg) {
+    console.error(
+      `[master] FATAL providers.json missing models.supervisor — cannot boot agent`,
+    );
+    process.exit(1);
+  }
+  const supervisorModel = buildModel(supervisorCfg);
+  const tools = Object.entries(toolRegistry).map(([name, t]) =>
+    adaptTool(name, t),
+  );
 
-  console.error(`[master] config OK. SDK wiring pending — see TODO in server.ts.`);
-  console.error(`[master] tools registered: ${Object.keys(toolRegistry).length}`);
+  const agent = new Agent({
+    initialState: {
+      systemPrompt: skill,
+      model: supervisorModel,
+      tools,
+      messages: loadAgentTranscript(),
+    },
+    sessionId: `clawd-master-${Date.now()}`,
+  });
+
+  // Persist transcript whenever the agent completes a run.
+  agent.subscribe((event) => {
+    if (event.type === "agent_end") {
+      saveAgentTranscript(agent.state.messages);
+    }
+  });
+
+  console.error(
+    `[master] agent ready — supervisor=${supervisorCfg.provider}/${supervisorCfg.model}, tools=${tools.length}, transcript=${agent.state.messages.length} msgs`,
+  );
 
   logDecision({
     project: "_master",
     action: "boot",
-    rationale: `daemon started — ${Object.keys(toolRegistry).length} tools, ${policy.projects.length} projects in portfolio`,
+    rationale: `daemon started — ${tools.length} tools, ${policy.projects.length} projects in portfolio, supervisor=${supervisorCfg.provider}/${supervisorCfg.model}`,
   });
 
-  // Heartbeat — replaces the agent loop until SDK is wired
+  // ── review loop ─────────────────────────────────────────────────────────
+  const intervalMin = policy.global_defaults.review_interval_minutes;
+  const intervalMs = Math.max(1, intervalMin) * 60 * 1000;
+  let stopped = false;
+  let inFlight = false;
+
+  const REVIEW_PROMPT =
+    "Walk the project portfolio, decide next action, send digest if status changed, return.";
+
+  async function runReviewTick() {
+    if (stopped || inFlight) return;
+    inFlight = true;
+    const tickStarted = new Date().toISOString();
+    console.error(`[master] review-tick start ${tickStarted}`);
+    try {
+      await agent.prompt(REVIEW_PROMPT);
+      updateLastReviewTs();
+      console.error(`[master] review-tick ok ${new Date().toISOString()}`);
+    } catch (err) {
+      // Per SDK contract, streamFn should never throw — but tool failures or
+      // listener errors can. Don't let one bad tick kill the daemon.
+      console.error(
+        `[master] review-tick failed: ${(err as Error).message ?? err}`,
+      );
+      logDecision({
+        project: "_master",
+        action: "review_tick_failed",
+        rationale: (err as Error).message ?? String(err),
+      });
+    } finally {
+      inFlight = false;
+    }
+  }
+
+  // Kick off the first tick immediately so launchd sees activity in the log,
+  // then schedule subsequent ticks on the policy interval.
+  void runReviewTick();
+  const reviewInterval = setInterval(() => void runReviewTick(), intervalMs);
+
+  // Heartbeat — keeps launchd / log-watchers happy between review ticks.
   const beat = setInterval(() => {
     console.error(`[master] heartbeat ${new Date().toISOString()}`);
   }, 60_000);
 
-  // Graceful shutdown
+  console.error(
+    `[master] review loop armed — interval=${intervalMin}m (${intervalMs}ms)`,
+  );
+
+  // ── graceful shutdown ───────────────────────────────────────────────────
   const shutdown = (signal: string) => {
+    if (stopped) return;
+    stopped = true;
     console.error(`[master] caught ${signal}, shutting down`);
+    clearInterval(reviewInterval);
     clearInterval(beat);
+    agent.abort();
+    // Flush transcript so the next boot resumes the conversation.
+    try {
+      saveAgentTranscript(agent.state.messages);
+    } catch (err) {
+      console.error(
+        `[master] WARN transcript flush on shutdown failed: ${(err as Error).message}`,
+      );
+    }
     logDecision({
       project: "_master",
       action: "shutdown",
       rationale: `signal=${signal}`,
     });
-    process.exit(0);
+    // Give in-flight listeners a moment to settle before we exit.
+    agent
+      .waitForIdle()
+      .catch(() => undefined)
+      .finally(() => process.exit(0));
   };
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.on("SIGINT", () => shutdown("SIGINT"));
