@@ -356,6 +356,19 @@ async function main() {
     adaptTool(name, t),
   );
 
+  // Local-runtime providers (mlx/ollama/lmstudio/vllm) don't need real API
+  // keys — LM Studio and Ollama accept any value, and the request never leaves
+  // the box. pi-ai's openai-completions provider still requires SOMETHING in
+  // the Authorization header, so feed it a sentinel for local providers and
+  // let real ones fall through (Anthropic + Codex pull from their own env vars
+  // / OAuth flow internally; we don't need to thread those here).
+  const LOCAL_PROVIDERS = new Set(["mlx", "ollama", "lmstudio", "vllm"]);
+  const getApiKey = (provider: string): string | undefined => {
+    if (LOCAL_PROVIDERS.has(provider)) return "not-needed";
+    // Fall through — pi-ai handles real providers via env vars / OAuth
+    return undefined;
+  };
+
   const agent = new Agent({
     initialState: {
       systemPrompt: skill,
@@ -364,6 +377,7 @@ async function main() {
       messages: loadAgentTranscript(),
     },
     sessionId: `subctl-master-${Date.now()}`,
+    getApiKey,
   });
 
   // Persist transcript whenever the agent completes a run.
