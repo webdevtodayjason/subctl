@@ -8,6 +8,9 @@
     __BUN__        absolute path to the bun binary (e.g. /opt/homebrew/bin/bun)
     __SERVER_TS__  absolute path to dashboard/server.ts
     __PORT__       port to listen on (e.g. 8787)
+    __DASH_HOST__  hostname/interface to bind (default 127.0.0.1, set
+                   SUBCTL_DASHBOARD_HOST=0.0.0.0 in env at install time
+                   to expose on LAN/Tailscale)
     __HOME__       absolute path to user's $HOME
 -->
 <plist version="1.0">
@@ -26,6 +29,8 @@
     <dict>
         <key>PORT</key>
         <string>__PORT__</string>
+        <key>SUBCTL_DASHBOARD_HOST</key>
+        <string>__DASH_HOST__</string>
         <key>HOME</key>
         <string>__HOME__</string>
         <key>PATH</key>

@@ -8,6 +8,11 @@ _SUBCTL_SERVICE_LOADED=1
 
 SUBCTL_SERVICE_LABEL="${SUBCTL_SERVICE_LABEL:-com.subctl.dashboard}"
 SUBCTL_SERVICE_PORT="${SUBCTL_SERVICE_PORT:-8787}"
+# Dashboard bind interface. Default 127.0.0.1 keeps fresh installs locked to
+# localhost — the dashboard is a control plane (spawns/kills orchestrators).
+# Set SUBCTL_DASHBOARD_HOST=0.0.0.0 before `subctl service enable` to expose
+# on LAN + Tailscale + every other interface.
+SUBCTL_DASHBOARD_HOST="${SUBCTL_DASHBOARD_HOST:-127.0.0.1}"
 SUBCTL_SERVICE_PLIST="$HOME/Library/LaunchAgents/${SUBCTL_SERVICE_LABEL}.plist"
 SUBCTL_SERVICE_TPL="$SUBCTL_REPO_ROOT/dashboard/launchd/com.example.subctl.dashboard.plist.tpl"
 SUBCTL_DASHBOARD_TS="$SUBCTL_REPO_ROOT/dashboard/server.ts"
@@ -38,7 +43,14 @@ subctl_service_status() {
       printf "%s● Running%s\n" "$C_GRN" "$C_RST"
       printf "  Label:    %s\n" "$SUBCTL_SERVICE_LABEL"
       printf "  PID:      %s\n" "${pid:-?}"
-      printf "  URL:      http://127.0.0.1:%s\n" "$SUBCTL_SERVICE_PORT"
+      # Read host from the running plist so status reflects what's actually bound
+      local host
+      host=$(/usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:SUBCTL_DASHBOARD_HOST" "$SUBCTL_SERVICE_PLIST" 2>/dev/null || echo "127.0.0.1")
+      if [[ "$host" == "0.0.0.0" ]]; then
+        printf "  URL:      http://127.0.0.1:%s  (also LAN/Tailscale on this port — bound 0.0.0.0)\n" "$SUBCTL_SERVICE_PORT"
+      else
+        printf "  URL:      http://%s:%s\n" "$host" "$SUBCTL_SERVICE_PORT"
+      fi
       printf "  Plist:    %s\n" "$SUBCTL_SERVICE_PLIST"
       ;;
     stopped)
@@ -68,6 +80,7 @@ subctl_service_enable() {
       -e "s|__BUN__|$bun_bin|g" \
       -e "s|__SERVER_TS__|$SUBCTL_DASHBOARD_TS|g" \
       -e "s|__PORT__|$SUBCTL_SERVICE_PORT|g" \
+      -e "s|__DASH_HOST__|$SUBCTL_DASHBOARD_HOST|g" \
       -e "s|__HOME__|$HOME|g" \
       "$SUBCTL_SERVICE_TPL" > "$SUBCTL_SERVICE_PLIST"
 

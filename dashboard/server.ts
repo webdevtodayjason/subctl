@@ -2055,9 +2055,16 @@ if (_listener.running) {
 
 // ---------- server ----------
 
+// Default to localhost-only — safer for fresh installs. Opt in to LAN
+// exposure via SUBCTL_DASHBOARD_HOST=0.0.0.0 (or a specific interface IP)
+// in the launchd plist or shell env. The dashboard is a control plane
+// (spawns/kills orchestrators), so binding to 0.0.0.0 should be a
+// deliberate choice on a trusted network.
+const HOSTNAME = process.env.SUBCTL_DASHBOARD_HOST || "127.0.0.1";
+
 const server = Bun.serve({
   port: PORT,
-  hostname: "127.0.0.1",
+  hostname: HOSTNAME,
   async fetch(req, srv) {
     const url = new URL(req.url);
     if (url.pathname === "/api/live") {
@@ -2540,4 +2547,4 @@ const server = Bun.serve({
   },
 });
 
-console.log(`subctl dashboard v${VERSION} listening on http://127.0.0.1:${server.port}`);
+console.log(`subctl dashboard v${VERSION} listening on http://${HOSTNAME}:${server.port}`);
