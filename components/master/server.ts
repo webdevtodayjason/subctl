@@ -406,6 +406,34 @@ async function main() {
   const REVIEW_PROMPT =
     "Walk the project portfolio, decide next action, send digest if status changed, return.";
 
+  // Errors that mean "the call didn't go through, try again" — not "the model
+  // refused / produced bad output". LM Studio evicts idle models under memory
+  // pressure; the next call auto-loads them, but the call that hit eviction
+  // returns "Model unloaded.". Network blips fall in the same bucket.
+  const TRANSIENT_ERROR_PATTERNS = [
+    /model unloaded/i,
+    /econnreset/i,
+    /econnrefused/i,
+    /ehostunreach/i,
+    /etimedout/i,
+    /fetch failed/i,
+    /socket hang up/i,
+  ];
+
+  function lastStopReason(): { stop?: string; err?: string } {
+    const msgs = agent.state.messages;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i] as { role?: string; stopReason?: string; errorMessage?: string };
+      if (m.role === "assistant") return { stop: m.stopReason, err: m.errorMessage };
+    }
+    return {};
+  }
+
+  function isTransient(errMsg: string | undefined): boolean {
+    if (!errMsg) return false;
+    return TRANSIENT_ERROR_PATTERNS.some((re) => re.test(errMsg));
+  }
+
   async function runReviewTick() {
     if (stopped || inFlight) return;
     inFlight = true;
@@ -413,8 +441,27 @@ async function main() {
     console.error(`[master] review-tick start ${tickStarted}`);
     try {
       await agent.prompt(REVIEW_PROMPT);
-      updateLastReviewTs();
-      console.error(`[master] review-tick ok ${new Date().toISOString()}`);
+      // SDK swallows provider errors and records them on the assistant message
+      // (stopReason="error"). Retry once for transient classes — gives LM Studio
+      // time to JIT-reload an evicted model, etc.
+      let { stop, err } = lastStopReason();
+      if (stop === "error" && isTransient(err) && !stopped) {
+        console.error(`[master] review-tick transient error "${err}", retrying in 5s`);
+        await new Promise((r) => setTimeout(r, 5000));
+        await agent.prompt(REVIEW_PROMPT);
+        ({ stop, err } = lastStopReason());
+      }
+      if (stop === "error") {
+        console.error(`[master] review-tick ended with error: ${err}`);
+        logDecision({
+          project: "_master",
+          action: "review_tick_error",
+          rationale: err ?? "unknown",
+        });
+      } else {
+        updateLastReviewTs();
+        console.error(`[master] review-tick ok ${new Date().toISOString()}`);
+      }
     } catch (err) {
       // Per SDK contract, streamFn should never throw — but tool failures or
       // listener errors can. Don't let one bad tick kill the daemon.
