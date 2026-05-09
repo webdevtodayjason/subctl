@@ -508,6 +508,11 @@ case "$cmd" in
     subctl_orch "$@"
     ;;
 
+  master)
+    . "$SUBCTL_REPO_ROOT/lib/master.sh"
+    subctl_master "$@"
+    ;;
+
   uninstall)
     bash "$SUBCTL_REPO_ROOT/uninstall.sh" "$@"
     ;;
