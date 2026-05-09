@@ -94,6 +94,48 @@ subctl orch msg <name> "<text>"        # tmux paste-buffer + Enter
 subctl orch kill <name>                # tmux kill-session
 ```
 
+## Master daemon (subctl master)
+
+A long-running per-machine daemon that owns rate-limit-aware dispatch
+across all your accounts. Two-bot model: a **master-bot** runs the
+strategic queue + provider routing, a **notify-bot** fields the inbound
+Telegram listener (replies, asks, acks). Wired into `subctl install`;
+runs under launchd.
+
+### CLI verbs
+
+| Command | Purpose |
+|---|---|
+| `subctl master enable` | Install + load the launchd plist (master starts at login) |
+| `subctl master disable` | Unload + uninstall the launchd plist |
+| `subctl master status` | Daemon state, uptime, queue depth, last heartbeat |
+| `subctl master logs` | Tail master + notify logs |
+| `subctl master prompt "<msg>"` | Inject a strategic prompt into the master queue |
+| `subctl master providers` | Show / edit configured providers |
+| `subctl master policy` | Show / edit dispatch policy |
+| `subctl master pause` / `resume` | Halt or resume dispatch (queue keeps accumulating) |
+| `subctl master restart` | Restart the daemon (reloads providers + policy) |
+
+### Config files
+
+| File | What lives here |
+|---|---|
+| `~/.config/subctl/master/providers.json` | Per-provider routing + cost weights (seeded from `components/master/providers.json.example` on first boot) |
+| `~/.config/subctl/master/policy.json` | Dispatch / pause / escalation policy (seeded from `components/master/policy.json.example` on first boot) |
+| `~/.config/subctl/master-notify.json` | notify-bot Telegram credentials + chat id |
+
+`subctl install` only places the daemon code. `providers.json` and
+`policy.json` are seeded by the daemon itself the first time it boots.
+
+### When NOT to invoke
+
+- Worker sessions don't `subctl master prompt` — that's strategic
+  operator surface, not worker-loop traffic. Workers escalate via
+  `subctl notify ask-*` exactly as before.
+- Don't pipe verbose status into the master from automation; the
+  daemon's queue is for human-or-orchestrator strategic intent, not
+  log fan-in.
+
 ## Telegram escalation channel
 
 ### Outbound: notify
