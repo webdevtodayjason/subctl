@@ -147,13 +147,44 @@ When given a task, first outline your agent plan before proceeding."
   # Launch Claude in the first pane
   tmux send-keys -t "$SESSION_NAME" "$CLAUDE_CMD" Enter
 
-  # Send initial prompt after Claude boots
+  # Send initial prompt after Claude boots.
+  #
+  # PRIOR BUG: a fixed `sleep 3` here silently lost prompts on most spawns —
+  # Claude Code takes 5–15s to render its UI on first launch (banner + the
+  # SessionStart hook's claude-mem context dump + initial frame). Pasting at
+  # T+3s landed the prompt during the boot sequence, where it was either
+  # consumed by the still-rendering UI or cleared when claude redrew the
+  # screen. Result: spawned sessions sat at an empty `❯` waiting for input
+  # the user thought they had already supplied.
+  #
+  # FIX: poll the pane for the `❯` input-prompt marker (only renders once
+  # Claude is fully booted) and paste once it appears. Run the entire
+  # wait + paste in a detached subshell so the spawn call returns fast —
+  # callers (HTTP API, CLI) get their session_name immediately and the
+  # prompt arrives whenever Claude becomes ready. 60s ceiling; warning
+  # logged to /tmp/subctl-spawn-paste.log if it can't find the prompt
+  # marker before the timeout.
   if [[ -n "$INITIAL_PROMPT" ]]; then
-    sleep 3
-    tmux set-buffer -b subctl-prompt "$INITIAL_PROMPT"
-    tmux paste-buffer -t "$SESSION_NAME" -b subctl-prompt
-    sleep 0.3
-    tmux send-keys -t "$SESSION_NAME" Enter
+    (
+      local elapsed=0
+      while [[ $elapsed -lt 120 ]]; do  # 120 × 0.5s = 60s ceiling
+        if tmux capture-pane -t "$SESSION_NAME" -p 2>/dev/null | grep -q '^❯'; then
+          break
+        fi
+        sleep 0.5
+        elapsed=$((elapsed + 1))
+      done
+      if [[ $elapsed -ge 120 ]]; then
+        echo "$(date -u +%FT%TZ) [$SESSION_NAME] ready-check timeout, pasting anyway" \
+          >> /tmp/subctl-spawn-paste.log 2>&1 || true
+      fi
+      sleep 0.3  # a beat after ready so the prompt is fully focused
+      tmux set-buffer -b subctl-prompt "$INITIAL_PROMPT"
+      tmux paste-buffer -t "$SESSION_NAME" -b subctl-prompt
+      sleep 0.3
+      tmux send-keys -t "$SESSION_NAME" Enter
+    ) </dev/null >/dev/null 2>&1 &
+    disown 2>/dev/null || true
   fi
 
   # Attach (unless --no-attach / SUBCTL_NO_ATTACH=1 was passed, which is the

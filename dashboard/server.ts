@@ -2361,6 +2361,9 @@ const server = Bun.serve({
       const r = spawnSync(subctlBin, args, {
         cwd: project,
         encoding: "utf8",
+        // 30s is plenty — teams.sh now backgrounds the prompt-paste, so the
+        // synchronous portion is just tmux session creation + setup (typically
+        // <2s). The wait-for-ready + paste happens async in a detached subshell.
         timeout: 30_000,
         env: { ...process.env, SUBCTL_NO_ATTACH: "1" },
       });
