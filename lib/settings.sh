@@ -270,3 +270,28 @@ subctl_settings_install_mcp() {
   ' "$settings" > "$settings.tmp" && mv "$settings.tmp" "$settings"
   subctl_ok "MCP server registered → settings.json (mcpServers.subctl)"
 }
+
+# Install the subctl master daemon. Two steps:
+#   1. Sanity-check components/master/server.ts is present (stage 1 scaffold)
+#   2. bun install in components/master/ if node_modules is missing
+#
+# Does NOT register the launchd plist — that's `subctl master enable`'s job.
+# Idempotent. Re-running upgrades deps only when node_modules is absent.
+subctl_settings_install_master() {
+  local master_dir="$SUBCTL_REPO_ROOT/components/master"
+  local server_ts="$master_dir/server.ts"
+  [[ ! -f "$server_ts" ]] && { subctl_warn "master server.ts missing at $server_ts"; return 1; }
+
+  if ! command -v bun >/dev/null 2>&1; then
+    subctl_warn "bun missing — master daemon cannot run. Install: curl -fsSL https://bun.sh/install | bash"
+    return 1
+  fi
+  if [[ ! -d "$master_dir/node_modules" ]]; then
+    subctl_info "installing master daemon dependencies..."
+    (cd "$master_dir" && bun install >/dev/null 2>&1) \
+      && subctl_ok "master deps installed" \
+      || { subctl_err "bun install failed in $master_dir"; return 1; }
+  fi
+
+  subctl_ok "master daemon installed (components/master/). Run 'subctl master enable' to start."
+}

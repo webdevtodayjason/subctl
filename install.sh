@@ -111,6 +111,10 @@ $DRY_RUN || subctl_settings_install_autonomy_skill
 subctl_info "installing MCP server (~/.claude/settings.json mcpServers.subctl)"
 $DRY_RUN || subctl_settings_install_mcp
 
+# ── 4d. install master daemon (subctl master) ───────────────────────────────
+subctl_info "installing master daemon (components/master/)"
+$DRY_RUN || subctl_settings_install_master
+
 # ── 5. generate shell aliases + update zshrc ────────────────────────────────
 if ! $NO_SHELL; then
   subctl_info "shell aliases"

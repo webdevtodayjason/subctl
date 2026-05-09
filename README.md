@@ -234,6 +234,19 @@ start) — the new tools appear in the next session.
 
 ---
 
+## Master daemon (v1.5.0+)
+
+`subctl install` also lays down a per-machine **master daemon**
+(`subctl master enable` runs it under launchd) that owns
+rate-limit-aware dispatch across every account. The daemon ships in two
+halves: a master-bot drives the strategic queue + provider routing, and
+a notify-bot fields inbound Telegram replies and acks. CLI surface:
+`subctl master {enable,disable,status,logs,prompt,providers,policy,pause,resume,restart}`.
+Full details, config schemas, and the launchd contract live in
+[components/master/README.md](components/master/README.md).
+
+---
+
 ## Orchestration control plane (v1.3.0+)
 
 Manage multiple tmux orchestrator sessions over HTTP. Any process can
