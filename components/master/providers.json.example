@@ -1,0 +1,59 @@
+{
+  "_comment": "Operator-editable model routing for clawd (subctl master). Roles are semantic — model names can change without code edits. Recommendation as of 2026-05: MLX runtime on Apple Silicon, with Ollama as fallback for models without MLX ports yet.",
+
+  "models": {
+    "router": {
+      "_comment": "Fast, lightweight. Used for 'is this task simple enough for me?' routing decisions and tool-call dispatch. Should fit in <8GB RAM and respond <1s.",
+      "provider": "mlx",
+      "model": "lmstudio-community/gemma-4-E4B-it-MLX-4bit",
+      "host": "http://localhost:8080"
+    },
+    "supervisor": {
+      "_comment": "Primary thinker. Walks the project portfolio, decides next actions, drafts Telegram digests. ~32GB resident at 8bit.",
+      "provider": "mlx",
+      "model": "lmstudio-community/gemma-4-31B-it-MLX-8bit",
+      "host": "http://localhost:8080"
+    },
+    "reviewer": {
+      "_comment": "Code-strong. Used for PR diff review, deep code reasoning, audit synthesis. Stronger on code than Gemma. ~14GB at 4bit.",
+      "provider": "mlx",
+      "model": "mlx-community/Qwen3.6-27B-4bit",
+      "host": "http://localhost:8080"
+    },
+    "embeddings": {
+      "_comment": "Memory + vault search. ModernBERT-based, fast, 768-dim. ~150MB.",
+      "provider": "mlx",
+      "model": "mlx-community/nomicai-modernbert-embed-base-bf16",
+      "host": "http://localhost:8080"
+    }
+  },
+
+  "escalate": {
+    "_comment": "When local models aren't enough — irreversible decisions, complex multi-repo planning, hard reasoning. Verified working with argent.",
+    "provider": "openai-codex",
+    "model": "gpt-5.2",
+    "auth": "oauth"
+  },
+
+  "fallback": {
+    "_comment": "Last-resort if local stack is offline AND escalate provider is unreachable. Uses your Anthropic Max subscription via subctl's account routing.",
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "auth": "max-subscription"
+  },
+
+  "routing_policy": {
+    "_comment": "Defaults applied when the master_skill doesn't override. The master can self-elevate on a per-task basis via the `escalate_decision` tool.",
+    "default": "supervisor",
+    "code_review": "reviewer",
+    "search_memory": "embeddings",
+    "irreversible_decision": "escalate",
+    "multi_repo_planning": "escalate"
+  },
+
+  "memory_budget_gb": {
+    "_comment": "Total resident memory the master should target on the M3 Ultra (256GB total). Helps the boot probe decide which models to keep loaded vs unload between calls. ~50GB resident is comfortable.",
+    "target": 50,
+    "ceiling": 80
+  }
+}
