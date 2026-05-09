@@ -128,9 +128,18 @@ When given a task, first outline your agent plan before proceeding."
   # CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 is what surfaces the Team*/SendMessage
   # tools and the Agent(team_name=...) variant — without it /team is just a
   # markdown skill with no runtime, which defeats the whole point of `teams`.
+  # SUBCTL_AGENT_ROLE=worker — anti-stuck guard. Read by the orchestrator-mode
+  # SKILL's activation guard (~/.claude/skills/orchestrator-mode/SKILL.md):
+  # if this env is "worker", the skill MUST NOT activate. Workers execute
+  # their assigned task directly; they do not orchestrate sub-workers.
+  # Defends against the orchestrator-mode-deadlock pattern where a worker
+  # reading a multi-phase prompt that mentions 'orchestrator' would self-load
+  # the skill and wait forever for approval to dispatch sub-workers.
   tmux new-session -d -s "$SESSION_NAME" -c "$PWD" \
     -e "CLAUDE_CONFIG_DIR=$cfg_dir" \
-    -e "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1"
+    -e "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1" \
+    -e "SUBCTL_AGENT_ROLE=worker" \
+    -e "SUBCTL_SPAWN_TS=$(date +%s)"
 
   # Defensive tmux ergonomics for this server. Without these, Claude Code's
   # mouse tracking eats wheel events, leaving tmux's scrollback unreachable

@@ -68,6 +68,30 @@ subctl_orch_spawn() {
   [[ -z "$account" || -z "$project" ]] && subctl_die "usage: subctl orch spawn --account <a> --project <path> [opts]"
   # Expand ~ in project path
   project="${project/#\~/$HOME}"
+
+  # Anti-stuck preface — auto-prepend a worker-role assertion to every prompt.
+  # Belt-and-braces with the SUBCTL_AGENT_ROLE=worker env var injected by
+  # teams.sh: even if the env var is somehow lost, the prompt itself tells
+  # the worker not to load orchestrator-mode. Prevents the deadlock pattern
+  # where a worker reading 'orchestrator (parent...)' in its assigned task
+  # description would self-load orchestrator-mode and wait forever.
+  #
+  # Skipped when prompt is empty (interactive spawn / resume cases).
+  if [[ -n "$prompt" ]]; then
+    local PREFACE="⚠ subctl-worker-preface (auto-prepended by orch.sh):
+You are running as a subctl worker. NOT an orchestrator. Do NOT load the
+orchestrator-mode skill. Do NOT TeamCreate. Do NOT spawn sub-workers. If
+your prompt below mentions 'orchestrator (parent...)' or 'team-lead' that
+refers to your PARENT — you don't replicate that role. Execute your
+assigned task directly. If the task is genuinely too large or ambiguous to
+execute as one worker, fire \`subctl notify ask-yesno\` to escalate to
+the operator. Don't dispatch sub-workers without explicit authorization.
+
+────────────────────────────────────────────────────────────
+"
+    prompt="${PREFACE}${prompt}"
+  fi
+
   local payload
   payload=$(jq -nc \
     --arg a "$account" \
