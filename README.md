@@ -100,15 +100,66 @@ The statusline reads only from filesystem state (`~/.claude/projects/<id>/transc
 
 ---
 
+## Requirements
+
+### Required (always)
+
+| Tool | Why | macOS install |
+|---|---|---|
+| **macOS 12+** or Linux | Tested on macOS 14/15; Linux runs but launchd integration is macOS-only (substitute systemd-user) | — |
+| **bash 3.2+** | Shell scripts | bundled |
+| **git** | Repo management | `brew install git` (or Xcode tools) |
+| **jq** | JSON parsing in helpers + idempotent settings.json patches | `brew install jq` |
+| **bun ≥ 1.2** | Dashboard service runtime + master daemon runtime + MCP server | `curl -fsSL https://bun.sh/install \| bash` |
+| **tmux ≥ 3.0** | `subctl orch spawn` + `subctl teams claude` worker sessions | `brew install tmux` |
+| **gh CLI** | PR queries, issue management, master daemon's GitHub tool surface | `brew install gh` |
+| **Claude Code CLI** | The agent runtime workers spawn on. Required even if you only use the dashboard side. | https://docs.claude.com/claude-code |
+
+### Optional (feature-dependent)
+
+| Tool | Enables | Install |
+|---|---|---|
+| **gum** | Prettier TUI prompts (subctl falls back to plain text without it) | `brew install gum` |
+| **Go 1.21+** | `subctl-deck` TUI session manager (Go binary built during install) | `brew install go` |
+| **CodeRabbit CLI** | Pre-PR diff review, structured `--agent` findings consumed by master daemon | `curl -fsSL https://cli.coderabbit.ai/install.sh \| sh` |
+
+### Master daemon (v1.5.0+) additionals
+
+The persistent supervisor daemon runs locally and routes across multi-tier LLMs. It's optional — `subctl` works fine without it.
+
+| Component | Why |
+|---|---|
+| **Local LLM runtime** — one of: Ollama (`brew install ollama`), LM Studio (https://lmstudio.ai), or `mlx_lm.server` (`pip install mlx-lm`) | Default + heavy + reviewer + embeddings tiers route to local models; remote tiers (Codex / Sonnet) fire only on hard reasoning |
+| **Local models** per `providers.json` | Recommended on Apple Silicon (256 GB unified memory ideal): `gemma-4-31B-it-MLX-8bit` (supervisor), `Qwen3.6-27B-4bit` (reviewer), `gemma-4-E4B-it-MLX-4bit` (router), `nomicai-modernbert-embed-base-bf16` (embeddings) — total ~50 GB resident |
+| **Two Telegram bot tokens** — register via `@BotFather` | One bot for tactical worker escalations (`~/.config/subctl/notify.json`), one bot for strategic master conversation (`~/.config/subctl/master-notify.json`). Tokens MUST differ — Telegram allows only one `getUpdates` poller per bot. |
+| **OpenAI Codex OAuth** (optional) | Escalation tier for irreversible decisions; uses your ChatGPT login, not an API key |
+| **Anthropic Max subscription** (optional fallback) | Last-resort tier when local stack offline |
+
+---
+
 ## Quick start
 
+```bash
+# 0. install prerequisites (fresh macOS — adjust per the Requirements table above)
+brew install jq tmux gh
+curl -fsSL https://bun.sh/install | bash
+curl -fsSL https://cli.coderabbit.ai/install.sh | sh   # optional but recommended
+
+# 1. clone + install
+git clone https://github.com/webdevtodayjason/subctl.git ~/code/subctl
+cd ~/code/subctl && ./install.sh
+
+# 2. add your first account (one-time browser login)
+subctl auth claude personal
+
+# 3. start the dashboard
+subctl service enable                  # http://localhost:8787
+
+# 4. open the TUI
+subctl
 ```
-$ git clone https://github.com/webdevtodayjason/subctl.git ~/.subctl
-$ cd ~/.subctl && ./install.sh
-$ subctl auth claude personal           # one-time browser login for the "personal" account
-$ subctl service enable                 # starts the dashboard at http://localhost:8787
-$ subctl                                # opens the TUI
-```
+
+For multi-Mac setup (e.g. master daemon on a beefy host, dashboards on each laptop), repeat steps 1 and 2 on each machine. Each machine has its own `~/.config/subctl/` and account isolation; nothing is shared automatically.
 
 ---
 
