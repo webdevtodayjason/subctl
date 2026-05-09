@@ -360,8 +360,74 @@
     renderCost(state.cost ?? { this_month: [], totals: { api_cost_month_usd: 0, subscription_total_usd: 0, savings_month_usd: 0 } });
     renderRateLimits(state.rate_limits ?? { today_total: 0, by_account: [] });
     renderEvents(state.rate_limits?.events_today ?? []);
+    renderOrchestrations(state.orchestrations ?? []);
     renderConversations(state.active_conversations ?? []);
     populateSearchAccountFilter(state.accounts ?? []);
+  }
+
+  // ----- Orchestrations (tmux sessions with CLAUDE_CONFIG_DIR set) -----
+
+  function renderOrchestrations(orchs) {
+    const tbody = $("orchestrations-body");
+    if (!tbody) return;
+    if (!orchs || orchs.length === 0) {
+      tbody.replaceChildren(emptyRow(6, "no orchestrator sessions running"));
+      return;
+    }
+    tbody.replaceChildren(...orchs.map(o => {
+      const tr = document.createElement("tr");
+
+      const nameCell = td(o.name);
+      nameCell.classList.add("ev-session");
+      tr.appendChild(nameCell);
+
+      const acctAlias = (o.claude_account_dir || "")
+        .replace(/\/$/, "")
+        .split("/")
+        .pop() || "—";
+      const acctPretty = acctAlias.replace(/^\.claude-?/, "") || acctAlias;
+      const acctTd = td(acctPretty);
+      acctTd.title = o.claude_account_dir || "";
+      tr.appendChild(acctTd);
+
+      const projShort = (o.path || "").split("/").pop() || o.path || "";
+      const projTd = td(projShort);
+      projTd.title = o.path || "";
+      tr.appendChild(projTd);
+
+      tr.appendChild(td(String(o.windows ?? 0), "num"));
+      tr.appendChild(td(o.attached ? "yes" : "no"));
+
+      const wrap = document.createElement("div");
+      wrap.className = "resume-actions";
+      const btnKill = document.createElement("button");
+      btnKill.className = "btn-resume";
+      btnKill.textContent = "kill";
+      btnKill.title = "tmux kill-session -t " + o.name;
+      btnKill.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        if (!confirm("Kill orchestrator session " + o.name + "?")) return;
+        btnKill.disabled = true;
+        btnKill.textContent = "killing…";
+        try {
+          const r = await fetch("/api/orchestration/" + encodeURIComponent(o.name) + "/kill", { method: "POST" });
+          const j = await r.json().catch(() => ({}));
+          if (!j.ok) {
+            btnKill.textContent = "failed";
+            btnKill.title = j.error || "kill failed";
+            setTimeout(() => { btnKill.disabled = false; btnKill.textContent = "kill"; }, 2500);
+          }
+          // On success the WebSocket pushes a fresh state and the row is re-rendered out.
+        } catch (err) {
+          btnKill.textContent = "error";
+          btnKill.title = String(err);
+        }
+      });
+      wrap.appendChild(btnKill);
+      tr.appendChild(td(wrap));
+
+      return tr;
+    }));
   }
 
   function renderSessions(sessions) {

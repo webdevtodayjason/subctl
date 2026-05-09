@@ -94,6 +94,25 @@
       </table>
     </section>
 
+    <section class="panel" data-tab="dashboard" id="orchestrations-panel">
+      <h2>Orchestrations <span class="panel-hint">tmux sessions spawned by <code>subctl teams claude</code> — orchestrator + worker panes pinned to a CLAUDE_CONFIG_DIR</span></h2>
+      <table class="data-table" id="orchestrations-table">
+        <thead>
+          <tr>
+            <th>session</th>
+            <th>account</th>
+            <th>project</th>
+            <th class="num">windows</th>
+            <th>attached</th>
+            <th>actions</th>
+          </tr>
+        </thead>
+        <tbody id="orchestrations-body">
+          <tr><td colspan="6" class="empty">no orchestrator sessions running</td></tr>
+        </tbody>
+      </table>
+    </section>
+
     <section class="panel" data-tab="dashboard" id="conversations-panel">
       <h2>Active conversations <span class="panel-hint">claude code sessions with file activity in the last 5min — includes ones outside tmux (this dashboard tab counts!)</span></h2>
       <table class="data-table" id="conversations-table">

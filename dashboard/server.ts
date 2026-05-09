@@ -1299,6 +1299,37 @@ function buildAccountSummaries(
   });
 }
 
+// ---------- orchestration list ----------
+
+// Filter tmux sessions to those spawned by `subctl teams claude` —
+// they have a CLAUDE_CONFIG_DIR set in their tmux env, which is the
+// signal that distinguishes "orchestrator session" from random tmux noise.
+// Used by the /api/orchestration endpoint AND included in buildState() so
+// the dashboard UI can render an Orchestrations panel.
+function buildOrchestrations(): Array<{
+  name: string;
+  path: string;
+  attached: boolean;
+  windows: number;
+  claude_account_dir: string | null;
+  is_orchestrator: boolean;
+}> {
+  const rawSessions = listTmuxSessions();
+  return rawSessions
+    .map((s) => {
+      const cfg = tmuxShowEnv(s.name, "CLAUDE_CONFIG_DIR");
+      return {
+        name: s.name,
+        path: s.path,
+        attached: s.attached,
+        windows: s.windows,
+        claude_account_dir: cfg,
+        is_orchestrator: cfg !== null,
+      };
+    })
+    .filter((x) => x.is_orchestrator);
+}
+
 // ---------- top-level state builder ----------
 
 function buildState() {
@@ -1383,6 +1414,7 @@ function buildState() {
     },
     accounts: accountSummaries,
     sessions: sessionsOut,
+    orchestrations: buildOrchestrations(),
     active_conversations: activeConversations,
     rate_limits: rateLimits,
     dispatch,
@@ -2401,22 +2433,7 @@ const server = Bun.serve({
     }
 
     if (url.pathname === "/api/orchestration" && req.method === "GET") {
-      // List sessions whose env contains CLAUDE_CONFIG_DIR (i.e. spawned by
-      // subctl teams claude) — separates orchestrator sessions from random
-      // tmux noise.
-      const rawSessions = listTmuxSessions();
-      const result = rawSessions.map(s => {
-        const cfg = tmuxShowEnv(s.name, "CLAUDE_CONFIG_DIR");
-        return {
-          name: s.name,
-          path: s.path,
-          attached: s.attached,
-          windows: s.windows,
-          claude_account_dir: cfg,
-          is_orchestrator: cfg !== null,
-        };
-      }).filter(x => x.is_orchestrator);
-      return new Response(JSON.stringify({ orchestrations: result }), {
+      return new Response(JSON.stringify({ orchestrations: buildOrchestrations() }), {
         headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
       });
     }
