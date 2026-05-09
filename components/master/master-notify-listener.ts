@@ -1,0 +1,520 @@
+// components/master/master-notify-listener.ts
+//
+// clawd's dedicated Telegram listener. NOT a separate process — runs IN
+// the master daemon (server.ts imports startMasterNotifyListener and
+// calls it from main()). One Bun process, one launchd plist, one
+// lifecycle.
+//
+// Bot conflict rule (mandatory):
+//   This is the MASTER bot — completely separate from the worker
+//   notify-bot driven by dashboard/notify-listener.ts. Telegram serves
+//   getUpdates to the first caller per bot, so each bot must have
+//   exactly ONE poller. Use a different bot token in master-notify.json
+//   than the one in ~/.config/subctl/notify.json. Don't share.
+//
+// Inbound flow:
+//   Operator → master-bot → this listener →
+//     • bot commands (/start /help /status /pause /resume) handled inline
+//     • free-text queued in pendingMessages, drained by the agent loop
+//
+// Outbound is NOT this file's job — components/master/tools/telegram.ts
+// already wraps the Telegram sendMessage API for the agent's tool surface.
+// We only call sendMessage here for the small set of inline command echoes.
+//
+// CLI-prompt bridge:
+//   `subctl master prompt "..."` (lib/master.sh) appends a JSON line to
+//   ~/.config/subctl/master/cli-prompts.jsonl. This listener polls that
+//   file (offset-tracked) and pushes lines into the SAME pendingMessages
+//   queue, so server.ts has ONE source of operator input regardless of
+//   channel.
+//
+// Server.ts contract (sdk-wiring slice fills this in):
+//   import {
+//     startMasterNotifyListener,
+//     drainOperatorInbox,
+//     subscribeOperatorMessages,
+//   } from "./master-notify-listener";
+//
+//   const listener = startMasterNotifyListener({
+//     stateProvider: () => buildLiveDaemonState(),
+//   });
+//   if (!listener.running) console.error(`[master] listener: ${listener.reason}`);
+//
+//   // Either pull each tick…
+//   const messages = drainOperatorInbox();
+//   for (const m of messages) feedAgent(m);
+//
+//   // …or push:
+//   subscribeOperatorMessages((m) => agentQueue.push(m));
+
+import {
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  statSync,
+  unlinkSync,
+} from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
+
+const HOME = homedir();
+const SUBCTL_CONFIG_DIR =
+  process.env.SUBCTL_CONFIG_DIR ?? join(HOME, ".config", "subctl");
+const MASTER_STATE_DIR = join(SUBCTL_CONFIG_DIR, "master");
+const MASTER_NOTIFY_CONFIG =
+  process.env.SUBCTL_MASTER_NOTIFY_CONFIG ??
+  join(SUBCTL_CONFIG_DIR, "master-notify.json");
+const OFFSET_PATH = join(MASTER_STATE_DIR, "master-notify-listener.offset");
+const PAUSED_FLAG = join(MASTER_STATE_DIR, "PAUSED");
+const CLI_PROMPTS_PATH = join(MASTER_STATE_DIR, "cli-prompts.jsonl");
+const CLI_PROMPTS_OFFSET = join(MASTER_STATE_DIR, "cli-prompts.offset");
+const DECISIONS_LOG = join(MASTER_STATE_DIR, "decisions.jsonl");
+
+interface MasterNotifyConfig {
+  telegram_bot_token: string;
+  telegram_chat_id: string;
+}
+
+export interface OperatorMessage {
+  ts: string;
+  source: "telegram" | "cli";
+  text: string;
+  from_id: number | null;
+  from_name: string | null;
+  chat_id: string | null;
+}
+
+type StateProvider = () => unknown;
+type MessageSubscriber = (msg: OperatorMessage) => void;
+
+let _running = false;
+let _abortController: AbortController | null = null;
+let _stateProvider: StateProvider | null = null;
+let _allowedChatId: string | null = null;
+let _botUsername: string | null = null;
+
+const pendingMessages: OperatorMessage[] = [];
+const subscribers: MessageSubscriber[] = [];
+
+export interface StartMasterListenerOptions {
+  stateProvider?: StateProvider;
+  onOperatorMessage?: MessageSubscriber;
+}
+
+export function startMasterNotifyListener(
+  opts: StartMasterListenerOptions = {},
+): { running: boolean; reason?: string } {
+  if (_running) return { running: true, reason: "already running" };
+
+  if (!existsSync(MASTER_NOTIFY_CONFIG)) {
+    return {
+      running: false,
+      reason: `no master-notify.json at ${MASTER_NOTIFY_CONFIG} — see components/master/README.md`,
+    };
+  }
+
+  let cfg: MasterNotifyConfig;
+  try {
+    cfg = JSON.parse(readFileSync(MASTER_NOTIFY_CONFIG, "utf8"));
+  } catch {
+    return { running: false, reason: "master-notify.json unreadable / not JSON" };
+  }
+  if (!cfg.telegram_bot_token) {
+    return { running: false, reason: "no telegram_bot_token in master-notify.json" };
+  }
+
+  mkdirSync(MASTER_STATE_DIR, { recursive: true });
+
+  _stateProvider = opts.stateProvider ?? null;
+  _allowedChatId = cfg.telegram_chat_id ?? null;
+  if (opts.onOperatorMessage) subscribers.push(opts.onOperatorMessage);
+
+  _running = true;
+  _abortController = new AbortController();
+
+  pollLoop(cfg.telegram_bot_token, _abortController.signal).catch((err) => {
+    console.error("[master-notify] poll loop crashed:", err?.message || err);
+    _running = false;
+  });
+
+  cliPromptLoop(_abortController.signal).catch((err) => {
+    console.error("[master-notify] cli-prompt loop crashed:", err?.message || err);
+  });
+
+  return { running: true };
+}
+
+export function stopMasterNotifyListener(): void {
+  if (_abortController) {
+    _abortController.abort();
+    _abortController = null;
+  }
+  _running = false;
+}
+
+export function masterNotifyListenerStatus(): {
+  running: boolean;
+  offset: number;
+  queue_size: number;
+  bot_username: string | null;
+} {
+  let offset = 0;
+  try {
+    offset = Number(readFileSync(OFFSET_PATH, "utf8").trim()) || 0;
+  } catch {
+    offset = 0;
+  }
+  return {
+    running: _running,
+    offset,
+    queue_size: pendingMessages.length,
+    bot_username: _botUsername,
+  };
+}
+
+// Drain the in-process operator-message queue. Returns all queued messages
+// in arrival order and clears the queue. Server.ts's agent loop calls
+// this on each tick (or after each tool call) to feed the agent.
+export function drainOperatorInbox(): OperatorMessage[] {
+  if (pendingMessages.length === 0) return [];
+  return pendingMessages.splice(0, pendingMessages.length);
+}
+
+// Subscribe to operator messages as they arrive. Returns a disposer.
+// Use this OR drainOperatorInbox(), not both — push and pull would
+// double-count the same message.
+export function subscribeOperatorMessages(cb: MessageSubscriber): () => void {
+  subscribers.push(cb);
+  return () => {
+    const idx = subscribers.indexOf(cb);
+    if (idx !== -1) subscribers.splice(idx, 1);
+  };
+}
+
+function enqueueOperatorMessage(msg: OperatorMessage) {
+  pendingMessages.push(msg);
+  for (const s of subscribers) {
+    try {
+      s(msg);
+    } catch (e) {
+      console.error("[master-notify] subscriber threw:", (e as any)?.message || e);
+    }
+  }
+}
+
+async function pollLoop(token: string, signal: AbortSignal) {
+  console.error("[master-notify] starting Telegram long-poll");
+
+  // Pre-flight: verify bot identity, warn on webhook (would block polling).
+  try {
+    const me = (await fetch(`https://api.telegram.org/bot${token}/getMe`).then(
+      (r) => r.json(),
+    )) as any;
+    if (me?.ok) {
+      _botUsername = me.result.username;
+      console.error(`[master-notify] bot: @${_botUsername}`);
+    } else {
+      console.error("[master-notify] getMe failed — bot token likely invalid");
+    }
+    const wh = (await fetch(
+      `https://api.telegram.org/bot${token}/getWebhookInfo`,
+    ).then((r) => r.json())) as any;
+    if (wh?.result?.url) {
+      console.error(
+        `[master-notify] WARNING: webhook set on this bot (${wh.result.url}) — getUpdates will return 409. Disable the webhook OR use a different bot.`,
+      );
+    }
+  } catch (e) {
+    console.error("[master-notify] preflight failed:", (e as any)?.message);
+  }
+
+  // Resume from saved offset so a restart doesn't replay updates.
+  let offset = 0;
+  try {
+    offset = Number(readFileSync(OFFSET_PATH, "utf8").trim()) || 0;
+  } catch {
+    offset = 0;
+  }
+
+  while (!signal.aborted) {
+    try {
+      const url = new URL(`https://api.telegram.org/bot${token}/getUpdates`);
+      url.searchParams.set("timeout", "25");
+      if (offset > 0) url.searchParams.set("offset", String(offset));
+      url.searchParams.set("allowed_updates", JSON.stringify(["message"]));
+
+      const r = await fetch(url, { signal });
+      if (!r.ok) {
+        const body = await r.text().catch(() => "");
+        if (r.status === 409) {
+          console.error(
+            "[master-notify] HTTP 409 — bot has a webhook OR another poller is running. Backing off 60s.",
+          );
+          await sleep(60_000);
+          continue;
+        }
+        console.error(`[master-notify] HTTP ${r.status}: ${body.slice(0, 200)}`);
+        await sleep(5_000);
+        continue;
+      }
+      const j = (await r.json()) as any;
+      if (!j?.ok || !Array.isArray(j.result)) {
+        await sleep(5_000);
+        continue;
+      }
+      for (const update of j.result) {
+        try {
+          await handleUpdate(update, token);
+        } catch (e) {
+          console.error(
+            "[master-notify] handleUpdate error:",
+            (e as any)?.message,
+          );
+        }
+        if (typeof update.update_id === "number") {
+          offset = update.update_id + 1;
+        }
+      }
+      try {
+        writeFileSync(OFFSET_PATH, String(offset));
+      } catch {
+        /* offset persistence is best-effort */
+      }
+    } catch (e: any) {
+      if (e?.name === "AbortError") break;
+      console.error("[master-notify] poll error:", e?.message || e);
+      await sleep(5_000);
+    }
+  }
+  console.error("[master-notify] stopped");
+  _running = false;
+}
+
+async function handleUpdate(update: any, token: string) {
+  if (!update.message) return;
+  const msg = update.message;
+  const text: string = (msg.text ?? "").trim();
+  if (!text) return;
+
+  const fromId: number = msg.from?.id ?? 0;
+  const fromName: string = msg.from?.first_name ?? "(unknown)";
+  const chatId: string = String(msg.chat?.id ?? "");
+  const ts = new Date().toISOString();
+
+  // Auth: clawd's tool surface can take real action (spawn workers, run gh
+  // commands). Drop messages from any chat other than the configured one
+  // — strangers must not have a path in.
+  if (_allowedChatId && chatId !== _allowedChatId) {
+    console.error(
+      `[master-notify] dropping message from unauthorized chat=${chatId} from=${fromName}(${fromId})`,
+    );
+    return;
+  }
+
+  if (text.startsWith("/")) {
+    const reply = await handleBotCommand(text);
+    await sendMessage(chatId, reply, token);
+    return;
+  }
+
+  enqueueOperatorMessage({
+    ts,
+    source: "telegram",
+    text,
+    from_id: fromId,
+    from_name: fromName,
+    chat_id: chatId,
+  });
+}
+
+async function handleBotCommand(text: string): Promise<string> {
+  const parts = text.split(/\s+/);
+  const cmd = (parts[0] || "").toLowerCase().split("@")[0]!;
+  switch (cmd) {
+    case "/start":
+    case "/help":
+      return formatHelp();
+    case "/status":
+      return formatStatus();
+    case "/pause": {
+      try {
+        mkdirSync(MASTER_STATE_DIR, { recursive: true });
+        writeFileSync(PAUSED_FLAG, new Date().toISOString());
+        return "⏸  clawd review loop PAUSED.\n\nThe daemon checks this flag each tick — already-running tools will complete. Resume with /resume.";
+      } catch (e: any) {
+        return `pause failed: ${e?.message || e}`;
+      }
+    }
+    case "/resume": {
+      try {
+        if (existsSync(PAUSED_FLAG)) {
+          unlinkSync(PAUSED_FLAG);
+          return "▶️  clawd review loop RESUMED.";
+        }
+        return "ℹ️  clawd was not paused.";
+      } catch (e: any) {
+        return `resume failed: ${e?.message || e}`;
+      }
+    }
+    default:
+      return `Unknown command: ${cmd}\n\nTry: /status, /pause, /resume, /help`;
+  }
+}
+
+function formatHelp(): string {
+  return [
+    "🤖 clawd — the dev-team conductor",
+    "",
+    "/start, /help    this message",
+    "/status          current daemon state + recent activity",
+    "/pause           halt the autonomous review loop",
+    "/resume          resume after pause",
+    "",
+    "Free-text messages are queued for the next agent turn — clawd",
+    "will act on them per its policy and report back.",
+  ].join("\n");
+}
+
+function formatStatus(): string {
+  const lines: string[] = [];
+  lines.push(
+    `📊 clawd · ${new Date().toISOString().slice(0, 19).replace("T", " ")}Z`,
+  );
+  lines.push("");
+  lines.push(`Loop: ${existsSync(PAUSED_FLAG) ? "⏸ PAUSED" : "▶️ running"}`);
+  lines.push(`Queued operator messages: ${pendingMessages.length}`);
+
+  if (_stateProvider) {
+    try {
+      const s = _stateProvider() as any;
+      if (s?.last_review_ts) lines.push(`Last review: ${s.last_review_ts}`);
+      if (s?.active_projects) {
+        const pcount = Object.keys(s.active_projects).length;
+        lines.push(`Active projects: ${pcount}`);
+      }
+      if (s?.known_workers) {
+        const wcount = Object.keys(s.known_workers).length;
+        lines.push(`Known workers: ${wcount}`);
+      }
+    } catch (e: any) {
+      lines.push(`(state unavailable: ${e?.message || e})`);
+    }
+  } else {
+    lines.push(
+      "(stateProvider not wired — pass one to startMasterNotifyListener)",
+    );
+  }
+
+  if (existsSync(DECISIONS_LOG)) {
+    try {
+      const all = readFileSync(DECISIONS_LOG, "utf8").trim().split("\n");
+      const last = all.slice(-3).filter(Boolean);
+      if (last.length) {
+        lines.push("");
+        lines.push("Recent decisions:");
+        for (const line of last) {
+          try {
+            const d = JSON.parse(line);
+            const t = (d.ts || "").slice(11, 19);
+            lines.push(`  ${t}Z · ${d.project || "—"} · ${d.action || "—"}`);
+          } catch {
+            /* skip bad line */
+          }
+        }
+      }
+    } catch {
+      /* swallow — log read is best-effort */
+    }
+  }
+
+  return lines.join("\n");
+}
+
+async function sendMessage(chatId: string, text: string, token: string) {
+  try {
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, text }),
+    });
+  } catch (e) {
+    console.error("[master-notify] sendMessage failed:", (e as any)?.message);
+  }
+}
+
+// CLI-prompt bridge: poll the cli-prompts.jsonl file written by
+// `subctl master prompt "..."`. Byte-offset-tracked so a daemon
+// restart doesn't replay history. On first start (no offset file),
+// we skip whatever's already in the file — we only consume prompts
+// queued AFTER boot.
+async function cliPromptLoop(signal: AbortSignal) {
+  let offset = 0;
+  try {
+    offset = Number(readFileSync(CLI_PROMPTS_OFFSET, "utf8").trim()) || 0;
+  } catch {
+    offset = 0;
+  }
+
+  if (offset === 0 && existsSync(CLI_PROMPTS_PATH)) {
+    try {
+      offset = statSync(CLI_PROMPTS_PATH).size;
+      writeFileSync(CLI_PROMPTS_OFFSET, String(offset));
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  while (!signal.aborted) {
+    try {
+      if (existsSync(CLI_PROMPTS_PATH)) {
+        const size = statSync(CLI_PROMPTS_PATH).size;
+        if (size < offset) {
+          // file rotated/truncated — restart from 0
+          offset = 0;
+        }
+        if (size > offset) {
+          const whole = readFileSync(CLI_PROMPTS_PATH);
+          const newBytes = whole.subarray(offset).toString("utf8");
+          const lines = newBytes.split("\n").filter((l) => l.trim().length > 0);
+          for (const line of lines) {
+            try {
+              const j = JSON.parse(line) as any;
+              const text = String(j.text ?? "").trim();
+              if (!text) continue;
+              enqueueOperatorMessage({
+                ts: j.ts ?? new Date().toISOString(),
+                source: "cli",
+                text,
+                from_id: null,
+                from_name: j.user ?? "cli",
+                chat_id: null,
+              });
+            } catch {
+              console.error(
+                "[master-notify] bad cli-prompt line:",
+                line.slice(0, 100),
+              );
+            }
+          }
+          offset = size;
+          try {
+            writeFileSync(CLI_PROMPTS_OFFSET, String(offset));
+          } catch {
+            /* best-effort */
+          }
+        }
+      }
+    } catch (e: any) {
+      if (e?.name === "AbortError") break;
+      console.error("[master-notify] cli-prompt poll error:", e?.message || e);
+    }
+    // 2s cadence — local stat() is cheap, and operator latency on a
+    // CLI prompt is not user-perceptible at this granularity.
+    await sleep(2_000);
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}

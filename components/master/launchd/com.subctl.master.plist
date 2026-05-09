@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  clawd (subctl master daemon) launchd template.
+
+  Template — placeholders are substituted at install time by
+  lib/master.sh:subctl_master_enable():
+    __OWNER__      reverse-DNS prefix (e.g. com.subctl)
+    __BUN__        absolute path to the bun binary
+    __SERVER_TS__  absolute path to components/master/server.ts
+    __HOME__       absolute path to user's $HOME
+
+  Boot expectations from the daemon (server.ts):
+    - emit a heartbeat log line within 30s of boot. server.ts logs
+      `[master] booting clawd ...` immediately and a heartbeat every
+      60s thereafter; ThrottleInterval=10 keeps successive crash-restarts
+      from runaway-detecting.
+
+  Both stdout and stderr stream to the SAME file
+  (~/Library/Logs/subctl/master.log) — server.ts uses console.error
+  for all structured logs (so a single file gives you the full picture
+  without merging streams).
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>__OWNER__.master</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__BUN__</string>
+        <string>run</string>
+        <string>__SERVER_TS__</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>WorkingDirectory</key>
+    <string>__HOME__</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/Library/Logs/subctl/master.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Library/Logs/subctl/master.log</string>
+</dict>
+</plist>
