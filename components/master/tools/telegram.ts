@@ -1,4 +1,4 @@
-// Telegram outbound for clawd. Uses a SEPARATE bot from subctl's
+// Telegram outbound for subctl master. Uses a SEPARATE bot from subctl's
 // notify-listener bot. Two-bot model is intentional:
 //   - notify-bot: tactical worker escalations (existing, in components/notify/)
 //   - master-bot: strategic conversation with the operator (this file + master-notify-listener.ts)
@@ -61,7 +61,7 @@ async function sendMessage(
 export const telegramTools = {
   send: {
     description:
-      "Send a message to the operator via clawd's dedicated Telegram bot. Default to plain text — Markdown only when needed (and only with parse_mode='MarkdownV2', escape carefully). Keep messages under 200 words.",
+      "Send a message to the operator via subctl master's dedicated Telegram bot. Default to plain text — Markdown only when needed (and only with parse_mode='MarkdownV2', escape carefully). Keep messages under 200 words.",
     schema: {
       type: "object",
       properties: {

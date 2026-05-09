@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# lib/master.sh — subctl master verb dispatcher (clawd daemon control plane).
+# lib/master.sh — subctl master verb dispatcher (subctl master daemon control plane).
 #
 # Mirrors lib/service.sh's launchd plumbing for the dashboard, but for the
 # master daemon (components/master/server.ts). Configuration lives at
 # ~/.config/subctl/master/{providers,policy}.json; bot creds at
-# ~/.config/subctl/master-notify.json (separate from notify.json — clawd
+# ~/.config/subctl/master-notify.json (separate from notify.json — subctl master
 # uses its own dedicated Telegram bot per the two-bot mandate in
 # components/master/README.md).
 
@@ -41,7 +41,7 @@ subctl_master() {
       cat <<'EOF'
 subctl master <verb> [args]
 
-  Control clawd — the master orchestrator daemon.
+  Control subctl master — the master orchestrator daemon.
 
 Verbs:
   enable          Install + load launchd plist (auto-starts at login)
@@ -92,7 +92,7 @@ subctl_master_enable() {
     subctl_err "master Telegram config missing: $SUBCTL_MASTER_NOTIFY_CFG"
     cat <<EOF >&2
 
-clawd uses a SEPARATE Telegram bot from 'subctl notify' (the worker-
+subctl master uses a SEPARATE Telegram bot from 'subctl notify' (the worker-
 escalation bot). To set it up:
 
   1. Open Telegram, message @BotFather, /newbot, get a NEW token.
@@ -135,7 +135,7 @@ EOF
     return 1
   fi
 
-  subctl_ok "clawd enabled — auto-starts at login"
+  subctl_ok "subctl master enabled — auto-starts at login"
   sleep 1
   local pid
   pid=$(subctl_master_pid)
@@ -152,10 +152,10 @@ subctl_master_disable() {
   if [[ -f "$SUBCTL_MASTER_PLIST" ]]; then
     launchctl unload "$SUBCTL_MASTER_PLIST" 2>/dev/null || true
     rm -f "$SUBCTL_MASTER_PLIST"
-    subctl_ok "clawd disabled — plist removed"
+    subctl_ok "subctl master disabled — plist removed"
     subctl_info "state preserved at $SUBCTL_MASTER_STATE_DIR"
   else
-    subctl_info "clawd was not enabled"
+    subctl_info "subctl master was not enabled"
   fi
 }
 
@@ -166,16 +166,16 @@ subctl_master_status() {
   case "$state" in
     running)
       pid=$(subctl_master_pid)
-      printf "%s● clawd running%s\n" "$C_GRN" "$C_RST"
+      printf "%s● subctl master running%s\n" "$C_GRN" "$C_RST"
       printf "  Label:    %s\n" "$SUBCTL_MASTER_LABEL"
       printf "  PID:      %s\n" "${pid:-?}"
       ;;
     stopped)
-      printf "%s○ clawd stopped%s (auto-start enabled)\n" "$C_YLW" "$C_RST"
+      printf "%s○ subctl master stopped%s (auto-start enabled)\n" "$C_YLW" "$C_RST"
       printf "  Plist:    %s\n" "$SUBCTL_MASTER_PLIST"
       ;;
     not-installed)
-      printf "%s○ clawd not enabled%s\n" "$C_DIM" "$C_RST"
+      printf "%s○ subctl master not enabled%s\n" "$C_DIM" "$C_RST"
       printf "  Enable:   subctl master enable\n"
       ;;
   esac
@@ -225,7 +225,7 @@ subctl_master_logs() {
   done
   if [[ ! -f "$SUBCTL_MASTER_LOG" ]]; then
     subctl_warn "no log yet at $SUBCTL_MASTER_LOG"
-    subctl_info "  (created on first clawd boot — try: subctl master enable)"
+    subctl_info "  (created on first subctl master boot — try: subctl master enable)"
     return 1
   fi
   if $follow; then
@@ -256,12 +256,12 @@ subctl_master_prompt() {
     --arg user "${USER:-cli}" \
     '{ts: $ts, text: $text, source: "cli", user: $user}')
   printf "%s\n" "$payload" >> "$SUBCTL_MASTER_CLI_PROMPTS"
-  subctl_ok "queued for clawd: ${text:0:80}"
+  subctl_ok "queued for subctl master: ${text:0:80}"
   subctl_info "the daemon picks up cli-prompts on its next poll cycle (~2s)"
 
   # Soft warning if the daemon isn't running — the prompt will wait until it is.
   if [[ "$(subctl_master_state)" != "running" ]]; then
-    subctl_warn "clawd is not running — prompt will be processed when you 'subctl master enable'"
+    subctl_warn "subctl master is not running — prompt will be processed when you 'subctl master enable'"
   fi
 }
 
@@ -298,7 +298,7 @@ subctl_master_policy() {
 subctl_master_pause() {
   mkdir -p "$SUBCTL_MASTER_STATE_DIR"
   date -u +'%Y-%m-%dT%H:%M:%SZ' > "$SUBCTL_MASTER_PAUSED_FLAG"
-  subctl_ok "clawd review loop PAUSED"
+  subctl_ok "subctl master review loop PAUSED"
   subctl_info "  flag: $SUBCTL_MASTER_PAUSED_FLAG"
   subctl_info "  the daemon checks this each tick — already-running tools will complete"
 }
@@ -306,9 +306,9 @@ subctl_master_pause() {
 subctl_master_resume() {
   if [[ -f "$SUBCTL_MASTER_PAUSED_FLAG" ]]; then
     rm -f "$SUBCTL_MASTER_PAUSED_FLAG"
-    subctl_ok "clawd review loop RESUMED"
+    subctl_ok "subctl master review loop RESUMED"
   else
-    subctl_info "clawd was not paused"
+    subctl_info "subctl master was not paused"
   fi
 }
 

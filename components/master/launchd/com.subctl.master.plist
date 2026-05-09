@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  clawd (subctl master daemon) launchd template.
+  subctl master (subctl master daemon) launchd template.
 
   Template — placeholders are substituted at install time by
   lib/master.sh:subctl_master_enable():
@@ -12,7 +12,7 @@
 
   Boot expectations from the daemon (server.ts):
     - emit a heartbeat log line within 30s of boot. server.ts logs
-      `[master] booting clawd ...` immediately and a heartbeat every
+      `[master] booting subctl master ...` immediately and a heartbeat every
       60s thereafter; ThrottleInterval=10 keeps successive crash-restarts
       from runaway-detecting.
 

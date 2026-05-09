@@ -1,4 +1,4 @@
-// subctl orchestration control plane — exposed to clawd as tools.
+// subctl orchestration control plane — exposed to subctl master as tools.
 // All calls go via the dashboard HTTP API at SUBCTL_API (default
 // http://127.0.0.1:8787). The dashboard service must be running.
 

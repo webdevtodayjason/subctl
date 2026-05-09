@@ -1,4 +1,4 @@
-# clawd — the dev-team conductor
+# subctl master — the dev-team conductor
 
 > Persistent supervisor daemon. Drives subctl orchestrators across the operator's code projects, routes across local + remote LLMs, keeps the operator in the loop via a dedicated Telegram bot.
 
@@ -8,13 +8,13 @@
 
 ## What this is
 
-The "master orchestrator" sitting above subctl's worker layer. While `subctl orch spawn` creates one-shot worker sessions, **clawd is always running** — walking the portfolio, deciding what to advance next, watching for stalled workers, and talking to the operator over its own Telegram channel.
+The "master orchestrator" sitting above subctl's worker layer. While `subctl orch spawn` creates one-shot worker sessions, **subctl master is always running** — walking the portfolio, deciding what to advance next, watching for stalled workers, and talking to the operator over its own Telegram channel.
 
 ```
                     Operator (Jason)
                          ↕ Telegram (master-bot, dedicated)
                 ┌────────────────┐
-                │     clawd      │   Node daemon, pi-agent-core SDK
+                │     subctl master      │   Node daemon, pi-agent-core SDK
                 │  (always on)   │   Runs on M3 Studio Ultra
                 │                │   Routes: local MLX (default) → Codex (escalate) → Sonnet (fallback)
                 └────────┬───────┘
@@ -38,9 +38,9 @@ The "master orchestrator" sitting above subctl's worker layer. While `subctl orc
 |---|---|---|
 | Daemon entry | Boot, config load, heartbeat, signal handling | `server.ts` |
 | Master SKILL | The CEO/CFO mandate (system prompt for the agent) | `../skills/master/SKILL.md` |
-| Tool registry | What clawd can invoke | `tools/{subctl-orch,gh,coderabbit,telegram}.ts` |
+| Tool registry | What subctl master can invoke | `tools/{subctl-orch,gh,coderabbit,telegram}.ts` |
 | Multi-model routing | Operator-editable provider config | `providers.json.example` → `~/.config/subctl/master/providers.json` |
-| Per-project autonomy | What clawd can drive vs. ask vs. shadow | `policy.json.example` → `~/.config/subctl/master/policy.json` |
+| Per-project autonomy | What subctl master can drive vs. ask vs. shadow | `policy.json.example` → `~/.config/subctl/master/policy.json` |
 | State / decisions | Persistent working memory + audit trail | `~/.config/subctl/master/{state.json,decisions.jsonl}` |
 | Master Telegram bot | Strategic conversation channel | `master-notify-listener.ts` (TODO stage 2) |
 | Worker notify bot | Tactical escalation (existing subctl notify) | `../../dashboard/notify-listener.ts` |
@@ -70,9 +70,9 @@ The master self-elevates per-task based on `routing_policy` in `providers.json` 
 
 `policy.json` declares per-project autonomy levels:
 
-- **drive** — clawd decides + acts. Used for projects you trust the system to push forward.
-- **ask** — clawd proposes + waits for operator yes/no. Used for high-stakes projects (AMP Cortex, anything with regulatory/financial exposure).
-- **shadow** — clawd observes + reports, never acts. Used for projects in moratorium (e.g. argent-core during a refactor).
+- **drive** — subctl master decides + acts. Used for projects you trust the system to push forward.
+- **ask** — subctl master proposes + waits for operator yes/no. Used for high-stakes projects (AMP Cortex, anything with regulatory/financial exposure).
+- **shadow** — subctl master observes + reports, never acts. Used for projects in moratorium (e.g. argent-core during a refactor).
 
 `must_escalate` is additive: even drive-tier projects can require operator approval for specific actions like `push_to_main`, `merge_pr`, `apply_migration`.
 
@@ -89,7 +89,7 @@ bun install
 $EDITOR ~/.config/subctl/master/providers.json
 $EDITOR ~/.config/subctl/master/policy.json
 
-# 3. Configure clawd's Telegram bot (separate from notify-bot)
+# 3. Configure subctl master's Telegram bot (separate from notify-bot)
 echo '{"bot_token": "YOUR_NEW_BOT_TOKEN", "chat_id": "8693117634"}' > ~/.config/subctl/master-notify.json
 chmod 600 ~/.config/subctl/master-notify.json
 
@@ -110,7 +110,7 @@ subctl master enable           # boot the persistent daemon (launchd plist)
 subctl master disable          # tear down + unregister from launchd
 subctl master status            # dashboard pane: providers, policy, last review, recent decisions
 subctl master logs [--follow]   # tail master.log
-subctl master prompt "..."      # send a one-shot message to clawd from CLI
+subctl master prompt "..."      # send a one-shot message to subctl master from CLI
 subctl master providers         # inspect active routing config
 subctl master policy            # inspect active policy
 subctl master pause             # halt autonomous review loop (manual mode only)
@@ -119,7 +119,7 @@ subctl master resume            # resume after pause
 
 ---
 
-## Boundaries clawd doesn't cross
+## Boundaries subctl master doesn't cross
 
 Built into the master SKILL:
 
@@ -158,6 +158,6 @@ Built into the master SKILL:
 
 ## Why this isn't ArgentOS
 
-Argent is broad-purpose: calendar, email, knowledge work, agents-on-everything. clawd is **code-dev only** — narrower scope, deeper specialization. One workflow vocabulary (git, GitHub, CI, branches, PRs, project portfolios), one integration surface (subctl + GitHub + Telegram). Lives in subctl, not in argent-core, and never tries to grow into Argent's footprint.
+Argent is broad-purpose: calendar, email, knowledge work, agents-on-everything. subctl master is **code-dev only** — narrower scope, deeper specialization. One workflow vocabulary (git, GitHub, CI, branches, PRs, project portfolios), one integration surface (subctl + GitHub + Telegram). Lives in subctl, not in argent-core, and never tries to grow into Argent's footprint.
 
 Per the operator's instruction: *"Argent is awesome but serves a different purpose."*

@@ -1,6 +1,6 @@
 // components/master/master-notify-listener.ts
 //
-// clawd's dedicated Telegram listener. NOT a separate process — runs IN
+// subctl master's dedicated Telegram listener. NOT a separate process — runs IN
 // the master daemon (server.ts imports startMasterNotifyListener and
 // calls it from main()). One Bun process, one launchd plist, one
 // lifecycle.
@@ -302,7 +302,7 @@ async function handleUpdate(update: any, token: string) {
   const chatId: string = String(msg.chat?.id ?? "");
   const ts = new Date().toISOString();
 
-  // Auth: clawd's tool surface can take real action (spawn workers, run gh
+  // Auth: subctl master's tool surface can take real action (spawn workers, run gh
   // commands). Drop messages from any chat other than the configured one
   // — strangers must not have a path in.
   if (_allowedChatId && chatId !== _allowedChatId) {
@@ -341,7 +341,7 @@ async function handleBotCommand(text: string): Promise<string> {
       try {
         mkdirSync(MASTER_STATE_DIR, { recursive: true });
         writeFileSync(PAUSED_FLAG, new Date().toISOString());
-        return "⏸  clawd review loop PAUSED.\n\nThe daemon checks this flag each tick — already-running tools will complete. Resume with /resume.";
+        return "⏸  subctl master review loop PAUSED.\n\nThe daemon checks this flag each tick — already-running tools will complete. Resume with /resume.";
       } catch (e: any) {
         return `pause failed: ${e?.message || e}`;
       }
@@ -350,9 +350,9 @@ async function handleBotCommand(text: string): Promise<string> {
       try {
         if (existsSync(PAUSED_FLAG)) {
           unlinkSync(PAUSED_FLAG);
-          return "▶️  clawd review loop RESUMED.";
+          return "▶️  subctl master review loop RESUMED.";
         }
-        return "ℹ️  clawd was not paused.";
+        return "ℹ️  subctl master was not paused.";
       } catch (e: any) {
         return `resume failed: ${e?.message || e}`;
       }
@@ -364,14 +364,14 @@ async function handleBotCommand(text: string): Promise<string> {
 
 function formatHelp(): string {
   return [
-    "🤖 clawd — the dev-team conductor",
+    "🤖 subctl master — the dev-team conductor",
     "",
     "/start, /help    this message",
     "/status          current daemon state + recent activity",
     "/pause           halt the autonomous review loop",
     "/resume          resume after pause",
     "",
-    "Free-text messages are queued for the next agent turn — clawd",
+    "Free-text messages are queued for the next agent turn — subctl master",
     "will act on them per its policy and report back.",
   ].join("\n");
 }
@@ -379,7 +379,7 @@ function formatHelp(): string {
 function formatStatus(): string {
   const lines: string[] = [];
   lines.push(
-    `📊 clawd · ${new Date().toISOString().slice(0, 19).replace("T", " ")}Z`,
+    `📊 subctl master · ${new Date().toISOString().slice(0, 19).replace("T", " ")}Z`,
   );
   lines.push("");
   lines.push(`Loop: ${existsSync(PAUSED_FLAG) ? "⏸ PAUSED" : "▶️ running"}`);

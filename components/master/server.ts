@@ -1,4 +1,4 @@
-// clawd — the master daemon entry point.
+// subctl master — the master daemon entry point.
 //
 // Boots a persistent supervisor process that:
 //   1. Loads providers.json (multi-model routing) + policy.json (per-project autonomy)
@@ -318,7 +318,7 @@ function updateLastReviewTs() {
 // ─── main ───────────────────────────────────────────────────────────────────
 
 async function main() {
-  console.error(`[master] booting clawd v0.1.0`);
+  console.error(`[master] booting subctl master v0.1.0`);
 
   const probe = ensureConfigFiles();
   if (!probe.ok) {
@@ -352,7 +352,7 @@ async function main() {
       tools,
       messages: loadAgentTranscript(),
     },
-    sessionId: `clawd-master-${Date.now()}`,
+    sessionId: `subctl-master-${Date.now()}`,
   });
 
   // Persist transcript whenever the agent completes a run.

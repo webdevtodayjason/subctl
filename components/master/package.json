@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "private": true,
-  "description": "clawd — the dev-team conductor. Persistent supervisor daemon that drives subctl orchestrators via pi-agent-core, routes across local + remote LLMs, and keeps the operator in the loop via a dedicated Telegram bot.",
+  "description": "subctl master — the dev-team conductor. Persistent supervisor daemon that drives subctl orchestrators via pi-agent-core, routes across local + remote LLMs, and keeps the operator in the loop via a dedicated Telegram bot.",
   "main": "./server.ts",
   "scripts": {
     "start": "bun run server.ts",

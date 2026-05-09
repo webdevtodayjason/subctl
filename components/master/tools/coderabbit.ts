@@ -1,5 +1,5 @@
 // CodeRabbit CLI integration. The --agent mode emits structured findings
-// suitable for programmatic consumption by clawd.
+// suitable for programmatic consumption by subctl master.
 //
 // The master uses this in two ways:
 //   1. Pre-PR review (worker invokes via MCP, before pushing) — ensures the
