@@ -4,6 +4,18 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.1.9] — 2026-05-10
+
+Patch — dev-team tmux sessions spawn at 220×50 instead of default 80×24.
+
+### Changed
+
+- **`tmux new-session` in `providers/claude/teams.sh` now passes `-x 220 -y 50`.** Without these flags, detached tmux sessions default to 80×24 because the spawning shell has no controlling terminal. Claude Code's TUI lays out at 80 columns, which renders fine for an attached user but looks half-empty in the dashboard's wide tmux-preview modal — the right ~50% of the (now letterboxed) modal stayed blank because the captured content was genuinely 80 cols. 220×50 gives Claude Code enough horizontal room for tool-call blocks to render on single lines, plus 50 rows of scrollback context.
+
+### Live fix applied on M3 Ultra
+
+- The `claude-Down-Time-Arena` session was resized from 80×24 → 220×50 via `tmux resize-window`. Claude Code repaints on SIGWINCH so no work was lost; the next dashboard capture will show the wider layout. Future spawns pick up the change automatically from v2.1.9.
+
 ## [2.1.8] — 2026-05-10
 
 Patch — modal width-variant CSS specificity fix.

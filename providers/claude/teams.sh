@@ -261,7 +261,16 @@ When given a task, first outline your agent plan before proceeding."
   # Defends against the orchestrator-mode-deadlock pattern where a worker
   # reading a multi-phase prompt that mentions 'orchestrator' would self-load
   # the skill and wait forever for approval to dispatch sub-workers.
+  # -x 220 -y 50 sets the initial pane size. Without these flags tmux
+  # creates the session at its default 80×24 because the spawning shell
+  # has no controlling terminal (we use -d for detached). 80 columns is
+  # too narrow for Claude Code's TUI when the operator later views the
+  # capture via the dashboard's wide tmux-preview modal — the right
+  # portion of the modal stays blank. 220×50 gives Claude Code enough
+  # horizontal room for tool-call call/result blocks to render on single
+  # lines, and 50 rows is enough scrollback context. Diagnosed 2026-05-10.
   tmux new-session -d -s "$SESSION_NAME" -c "$PWD" \
+    -x 220 -y 50 \
     -e "CLAUDE_CONFIG_DIR=$cfg_dir" \
     -e "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1" \
     -e "SUBCTL_AGENT_ROLE=worker" \
