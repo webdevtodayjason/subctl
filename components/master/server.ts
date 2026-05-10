@@ -61,6 +61,14 @@ import { skillAuthorTools } from "./tools/skill-author";
 import { notifyTools, bindNotifyBroadcast } from "./tools/notify";
 import { specforgeTools } from "./tools/specforge";
 import { schedulerTools, popDueFollowups } from "./tools/scheduler";
+import { attachmentsTools } from "./tools/attachments";
+import {
+  saveAttachment,
+  listAttachments,
+  getAttachment,
+  deleteAttachment,
+  inlineAttachmentBlocks,
+} from "./attachments";
 import { extractLastTurn, findGaps, formatCorrectionPrompt } from "./verifier";
 import {
   buildPersonalityFragment,
@@ -322,6 +330,12 @@ export const toolRegistry: Record<string, InternalTool> = {
   ...Object.fromEntries(
     Object.entries(schedulerTools).map(([k, v]) => [
       k, // schedule_followup, list_followups, cancel_followup
+      v as unknown as InternalTool,
+    ]),
+  ),
+  ...Object.fromEntries(
+    Object.entries(attachmentsTools).map(([k, v]) => [
+      k, // read_attachment, list_attachments
       v as unknown as InternalTool,
     ]),
   ),
@@ -1412,7 +1426,11 @@ async function main() {
       }
 
       if (url.pathname === "/chat" && req.method === "POST") {
-        let body: { text?: string; source?: "chat" | "telegram" | "watchdog" };
+        let body: {
+          text?: string;
+          source?: "chat" | "telegram" | "watchdog";
+          attachments?: string[];
+        };
         try {
           body = await req.json();
         } catch {
@@ -1420,10 +1438,136 @@ async function main() {
         }
         const text = (body.text ?? "").trim();
         const source = body.source ?? "chat";
-        if (!text) return Response.json({ ok: false, error: "empty text" }, { status: 400 });
+        const attachmentIds = Array.isArray(body.attachments)
+          ? body.attachments.filter((s): s is string => typeof s === "string" && s.length > 0)
+          : [];
+        if (!text && attachmentIds.length === 0) {
+          return Response.json({ ok: false, error: "empty text and no attachments" }, { status: 400 });
+        }
+
+        // Resolve attachments → fenced <attachment>…</attachment> blocks
+        // and prepend to the prompt the agent actually sees. The browser-
+        // visible transcript will record just the metadata (handled in
+        // dispatchToAgent's annotation path, future work; for now the
+        // assistant sees the inline content + the user's text).
+        let prompt = text;
+        let resolvedAttachments: Array<{ id: string; filename: string; size: number }> = [];
+        if (attachmentIds.length > 0) {
+          const inj = inlineAttachmentBlocks(attachmentIds);
+          if (inj.errors.length > 0) {
+            return Response.json(
+              { ok: false, error: "attachment resolution failed", details: inj.errors },
+              { status: 400 },
+            );
+          }
+          resolvedAttachments = inj.resolved;
+          prompt = inj.text + (text ? "\n\n" + text : "");
+        }
+
         // Fire and forget — caller subscribes to /events to watch the response stream.
-        void dispatchToAgent(text, source);
-        return Response.json({ ok: true, source, accepted_at: new Date().toISOString() }, { status: 202 });
+        void dispatchToAgent(prompt, source);
+        return Response.json(
+          {
+            ok: true,
+            source,
+            accepted_at: new Date().toISOString(),
+            attachments: resolvedAttachments,
+          },
+          { status: 202 },
+        );
+      }
+
+      // ── Attachments (Phase 3l) ──────────────────────────────────────────
+      // POST /attachments — body: raw bytes. Headers carry metadata:
+      //   X-Filename: original filename
+      //   X-Mime:     mime type (optional; inferred from filename if omitted)
+      //   X-Source:   one of "upload" | "paste" | "tool"
+      if (url.pathname === "/attachments" && req.method === "POST") {
+        // Browser sends X-Filename URL-encoded (handles unicode + special chars).
+        // decodeURIComponent is safe to call on bare ASCII too.
+        const rawFilename = req.headers.get("X-Filename") ?? "untitled.txt";
+        let filename: string;
+        try {
+          filename = decodeURIComponent(rawFilename);
+        } catch {
+          filename = rawFilename;
+        }
+        const mime = req.headers.get("X-Mime") ?? undefined;
+        const sourceHdr = req.headers.get("X-Source") ?? "upload";
+        const validSources = new Set(["upload", "paste", "tool"]);
+        const source = (validSources.has(sourceHdr) ? sourceHdr : "upload") as
+          "upload" | "paste" | "tool";
+        let buf: Buffer;
+        try {
+          const ab = await req.arrayBuffer();
+          buf = Buffer.from(ab);
+        } catch (err) {
+          return Response.json({ ok: false, error: (err as Error).message }, { status: 400 });
+        }
+        const result = saveAttachment(buf, filename, mime, source);
+        if (!result.ok) {
+          return Response.json(result, { status: 400 });
+        }
+        return Response.json(
+          {
+            ok: true,
+            attachment: {
+              id: result.attachment!.id,
+              filename: result.attachment!.filename,
+              size: result.attachment!.size,
+              mime: result.attachment!.mime,
+              sha256: result.attachment!.sha256,
+              created_at: result.attachment!.created_at,
+            },
+          },
+          { status: 201 },
+        );
+      }
+      if (url.pathname === "/attachments" && req.method === "GET") {
+        const all = listAttachments();
+        // Sort newest first, return metadata only.
+        all.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+        return Response.json({
+          ok: true,
+          count: all.length,
+          attachments: all.map((a) => ({
+            id: a.id,
+            filename: a.filename,
+            size: a.size,
+            mime: a.mime,
+            source: a.source,
+            created_at: a.created_at,
+          })),
+        });
+      }
+      {
+        const m = url.pathname.match(/^\/attachments\/([a-f0-9]+)$/);
+        if (m && req.method === "GET") {
+          const id = m[1]!;
+          const att = getAttachment(id);
+          if (!att) {
+            return Response.json({ ok: false, error: "not found" }, { status: 404 });
+          }
+          try {
+            const buf = readFileSync(att.storage_path);
+            return new Response(buf, {
+              headers: {
+                "Content-Type": att.mime,
+                "Content-Disposition": `inline; filename="${att.filename}"`,
+              },
+            });
+          } catch (err) {
+            return Response.json(
+              { ok: false, error: (err as Error).message },
+              { status: 500 },
+            );
+          }
+        }
+        if (m && req.method === "DELETE") {
+          const id = m[1]!;
+          const r = deleteAttachment(id);
+          return Response.json(r, { status: r.ok ? 200 : 404 });
+        }
       }
 
       if (url.pathname === "/events" && req.method === "GET") {

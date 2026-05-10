@@ -3219,14 +3219,165 @@
       }
     }
 
+    // ── Attachments (Phase 3l) ────────────────────────────────────────────
+    // Tracks the attachment ids currently queued for the NEXT outgoing
+    // message. Cleared after send. Each entry has the id + minimal metadata
+    // for rendering the pill.
+    const pendingAttachments = []; // {id, filename, size}
+    const attachBar = $("master-attachments");
+    const attachBtn = $("master-attach-btn");
+    const attachFile = $("master-attach-file");
+    // Threshold for auto-paste-as-attachment. Spec §3l default: 4 KB.
+    const PASTE_ATTACH_THRESHOLD = 4 * 1024;
+
+    function fmtBytes(n) {
+      if (n < 1024) return `${n} B`;
+      if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+      return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+    }
+
+    function renderAttachmentBar() {
+      if (!attachBar) return;
+      if (pendingAttachments.length === 0) {
+        attachBar.hidden = true;
+        attachBar.innerHTML = "";
+        return;
+      }
+      attachBar.hidden = false;
+      attachBar.innerHTML = pendingAttachments.map((a, i) =>
+        `<span class="att-pill" data-i="${i}">
+          <span class="att-name">${escForHtml(a.filename)}</span>
+          <span class="att-size">${fmtBytes(a.size)}</span>
+          <button type="button" class="att-x" data-i="${i}" aria-label="remove">×</button>
+        </span>`
+      ).join("");
+      for (const btn of attachBar.querySelectorAll(".att-x")) {
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const i = parseInt(btn.getAttribute("data-i"), 10);
+          if (Number.isInteger(i)) {
+            pendingAttachments.splice(i, 1);
+            renderAttachmentBar();
+          }
+        });
+      }
+    }
+
+    function escForHtml(s) {
+      return String(s).replace(/[&<>"']/g, (c) =>
+        c === "&" ? "&amp;" : c === "<" ? "&lt;" : c === ">" ? "&gt;" :
+        c === '"' ? "&quot;" : "&#39;"
+      );
+    }
+
+    async function uploadAttachment(blob, filename, source) {
+      try {
+        const r = await fetch("/api/master/attachments", {
+          method: "POST",
+          headers: {
+            "Content-Type": blob.type || "application/octet-stream",
+            "X-Filename": encodeURIComponent(filename),
+            "X-Mime": blob.type || "",
+            "X-Source": source,
+          },
+          body: blob,
+        });
+        const j = await r.json();
+        if (!r.ok || !j.ok) {
+          const msg = (j && (j.error || j.hint)) || `HTTP ${r.status}`;
+          if (window.notice && window.notice.error) window.notice.error("Attach failed", msg);
+          else appendMessage("error", "attach failed: " + msg, { label: "error" });
+          return null;
+        }
+        pendingAttachments.push({
+          id: j.attachment.id,
+          filename: j.attachment.filename,
+          size: j.attachment.size,
+        });
+        renderAttachmentBar();
+        return j.attachment;
+      } catch (err) {
+        appendMessage("error", "attach error: " + err, { label: "error" });
+        return null;
+      }
+    }
+
+    // Paperclip → file picker
+    if (attachBtn && attachFile) {
+      attachBtn.addEventListener("click", () => attachFile.click());
+      attachFile.addEventListener("change", async () => {
+        const files = Array.from(attachFile.files || []);
+        for (const f of files) {
+          await uploadAttachment(f, f.name, "upload");
+        }
+        attachFile.value = "";
+      });
+    }
+
+    // Drag-and-drop onto the input or anywhere in master-chat panel.
+    const dropZone = form && form.closest("section");
+    if (dropZone) {
+      dropZone.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        dropZone.classList.add("drag-over");
+      });
+      dropZone.addEventListener("dragleave", (e) => {
+        if (!dropZone.contains(e.relatedTarget)) dropZone.classList.remove("drag-over");
+      });
+      dropZone.addEventListener("drop", async (e) => {
+        e.preventDefault();
+        dropZone.classList.remove("drag-over");
+        const files = Array.from(e.dataTransfer?.files || []);
+        for (const f of files) {
+          await uploadAttachment(f, f.name, "upload");
+        }
+      });
+    }
+
+    // Paste interception — if the pasted text exceeds the threshold, take
+    // over the paste event, upload the text as an attachment, and clear
+    // the input. Small pastes pass through normally.
+    input.addEventListener("paste", async (e) => {
+      const clip = e.clipboardData;
+      if (!clip) return;
+      const pasted = clip.getData("text") || "";
+      if (pasted.length < PASTE_ATTACH_THRESHOLD) return; // normal paste
+      e.preventDefault();
+      // Synthesize a filename from the timestamp + first non-whitespace line.
+      const firstLine = pasted.split("\n").find((l) => l.trim()) || "pasted";
+      const slug = firstLine
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .slice(0, 40)
+        .replace(/^-|-$/g, "") || "pasted";
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      const filename = `pasted-${stamp}-${slug}.md`;
+      const blob = new Blob([pasted], { type: "text/markdown" });
+      await uploadAttachment(blob, filename, "paste");
+    });
+
     async function sendChat(text) {
       sendBtn.disabled = true;
-      appendMessage("user", text, { label: "you" });
+      // Build the visible message — include attachment names if any.
+      const attachmentIds = pendingAttachments.map((a) => a.id);
+      const attachLabels = pendingAttachments.map((a) => `📎 ${a.filename}`).join("  ");
+      const visible = attachLabels
+        ? (text ? `${attachLabels}\n${text}` : attachLabels)
+        : text;
+      appendMessage("user", visible, { label: "you" });
+      // Clear pending attachments NOW (so the next message starts fresh).
+      pendingAttachments.length = 0;
+      renderAttachmentBar();
       try {
         const r = await fetch("/api/master/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text, source: "chat" }),
+          body: JSON.stringify({
+            text,
+            source: "chat",
+            attachments: attachmentIds,
+          }),
         });
         if (!r.ok) {
           const j = await r.json().catch(() => ({}));
@@ -3243,7 +3394,8 @@
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       const text = input.value.trim();
-      if (!text) return;
+      // Allow send with empty text if attachments exist.
+      if (!text && pendingAttachments.length === 0) return;
       input.value = "";
       if (text.startsWith("/")) {
         await handleSlashCommand(text);

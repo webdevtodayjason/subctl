@@ -4,6 +4,47 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.4.0] — 2026-05-10
+
+Minor — Phase 3l ships (MVP): **document attachments in chat.**
+
+### Added
+
+- **Attachment storage layer** (`components/master/attachments.ts`): on-disk files under `~/.config/subctl/master/attachments/<date>/<id>-<filename>` plus an append-only `index.jsonl` of metadata. Each entry tracks id, filename, sha256, size, mime, source (`upload` / `paste` / `tool`), created/deleted timestamps. Soft-delete in index, hard-delete the file. 5 MiB per-attachment cap; mime allowlist covers text/* + JSON/YAML/TOML/XML/script types (PDF + images deferred to Phase 2).
+- **Master HTTP endpoints**:
+  - `POST /attachments` (raw bytes; metadata via `X-Filename` / `X-Mime` / `X-Source` headers) → `{id, filename, size, mime, sha256}`
+  - `GET /attachments` → list metadata
+  - `GET /attachments/<id>` → file bytes with proper mime
+  - `DELETE /attachments/<id>` → soft-delete + remove on-disk file
+- **`POST /chat` now accepts `attachments: [id…]`**. Server resolves each id, wraps content in fenced `<attachment id="…" filename="…" size="…" mime="…">…</attachment>` blocks, prepends to the prompt the model sees. Empty `text` is fine if at least one attachment is present.
+- **Two new master tools** (`components/master/tools/attachments.ts`):
+  - `read_attachment(id, start?, end?)` — re-read an attachment by id, with optional byte-range chunking. Use case: auto-compaction has dropped the original turn's inline content; this tool lets the master re-fetch without forcing the operator to re-upload.
+  - `list_attachments(filter_filename?, limit?)` — find an attachment id by filename substring when the operator references a document by name.
+
+### Frontend
+
+- **Paperclip button** next to the chat input opens a multi-file picker.
+- **Drag-and-drop** anywhere on the chat panel highlights the input area and attaches dropped files.
+- **Paste interception**: pasted text ≥ 4 KB is automatically uploaded as `paste-<timestamp>-<slug>.md` instead of going into the input. Smaller pastes pass through as normal.
+- **Pill chips** above the input show each queued attachment (filename + size) with a × to remove before send. Cleared automatically after send.
+- **Visible chat history** records each attachment as `📎 filename` plus any user text, so the transcript stays readable even though the model received the full inline content.
+
+### Out of scope for v2.4.0
+
+- PDF text extraction (`pdftotext`) — deferred. PDF mime not yet in the allowlist; ship after wiring extraction.
+- Image vision — deferred until a vision-capable supervisor is wired (qwen-VL via LM Studio is the obvious path).
+- `subctl master attachments gc` CLI verb — `gc()` exists in the module; wiring deferred.
+- Subctl-side worker prompt augmentation (handing attachments to dev-team workers).
+
+### Try it
+
+```
+# Drop a markdown file on the chat panel.
+# Or paste a long block (>4KB) — auto-attaches.
+# Or click 📎 → pick a file.
+# Send. Master sees the content; transcript shows just the pill.
+```
+
 ## [2.3.0] — 2026-05-10
 
 Minor — Phase 3m ships (MVP): **multi-team camera view** in the Orchestration tab.

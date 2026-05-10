@@ -162,8 +162,13 @@
       <div class="master-log" id="master-log">
         <div class="master-log-empty">no messages yet — type below to start a conversation, or try <code>/help</code> for slash commands</div>
       </div>
+      <!-- Attachment pill row — shows files attached to the next outgoing
+           message. Hidden when empty. Phase 3l. -->
+      <div class="master-attachments" id="master-attachments" hidden></div>
       <form class="master-input" id="master-input-form" autocomplete="off">
-        <input type="text" id="master-input" placeholder="message subctl master… (enter to send)" autocomplete="off">
+        <input type="file" id="master-attach-file" hidden multiple>
+        <button type="button" class="master-attach-btn" id="master-attach-btn" title="Attach a document (or drag-drop onto the chat — large pastes auto-attach)">📎</button>
+        <input type="text" id="master-input" placeholder="message subctl master… (enter to send · drop or paste a doc to attach)" autocomplete="off">
         <button type="submit" id="master-send">send</button>
       </form>
     </section>

@@ -3322,6 +3322,55 @@ tr.project-in-policy td { background: rgba(108, 214, 151, 0.03); }
 }
 .master-input button:hover:not([disabled]) { background: #1f4256; border-color: #3a5a6a; }
 .master-input button[disabled] { opacity: 0.5; cursor: not-allowed; }
+/* Paperclip / attachment trigger sits flush with the input, smaller than SEND. */
+.master-input button.master-attach-btn {
+  padding: 8px 10px;
+  background: #0c0c0c;
+  border: 1px solid #2a2a2a;
+  color: #888;
+  font-size: 15px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.master-input button.master-attach-btn:hover { background: #141414; color: #c4c4c4; border-color: #3a3a3a; }
+/* Attachment pill bar sits above the input row when there's at least one
+   attachment queued for the next send. Hidden via [hidden] when empty. */
+.master-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 0 10px;
+}
+.master-attachments[hidden] { display: none; }
+.master-attachments .att-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: #0e2a16;
+  border: 1px solid #1a4a2a;
+  color: #6cd697;
+  border-radius: 12px;
+  font-size: 11px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.master-attachments .att-name { color: #cdeed6; }
+.master-attachments .att-size { color: #6a9a78; font-size: 10.5px; }
+.master-attachments .att-x {
+  background: transparent;
+  border: none;
+  color: #6cd697;
+  padding: 0 2px;
+  font-size: 13px;
+  cursor: pointer;
+  line-height: 1;
+}
+.master-attachments .att-x:hover { color: #fff; }
+/* Drag-over highlight on the chat panel when a file is being dropped. */
+.orchestration-screen .master-chat.drag-over {
+  outline: 2px dashed #5fd7ff;
+  outline-offset: -8px;
+}
 
 /* ── dev teams panel ──────────────────────────────────────────────────── */
 .team-dot {
