@@ -1540,7 +1540,20 @@ body[data-active-tab="skills"]        section[data-tab]:not([data-tab="skills"])
 .health-row.ok .mark, .key-row.ok .mark, .oauth-row.ok .mark { color: #6cd697; }
 .health-row.err .mark, .key-row.err .mark, .oauth-row.err .mark { color: #d66c6c; }
 .health-row.warn .mark, .key-row.warn .mark { color: #d6c46c; }
-.health-row .name, .key-row .name, .oauth-row .name { width: 130px; color: #aaa; font-weight: 500; }
+.health-row .name, .key-row .name, .oauth-row .name { width: 150px; color: #aaa; font-weight: 500; }
+.req-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 0 6px;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  background: #2a1010;
+  color: #d66c6c;
+  border-radius: 2px;
+  vertical-align: middle;
+}
+.health-row.ok .req-badge { background: #102a18; color: #6cd697; }
 .health-row .detail, .key-row .detail, .oauth-row .detail { flex: 1; color: #888; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11.5px; }
 .health-row .install-cmd {
   display: inline-block;

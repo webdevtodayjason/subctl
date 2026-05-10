@@ -17,11 +17,25 @@
 //                     project status updates to vault entries — not for
 //                     code generation, not for arbitrary file IO.
 
-import { existsSync, appendFileSync, mkdirSync } from "node:fs";
+import { existsSync, appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve, normalize, join, dirname } from "node:path";
 
-const VAULT_ROOT = `${homedir()}/Documents/Obsidian Vault`;
+// Resolve the configured Obsidian vault root. Reads
+// ~/.config/subctl/master/obsidian.json if present (set via dashboard
+// Settings → Obsidian vault), otherwise falls back to the default.
+function resolveVaultRoot(): string {
+  const fallback = `${homedir()}/Documents/Obsidian Vault`;
+  try {
+    const cfgPath = `${homedir()}/.config/subctl/master/obsidian.json`;
+    if (existsSync(cfgPath)) {
+      const j = JSON.parse(readFileSync(cfgPath, "utf8")) as { vault_root?: string };
+      if (j.vault_root) return j.vault_root.replace(/^~/, homedir());
+    }
+  } catch { /* ignore */ }
+  return fallback;
+}
+
 const SUBCTL_API = process.env.SUBCTL_API ?? "http://127.0.0.1:8787";
 
 function pathEscapesRoot(targetAbs: string, root: string): boolean {
@@ -118,18 +132,19 @@ export const projectTools = {
       if (rel.startsWith("/")) return { ok: false, error: "path must be relative to the vault root, not absolute" };
       if (rel.includes("..")) return { ok: false, error: "path may not contain '..'" };
 
-      const target = resolve(VAULT_ROOT, rel);
-      if (pathEscapesRoot(target, VAULT_ROOT)) {
+      const vaultRoot = resolveVaultRoot();
+      const target = resolve(vaultRoot, rel);
+      if (pathEscapesRoot(target, vaultRoot)) {
         return { ok: false, error: `path escapes vault root: ${target}` };
       }
 
       // Make sure the vault root itself exists — if Obsidian isn't installed
       // yet, the master should NOT silently create the vault dir; that
       // would leave Jason with an empty unconfigured Obsidian directory.
-      if (!existsSync(VAULT_ROOT)) {
+      if (!existsSync(vaultRoot)) {
         return {
           ok: false,
-          error: `vault root does not exist at ${VAULT_ROOT}. Install Obsidian and create the vault first (brew install --cask obsidian).`,
+          error: `vault root does not exist at ${vaultRoot}. Install Obsidian (curl -fsSL https://obsidian.md/install.sh) or set the vault_root via Settings → Obsidian vault.`,
         };
       }
 

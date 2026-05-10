@@ -2415,36 +2415,136 @@ const server = Bun.serve({
     // ── Settings page endpoints ─────────────────────────────────────────
 
     // /api/settings/install-checks — broad install matrix beyond /diag.
-    // Each entry: {name, ok, version, install_cmd}
+    // Each entry: {name, ok, version, install_cmd, required}
     if (url.pathname === "/api/settings/install-checks" && req.method === "GET") {
-      const tools = [
-        { name: "git",        check: ["git", "--version"],            install: "preinstalled on macOS / xcode-select --install" },
-        { name: "tmux",       check: ["tmux", "-V"],                  install: "brew install tmux" },
-        { name: "bun",        check: ["bun", "--version"],            install: "curl -fsSL https://bun.sh/install | bash" },
-        { name: "jq",         check: ["jq", "--version"],             install: "brew install jq" },
-        { name: "gh",         check: ["gh", "--version"],             install: "brew install gh && gh auth login" },
-        { name: "claude",     check: ["claude", "--version"],         install: "https://claude.com/claude-code" },
-        { name: "coderabbit", check: ["coderabbit", "--version"],     install: "brew install coderabbitai/coderabbit/coderabbit  (or: npm i -g @coderabbitai/cli)" },
-        { name: "obsidian",   check: ["test", "-d", "/Applications/Obsidian.app"], install: "brew install --cask obsidian", checkType: "app" },
-        { name: "lms",        check: ["lms", "version"],              install: "Open LM Studio app → Settings → Developer mode → Use lms in terminal" },
+      const home = process.env.HOME ?? "";
+      // PATH for install probes — extends launchd's minimal default with
+      // common user-binary locations that installers drop binaries into:
+      //   ~/.bun/bin       — bun installer
+      //   ~/.local/bin     — coderabbit, many other curl|sh installers
+      //   ~/.lmstudio/bin  — LM Studio's `lms` after "Use lms in terminal"
+      //   ~/.cargo/bin     — rust toolchain
+      const checkPath = [
+        "/usr/sbin", "/usr/bin", "/bin", "/sbin",
+        "/opt/homebrew/bin", "/usr/local/bin",
+        `${home}/.bun/bin`,
+        `${home}/.local/bin`,
+        `${home}/.lmstudio/bin`,
+        `${home}/.cargo/bin`,
+      ].join(":");
+
+      const tools: Array<{
+        name: string;
+        check: string[];
+        install: string;
+        required?: boolean;
+        // Optional explicit fallback paths to test when the command isn't on PATH
+        fallback_paths?: string[];
+      }> = [
+        { name: "git",        check: ["git", "--version"],            install: "preinstalled on macOS / xcode-select --install", required: true },
+        { name: "tmux",       check: ["tmux", "-V"],                  install: "brew install tmux", required: true },
+        { name: "bun",        check: ["bun", "--version"],            install: "curl -fsSL https://bun.sh/install | bash", required: true,
+          fallback_paths: [`${home}/.bun/bin/bun`] },
+        { name: "jq",         check: ["jq", "--version"],             install: "brew install jq", required: true },
+        { name: "gh",         check: ["gh", "--version"],             install: "brew install gh && gh auth login", required: true },
+        { name: "claude",     check: ["claude", "--version"],         install: "curl -fsSL https://claude.ai/install.sh | bash", required: true },
+        { name: "coderabbit", check: ["coderabbit", "--version"],     install: "curl -fsSL https://cli.coderabbit.ai/install.sh | sh", required: true,
+          fallback_paths: [`${home}/.local/bin/coderabbit`] },
+        { name: "obsidian",   check: ["test", "-d", "/Applications/Obsidian.app"], install: "brew install --cask obsidian", required: false },
+        { name: "lms",        check: ["lms", "version"],              install: "Open LM Studio app → Power user → Developer → Use lms in terminal (CLI lands at ~/.lmstudio/bin/lms)",
+          required: false,
+          fallback_paths: [`${home}/.lmstudio/bin/lms`, `${home}/.cache/lm-studio/bin/lms`] },
       ];
-      const results = await Promise.all(tools.map(async (t) => {
+
+      // Strip ANSI escape codes — lms's --version emits a colored ASCII
+      // banner that renders as garbage in the dashboard's plain-text rows.
+      const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
+      // Also extract a sensible single-line version from output that may be
+      // multi-line (lms prints a banner). Prefer a line containing a digit.
+      const cleanVersion = (raw: string): string => {
+        const cleaned = stripAnsi(raw).trim();
+        const lines = cleaned.split("\n").filter((l) => l.trim());
+        const versionLine = lines.find((l) => /\d+\.\d+/.test(l)) ?? lines[0] ?? "";
+        return versionLine.trim().slice(0, 80);
+      };
+
+      async function probeOne(t: typeof tools[number]) {
         try {
           const r = spawnSync(t.check[0]!, t.check.slice(1), {
             encoding: "utf8",
             timeout: 2500,
-            env: { ...process.env, PATH: "/usr/sbin:/usr/bin:/bin:/sbin:/opt/homebrew/bin:/usr/local/bin" },
+            env: { ...process.env, PATH: checkPath },
           });
           if (r.status === 0) {
-            const version = (r.stdout || "").trim().split("\n")[0]!.slice(0, 80);
-            return { name: t.name, ok: true, version: version || "ok", install: t.install };
+            const version = cleanVersion(r.stdout || "");
+            return { name: t.name, ok: true, version: version || "ok", install: t.install, required: !!t.required };
           }
-          return { name: t.name, ok: false, version: null, install: t.install, detail: ((r.stderr || r.stdout) ?? "").slice(0, 120) };
+          for (const fp of t.fallback_paths ?? []) {
+            if (existsSync(fp)) {
+              const r2 = spawnSync(fp, t.check.slice(1), { encoding: "utf8", timeout: 2500 });
+              if (r2.status === 0) {
+                const version = cleanVersion(r2.stdout || "");
+                return { name: t.name, ok: true, version: version || "ok (via fallback path)", install: t.install, required: !!t.required };
+              }
+            }
+          }
+          return { name: t.name, ok: false, version: null, install: t.install, required: !!t.required, detail: stripAnsi((r.stderr || r.stdout) ?? "").slice(0, 120) };
         } catch (err) {
-          return { name: t.name, ok: false, version: null, install: t.install, detail: (err as Error).message };
+          return { name: t.name, ok: false, version: null, install: t.install, required: !!t.required, detail: (err as Error).message };
         }
-      }));
-      return Response.json({ ok: true, checks: results, summary: `${results.filter((r) => r.ok).length}/${results.length} installed` });
+      }
+
+      const results = await Promise.all(tools.map(probeOne));
+      const required = results.filter((r) => r.required);
+      return Response.json({
+        ok: true,
+        checks: results,
+        summary: `${results.filter((r) => r.ok).length}/${results.length} installed (${required.filter((r) => r.ok).length}/${required.length} required)`,
+      });
+    }
+
+    // /api/settings/obsidian — get/set the configured Obsidian vault root path
+    if (url.pathname === "/api/settings/obsidian" && req.method === "GET") {
+      const cfgPath = join(SUBCTL_CONFIG_DIR, "master", "obsidian.json");
+      let vaultRoot = `${process.env.HOME}/Documents/Obsidian Vault`;
+      let configured = false;
+      try {
+        if (existsSync(cfgPath)) {
+          const j = JSON.parse(readFileSync(cfgPath, "utf8")) as { vault_root?: string };
+          if (j.vault_root) {
+            vaultRoot = j.vault_root.replace(/^~/, process.env.HOME ?? "");
+            configured = true;
+          }
+        }
+      } catch { /* ignore */ }
+      return Response.json({
+        ok: true,
+        vault_root: vaultRoot,
+        configured,
+        exists: existsSync(vaultRoot),
+        config_path: cfgPath,
+      });
+    }
+    if (url.pathname === "/api/settings/obsidian" && req.method === "POST") {
+      let body: { vault_root?: string };
+      try { body = await req.json(); } catch { return Response.json({ ok: false, error: "invalid JSON" }, { status: 400 }); }
+      const path = (body.vault_root ?? "").trim();
+      if (!path) return Response.json({ ok: false, error: "vault_root required" }, { status: 400 });
+      const expanded = path.replace(/^~/, process.env.HOME ?? "");
+      const cfgPath = join(SUBCTL_CONFIG_DIR, "master", "obsidian.json");
+      try {
+        const { mkdirSync, writeFileSync } = require("node:fs") as typeof import("node:fs");
+        mkdirSync(join(SUBCTL_CONFIG_DIR, "master"), { recursive: true });
+        writeFileSync(cfgPath, JSON.stringify({ vault_root: path, _comment: `set via dashboard ${new Date().toISOString()}` }, null, 2));
+        return Response.json({
+          ok: true,
+          vault_root: expanded,
+          exists: existsSync(expanded),
+          config_path: cfgPath,
+        });
+      } catch (err) {
+        return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+      }
     }
 
     // /api/settings/keys — STATUS only (presence flag, never the value)
@@ -2926,8 +3026,16 @@ const server = Bun.serve({
     if (url.pathname === "/api/memory") {
       const obsidianApp = "/Applications/Obsidian.app";
       const obsidianInstalled = existsSync(obsidianApp);
-      // Common vault locations to check
-      const candidates = [
+      // Configured vault root (from dashboard Settings) takes precedence
+      let configuredRoot: string | null = null;
+      try {
+        const cfgPath = join(SUBCTL_CONFIG_DIR, "master", "obsidian.json");
+        if (existsSync(cfgPath)) {
+          const j = JSON.parse(readFileSync(cfgPath, "utf8")) as { vault_root?: string };
+          if (j.vault_root) configuredRoot = j.vault_root.replace(/^~/, process.env.HOME ?? "");
+        }
+      } catch { /* ignore */ }
+      const candidates = configuredRoot ? [configuredRoot] : [
         `${process.env.HOME}/Documents/Obsidian Vault`,
         `${process.env.HOME}/Documents/ObsidianVault`,
         `${process.env.HOME}/Obsidian`,

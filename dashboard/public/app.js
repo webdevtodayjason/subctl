@@ -374,10 +374,13 @@
         if (summary) summary.textContent = j.summary;
         body.replaceChildren(...j.checks.map((c) => {
           const row = document.createElement("div");
-          row.className = "health-row " + (c.ok ? "ok" : "err");
+          // A missing REQUIRED tool is err; a missing optional tool is just a warning
+          const cls = c.ok ? "ok" : (c.required ? "err" : "warn");
+          row.className = "health-row " + cls;
+          const requiredBadge = c.required ? "<span class=\"req-badge\">required</span>" : "";
           row.innerHTML =
-            "<span class=\"mark\">" + (c.ok ? "✓" : "✗") + "</span>" +
-            "<span class=\"name\">" + escapeText(c.name) + "</span>" +
+            "<span class=\"mark\">" + (c.ok ? "✓" : (c.required ? "✗" : "○")) + "</span>" +
+            "<span class=\"name\">" + escapeText(c.name) + requiredBadge + "</span>" +
             "<span class=\"detail\">" + escapeText(c.ok ? c.version : (c.detail || "not installed")) + "</span>";
           if (!c.ok && c.install) {
             const cmd = document.createElement("code");
@@ -570,11 +573,75 @@
     }
     wireConfigViewer();
 
+    async function loadVault() {
+      const status = $("settings-vault-status");
+      const input = $("settings-vault-root");
+      try {
+        const r = await fetch("/api/settings/obsidian");
+        const j = await r.json();
+        if (!j.ok) {
+          if (status) { status.textContent = "error"; status.style.color = "#d66c6c"; }
+          return;
+        }
+        if (input && !input.value) input.value = j.vault_root || "";
+        if (status) {
+          const note = j.exists ? (j.configured ? "configured · exists" : "default · exists") : (j.configured ? "configured · MISSING" : "default · missing");
+          status.textContent = note;
+          status.style.color = j.exists ? "#6cd697" : "#d6c46c";
+        }
+      } catch {
+        if (status) { status.textContent = "unreachable"; status.style.color = "#d66c6c"; }
+      }
+    }
+    function wireVaultForm() {
+      const save = $("settings-vault-save");
+      const input = $("settings-vault-root");
+      const result = $("settings-vault-result");
+      if (!save || !input) return;
+      save.addEventListener("click", async () => {
+        const v = input.value.trim();
+        if (!v) {
+          result.hidden = false;
+          result.className = "settings-result err";
+          result.textContent = "vault_root is empty";
+          return;
+        }
+        save.disabled = true;
+        save.textContent = "saving…";
+        try {
+          const r = await fetch("/api/settings/obsidian", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ vault_root: v }),
+          });
+          const j = await r.json();
+          result.hidden = false;
+          if (!j.ok) {
+            result.className = "settings-result err";
+            result.textContent = "Failed: " + (j.error || "?");
+          } else {
+            result.className = "settings-result ok";
+            result.textContent = "✓ saved · " + (j.exists ? "vault exists" : "path saved but vault dir doesn't exist yet — create it on the M3 Ultra");
+            loadVault();
+          }
+        } catch (err) {
+          result.hidden = false;
+          result.className = "settings-result err";
+          result.textContent = "Error: " + err;
+        } finally {
+          save.disabled = false;
+          save.textContent = "save";
+        }
+      });
+    }
+    wireVaultForm();
+
     function refreshAll() {
       loadHealth();
       loadKeys();
       loadOAuth();
       loadTelegramStatus();
+      loadVault();
     }
     refreshBtn.addEventListener("click", refreshAll);
     refreshAll();

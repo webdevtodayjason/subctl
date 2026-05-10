@@ -590,6 +590,25 @@
           <div class="settings-card-body" id="settings-keys-body">loading…</div>
         </section>
 
+        <!-- Obsidian vault path -->
+        <section class="settings-card">
+          <div class="settings-card-head">
+            <h3>Obsidian vault</h3>
+            <span class="settings-card-meta" id="settings-vault-status">checking…</span>
+          </div>
+          <div class="settings-card-body" id="settings-vault-body">
+            <div class="form-row">
+              <label>Vault root path</label>
+              <input type="text" id="settings-vault-root" placeholder="/Users/sem/Documents/Obsidian Vault" autocomplete="off" />
+              <div class="form-hint">Where master writes vault entries via <code>vault_append</code> and where the Memory tab + project pages look for vaults. Use <code>~</code> for your home directory.</div>
+            </div>
+            <div class="settings-actions">
+              <button type="button" class="primary-btn" id="settings-vault-save">save</button>
+            </div>
+            <div class="settings-result" id="settings-vault-result" hidden></div>
+          </div>
+        </section>
+
         <!-- 4. OAuth connections per Claude account -->
         <section class="settings-card">
           <div class="settings-card-head">
