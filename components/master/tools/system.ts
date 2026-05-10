@@ -12,12 +12,18 @@ import { homedir } from "node:os";
 const HOME = homedir();
 const LMSTUDIO_HOST = process.env.SUBCTL_LMSTUDIO_HOST ?? "http://localhost:1234";
 
+// macOS launchd PATH doesn't include /usr/sbin by default, so sysctl,
+// vm_stat, etc. silently fail (returning "" via the catch). Force a
+// known-good PATH for every shell call.
+const SHELL_PATH = "/usr/sbin:/usr/bin:/bin:/sbin:/opt/homebrew/bin:/usr/local/bin";
+
 function shell(cmd: string, opts: { timeout?: number } = {}): string {
   try {
     return execSync(cmd, {
       encoding: "utf8",
       timeout: opts.timeout ?? 3000,
       stdio: ["ignore", "pipe", "ignore"],
+      env: { ...process.env, PATH: SHELL_PATH },
     }).trim();
   } catch {
     return "";

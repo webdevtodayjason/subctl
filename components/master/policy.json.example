@@ -1,5 +1,5 @@
 {
-  "_comment": "Per-project autonomy policy for clawd. Edit this to tell the master what it can drive autonomously vs what it must escalate to the operator. Restart the master after edits (subctl master restart).",
+  "_comment": "Per-project autonomy policy for the subctl master daemon. Tells the master what it can drive autonomously vs what it must escalate. Restart the master after edits: launchctl unload ~/Library/LaunchAgents/com.subctl.master.plist && launchctl load ~/Library/LaunchAgents/com.subctl.master.plist",
 
   "operator": {
     "name": "Jason",
@@ -13,7 +13,9 @@
     "require_coderabbit_pre_push": true,
     "max_concurrent_workers": 3,
     "review_interval_minutes": 30,
+    "_comment_review_interval_minutes": "Watchdog tick interval. The master is reactive (responds to chat + lead-report inbox events) rather than running an autonomous portfolio walk; this interval controls how often the watchdog scans for stale dev teams.",
     "stall_detection_minutes": 15,
+    "_comment_stall_detection_minutes": "A dev team whose inbox has not received a new event within this many minutes is flagged stale. The watchdog fires a synthetic prompt so the master can decide: ping the lead via subctl_orch_msg, escalate to Jason via telegram_send, or take corrective action.",
     "stall_action": "escalate"
   },
 

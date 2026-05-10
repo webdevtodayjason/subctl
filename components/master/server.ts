@@ -457,6 +457,12 @@ async function main() {
     return p.replace(/^.*\//, "").replace(/\.jsonl$/, "");
   }
 
+  // First scan after boot just establishes the read offset to "end of file"
+  // — events that already exist when the daemon starts are HISTORICAL, not
+  // new. Without this, every boot replays old "blocked"/"error" events as
+  // fresh agent prompts and the master reacts to ghosts.
+  let firstScanDone = false;
+
   function tailInboxFile(filePath: string) {
     let stat;
     try {
@@ -465,7 +471,29 @@ async function main() {
       return;
     }
     const team = teamNameFromPath(filePath);
-    const prev = teamReadOffsets.get(filePath) ?? 0;
+    let prev = teamReadOffsets.get(filePath);
+    if (prev === undefined) {
+      // Never seen this file. On first scan after boot, jump to end so
+      // pre-existing content doesn't replay as live events. Subsequent
+      // discoveries (a new team file appearing while running) start at 0
+      // since those events ARE live for us.
+      prev = firstScanDone ? 0 : stat.size;
+      teamReadOffsets.set(filePath, prev);
+      // Still backfill last_event metadata from the existing file so /teams
+      // and the dashboard show real state right after boot.
+      if (!firstScanDone && stat.size > 0) {
+        try {
+          const raw = require("node:fs").readFileSync(filePath, "utf8") as string;
+          const lines = raw.trimEnd().split("\n").filter((l) => l.trim());
+          if (lines.length) {
+            try {
+              const lastEv = JSON.parse(lines[lines.length - 1]) as TeamEvent;
+              teamLastActivity.set(team, { ts: stat.mtimeMs, lastEvent: lastEv });
+            } catch { /* ignore parse errors */ }
+          }
+        } catch { /* ignore */ }
+      }
+    }
     if (stat.size === prev) return;
     if (stat.size < prev) {
       // file truncated/rotated — re-read from 0

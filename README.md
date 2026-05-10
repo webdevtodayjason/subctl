@@ -22,28 +22,99 @@ If you pay for more than one Claude account — or you share a Max plan with a t
 - You have three terminals open, two of them are silently rate-limited, and the third still works because it picked up a different account from a half-remembered alias in your `.zshrc`.
 - You wrote a tmux helper to launch "Claude in this directory with this account" once, six months ago, and you can no longer find it.
 
-`subctl` consolidates the tribal knowledge you accumulated solving those problems into one tool. It does three things, all on the same engine:
+`subctl` consolidates the tribal knowledge you accumulated solving those problems into one tool. It does four things, all on the same engine:
 
 1. **Multi-account isolation.** Run multiple Claude accounts (and soon Gemini, OpenAI) on one machine without log-out / log-in dances. Uses each provider's official isolation knob — for Claude that's `CLAUDE_CONFIG_DIR`.
-2. **Rate-limit awareness ("radar").** Surface parallel session pressure, context %, session age, RL hits today, and dispatch readiness. The `claude-dispatch-radar` project lives here now.
+2. **Rate-limit awareness ("radar").** Surface parallel session pressure, context %, session age, RL hits today, and dispatch readiness.
 3. **Tmux team launcher.** `subctl teams claude -a personal -o -c -y` opens a tmux session pinned to a specific account, with the orchestrator + worker layout you use every day.
+4. **Conversational master orchestrator.** A persistent daemon (`subctl master`) backed by a local LLM (LM Studio) that you talk to through the dashboard chat panel or Telegram. It spawns dev-team tmux sessions on demand, watches them for staleness, kicks off code reviews, and keeps projects moving forward — even with your laptop closed.
 
-Plus a dashboard (`localhost:8787`) that runs as a launchd service and is useful as a browser new-tab page.
+Plus a dashboard (`localhost:8787`, or `0.0.0.0:8787` for LAN/Tailscale access) with tabs for accounts, sessions, dev teams, models, projects, and memory.
 
 ---
 
 ## What you get
 
+- **Conversational master daemon** — talk to it in the dashboard or Telegram. Spawns dev teams, runs code reviews, watchdog stale work, escalates blockers. Local LLM (LM Studio) by default; cloud escalate (OpenAI Codex / Anthropic) for hard reasoning.
+- **Dashboard chat panel** — first thing on the Dashboard tab. Streams agent responses token-by-token over SSE, shows tool calls live, supports slash commands (`/help`, `/diag`, `/status`, `/teams`, `/spawn`, `/kill`, `/attach`, `/config`, `/clear`).
+- **Six dashboard tabs** — Dashboard (overview), Sessions (search + resume), Models (LM Studio catalog), Projects (`~/code` scan + policy state), Memory (Obsidian vault status), plus Cheat sheet / Docs.
+- **Lead-report inbox** — dev-team leads write status events to `~/.config/subctl/master/inbox/<team>.jsonl` via `subctl team report`. Master tails the inbox, surfaces events to the dashboard, auto-prompts the agent on `blocked`/`error`.
 - **TUI menu** — type `subctl` and pick from a menu. No flag-memorizing.
 - **Flat commands** — `subctl service start`, `subctl auth claude personal`, etc. Scriptable.
 - **Per-provider account isolation** — Claude today; Gemini and OpenAI on the roadmap.
 - **Statusline** — terminal-friendly bar showing repo, branch, model, ctx %, parallel sessions, rate-limit hits today.
 - **Dispatch readiness check** — answers "should I fire off another agent right now?" with a single verdict.
-- **Stop hook** — scans transcripts for real rate-limit / overloaded literals (not bare 429/529 numbers — too noisy).
-- **Dashboard** — Bun-served HTTP+WS at `localhost:8787`. Set it as your new-tab page if you like.
-- **launchd integration** — service starts at login, lives in the background.
+- **launchd integration** — both the dashboard service and the master daemon start at login, live in the background.
 - **Tmux teams** — launch orchestrator + worker panes pinned to a specific account.
 - **Provider plugin model** — drop a directory under `providers/` to add a new one.
+
+---
+
+## Master daemon — talking to your dev teams
+
+The conversational layer. Lives at `127.0.0.1:8788` on the host (the dashboard at `:8787` proxies it for the browser, so you only ever expose one port).
+
+**Endpoints:**
+
+- `POST /chat` — send a message. JSON body `{text, source?: "chat"|"telegram"|"watchdog"}`. Returns 202; the agent's response streams over SSE.
+- `GET  /events` — Server-Sent Events stream of every agent event (text deltas, tool calls, tool results, watchdog firings, inbound message echoes, team events).
+- `GET  /diag` — connectivity checks: LM Studio reachable + supervisor model loaded, Telegram bot, coderabbit CLI, gh auth, tmux. Returns `{ok, checks: [{name, ok, detail}]}`.
+- `GET  /teams` — current dev-team activity (last event, age) from the inbox tracker.
+- `GET  /health` — uptime, transcript size, subscriber count, prompt-in-flight flag.
+
+**Tool families the master can call (24 total):**
+
+- `subctl_orch_*` — spawn / list / status / msg / kill dev-team tmux sessions
+- `gh_*` — GitHub PRs, issues, checks
+- `coderabbit_*` — AI code review on a branch or PR
+- `telegram_*` — push to the master's Telegram bot
+- `system_*` — introspect the host: hardware, load, disk, LM Studio model state, tmux sessions, projects under `~/code`, daemon self-info
+
+**Configure it via three files** (all under `~/.config/subctl/`):
+
+| File | Purpose |
+|---|---|
+| `master/policy.json` | operator info, project portfolio, autonomy levels (drive/ask/shadow), watchdog interval, max concurrent workers |
+| `master/providers.json` | model routing per role: router, supervisor, reviewer, embeddings, escalate (cloud), fallback |
+| `master-notify.json` | Telegram bot token + chat_id |
+
+**Reasoning models need context room.** When using LM Studio with a reasoning model like qwen3.6-35b-a3b, **eject and reload it with Context Length 32K+** (32768 minimum, 65536 recommended). With the default 4K window the model burns its entire output budget on `<think>` tokens before producing a tool call.
+
+---
+
+## Dev teams — the workers
+
+A dev team is a tmux session on the master's host with a Claude Code lead in pane 0 that uses the experimental teams feature (`TeamCreate` + `Agent` with `team_name`) to spawn its own workers. The master spawns these on demand from chat ("spawn a team for project X") via `subctl_orch_spawn`.
+
+**Each lead reports back** by appending to its inbox file:
+
+```bash
+# inside the lead's tmux pane
+subctl team report --team my-team --type progress --text "branch created, tests passing 4/5"
+subctl team report --team my-team --type blocked  --text "build failing on lint"
+subctl team report --team my-team --type done     --text "PR ready" --pr "owner/repo#42"
+```
+
+Event types: `progress | blocked | done | error | note`. The master tails every team's `~/.config/subctl/master/inbox/<team>.jsonl`, broadcasts each event to the dashboard via SSE, and **auto-prompts itself on `blocked` or `error`** so it can decide whether to ping the lead via `subctl_orch_msg`, escalate to you via Telegram, or take corrective action.
+
+**You can also drop into any team's tmux directly:**
+
+```bash
+ssh argent-m3-ultra-dev -t tmux attach -t <team-name>   # detach with Ctrl-b d
+```
+
+The master keeps running while you watch.
+
+**Manage teams from the chat panel:**
+
+```
+/teams                         list every dev team the master is tracking
+/spawn <account> <project>     ask master to spawn a team
+/kill   <team>                 ask master to tear one down
+/attach <team>                 print the SSH command to attach
+```
+
+---
 
 ---
 
