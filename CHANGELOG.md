@@ -4,6 +4,18 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.1.2] — 2026-05-10
+
+Patch — watchdog cadence + activity signal.
+
+### Changed
+
+- **Watchdog defaults tightened.** Default `review_interval_minutes` 5 → 3, default `stall_detection_minutes` 60 → 15. Operators expect the master to notice within minutes when a worker goes silent; the previous 5/60 defaults were "check in once every 5 minutes, escalate after an hour" — too coarse for an active dogfood loop. The new defaults align with the dashboard's row-colour thresholds (yellow at 15min, red at 30min) — the master now catches a team transitioning into "yellow" rather than waiting for red. Operator can still override via `policy.global_defaults`.
+
+### Added
+
+- **Tmux window-activity as a fallback liveness signal.** Previously `teamLastActivity` was only updated by the inbox tailer, which meant a worker that was productively writing files but never self-reporting via inbox looked stale. Diagnosed during FOOTHOLD when the worker built `server-foothold/` over 25 min while the inbox stayed pinned at the spawn-seed timestamp from 14:13 — dashboard reported `30m ago` and a red staleness dot even though the worker had just paused waiting for the operator's `go`. The watchdog tick now calls `tmux list-windows -a -F '#{session_name}|#{window_activity}'` first and bumps `teamLastActivity` to the latest tmux activity timestamp for any session whose window has been touched more recently. Inbox events still take precedence when present; tmux only fills the gap.
+
 ## [2.1.1] — 2026-05-10
 
 Patch — chat-toolbar overflow into right sidecar.

@@ -1386,19 +1386,66 @@ async function main() {
   // recently, no git activity, etc.), synthesize a prompt so the agent can
   // decide what to do — ping the lead, escalate to Jason, take corrective
   // action. The actual scan logic gets richer as dev teams come online.
+  //
+  // Defaults were 5min interval / 60min staleness — too coarse during the
+  // FOOTHOLD dogfood. Operator wants a 3–5 min pulse cadence: "It's keeping
+  // a pulse, and 30 min is a long time to let things go." Tightened to
+  // 3min interval / 15min staleness, which aligns with the dashboard's
+  // row-colour thresholds (yellow at 15min, red at 30min) — watchdog
+  // catches a team transitioning into "yellow" instead of waiting for red.
+  // Operator can still override via policy.global_defaults.
   const watchdogIntervalMin = Math.max(
     1,
-    policy.global_defaults.review_interval_minutes ?? 5,
+    policy.global_defaults.review_interval_minutes ?? 3,
   );
   const watchdogIntervalMs = watchdogIntervalMin * 60 * 1000;
   const stalenessThresholdMin =
-    policy.global_defaults.stall_detection_minutes ?? 60;
+    policy.global_defaults.stall_detection_minutes ?? 15;
+
+  // Pull the latest tmux window-activity unix timestamp for every claude-*
+  // tmux session and bump teamLastActivity if the pane has been touched
+  // more recently than the inbox event we know about. Without this, a
+  // worker that's productively writing files but never reporting via inbox
+  // looks stale to the master — diagnosed 2026-05-10 during FOOTHOLD when
+  // the worker built server-foothold/ over 25min while the inbox stayed
+  // pinned at the 14:13 spawn-seed timestamp.
+  function refreshTeamActivityFromTmux() {
+    try {
+      const proc = Bun.spawnSync(
+        ["tmux", "list-windows", "-a", "-F", "#{session_name}|#{window_activity}"],
+        { stdout: "pipe", stderr: "pipe" },
+      );
+      if (proc.exitCode !== 0) return;
+      for (const line of proc.stdout.toString().trim().split("\n")) {
+        const [session, activityStr] = line.split("|");
+        if (!session || !activityStr) continue;
+        const activityUnix = parseInt(activityStr, 10);
+        if (!activityUnix) continue;
+        const activityMs = activityUnix * 1000;
+        const existing = teamLastActivity.get(session);
+        // Only consider sessions either already tracked OR matching the
+        // subctl-spawned naming convention (claude-*).
+        if (!existing && !session.startsWith("claude-")) continue;
+        if (!existing) {
+          teamLastActivity.set(session, { ts: activityMs });
+        } else if (activityMs > existing.ts) {
+          teamLastActivity.set(session, { ts: activityMs, lastEvent: existing.lastEvent });
+        }
+      }
+    } catch {
+      // tmux not on PATH or no server running — skip silently. The
+      // inbox-only signal still works as a fallback.
+    }
+  }
 
   async function runWatchdogTick() {
     if (stopped || promptInFlight) return;
-    // Use the in-memory teamLastActivity map (populated by the inbox tailer)
-    // rather than re-stat'ing files every tick. Teams that have NEVER reported
-    // are also stale candidates — we know they exist if the inbox file exists.
+    // Refresh from tmux first — workers may be productive without
+    // writing to the inbox; window_activity captures keystrokes and
+    // pane output regardless of whether the lead self-reported.
+    refreshTeamActivityFromTmux();
+    // Use the in-memory teamLastActivity map (populated by the inbox tailer
+    // + tmux refresh above) rather than re-stat'ing files every tick.
     const now = Date.now();
     const stale: Array<{ team: string; lastSeenMin: number; lastEventType?: string }> = [];
     for (const [team, v] of teamLastActivity) {
