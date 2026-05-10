@@ -2768,6 +2768,62 @@ main {
 }
 .orch-activity-item:last-child { border-bottom: none; }
 .orch-activity-item .when { color: #555; font-size: 10.5px; margin-right: 6px; }
+
+/* Curated notification feed (replaces the activity ring) */
+.orch-notify-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  font-size: 12px;
+}
+.orch-notify-item {
+  display: grid;
+  grid-template-columns: 56px 18px 1fr;
+  gap: 6px;
+  padding: 7px 0;
+  border-bottom: 1px dashed #1a1a1a;
+  align-items: start;
+  line-height: 1.4;
+}
+.orch-notify-item:last-child { border-bottom: none; }
+.orch-notify-item .when { color: #555; font-size: 10.5px; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+.orch-notify-item .glyph { font-size: 12px; text-align: center; }
+.orch-notify-item .summary { color: #c4c4c4; word-wrap: break-word; }
+.orch-notify-item .team-pill {
+  display: inline-block;
+  padding: 0 6px;
+  margin-right: 6px;
+  font-size: 10px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  background: #1a1a1a;
+  color: #888;
+  border-radius: 9px;
+  vertical-align: middle;
+}
+.orch-notify-item.kind-spawn       .glyph { color: #5fd7ff; }
+.orch-notify-item.kind-blocked     .glyph,
+.orch-notify-item.kind-error       .glyph,
+.orch-notify-item.kind-escalation  .glyph { color: #d66c6c; }
+.orch-notify-item.kind-done        .glyph { color: #6cd697; }
+.orch-notify-item.kind-milestone   .glyph { color: #6cd697; }
+.orch-notify-item.kind-decision    .glyph { color: #5fd7ff; }
+.orch-notify-item.kind-watchdog    .glyph { color: #d6c46c; }
+.orch-notify-item.kind-memory      .glyph { color: #b074d6; }
+.orch-notify-item.kind-info        .glyph { color: #888; }
+.notify-clear-btn {
+  background: transparent;
+  border: 1px solid #2a2a2a;
+  color: #666;
+  padding: 0 8px;
+  margin-left: 8px;
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border-radius: 9px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.notify-clear-btn:hover { color: #aaa; border-color: #555; }
 .small { font-size: 11px; }
 
 /* Hide the old top-area dispatch row position adjustments */

@@ -130,6 +130,11 @@ Usage:
   subctl templates duplicate <a> <b>  Copy a template
   subctl templates delete <name>      Remove a template
 
+  subctl plugins list                 List installed subctl plugins
+  subctl plugins install <src>        Install from git URL, owner/repo, or path
+  subctl plugins remove <id>          Uninstall
+  subctl plugins status               Validate all installed plugin manifests
+
   subctl update                       Pull origin/main, rebuild, restart daemons,
                                       doctor on the way out (no manual ssh+rsync)
   subctl uninstall                    Remove subctl
@@ -543,6 +548,11 @@ case "$cmd" in
   templates)
     . "$SUBCTL_REPO_ROOT/components/teams/teams.sh"
     subctl_templates "$@"
+    ;;
+
+  plugins)
+    . "$SUBCTL_REPO_ROOT/lib/plugins.sh"
+    subctl_plugins "$@"
     ;;
 
   master)

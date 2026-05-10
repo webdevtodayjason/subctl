@@ -57,6 +57,9 @@ import { projectTools } from "./tools/project";
 import { memoryTools } from "./tools/memory";
 import { context7Tools } from "./tools/context7";
 import { tier1MemoryTools, buildMemoryBlock } from "./tools/tier1-memory";
+import { skillAuthorTools } from "./tools/skill-author";
+import { notifyTools, bindNotifyBroadcast } from "./tools/notify";
+import { specforgeTools } from "./tools/specforge";
 import {
   startMasterNotifyListener,
   stopMasterNotifyListener,
@@ -275,6 +278,24 @@ export const toolRegistry: Record<string, InternalTool> = {
   ...Object.fromEntries(
     Object.entries(tier1MemoryTools).map(([k, v]) => [
       k, // already prefixed (memory_show, memory_remember, memory_forget, memory_user_update)
+      v as unknown as InternalTool,
+    ]),
+  ),
+  ...Object.fromEntries(
+    Object.entries(skillAuthorTools).map(([k, v]) => [
+      k, // already prefixed (skill_create, skill_revise, skill_remove, skill_list_master)
+      v as unknown as InternalTool,
+    ]),
+  ),
+  ...Object.fromEntries(
+    Object.entries(notifyTools).map(([k, v]) => [
+      k, // notify_dashboard
+      v as unknown as InternalTool,
+    ]),
+  ),
+  ...Object.fromEntries(
+    Object.entries(specforgeTools).map(([k, v]) => [
+      k, // specforge
       v as unknown as InternalTool,
     ]),
   ),
@@ -556,6 +577,8 @@ async function main() {
       try { c.write(line); } catch { /* client dropped, will GC on next iter */ }
     }
   }
+  // Let the notify tool publish to the SSE bus via the same broadcast.
+  bindNotifyBroadcast(broadcast);
 
   agent.subscribe((event) => {
     // Stream every event to subscribers — the dashboard chat panel renders

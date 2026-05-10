@@ -2854,27 +2854,33 @@
         try {
           const d = JSON.parse(e.data);
           appendMessage("watchdog", d.prompt, { label: "watchdog" });
-          if (window.__subctlPushActivity) window.__subctlPushActivity(`<strong>watchdog</strong> fired: ${escapeText(String(d.prompt || "").slice(0, 80))}`);
+          if (window.__subctlPushNotification) {
+            window.__subctlPushNotification("watchdog", String(d.prompt || "").slice(0, 140));
+          }
         } catch {}
       });
-      // Lightweight activity feed plumbing — surfaces tool calls + team
-      // events + inbound messages on the Orchestration sidecar so it's not
-      // just a chat box. Avoids re-rendering anything chat-side.
-      es.addEventListener("inbound", (e) => {
+      // Curated notifications. Three SSE event types map to sidecar:
+      //   "notify"      — master called notify_dashboard explicitly
+      //   "team_event"  — auto-derive on blocked/done/error (skip progress/note noise)
+      //   "watchdog_fire" — already handled above
+      es.addEventListener("notify", (e) => {
         try {
           const d = JSON.parse(e.data);
-          if (window.__subctlPushActivity) {
-            const src = d.source === "telegram" ? "telegram" : d.source === "watchdog" ? "watchdog" : "you";
-            window.__subctlPushActivity(`<strong>${src}</strong>: ${escapeText(String(d.text || "").slice(0, 80))}`);
+          if (window.__subctlPushNotification) {
+            window.__subctlPushNotification(d.kind || "info", d.summary || "", d.team);
           }
         } catch {}
       });
       es.addEventListener("team_event", (e) => {
         try {
           const d = JSON.parse(e.data);
-          if (window.__subctlPushActivity) {
-            window.__subctlPushActivity(`team <strong>${escapeText(d.team)}</strong>: ${escapeText(d.type)} · ${escapeText(String(d.text || "").slice(0, 60))}`);
-          }
+          if (!window.__subctlPushNotification) return;
+          // Only auto-publish meaningful state changes — skip progress
+          // tick noise (master can choose to notify_dashboard("…", "milestone")
+          // for those if it wants to surface them).
+          const significant = ["blocked", "done", "error"];
+          if (!significant.includes(d.type)) return;
+          window.__subctlPushNotification(d.type, String(d.text || "").slice(0, 140), d.team);
         } catch {}
       });
     }
@@ -3380,29 +3386,69 @@
     }));
   }
 
-  // Activity feed: tap into the same SSE stream the chat panel listens to,
-  // append a one-liner per meaningful event (tool calls, watchdog firings,
-  // team events, decisions). Keeps a bounded ring of the last 30.
-  const ACTIVITY_LIMIT = 30;
-  function pushActivity(html) {
-    const list = $("orch-activity-list");
+  // Curated notification feed (replaces the old raw-event activity ring).
+  // The chat sidecar shows summary-style notifications instead of every
+  // text-delta and tool-call. Three sources feed it:
+  //
+  //   1. Master pushes via notify_dashboard tool → "notify" SSE event.
+  //   2. Auto-derived from team_event blocked/done/error in the SSE
+  //      stream (we don't need master to call notify_dashboard for those).
+  //   3. Auto-derived from watchdog_fire SSE events.
+  //
+  // No tool-call ticker noise, no text-delta replays. If you want raw
+  // events the Live Logs tab has them.
+  const NOTIFY_LIMIT = 30;
+  const KIND_GLYPH = {
+    spawn:       "▶",
+    blocked:     "⛔",
+    done:        "✓",
+    milestone:   "◉",
+    escalation:  "📡",
+    decision:    "→",
+    watchdog:    "⏰",
+    memory:      "✦",
+    info:        "·",
+    error:       "✗",
+  };
+  function pushNotification(kind, summary, team) {
+    const list = $("orch-notify-list");
     if (!list) return;
     const empty = list.querySelector(".dim");
     if (empty) empty.remove();
     const row = document.createElement("div");
-    row.className = "orch-activity-item";
+    row.className = "orch-notify-item kind-" + (kind || "info");
     const when = document.createElement("span");
     when.className = "when";
     when.textContent = new Date().toLocaleTimeString();
+    const glyph = document.createElement("span");
+    glyph.className = "glyph";
+    glyph.textContent = KIND_GLYPH[kind] || "·";
+    const text = document.createElement("span");
+    text.className = "summary";
+    if (team) {
+      const teamPill = document.createElement("span");
+      teamPill.className = "team-pill";
+      teamPill.textContent = team;
+      text.appendChild(teamPill);
+    }
+    text.appendChild(document.createTextNode(summary));
     row.appendChild(when);
-    const body = document.createElement("span");
-    body.innerHTML = html;
-    row.appendChild(body);
+    row.appendChild(glyph);
+    row.appendChild(text);
     list.insertBefore(row, list.firstChild);
-    while (list.children.length > ACTIVITY_LIMIT) list.removeChild(list.lastChild);
+    while (list.children.length > NOTIFY_LIMIT) list.removeChild(list.lastChild);
   }
-  // Expose globally so wireMasterChat can push events into it.
-  window.__subctlPushActivity = pushActivity;
+  // Expose so wireMasterChat's SSE handlers can publish into the feed.
+  window.__subctlPushNotification = pushNotification;
+  const notifyClearBtn = $("notify-clear");
+  if (notifyClearBtn) notifyClearBtn.addEventListener("click", () => {
+    const list = $("orch-notify-list");
+    if (!list) return;
+    list.innerHTML = "<div class=\"dim small\">cleared</div>";
+  });
+  // Backward-compat shim — older code may still call __subctlPushActivity.
+  // Map it to a generic "info" notification so we don't lose anything.
+  window.__subctlPushActivity = (html) => pushNotification("info", String(html).replace(/<[^>]+>/g, ""));
 
   // ----- Dev Teams (tmux sessions with CLAUDE_CONFIG_DIR set, enriched with master inbox activity) -----
 
