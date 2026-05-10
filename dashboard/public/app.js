@@ -544,22 +544,38 @@
     populateSearchAccountFilter(state.accounts ?? []);
   }
 
-  // ----- Orchestrations (tmux sessions with CLAUDE_CONFIG_DIR set) -----
+  // ----- Dev Teams (tmux sessions with CLAUDE_CONFIG_DIR set, enriched with master inbox activity) -----
 
   function renderOrchestrations(orchs) {
     const tbody = $("orchestrations-body");
     if (!tbody) return;
     if (!orchs || orchs.length === 0) {
-      tbody.replaceChildren(emptyRow(6, "no orchestrator sessions running"));
+      const tr = document.createElement("tr");
+      const td0 = document.createElement("td");
+      td0.colSpan = 7;
+      td0.className = "empty";
+      td0.innerHTML = "no dev teams running — master will spawn them via <code>subctl_orch_spawn</code> when conversations conclude one is needed";
+      tr.appendChild(td0);
+      tbody.replaceChildren(tr);
       return;
     }
     tbody.replaceChildren(...orchs.map(o => {
       const tr = document.createElement("tr");
 
+      // Staleness color from last_activity_seconds_ago
+      const ageS = o.last_activity_seconds_ago;
+      if (typeof ageS === "number") {
+        if (ageS > 1800) tr.classList.add("team-stale-red");
+        else if (ageS > 900) tr.classList.add("team-stale-yellow");
+        else tr.classList.add("team-stale-green");
+      }
+
+      // team name
       const nameCell = td(o.name);
       nameCell.classList.add("ev-session");
       tr.appendChild(nameCell);
 
+      // account
       const acctAlias = (o.claude_account_dir || "")
         .replace(/\/$/, "")
         .split("/")
@@ -569,14 +585,55 @@
       acctTd.title = o.claude_account_dir || "";
       tr.appendChild(acctTd);
 
+      // project
       const projShort = (o.path || "").split("/").pop() || o.path || "";
       const projTd = td(projShort);
       projTd.title = o.path || "";
       tr.appendChild(projTd);
 
       tr.appendChild(td(String(o.windows ?? 0), "num"));
-      tr.appendChild(td(o.attached ? "yes" : "no"));
 
+      // last activity (with attached indicator inline)
+      const actCell = document.createElement("td");
+      if (typeof ageS === "number") {
+        const dot = document.createElement("span");
+        dot.className = "team-dot";
+        actCell.appendChild(dot);
+        actCell.appendChild(document.createTextNode(" " + fmtAge(ageS) + " ago"));
+      } else {
+        actCell.textContent = "no reports yet";
+        actCell.classList.add("dim");
+      }
+      if (o.attached) {
+        const att = document.createElement("span");
+        att.className = "team-attached-pill";
+        att.textContent = "attached";
+        actCell.appendChild(att);
+      }
+      tr.appendChild(actCell);
+
+      // last event
+      const evCell = document.createElement("td");
+      evCell.classList.add("team-last-event");
+      if (o.last_event_type) {
+        const typePill = document.createElement("span");
+        typePill.className = "team-event-pill team-event-" + o.last_event_type;
+        typePill.textContent = o.last_event_type;
+        evCell.appendChild(typePill);
+        if (o.last_event_text) {
+          const text = document.createElement("span");
+          text.className = "team-event-text";
+          text.textContent = " " + o.last_event_text;
+          text.title = o.last_event_text;
+          evCell.appendChild(text);
+        }
+      } else {
+        evCell.textContent = "—";
+        evCell.classList.add("dim");
+      }
+      tr.appendChild(evCell);
+
+      // actions: kill button
       const wrap = document.createElement("div");
       wrap.className = "resume-actions";
       const btnKill = document.createElement("button");
@@ -585,7 +642,7 @@
       btnKill.title = "tmux kill-session -t " + o.name;
       btnKill.addEventListener("click", async (e) => {
         e.stopPropagation();
-        if (!confirm("Kill orchestrator session " + o.name + "?")) return;
+        if (!confirm("Kill dev-team session " + o.name + "?")) return;
         btnKill.disabled = true;
         btnKill.textContent = "killing…";
         try {
@@ -596,7 +653,6 @@
             btnKill.title = j.error || "kill failed";
             setTimeout(() => { btnKill.disabled = false; btnKill.textContent = "kill"; }, 2500);
           }
-          // On success the WebSocket pushes a fresh state and the row is re-rendered out.
         } catch (err) {
           btnKill.textContent = "error";
           btnKill.title = String(err);

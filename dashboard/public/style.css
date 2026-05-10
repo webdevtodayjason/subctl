@@ -1496,3 +1496,47 @@ body[data-active-tab="sessions"] section[data-tab="dashboard"] { display: none; 
 }
 .master-input button:hover:not([disabled]) { background: #1f4256; border-color: #3a5a6a; }
 .master-input button[disabled] { opacity: 0.5; cursor: not-allowed; }
+
+/* ── dev teams panel ──────────────────────────────────────────────────── */
+.team-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #555;
+  vertical-align: middle;
+}
+tr.team-stale-green .team-dot  { background: #6cd697; }
+tr.team-stale-yellow .team-dot { background: #d6c46c; }
+tr.team-stale-red .team-dot    { background: #d66c6c; }
+tr.team-stale-yellow td        { background: rgba(214, 196, 108, 0.04); }
+tr.team-stale-red td           { background: rgba(214, 108, 108, 0.06); }
+.team-attached-pill {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 0 6px;
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  background: #1a3a4a;
+  color: #5fd7ff;
+  border-radius: 9px;
+}
+.team-last-event { white-space: nowrap; max-width: 380px; overflow: hidden; text-overflow: ellipsis; }
+.team-event-pill {
+  display: inline-block;
+  padding: 1px 7px;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border-radius: 3px;
+  background: #1a1a1a;
+  color: #888;
+  vertical-align: middle;
+}
+.team-event-pill.team-event-progress { background: #102a18; color: #6cd697; }
+.team-event-pill.team-event-blocked  { background: #2a230e; color: #d6c46c; }
+.team-event-pill.team-event-error    { background: #2a1010; color: #d66c6c; }
+.team-event-pill.team-event-done     { background: #102236; color: #5fd7ff; }
+.team-event-pill.team-event-note     { background: #1a1a1a; color: #888; }
+.team-event-text { color: #999; font-size: 12.5px; margin-left: 6px; }

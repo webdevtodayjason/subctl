@@ -108,20 +108,21 @@
     </section>
 
     <section class="panel" data-tab="dashboard" id="orchestrations-panel">
-      <h2>Orchestrations <span class="panel-hint">tmux sessions spawned by <code>subctl teams claude</code> — orchestrator + worker panes pinned to a CLAUDE_CONFIG_DIR</span></h2>
+      <h2>Dev Teams <span class="panel-hint">tmux sessions spawned by the master · last activity from <code>~/.config/subctl/master/inbox/&lt;team&gt;.jsonl</code> · row turns yellow at 15min stale, red at 30min</span></h2>
       <table class="data-table" id="orchestrations-table">
         <thead>
           <tr>
-            <th>session</th>
+            <th>team</th>
             <th>account</th>
             <th>project</th>
             <th class="num">windows</th>
-            <th>attached</th>
+            <th>last activity</th>
+            <th>last event</th>
             <th>actions</th>
           </tr>
         </thead>
         <tbody id="orchestrations-body">
-          <tr><td colspan="6" class="empty">no orchestrator sessions running</td></tr>
+          <tr><td colspan="7" class="empty">no dev teams running — master will spawn them via <code>subctl_orch_spawn</code> when conversations conclude one is needed</td></tr>
         </tbody>
       </table>
     </section>

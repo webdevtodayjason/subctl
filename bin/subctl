@@ -110,6 +110,13 @@ Usage:
   subctl orch msg <name> <text>       Inject text into a session's pane
   subctl orch kill <name>             Kill a session
 
+  subctl team report --team <t> --type <kind> --text "..."
+                                      Append a status event to a dev-team
+                                      inbox so the master sees it (used by
+                                      team leads in dev-team tmux sessions)
+  subctl team inbox <team> [--tail N] Show recent events for a team
+  subctl team list                    List teams with an inbox
+
   subctl uninstall                    Remove subctl
   subctl version                      Print version
   subctl help                         Show this help
@@ -506,6 +513,11 @@ case "$cmd" in
   orch)
     . "$SUBCTL_REPO_ROOT/components/orch/orch.sh"
     subctl_orch "$@"
+    ;;
+
+  team)
+    . "$SUBCTL_REPO_ROOT/components/team/team.sh"
+    subctl_team "$@"
     ;;
 
   master)

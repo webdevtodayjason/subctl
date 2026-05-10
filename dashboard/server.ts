@@ -1306,6 +1306,47 @@ function buildAccountSummaries(
 // signal that distinguishes "orchestrator session" from random tmux noise.
 // Used by the /api/orchestration endpoint AND included in buildState() so
 // the dashboard UI can render an Orchestrations panel.
+// In-memory cache of master /teams response. Refreshed in the background
+// every 2s so buildState() stays synchronous (called from many places, some
+// HTTP-handler-sync) and never blocks on a master fetch.
+type MasterTeamRow = {
+  name: string;
+  last_activity_seconds_ago: number;
+  last_event: { ts: string; type: string; text?: string; [k: string]: unknown } | null;
+};
+let _masterTeams = new Map<string, MasterTeamRow>();
+let _masterTeamsLastSyncMs: number | null = null;
+
+async function refreshMasterTeams(): Promise<void> {
+  try {
+    const port = process.env.SUBCTL_MASTER_PORT ?? "8788";
+    const r = await fetch(`http://127.0.0.1:${port}/teams`, {
+      signal: AbortSignal.timeout(1500),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const j = (await r.json()) as { ok: boolean; teams: MasterTeamRow[] };
+    const map = new Map<string, MasterTeamRow>();
+    for (const t of j.teams ?? []) map.set(t.name, t);
+    _masterTeams = map;
+    _masterTeamsLastSyncMs = Date.now();
+  } catch {
+    // Master may be down — keep the last known map so the dashboard still
+    // shows something, but mark it stale via _masterTeamsLastSyncMs.
+  }
+}
+// Kick off the background refresh loop (only once per process).
+let _masterTeamsPoller: ReturnType<typeof setInterval> | null = null;
+function ensureMasterTeamsPoller() {
+  if (_masterTeamsPoller) return;
+  void refreshMasterTeams(); // fire one immediately
+  _masterTeamsPoller = setInterval(() => void refreshMasterTeams(), 2000);
+}
+
+// Dev teams = tmux sessions with CLAUDE_CONFIG_DIR set (spawned by `subctl
+// teams claude`). We enrich each with last-activity from the master daemon's
+// inbox tracker. The team name in tmux matches the inbox file basename when
+// the lead reports under that name; if it doesn't match, last_activity stays
+// null (still rendered, just without the staleness signal).
 function buildOrchestrations(): Array<{
   name: string;
   path: string;
@@ -1313,11 +1354,16 @@ function buildOrchestrations(): Array<{
   windows: number;
   claude_account_dir: string | null;
   is_orchestrator: boolean;
+  last_activity_seconds_ago: number | null;
+  last_event_type: string | null;
+  last_event_text: string | null;
 }> {
+  ensureMasterTeamsPoller();
   const rawSessions = listTmuxSessions();
   return rawSessions
     .map((s) => {
       const cfg = tmuxShowEnv(s.name, "CLAUDE_CONFIG_DIR");
+      const team = _masterTeams.get(s.name);
       return {
         name: s.name,
         path: s.path,
@@ -1325,6 +1371,9 @@ function buildOrchestrations(): Array<{
         windows: s.windows,
         claude_account_dir: cfg,
         is_orchestrator: cfg !== null,
+        last_activity_seconds_ago: team?.last_activity_seconds_ago ?? null,
+        last_event_type: team?.last_event?.type ?? null,
+        last_event_text: (team?.last_event?.text as string | undefined) ?? null,
       };
     })
     .filter((x) => x.is_orchestrator);

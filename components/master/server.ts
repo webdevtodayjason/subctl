@@ -411,6 +411,109 @@ async function main() {
     }
   });
 
+  // ── lead-report inbox ──────────────────────────────────────────────────
+  // Each running dev team gets a JSONL file at $MASTER_STATE_DIR/inbox/{team}.jsonl.
+  // The team lead (claude in tmux pane 0) appends one JSON line per status event:
+  //
+  //   {"ts":"…","type":"progress|blocked|done|error|note","text":"…", …}
+  //
+  // We tail every file in the dir, broadcast new lines as `team_event` SSE
+  // events (so the dashboard updates live), expose per-team last-activity to
+  // the watchdog (so it can decide if a team's gone stale), and surface
+  // "blocked"/"error" events to the agent so it can decide whether to ping
+  // the lead or escalate to Jason.
+  const INBOX_DIR = join(MASTER_STATE_DIR, "inbox");
+  mkdirSync(INBOX_DIR, { recursive: true });
+
+  type TeamEvent = {
+    ts: string;
+    type: string;
+    text?: string;
+    [k: string]: unknown;
+  };
+  const teamLastActivity = new Map<string, { ts: number; lastEvent?: TeamEvent }>();
+  const teamReadOffsets = new Map<string, number>(); // file path → last byte read
+
+  function teamNameFromPath(p: string): string {
+    return p.replace(/^.*\//, "").replace(/\.jsonl$/, "");
+  }
+
+  function tailInboxFile(filePath: string) {
+    let stat;
+    try {
+      stat = require("node:fs").statSync(filePath);
+    } catch {
+      return;
+    }
+    const team = teamNameFromPath(filePath);
+    const prev = teamReadOffsets.get(filePath) ?? 0;
+    if (stat.size === prev) return;
+    if (stat.size < prev) {
+      // file truncated/rotated — re-read from 0
+      teamReadOffsets.set(filePath, 0);
+      return tailInboxFile(filePath);
+    }
+    let chunk: string;
+    try {
+      const fd = require("node:fs").openSync(filePath, "r");
+      const buf = Buffer.alloc(stat.size - prev);
+      require("node:fs").readSync(fd, buf, 0, buf.length, prev);
+      require("node:fs").closeSync(fd);
+      chunk = buf.toString("utf8");
+    } catch (err) {
+      console.error(`[master] inbox tail error ${filePath}: ${(err as Error).message}`);
+      return;
+    }
+    teamReadOffsets.set(filePath, stat.size);
+    for (const raw of chunk.split("\n")) {
+      const line = raw.trim();
+      if (!line) continue;
+      let ev: TeamEvent;
+      try {
+        ev = JSON.parse(line) as TeamEvent;
+      } catch {
+        continue;
+      }
+      teamLastActivity.set(team, { ts: Date.now(), lastEvent: ev });
+      broadcast("team_event", { team, ...ev });
+      // Auto-prompt the agent on important event types so it can react.
+      if (ev.type === "blocked" || ev.type === "error") {
+        const summary = ev.text ?? JSON.stringify(ev);
+        const synth = `[team-report] dev-team "${team}" reported ${ev.type}: ${summary}. Decide whether to ping the lead via subctl_orch_msg, escalate to Jason via telegram_send, or take corrective action.`;
+        void dispatchToAgent(synth, "watchdog");
+      }
+    }
+  }
+
+  function scanInboxOnce() {
+    try {
+      const { readdirSync } = require("node:fs") as typeof import("node:fs");
+      for (const f of readdirSync(INBOX_DIR)) {
+        if (f.endsWith(".jsonl")) tailInboxFile(join(INBOX_DIR, f));
+      }
+    } catch (err) {
+      console.error(`[master] inbox scan error: ${(err as Error).message}`);
+    }
+  }
+
+  // Initial pass to populate teamLastActivity from existing files.
+  scanInboxOnce();
+  // ALWAYS poll — fs.watch on macOS fires unreliably (filename arg often
+  // undefined for content writes inside the watched dir), so we can't depend
+  // on it. The watcher below is an opportunistic "wake sooner" optimization;
+  // the poll is the contract.
+  const inboxPoll = setInterval(scanInboxOnce, 2000);
+  let inboxWatcher: import("node:fs").FSWatcher | null = null;
+  try {
+    inboxWatcher = require("node:fs").watch(INBOX_DIR, { persistent: false }, () => {
+      // Don't trust the filename arg — just rescan all .jsonl files.
+      scanInboxOnce();
+    });
+    console.error(`[master] inbox watcher+poll armed at ${INBOX_DIR}`);
+  } catch (err) {
+    console.error(`[master] inbox fs.watch failed (${(err as Error).message}) — relying on 2s poll`);
+  }
+
   console.error(
     `[master] agent ready — supervisor=${supervisorCfg.provider}/${supervisorCfg.model}, tools=${tools.length}, transcript=${agent.state.messages.length} msgs`,
   );
@@ -518,7 +621,18 @@ async function main() {
           transcript_msgs: agent.state.messages.length,
           subscribers: sseClients.size,
           prompt_in_flight: promptInFlight,
+          teams_tracked: teamLastActivity.size,
         });
+      }
+
+      if (url.pathname === "/teams" && req.method === "GET") {
+        const now = Date.now();
+        const teams = Array.from(teamLastActivity.entries()).map(([name, v]) => ({
+          name,
+          last_activity_seconds_ago: Math.floor((now - v.ts) / 1000),
+          last_event: v.lastEvent ?? null,
+        }));
+        return Response.json({ ok: true, teams });
       }
 
       if (url.pathname === "/chat" && req.method === "POST") {
@@ -620,34 +734,33 @@ async function main() {
 
   async function runWatchdogTick() {
     if (stopped || promptInFlight) return;
-    // For now this is a stub that fires only when there are dev teams to
-    // watch. The real scan logic — tail lead-report inboxes, check git
-    // activity — lands in the next slice once teams actually exist.
-    const inboxDir = join(MASTER_STATE_DIR, "inbox");
-    let stale: Array<{ team: string; lastSeenMin: number }> = [];
-    try {
-      if (existsSync(inboxDir)) {
-        const { readdirSync, statSync } = require("node:fs") as typeof import("node:fs");
-        for (const f of readdirSync(inboxDir)) {
-          if (!f.endsWith(".jsonl")) continue;
-          const fp = join(inboxDir, f);
-          const ageMin = (Date.now() - statSync(fp).mtimeMs) / 60_000;
-          if (ageMin > stalenessThresholdMin) {
-            stale.push({ team: f.replace(/\.jsonl$/, ""), lastSeenMin: Math.round(ageMin) });
-          }
-        }
+    // Use the in-memory teamLastActivity map (populated by the inbox tailer)
+    // rather than re-stat'ing files every tick. Teams that have NEVER reported
+    // are also stale candidates — we know they exist if the inbox file exists.
+    const now = Date.now();
+    const stale: Array<{ team: string; lastSeenMin: number; lastEventType?: string }> = [];
+    for (const [team, v] of teamLastActivity) {
+      const ageMin = (now - v.ts) / 60_000;
+      if (ageMin > stalenessThresholdMin) {
+        stale.push({
+          team,
+          lastSeenMin: Math.round(ageMin),
+          lastEventType: v.lastEvent?.type,
+        });
       }
-    } catch (err) {
-      console.error(`[master] watchdog scan error: ${(err as Error).message}`);
     }
     if (stale.length === 0) {
-      broadcast("watchdog_ok", { ts: new Date().toISOString(), open_teams: 0, stale: 0 });
+      broadcast("watchdog_ok", {
+        ts: new Date().toISOString(),
+        teams_tracked: teamLastActivity.size,
+        stale: 0,
+      });
       return;
     }
     const summary = stale
-      .map((s) => `${s.team} (last activity ${s.lastSeenMin}min ago)`)
+      .map((s) => `${s.team} (${s.lastSeenMin}min ago${s.lastEventType ? `, last=${s.lastEventType}` : ""})`)
       .join(", ");
-    const synthPrompt = `[watchdog] ${stale.length} dev team(s) appear stale: ${summary}. Decide whether to ping the lead, escalate to Jason via telegram, or take corrective action. Use the tools available.`;
+    const synthPrompt = `[watchdog] ${stale.length} dev team(s) appear stale: ${summary}. Decide whether to ping the lead via subctl_orch_msg, escalate to Jason via telegram_send, or take corrective action.`;
     broadcast("watchdog_fire", { ts: new Date().toISOString(), stale, prompt: synthPrompt });
     await dispatchToAgent(synthPrompt, "watchdog");
   }
@@ -663,6 +776,8 @@ async function main() {
     stopped = true;
     console.error(`[master] caught ${signal}, shutting down`);
     clearInterval(watchdog);
+    clearInterval(inboxPoll);
+    if (inboxWatcher) try { inboxWatcher.close(); } catch { /* ignore */ }
     httpServer.stop(true);
     agent.abort();
     try {
