@@ -1486,17 +1486,33 @@
 
     let es = null;
     let backoffMs = 1000;
+    let reconnectingDebounce = null;
 
     function connect() {
-      setConnState("connecting");
+      // Don't show "connecting" on first paint either — rely on the
+      // EventSource open event to flip to connected. Initial state is
+      // "connecting" already from the HTML default.
+      if (!es) setConnState("connecting");
       es = new EventSource("/api/master/events");
       es.addEventListener("open", () => {
+        // Cancel any pending "reconnecting" display — we made it back.
+        if (reconnectingDebounce) {
+          clearTimeout(reconnectingDebounce);
+          reconnectingDebounce = null;
+        }
         setConnState("connected");
         backoffMs = 1000;
       });
       es.addEventListener("error", () => {
-        setConnState("reconnecting");
         try { es.close(); } catch {}
+        // Debounce: only show "reconnecting" if we're still trying after
+        // 1.5s. Most real reconnects complete in <1s and shouldn't flash
+        // the UI.
+        if (reconnectingDebounce) clearTimeout(reconnectingDebounce);
+        reconnectingDebounce = setTimeout(() => {
+          setConnState("reconnecting");
+          reconnectingDebounce = null;
+        }, 1500);
         setTimeout(connect, backoffMs);
         backoffMs = Math.min(backoffMs * 2, 15000);
       });
@@ -1888,14 +1904,30 @@
     setText(label, "reconnecting…");
   }
 
-  // Refresh pulse — flash on every WS message.
+  // Refresh pulse — used to flash on every WS message (~every 2s) which
+  // was visually noisy. Now we only flash on actual state changes that
+  // produce a different payload signature (account counts, RL hits,
+  // verdict, dev-team count). Cuts the blink rate from "constantly" to
+  // "when something interesting happens".
   let pulseClearTimer = null;
-  function flashPulse() {
+  let lastPulseSig = "";
+  function flashPulse(state) {
     const dot = $("pulse-dot");
     if (!dot) return;
+    if (state) {
+      const sig = [
+        state.dispatch?.verdict,
+        state.totals?.tmux_sessions,
+        state.totals?.ready_accounts,
+        state.totals?.rl_today,
+        (state.orchestrations || []).length,
+      ].join("|");
+      if (sig === lastPulseSig) return; // no meaningful change → no flash
+      lastPulseSig = sig;
+    }
     dot.classList.add("flash");
     if (pulseClearTimer) clearTimeout(pulseClearTimer);
-    pulseClearTimer = setTimeout(() => dot.classList.remove("flash"), 200);
+    pulseClearTimer = setTimeout(() => dot.classList.remove("flash"), 250);
   }
 
   // ----- Render -----
@@ -1962,12 +1994,14 @@
       }));
     }
 
-    // Service status pill (only if not currently in reconnecting state)
+    // Service status pill — encodes SERVICE liveness, not the dispatch
+    // verdict. (The verdict gets its own panel; double-encoding it here
+    // confused the eye: red dot + "live" text felt broken when accounts
+    // weren't authed yet.) Green = service running, dim = stopped.
     if (state.service?.running) {
       const pill = $("status-pill");
       if (!pill.classList.contains("reconnecting")) {
-        setStatus(VERDICT_DOT[verdict] ?? "green",
-                  `live · ${fmtAge(state.service.uptime_seconds)}`);
+        setStatus("green", `live · ${fmtAge(state.service.uptime_seconds)}`);
       }
     }
 
@@ -2996,8 +3030,9 @@
       try {
         const r = await fetch("/api/state", { cache: "no-store" });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        flashPulse();
-        render(await r.json());
+        const state = await r.json();
+        flashPulse(state);
+        render(state);
       } catch {
         if (!$("status-pill").classList.contains("reconnecting")) {
           setStatus("red", "offline");
@@ -3039,8 +3074,11 @@
       clearReconnectingBadge();
     });
     ws.addEventListener("message", (ev) => {
-      flashPulse();
-      try { render(JSON.parse(ev.data)); } catch { /* ignore malformed */ }
+      try {
+        const state = JSON.parse(ev.data);
+        flashPulse(state);
+        render(state);
+      } catch { /* ignore malformed */ }
     });
     ws.addEventListener("close", () => {
       // Fall back to polling and try to re-establish WS in 3s.

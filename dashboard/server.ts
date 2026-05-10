@@ -2146,6 +2146,10 @@ const HOSTNAME = process.env.SUBCTL_DASHBOARD_HOST || "127.0.0.1";
 const server = Bun.serve({
   port: PORT,
   hostname: HOSTNAME,
+  // SSE pass-through (/api/master/events) and our own WebSocket (/api/live)
+  // are long-lived. The default 10s idleTimeout was killing them every 10s,
+  // making the chat connection pill flash CONNECTED↔RECONNECTING forever.
+  idleTimeout: 0,
   async fetch(req, srv) {
     const url = new URL(req.url);
     if (url.pathname === "/api/live") {
