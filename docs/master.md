@@ -825,12 +825,164 @@ documents. This viewer is that place. Attachments become
 first-class notes in the master's vault when the operator wants
 them durable.
 
+### Phase 3o — Bake the operator's Claude config baseline into the repo
+
+Operator request 2026-05-10 during the FOOTHOLD dogfood: a chunk
+of the customizations subctl actually depends on live in the
+operator's `~/.claude/` and have never made it into the repo. New
+subctl installs (e.g., the M3 Ultra) get the worker scaffolding
+but miss the operator's hooks, skills, sub-agents, slash commands,
+and crucial settings. Audit confirms the gap.
+
+**What ships TODAY (already in repo, installed via `subctl install`):**
+
+- `providers/claude/statusline.sh` — radar bar
+- `providers/claude/dispatch-check.sh` — pre-prompt readiness gate
+- `providers/claude/hooks/log-rate-limits.sh` — Stop hook (rate-limit
+  event detection)
+- `providers/claude/commands/dispatch-check.md` — the `/dispatch-check`
+  slash command
+- `lib/radar.sh` (linked as `signals.sh`) — radar signal source
+- settings.json keys: `statusLine`, `hooks.Stop`,
+  `env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`,
+  per-account team-pane wiring
+
+**What's on the operator's laptop and SHOULD ship in repo
+(per-account install material):**
+
+- **Skills (critical for worker behaviour)** — `subctl`,
+  `orchestrator-mode`, `autonomy`, `damage-control`, `tdd`,
+  `triage`, `to-issues`, `to-prd`, `diagnose`, `find-docs`,
+  `context-audit`, `improve-codebase-architecture`. The first two
+  especially: a worker spawned via subctl that doesn't have the
+  `subctl` skill or `orchestrator-mode` skill won't understand the
+  team protocol it's running inside.
+- **Slash commands** — `/commit`, `/code-review`, `/security-review`,
+  `/ai-slop-cleaner`, `/team`. Workers actively invoke these.
+- **Sub-agents** — `bug-analyzer`, `code-reviewer`, `dev-planner`,
+  `story-generator`, `ui-sketcher`. The agent definitions for
+  parallel-decomposition work.
+- **Settings defaults**:
+  - `permissions.defaultMode: "bypassPermissions"` (autonomous
+    workers must not prompt for every tool call)
+  - `permissions.deny: [Read(**/node_modules/**), Read(**/.next/**), …]`
+    (prevents context blow-up from indexing build artefacts)
+  - `env.CLAUDE_AUTONOMY: "full"` for worker accounts
+  - `env.PATH: …` extension so workers find the tools subctl
+    installs (bun, lms, codex, coderabbit) without relying on
+    inheritance from a login shell
+
+**What stays user-personal (NEVER ships in repo):**
+
+- `~/.claude/CLAUDE.md` — the operator's personal instructions,
+  domain knowledge, infra description. Per-operator. Never.
+- `~/.claude/scripts/switch-claude-token` — the operator's token
+  rotation tool. Out of scope.
+- Operator-specific skills like `caveman`, `llm-council`,
+  `prod-db-surgical`, `setup-matt-pocock-skills`. Personal toolkit.
+- API keys, OAuth credentials, MCP endpoint configs. Never.
+
+**Where the shipped material lives in the repo:**
+
+```
+providers/claude/baseline/
+├── skills/
+│   ├── subctl/SKILL.md
+│   ├── orchestrator-mode/SKILL.md
+│   ├── autonomy/SKILL.md
+│   ├── damage-control/SKILL.md
+│   ├── tdd/SKILL.md
+│   ├── triage/SKILL.md
+│   ├── to-issues/SKILL.md
+│   ├── to-prd/SKILL.md
+│   ├── diagnose/SKILL.md
+│   ├── find-docs/SKILL.md
+│   ├── context-audit/SKILL.md
+│   └── improve-codebase-architecture/SKILL.md
+├── commands/
+│   ├── commit.md
+│   ├── code-review.md
+│   ├── security-review.md
+│   ├── ai-slop-cleaner.md
+│   └── team.md
+└── agents/
+    ├── bug-analyzer.md
+    ├── code-reviewer.md
+    ├── dev-planner.md
+    ├── story-generator.md
+    └── ui-sketcher.md
+```
+
+**`subctl_settings_install_claude_dir` extended to:**
+
+1. Symlink each `providers/claude/baseline/skills/<name>/SKILL.md`
+   into `<cfg_dir>/skills/<name>/SKILL.md`
+2. Same for `commands/` and `agents/`
+3. Merge the new settings keys into `<cfg_dir>/settings.json`:
+   - `permissions.defaultMode = "bypassPermissions"` (only if not
+     already set — don't override operator preference)
+   - `permissions.deny` — append the deny patterns the operator
+     hasn't already added (set-difference union, not replace)
+   - `env.CLAUDE_AUTONOMY = "full"` (only for non-default cfg dirs;
+     `~/.claude` keeps whatever the operator put there)
+
+**`subctl doctor` extended to:**
+
+- New section "Skills installed" — tally of which baseline skills
+  are present in each cfg_dir. Yellow if any are missing; suggests
+  `subctl install` to repair.
+
+**Audit step before shipping (must do before committing baseline):**
+
+For each candidate skill / command / agent in the operator's
+laptop ~/.claude/, manually inspect:
+
+- Does it contain operator-specific paths or accounts?
+  → Generalize before shipping.
+- Does it reference secrets, internal hostnames, real customer
+  names?
+  → Strip before shipping or refuse to ship.
+- Does it contain content the operator would not want public?
+  → Refuse to ship; flag for reuse-with-edits.
+
+This is NOT an automated dump. Each file gets read, sanitized,
+and approved before it lands in the repo.
+
+**Acceptance:**
+
+- Fresh subctl install on a clean Mac → `subctl install` runs →
+  every Claude cfg_dir has the baseline skills/commands/agents
+  symlinked + the settings keys merged.
+- Worker spawned via the master on the new install correctly
+  invokes the `subctl` skill (verifiable: ask the worker "what
+  skills do you have" and `subctl` appears in its reply).
+- Operator's personal customizations on the existing laptop
+  remain untouched (no destructive overwrites).
+- `subctl doctor` reports skills-installed tally per cfg_dir.
+
+**Out of scope for first cut:**
+
+- A "user can opt out per-skill" UI. Phase 1 ships the full
+  baseline; opt-out via deleting the symlink locally.
+- Versioned skill upgrades. Phase 1 ships static content; if a
+  baseline skill changes upstream, `subctl install` overwrites
+  the symlink (fine — they're symlinks, no destructive edits).
+- Pulling in the `~/.claude/plugins/` marketplace state. Plugins
+  are managed by `npx claude-mem install` and similar; subctl
+  doesn't replicate that surface.
+
 ### Backlog (non-blocking)
 
 - Rename the dashboard's `detached` team-status label to
   `running · headless` or similar. Operators interpret "detached"
   as broken when it actually means "no terminal is currently
   attached, work continues fine" — flagged 2026-05-10.
+- Master skill needs an explicit nudge to call `notify_dashboard`
+  on milestone events. The notifications sidecar in the chat
+  panel is empty during real dogfood runs because the master
+  never publishes — diagnosed 2026-05-10. Add to master SKILL.md
+  the rule: "On Milestone-X-complete, call notify_dashboard with
+  kind=milestone."
 
 - Sweep remaining `alert()` / `confirm()` calls in Projects + Teams + Skills tabs to use `window.notice` (the Chat tab is done)
 - `lms --version` ANSI banner stripping is imperfect — first line with a digit picks up an ASCII-art fragment

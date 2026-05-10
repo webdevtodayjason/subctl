@@ -53,11 +53,25 @@ subctl_settings_install_claude_dir() {
   fi
   [[ -f "$settings" ]] || echo '{}' > "$settings"
 
+  # Idempotent merge:
+  # 1. Set statusLine to current script path.
+  # 2. Rewrite any existing Stop hook command that points at log-rate-limits.sh
+  #    in a *different* cfg_dir to point at THIS cfg_dir. Catches the
+  #    laptop-→-M3Ultra alias migration case where settings.json gets copied
+  #    with stale paths (claude-personal/claude-work/claude-overflow).
+  # 3. If after the rewrite no Stop hook entry references the expected path,
+  #    add one.
   jq --arg statusline "$scripts/statusline.sh" \
      --arg hook       "$hooks/log-rate-limits.sh" '
     .statusLine = {type: "command", command: $statusline}
     | .hooks = (.hooks // {})
-    | .hooks.Stop = (.hooks.Stop // [])
+    | .hooks.Stop = (.hooks.Stop // [] | map(
+        .hooks = ((.hooks // []) | map(
+          if (.command // "" | test("log-rate-limits\\.sh$")) and (.command != $hook) then
+            .command = $hook
+          else . end
+        ))
+      ))
     | if (.hooks.Stop | map((.hooks // []) | map(.command // "") | any(. == $hook)) | any) then .
       else .hooks.Stop += [{hooks: [{type: "command", command: $hook}]}] end
   ' "$settings" > "$settings.tmp" && mv "$settings.tmp" "$settings"

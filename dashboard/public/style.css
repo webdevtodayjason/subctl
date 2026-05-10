@@ -2705,7 +2705,14 @@ main {
 /* ── Orchestration screen: chat + sidecar ─────────────────────────────── */
 .orchestration-screen {
   display: grid;
-  grid-template-columns: 1fr 320px;
+  /* Sidecar bumped from 320px → 360px to fit "Active Dev Teams" + count
+     pill + action buttons without truncating, and to give team rows room
+     to render full session names like "claude-Down-Time-Arena" without
+     ellipsizing. The minmax(0, 1fr) on the main track lets the chat
+     toolbar shrink instead of forcing the sidecar off-screen — diagnosed
+     2026-05-10 when the right column showed "ACTIVE DEV...", "claude-Dow…"
+     etc. clipped at the viewport edge. */
+  grid-template-columns: minmax(0, 1fr) 360px;
   gap: 18px;
   align-items: stretch;
   min-height: calc(100vh - 56px - 48px);
@@ -2714,6 +2721,7 @@ main {
   margin: 0;
   display: flex;
   flex-direction: column;
+  min-width: 0; /* allow toolbar contents to shrink rather than overflow */
   /* Fit within the viewport so the log scrolls inside instead of pushing
      the whole page taller. 56px topbar + 24px*2 main padding + ~80px for
      header/toolbar/input = ~184px of chrome to subtract. */
@@ -2730,6 +2738,9 @@ main {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  min-width: 0;       /* honour the 360px track even with long children */
+  overflow: hidden;   /* defensive — long unbroken team names get wrapped
+                         via word-break below rather than spilling out */
 }
 .orch-sidecar-block {
   background: #0c0c0c;
@@ -2756,11 +2767,25 @@ main {
   background: #0a0a0a;
   border-left: 2px solid #2a2a2a;
   border-radius: 0 3px 3px 0;
+  min-width: 0;
+  overflow: hidden;
 }
 .orch-team-row.stale-yellow { border-left-color: #d6c46c; }
 .orch-team-row.stale-red    { border-left-color: #d66c6c; }
-.orch-team-row .team-name   { color: #c4c4c4; font-weight: 500; }
-.orch-team-row .team-meta   { color: #777; font-size: 11px; margin-top: 2px; }
+.orch-team-row .team-name {
+  color: #c4c4c4;
+  font-weight: 500;
+  /* Allow long session names like "claude-Down-Time-Arena" to wrap
+     instead of overflowing the 360px sidecar track. */
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.orch-team-row .team-meta {
+  color: #777;
+  font-size: 11px;
+  margin-top: 2px;
+  word-break: break-word;
+}
 .orch-activity-item {
   padding: 4px 0;
   color: #999;
