@@ -471,6 +471,141 @@ components/master/personalities/
 message, watch the response style change without bouncing the
 daemon and without any tool-call regression.
 
+### Phase 3l — Document attachments in chat
+
+Operator request 2026-05-10, prompted by the FOOTHOLD dogfood test:
+pasting the 21-KB spec into the chat panel filled the visible chat
+with wall-of-text and pushed ctx from ~5K to ~26K instantly. We need
+a way to attach documents that doesn't bloat the chat surface.
+
+Two entry points, same backend:
+
+1. **Explicit upload** — paperclip / file-picker / drag-drop. Local
+   files attach as-is.
+2. **Auto-paste interception** — paste handler measures the
+   clipboard payload; if it crosses a threshold (default 4 KB), the
+   pasted text is intercepted, written to disk as an attachment,
+   and the chat input shows a pill (`pasted-2026-05-10-1342.md ·
+   8.4 KB`) instead of the raw text. User can still click the pill
+   to inline-paste the original if they really want it visible.
+
+**Storage:**
+
+```
+~/.config/subctl/master/attachments/
+├── 2026-05-10/
+│   ├── a1b2c3d4-foothold-spec.md
+│   └── e5f6a7b8-pasted-fragment.md
+└── index.jsonl   # {id, filename, sha256, size, mime, source, created_at, deleted_at?}
+```
+
+- Attachments live indefinitely. They're cheap on disk and someone
+  may want to refer back to one ("re-read FOOTHOLD_SPEC.md and
+  build me a worker prompt").
+- `subctl master attachments {list,show,gc}` for cleanup. `gc`
+  drops attachments older than 90 days that no transcript message
+  references.
+
+**How the master sees an attachment:**
+
+Two layers, both available simultaneously:
+
+- **Inline injection (default)** — at send time, the chat server
+  resolves attachment ids → reads file → wraps each in
+  `<attachment id="..." filename="..." size="...">…contents…</attachment>`
+  blocks → prepends them to the user message in the prompt sent to
+  the model. The browser-visible transcript shows only the pill, so
+  the chat surface stays readable but the model sees full content.
+- **Tool-mediated** — new master tool `read_attachment(id, range?)`
+  for after compaction. Once the auto-compactor drops the inline
+  content, the master can re-fetch on demand without forcing the
+  operator to re-paste.
+
+**Auto-paste threshold:**
+
+- Default: 4 KB or 50 lines, whichever is smaller. Configurable in
+  `~/.config/subctl/master/chat.json`.
+- Threshold matters: too low and quoting a stack trace gets
+  awkwardly attachment-ified; too high and a 20-KB spec slips
+  through. 4 KB is roughly "more than I'd want to read inline."
+
+**API surface:**
+
+```
+POST   /api/master/attachments        (multipart/form-data)
+         → { id, filename, sha256, size, mime, created_at }
+
+GET    /api/master/attachments        (auth required)
+         → [{ id, filename, size, source, created_at, refs }]
+
+GET    /api/master/attachments/<id>
+         → file bytes with proper Content-Type
+
+DELETE /api/master/attachments/<id>
+         → 204
+
+POST   /chat
+         body now accepts: { text, attachments: [<id>...], source }
+```
+
+**Chat-send flow with attachments:**
+
+1. User uploads or pastes large text → `POST /api/master/attachments`
+   returns `{id}`. Browser stores `[id, ...]` against the input box.
+2. User hits send → browser does `POST /chat { text, attachments: [...] }`.
+3. Master server reads each attachment's bytes, wraps in fenced
+   `<attachment>` blocks, prepends to the user message before
+   invoking `agent.prompt()`.
+4. Transcript message records the user text + an `attachments` array
+   of `{id, filename, size}` (NOT the inline content). Browser
+   renders the pill chip; model saw the full content during the call.
+5. After auto-compaction drops the prompt, the next time the master
+   needs that attachment it calls `read_attachment(id)` and gets it
+   back.
+
+**UI:**
+
+- Paperclip icon next to the SEND button. Click → file picker.
+- Drop zone: dragging a file anywhere on the chat panel highlights
+  the input area; drop attaches.
+- Pill chip(s) appear above the input field showing attached
+  filenames and sizes; X to remove before send.
+- Paste interception with toast: *"Captured 21.4 KB as
+  pasted-2026-05-10-1342.md — sent as attachment. [show inline]"*
+
+**Constraints:**
+
+- File size cap: 5 MB per attachment for MVP. Anything bigger
+  refuses with a clear error pointing at vault tier-3 instead.
+- Mime-type allowlist: text/* (any), application/json, application/yaml,
+  application/x-yaml, image/png, image/jpeg, application/pdf. Reject
+  binaries we can't read (executables, archives) by default —
+  master can't reason about them anyway.
+- For images: phase 1 stores them but does NOT inline them in the
+  prompt unless the supervisor model has vision. The pill shows
+  thumbnail-only for now; full vision-prompt integration is a
+  follow-up after we have a vision-capable supervisor wired (qwen
+  has VL variants; LM Studio supports them).
+- For PDFs: phase 1 extracts text via `pdftotext` (poppler) at
+  upload time, stores both the original PDF and the extracted text;
+  the inline injection uses the extracted text. The original PDF
+  stays for download but doesn't go into the prompt.
+
+**Out of scope for first cut:**
+
+- Per-attachment ACLs (everyone with master access sees everything).
+- OCR for scanned PDFs.
+- Inline-editing or annotation of attachments inside chat.
+- Sharing attachments out-bound (e.g., into a dev-team's worker
+  prompt). Phase 2 — workers should be able to fetch attachments by
+  id when their prompt references them.
+
+**Acceptance:** drop a 50-KB markdown file onto the chat panel,
+see a pill, hit send, master responds with full awareness of the
+file's contents, transcript stays readable, and re-asking after a
+compaction still works because the master re-reads via
+`read_attachment`.
+
 ### Backlog (non-blocking)
 
 - Sweep remaining `alert()` / `confirm()` calls in Projects + Teams + Skills tabs to use `window.notice` (the Chat tab is done)
