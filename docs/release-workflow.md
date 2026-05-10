@@ -61,16 +61,34 @@ it usually means an untracked file exists. `git status` will show it.
 
 ## Bump policy
 
-We follow strict semver:
+We follow standard 3-digit semver `X.Y.Z`. **Default to patch.** Minor
+bumps are reserved for genuine features, not for "this fix added a
+file." When in doubt, stay on patch — minor exists for milestones the
+operator wants to remember, not for daily deltas.
 
-| Bump  | When                                                   | Examples                                            |
-| ----- | ------------------------------------------------------ | --------------------------------------------------- |
-| patch | Bug fix; no public API change; no schema change        | Fix LM Studio JIT context reset; correct ANSI strip |
-| minor | New feature; backwards-compatible; opt-in              | Add a new master tool; add a new dashboard tab      |
-| major | Breaking change; config migration required; removal    | Restructure providers.json; remove a CLI verb       |
+| Bump  | When                                                   | Examples                                                    |
+| ----- | ------------------------------------------------------ | ----------------------------------------------------------- |
+| patch (Z) | Bug fix, doc tweak, refactor, internal change, *adding a small file or wiring*, behavior tightening | Fix Docker check, self-heal stale hooks, copy a skill into the repo and wire its install, add a check column to the dashboard |
+| minor (Y) | A genuinely new user-visible feature that you'd announce | Master daemon ships, new CLI verb, new dashboard tab, plugin system goes live |
+| major (X) | Breaking change; config migration required; removal | Restructure providers.json schema, remove a CLI verb, change auth model |
 
-If you're not sure, prefer the higher bump. Versions are cheap; surprised
-users are not.
+A patch bump is the default — most days produce 1–5 patch bumps. A
+minor bump is rare; major bumps even rarer. Counter-example to avoid:
+"I added a new file therefore minor" — no, the file is a leaf detail
+of an existing feature, that's a patch.
+
+Pacing examples:
+
+```
+2.1.0 → 2.1.1 → 2.1.2 → 2.1.3 → 2.1.4 → 2.1.5    ← five patches in a row, normal
+2.1.5 → 2.2.0                                     ← user-visible feature shipped
+2.2.0 → 2.2.1 → ... → 2.2.13                      ← back to patches
+```
+
+Don't roll-over to a new minor track every time you've shipped 4–5
+patches. There's no "5-patch budget" — 2.1.50 is fine if that's how
+the work flowed. Roll to minor when it's *meaningful*, not when the
+patch counter "looks high."
 
 ## Tagging (optional)
 
