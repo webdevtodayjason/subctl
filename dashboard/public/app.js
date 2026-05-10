@@ -249,14 +249,17 @@
             "<span class=\"name\">" + escapeText(a.alias) + "</span>" +
             "<span class=\"detail\">" + escapeText(a.email + " · " + (ok ? "authed" : "not authenticated")) + "</span>";
           if (!ok) {
+            // Use the account's actual provider (claude/openai/gemini) so
+            // the copied command lands the user in the right OAuth flow.
+            const cmdText = "subctl auth " + a.provider + " " + a.alias;
             const cmd = document.createElement("code");
             cmd.className = "install-cmd";
-            cmd.textContent = "subctl auth claude " + a.alias;
-            cmd.title = "click to copy";
+            cmd.textContent = cmdText;
+            cmd.title = "click to copy — run this on the M3 Ultra (ssh argent-m3-ultra-dev)";
             cmd.addEventListener("click", () => {
-              navigator.clipboard.writeText("subctl auth claude " + a.alias);
+              navigator.clipboard.writeText(cmdText);
               cmd.textContent = "copied ✓";
-              setTimeout(() => cmd.textContent = "subctl auth claude " + a.alias, 1500);
+              setTimeout(() => cmd.textContent = cmdText, 1500);
             });
             row.appendChild(cmd);
           }
