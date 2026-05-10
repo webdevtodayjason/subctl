@@ -766,6 +766,94 @@ async function main() {
         });
       }
 
+      // /transcript/compact — summarize older turns into a single message,
+      // archive the originals, and keep only the last K turns + the
+      // summary as the new transcript. Lets you stay in a conversation
+      // without ditching all context when the supervisor's loaded
+      // context window gets blown out (the 506% problem).
+      if (url.pathname === "/transcript/compact" && req.method === "POST") {
+        if (promptInFlight) {
+          return Response.json({ ok: false, error: "agent busy — try again in a moment" }, { status: 409 });
+        }
+        try {
+          const messages = agent.state.messages as Array<Record<string, unknown>>;
+          if (messages.length < 8) {
+            return Response.json({ ok: false, error: `transcript too short (${messages.length} msgs) to bother compacting` }, { status: 400 });
+          }
+          const KEEP_RECENT = 6; // keep last N turns intact
+          const toCompact = messages.slice(0, -KEEP_RECENT);
+          const recent = messages.slice(-KEEP_RECENT);
+
+          // Naive deterministic compaction: extract just user texts +
+          // last assistant text in each older turn, plus any tool names
+          // called. No LLM round-trip required, which means the compact
+          // works even when the model is broken / unreachable.
+          const userTexts: string[] = [];
+          const lastAssistantText: string[] = [];
+          const toolsCalled: Set<string> = new Set();
+          for (const m of toCompact) {
+            const role = m.role as string;
+            const content = (m.content as Array<Record<string, unknown>>) ?? [];
+            if (role === "user") {
+              const txt = content.filter((b) => b.type === "text").map((b) => b.text).join(" ").trim();
+              if (txt && !txt.startsWith("[watchdog]") && !txt.startsWith("[team-report]")) userTexts.push(txt.slice(0, 240));
+            } else if (role === "assistant") {
+              const txt = content.filter((b) => b.type === "text").map((b) => b.text).join(" ").trim();
+              if (txt) lastAssistantText.push(txt.slice(0, 240));
+              for (const b of content) {
+                if (b.type === "toolCall" && b.name) toolsCalled.add(b.name as string);
+              }
+            }
+          }
+
+          const summary =
+            `[transcript compaction · ${toCompact.length} prior messages compacted into this summary on ${new Date().toISOString()}]\n\n` +
+            `User said:\n` + userTexts.slice(-12).map((t) => "  · " + t).join("\n") + "\n\n" +
+            `You replied (highlights):\n` + lastAssistantText.slice(-8).map((t) => "  · " + t).join("\n") + "\n\n" +
+            `Tools you used during this period: ${Array.from(toolsCalled).join(", ") || "(none)"}\n\n` +
+            `(Original messages archived to disk; resume the conversation from here.)`;
+
+          // Archive the original transcript with a timestamp suffix
+          const ts = new Date().toISOString().replace(/[:.]/g, "-");
+          const archivePath = AGENT_STATE_PATH.replace(/\.json$/, `.archive-compact-${ts}.json`);
+          if (existsSync(AGENT_STATE_PATH)) {
+            const { copyFileSync } = require("node:fs") as typeof import("node:fs");
+            copyFileSync(AGENT_STATE_PATH, archivePath);
+          }
+
+          // Replace agent.state.messages in place: a single user message
+          // carrying the summary, then the last KEEP_RECENT turns intact.
+          agent.state.messages.length = 0;
+          agent.state.messages.push({
+            role: "user",
+            content: [{ type: "text", text: summary }],
+            timestamp: Date.now(),
+          } as any);
+          for (const m of recent) agent.state.messages.push(m as any);
+          // Persist
+          saveAgentTranscript(agent.state.messages);
+          broadcast("transcript_compacted", {
+            ts: new Date().toISOString(),
+            archived_count: toCompact.length,
+            kept: recent.length + 1,
+            archive_path: archivePath,
+          });
+          logDecision({
+            project: "_master",
+            action: "transcript_compacted",
+            rationale: `compacted ${toCompact.length} msgs, kept last ${recent.length}`,
+          });
+          return Response.json({
+            ok: true,
+            archived_count: toCompact.length,
+            kept_msgs: recent.length + 1,
+            archive_path: archivePath,
+          });
+        } catch (err) {
+          return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+        }
+      }
+
       // /transcript/clear — archive the transcript and start fresh.
       if (url.pathname === "/transcript/clear" && req.method === "POST") {
         try {

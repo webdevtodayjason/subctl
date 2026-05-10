@@ -42,6 +42,9 @@
         <button type="button" class="nav-btn" data-tab="teams">
           <span class="nav-icon">▤</span><span class="nav-label">Teams</span>
         </button>
+        <button type="button" class="nav-btn" data-tab="logs">
+          <span class="nav-icon">≣</span><span class="nav-label">Logs</span>
+        </button>
         <button type="button" class="nav-btn" data-tab="sessions">
           <span class="nav-icon">≡</span><span class="nav-label">Claude Sessions</span>
         </button>
@@ -76,6 +79,13 @@
     <!-- ── Chat: master conversation, model picker, full-height with sidecar ─── -->
     <section class="orchestration-screen chat-screen" data-tab="chat">
       <section class="panel master-chat" id="master-chat-panel">
+        <div class="ctx-overflow-banner" id="ctx-overflow-banner" hidden>
+          <strong>Context window overflowed</strong> — the supervisor model only has <span id="ctx-overflow-cap">?</span> tokens of context loaded but the transcript is ~<span id="ctx-overflow-now">?</span> tokens. Recent messages may be silently truncated and master will hallucinate "Standing by" responses to questions it can't see.
+          <div class="ctx-overflow-actions">
+            <button type="button" class="ctx-overflow-fix-1" id="ctx-overflow-compact">compact transcript now</button>
+            <span class="dim small">or in LM Studio: eject qwen3.6-35b-a3b → reload with Context Length 65536</span>
+          </div>
+        </div>
         <div class="chat-toolbar">
           <label class="chat-model-label">model
             <select id="chat-model-select" class="chat-model-select">
@@ -83,6 +93,7 @@
             </select>
           </label>
           <button type="button" class="chat-toolbar-btn" id="chat-model-apply" title="Switch the master's supervisor model. Edits providers.json and restarts the master daemon (transcript preserved).">apply</button>
+          <button type="button" class="chat-toolbar-btn" id="chat-compact-btn" title="Compact older turns of this conversation into a single summary message. Master keeps a working memory but the supervisor's prompt window stays manageable. Use when the context meter goes red.">compact</button>
           <button type="button" class="chat-toolbar-btn chat-toolbar-btn-warn" id="chat-new-btn" title="Archive the current transcript and start a fresh conversation. Your prior chat is saved to ~/.config/subctl/master/agent-state.archive-*.json.">+ new chat</button>
           <button type="button" class="chat-toolbar-btn chat-toolbar-btn-icon" id="chat-fullscreen-btn" title="Toggle full-screen chat (Esc exits)" aria-label="toggle full-screen">⛶</button>
           <span class="chat-context-meter" id="chat-context-meter" title="Approximate transcript tokens vs LM Studio's loaded context length. Includes system prompt + tool schemas overhead.">
@@ -551,6 +562,29 @@
       <div class="providers-list" id="providers-list">
         <div class="dim small" style="padding:24px">loading…</div>
       </div>
+    </section>
+
+    <!-- ── Logs ───────────────────────────────────────────────────── -->
+    <section class="logs-screen" data-tab="logs">
+      <header class="screen-header">
+        <h2>Live Logs <span class="screen-sub">streaming tail of master + dashboard launchd output</span></h2>
+        <div class="screen-header-actions">
+          <select id="logs-source">
+            <option value="master">master daemon</option>
+            <option value="dashboard-out">dashboard stdout</option>
+            <option value="dashboard-err">dashboard stderr</option>
+            <option value="decisions">master decisions log</option>
+          </select>
+          <label class="logs-autoscroll">
+            <input type="checkbox" id="logs-autoscroll" checked /> auto-scroll
+          </label>
+          <button type="button" class="secondary-btn" id="logs-clear-btn">clear view</button>
+          <button type="button" class="secondary-btn" id="logs-copy-btn">copy all</button>
+          <span class="logs-status" id="logs-status">disconnected</span>
+        </div>
+      </header>
+
+      <pre class="logs-view" id="logs-view"></pre>
     </section>
 
     <!-- ── Teams (dev-team templates) ─────────────────────────────── -->

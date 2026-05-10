@@ -1347,6 +1347,64 @@ body[data-active-tab="settings"]      section[data-tab]:not([data-tab="settings"
 body[data-active-tab="skills"]        section[data-tab]:not([data-tab="skills"])        { display: none; }
 body[data-active-tab="providers"]     section[data-tab]:not([data-tab="providers"])     { display: none; }
 body[data-active-tab="teams"]         section[data-tab]:not([data-tab="teams"])         { display: none; }
+body[data-active-tab="logs"]          section[data-tab]:not([data-tab="logs"])          { display: none; }
+
+/* ── Logs screen ──────────────────────────────────────────────────────── */
+.logs-screen { display: flex; flex-direction: column; gap: 12px; }
+.logs-screen .screen-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+.logs-screen .screen-header-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.logs-screen select {
+  background: #0a0a0a;
+  border: 1px solid #2a2a2a;
+  color: #c4c4c4;
+  font-family: inherit;
+  font-size: 12px;
+  padding: 5px 10px;
+  border-radius: 3px;
+  min-width: 220px;
+}
+.logs-autoscroll {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #888;
+}
+.logs-status {
+  display: inline-block;
+  padding: 2px 10px;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border-radius: 11px;
+  background: #1a1a1a;
+  color: #888;
+}
+.logs-status.connected { background: #0e2a16; color: #6cd697; }
+.logs-status.connecting { background: #2a230e; color: #d6c46c; }
+.logs-status.error { background: #2a1010; color: #d66c6c; }
+.logs-view {
+  flex: 1;
+  background: #0a0a0a;
+  border: 1px solid #1a1a1a;
+  border-radius: 4px;
+  margin: 0;
+  padding: 14px 16px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: #aaa;
+  overflow-y: auto;
+  max-height: calc(100vh - 56px - 110px);
+  white-space: pre;
+}
+.logs-view .log-line { display: block; }
+.logs-view .log-line.warn { color: #d6c46c; }
+.logs-view .log-line.err  { color: #d66c6c; }
+.logs-view .log-line.info { color: #5fd7ff; }
+.logs-view .log-line.ok   { color: #6cd697; }
 
 /* ── Teams screen ─────────────────────────────────────────────────────── */
 .teams-screen { display: flex; flex-direction: column; gap: 18px; }
@@ -1949,6 +2007,34 @@ body.chat-fullscreen .chat-toolbar-btn-icon { background: #1f4256; color: #5fd7f
   letter-spacing: 0.04em;
   z-index: 1;
 }
+
+/* Context-overflow banner */
+.ctx-overflow-banner {
+  background: #2a1010;
+  border: 1px solid #4a1f1f;
+  border-radius: 4px;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+  color: #d66c6c;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.ctx-overflow-banner strong { color: #ff8888; }
+.ctx-overflow-banner span { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+.ctx-overflow-actions { margin-top: 8px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.ctx-overflow-fix-1 {
+  background: #4a1f1f;
+  border: 1px solid #6a2929;
+  color: #ffaaaa;
+  padding: 5px 14px;
+  border-radius: 3px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  font-family: inherit;
+}
+.ctx-overflow-fix-1:hover { background: #5a2424; color: #ffd0d0; }
 
 /* ── Orchestration cockpit ────────────────────────────────────────────── */
 .orch-screen { display: flex; flex-direction: column; gap: 18px; }

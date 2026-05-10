@@ -168,6 +168,119 @@
   wireSkillsTab();
   wireProvidersTab();
   wireTeamsTab();
+  wireLogsTab();
+
+  // ----- Logs tab — streaming tail of master + dashboard logs -----
+  function wireLogsTab() {
+    const sourceSel = $("logs-source");
+    const view = $("logs-view");
+    const status = $("logs-status");
+    const autoscrollCb = $("logs-autoscroll");
+    const clearBtn = $("logs-clear-btn");
+    const copyBtn = $("logs-copy-btn");
+    if (!view || !sourceSel) return;
+
+    let es = null;
+    let backoffMs = 1000;
+    const MAX_LINES = 5000;
+
+    function setStatus(state) {
+      if (!status) return;
+      status.textContent = state;
+      status.className = "logs-status " + (state === "live" ? "connected" : state === "connecting" || state === "reconnecting" ? "connecting" : state.startsWith("error") ? "error" : "");
+    }
+
+    function classify(line) {
+      const lc = line.toLowerCase();
+      if (/(error|fatal|critical|✗|abort|exception|crashed)/.test(lc)) return "err";
+      if (/(warn|warning|degraded)/.test(lc)) return "warn";
+      if (/(✓|ok\b|ready|listening|armed)/.test(lc)) return "ok";
+      if (/(boot|init|spawn|reload)/.test(lc)) return "info";
+      return "";
+    }
+
+    function appendLines(lines) {
+      const frag = document.createDocumentFragment();
+      for (const line of lines) {
+        if (!line) continue;
+        const div = document.createElement("div");
+        div.className = "log-line " + classify(line);
+        div.textContent = line;
+        frag.appendChild(div);
+      }
+      view.appendChild(frag);
+      // Cap total rendered lines to avoid DOM bloat
+      while (view.childElementCount > MAX_LINES) view.removeChild(view.firstChild);
+      if (autoscrollCb?.checked !== false) view.scrollTop = view.scrollHeight;
+    }
+
+    function clearView() {
+      view.innerHTML = "";
+    }
+
+    function disconnect() {
+      if (es) try { es.close(); } catch {}
+      es = null;
+    }
+
+    function connect() {
+      disconnect();
+      const id = sourceSel.value;
+      setStatus("connecting");
+      clearView();
+      es = new EventSource(`/api/logs/${id}/stream`);
+      es.addEventListener("snapshot", (e) => {
+        try {
+          const d = JSON.parse(e.data);
+          clearView();
+          appendLines(d.lines || []);
+          setStatus("live");
+        } catch {}
+      });
+      es.addEventListener("append", (e) => {
+        try {
+          const d = JSON.parse(e.data);
+          appendLines(d.lines || []);
+        } catch {}
+      });
+      es.addEventListener("error", () => {
+        setStatus("error · reconnecting");
+        try { es.close(); } catch {}
+        setTimeout(connect, backoffMs);
+        backoffMs = Math.min(backoffMs * 2, 15000);
+      });
+      es.addEventListener("open", () => { backoffMs = 1000; });
+    }
+
+    sourceSel.addEventListener("change", () => connect());
+    if (clearBtn) clearBtn.addEventListener("click", clearView);
+    if (copyBtn) copyBtn.addEventListener("click", () => {
+      const text = Array.from(view.querySelectorAll(".log-line")).map((el) => el.textContent).join("\n");
+      navigator.clipboard.writeText(text);
+      copyBtn.textContent = "copied ✓";
+      setTimeout(() => copyBtn.textContent = "copy all", 1500);
+    });
+
+    // Connect on first switch into the Logs tab. Don't connect eagerly —
+    // SSE keeps a TCP connection open and we don't want to chew connections
+    // when the user never visits this view.
+    let everConnected = false;
+    const observer = new MutationObserver(() => {
+      const panel = document.querySelector("section[data-tab=\"logs\"]");
+      const visible = panel && getComputedStyle(panel).display !== "none";
+      if (visible && !everConnected) {
+        everConnected = true;
+        connect();
+      }
+    });
+    observer.observe(document.body, { attributes: true, attributeFilter: ["data-active-tab"] });
+    // If logs is the initial tab on load
+    const panel = document.querySelector("section[data-tab=\"logs\"]");
+    if (panel && getComputedStyle(panel).display !== "none") {
+      everConnected = true;
+      connect();
+    }
+  }
 
   // ----- Teams (dev-team templates) -----
   function wireTeamsTab() {
@@ -2227,6 +2340,20 @@
         ctxLabel.textContent = cap
           ? `ctx ${total.toLocaleString()} / ${cap.toLocaleString()} tok (${pct ?? "?"}%)`
           : `ctx ~${total.toLocaleString()} tok`;
+        // Show the overflow banner once we're past 100% — the supervisor
+        // is silently truncating from this point on, so flag it loudly.
+        const banner = $("ctx-overflow-banner");
+        if (banner) {
+          if (typeof pct === "number" && pct > 100) {
+            banner.hidden = false;
+            const capEl = $("ctx-overflow-cap");
+            const nowEl = $("ctx-overflow-now");
+            if (capEl) capEl.textContent = (cap || 0).toLocaleString();
+            if (nowEl) nowEl.textContent = (total || 0).toLocaleString();
+          } else {
+            banner.hidden = true;
+          }
+        }
       } catch { /* silent */ }
     }
     refreshContext();
@@ -2257,6 +2384,33 @@
         }
       });
     }
+
+    // Compact transcript button: summarize older turns into a single
+    // message so the supervisor's prompt window stays manageable.
+    async function runCompact(initiator) {
+      if (!confirm("Compact older turns of this conversation?\n\nMaster will keep the last 6 messages intact and replace everything before them with a structured summary (user asks + assistant highlights + tools used). The original transcript is archived to ~/.config/subctl/master/agent-state.archive-compact-*.json.\n\nProceed?")) return;
+      try {
+        const r = await fetch("/api/master/transcript/compact", { method: "POST" });
+        const j = await r.json();
+        if (!j.ok) {
+          alert("Compact failed: " + (j.error || "?"));
+          return;
+        }
+        // Wipe local log and re-render from the new compact transcript
+        while (log.firstChild) log.removeChild(log.firstChild);
+        await rehydrateFromTranscript();
+        refreshContext();
+        if (initiator === "banner") {
+          // Already implicit, no extra UX
+        }
+      } catch (err) {
+        alert("Compact error: " + err);
+      }
+    }
+    const compactBtn = $("chat-compact-btn");
+    if (compactBtn) compactBtn.addEventListener("click", () => runCompact("toolbar"));
+    const bannerCompact = $("ctx-overflow-compact");
+    if (bannerCompact) bannerCompact.addEventListener("click", () => runCompact("banner"));
 
     // New Chat button: archive the transcript and start fresh.
     if (newBtn) {

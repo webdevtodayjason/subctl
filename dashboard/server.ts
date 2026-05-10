@@ -2255,6 +2255,144 @@ const server = Bun.serve({
       return Response.json({ ok: true, code_root: codeRoot, projects });
     }
 
+    // ── Logs: streaming tail of master + dashboard launchd logs ──────────
+    // GET /api/logs/sources    list available log files with size + mtime
+    // GET /api/logs/<id>?tail=N return last N lines of one log
+    // GET /api/logs/<id>/stream SSE: tail -f equivalent
+    if (url.pathname === "/api/logs/sources" && req.method === "GET") {
+      const home = process.env.HOME ?? "";
+      const logsDir = `${home}/Library/Logs/subctl`;
+      const sources = [
+        { id: "master",        path: `${logsDir}/master.log`,         label: "master daemon (com.subctl.master)" },
+        { id: "dashboard-out", path: `${logsDir}/dashboard.out.log`,  label: "dashboard stdout (com.subctl.dashboard)" },
+        { id: "dashboard-err", path: `${logsDir}/dashboard.err.log`,  label: "dashboard stderr" },
+        { id: "decisions",     path: `${home}/.config/subctl/master/decisions.jsonl`, label: "master decisions log (JSONL)" },
+      ];
+      const enriched = sources.map((s) => {
+        try {
+          const { statSync } = require("node:fs") as typeof import("node:fs");
+          const st = statSync(s.path);
+          return { ...s, exists: true, size: st.size, mtime: st.mtimeMs };
+        } catch {
+          return { ...s, exists: false, size: 0, mtime: 0 };
+        }
+      });
+      return Response.json({ ok: true, sources: enriched });
+    }
+
+    {
+      const m = url.pathname.match(/^\/api\/logs\/([\w-]+)(?:\/stream)?$/);
+      if (m) {
+        const id = m[1]!;
+        const isStream = url.pathname.endsWith("/stream");
+        const home = process.env.HOME ?? "";
+        const map: Record<string, string> = {
+          "master":         `${home}/Library/Logs/subctl/master.log`,
+          "dashboard-out":  `${home}/Library/Logs/subctl/dashboard.out.log`,
+          "dashboard-err":  `${home}/Library/Logs/subctl/dashboard.err.log`,
+          "decisions":      `${home}/.config/subctl/master/decisions.jsonl`,
+        };
+        const path = map[id];
+        if (!path) return Response.json({ ok: false, error: "unknown log id" }, { status: 404 });
+        if (!existsSync(path)) return Response.json({ ok: false, error: "log file does not exist", path }, { status: 404 });
+
+        if (req.method === "GET" && !isStream) {
+          const tailN = Math.max(1, Math.min(2000, Number(url.searchParams.get("tail") ?? "200")));
+          try {
+            const raw = readFileSync(path, "utf8");
+            const lines = raw.split("\n");
+            const slice = lines.slice(-tailN);
+            const { statSync } = require("node:fs") as typeof import("node:fs");
+            const st = statSync(path);
+            return Response.json({
+              ok: true,
+              path,
+              size: st.size,
+              mtime: st.mtimeMs,
+              total_lines: lines.length,
+              returned: slice.length,
+              lines: slice,
+            });
+          } catch (err) {
+            return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+          }
+        }
+
+        if (req.method === "GET" && isStream) {
+          // Stream new appended bytes via SSE. Polls the file's size every
+          // 700ms and emits any newly-appended chunk as line events. Not
+          // as efficient as fs.watch but works around the unreliable
+          // FSEvents behavior on macOS for log files written by launchd-
+          // managed processes.
+          const stream = new ReadableStream({
+            start(controller) {
+              const encoder = new TextEncoder();
+              const { statSync, openSync, readSync, closeSync } = require("node:fs") as typeof import("node:fs");
+              let lastSize = 0;
+              try { lastSize = statSync(path).size; } catch { lastSize = 0; }
+              const send = (event: string, data: unknown) => {
+                try { controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)); }
+                catch { /* client gone */ }
+              };
+              // Initial: send the last 200 lines so the UI doesn't start empty
+              try {
+                const raw = readFileSync(path, "utf8");
+                const lines = raw.split("\n");
+                const last200 = lines.slice(-200);
+                send("snapshot", { lines: last200, total_lines: lines.length });
+              } catch { /* no-op */ }
+              const tick = () => {
+                let curSize = 0;
+                try { curSize = statSync(path).size; } catch { return; }
+                if (curSize === lastSize) return;
+                if (curSize < lastSize) {
+                  // file truncated/rotated — re-emit a fresh snapshot
+                  try {
+                    const raw = readFileSync(path, "utf8");
+                    const lines = raw.split("\n");
+                    send("snapshot", { lines: lines.slice(-200), total_lines: lines.length });
+                  } catch { /* no-op */ }
+                  lastSize = curSize;
+                  return;
+                }
+                try {
+                  const fd = openSync(path, "r");
+                  const buf = Buffer.alloc(curSize - lastSize);
+                  readSync(fd, buf, 0, buf.length, lastSize);
+                  closeSync(fd);
+                  const newLines = buf.toString("utf8").split("\n").filter((l) => l.length);
+                  if (newLines.length) send("append", { lines: newLines });
+                  lastSize = curSize;
+                } catch { /* fs errored, retry next tick */ }
+              };
+              const ticker = setInterval(tick, 700);
+              const ka = setInterval(() => {
+                try { controller.enqueue(encoder.encode(`: keep-alive ${Date.now()}\n\n`)); } catch { clearInterval(ka); }
+              }, 25_000);
+              (controller as any)._cleanup = () => {
+                clearInterval(ticker);
+                clearInterval(ka);
+              };
+              req.signal?.addEventListener("abort", () => {
+                const c = (controller as any)._cleanup; if (c) c();
+                try { controller.close(); } catch {}
+              });
+            },
+            cancel() {
+              const c = (this as any)._cleanup; if (c) c();
+            },
+          });
+          return new Response(stream, {
+            headers: {
+              "Content-Type": "text/event-stream",
+              "Cache-Control": "no-cache, no-transform",
+              "Connection": "keep-alive",
+            },
+          });
+        }
+      }
+    }
+
     // ── Teams (dev-team templates) ──────────────────────────────────────
     // GET    /api/teams         list every template
     // GET    /api/teams/:name   one template's full JSON
