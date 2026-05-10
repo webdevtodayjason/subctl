@@ -4,6 +4,15 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.1.7] — 2026-05-10
+
+Patch — quality-of-life: tmux-preview modal is now bigger + letterboxed.
+
+### Changed
+
+- **tmux-preview modal width 1100px → 95vw (cap 1900px).** Operator request 2026-05-10: the View button on dev-team rows opens a captured-pane viewer; at the old 1100px width long lines wrapped awkwardly while the rest of the screen sat empty. Now the modal fills nearly the full viewport horizontally, capped at 1900px for ultrawide screens.
+- **Pane area font 11.5px → 13px, min-height 360 → 520, max-height stays at 75vh.** Captures of 30+ rows of terminal output fit comfortably without scrolling, and the larger font reads cleanly at the wider modal size. Letterbox feel — wide and short, like a real terminal multiplexer view.
+
 ## [2.1.6] — 2026-05-10
 
 Patch — modal stacking context fix.

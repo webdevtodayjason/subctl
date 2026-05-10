@@ -1574,7 +1574,15 @@ body[data-active-tab="logs"]          section[data-tab]:not([data-tab="logs"])  
 
 .modal-wide { max-width: 800px; }
 .modal-narrow { max-width: 460px; }
-.tmux-preview { max-width: 1100px; }
+/* tmux-preview is the live worker-pane viewer. Operator wants it big +
+   letterboxed (2026-05-10): use 95vw so it nearly fills the viewport
+   horizontally, with a 1900px ceiling for ultrawide screens. The
+   .tmux-preview-pane below has matching height tuning so the aspect
+   ratio is comfortable for reading captured terminal output. */
+.tmux-preview {
+  width: 95vw;
+  max-width: min(95vw, 1900px);
+}
 .tmux-preview-toolbar {
   display: flex;
   align-items: center;
@@ -1600,15 +1608,21 @@ body[data-active-tab="logs"]          section[data-tab]:not([data-tab="logs"])  
   background: #050505;
   border: 1px solid #1a1a1a;
   border-radius: 4px;
-  padding: 12px 14px;
+  padding: 14px 16px;
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  font-size: 11.5px;
+  /* Bumped 11.5 → 13 — at 95vw width the terminal output has plenty of
+     horizontal room, larger font reads better without overflowing rows. */
+  font-size: 13px;
   line-height: 1.5;
   color: #cdd0d0;
   white-space: pre;
   overflow: auto;
-  max-height: 70vh;
-  min-height: 360px;
+  /* Letterbox feel: tall enough to show ~30 lines of capture comfortably
+     but capped at 75vh so the modal header/toolbar/footer stay visible
+     above and below. Min raised from 360 → 520 so even on shorter
+     viewports the pane is the focal point of the modal. */
+  max-height: 75vh;
+  min-height: 520px;
   margin: 0;
 }
 
