@@ -795,7 +795,15 @@ async function main() {
         try {
           const messages = agent.state.messages as Array<Record<string, unknown>>;
           if (messages.length < KEEP_RECENT + 2) {
-            return Response.json({ ok: false, error: `transcript too short (${messages.length} msgs) to bother compacting (need > ${KEEP_RECENT + 2})` }, { status: 400 });
+            // Not an error — nothing to do. Return ok:true with a noop flag
+            // so the UI can show a friendly "no compaction needed" notice
+            // instead of a red error.
+            return Response.json({
+              ok: true,
+              noop: true,
+              message: `Nothing to compact — transcript only has ${messages.length} messages (last ${KEEP_RECENT} are always kept). Compaction kicks in automatically when the transcript grows past about ${KEEP_RECENT + 2} turns.`,
+              transcript_msgs: messages.length,
+            });
           }
           // Token estimator: chars/4 — same heuristic as /context.
           const tokenize = (m: Record<string, unknown>): number => {

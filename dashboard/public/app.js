@@ -1638,7 +1638,11 @@
                           : kind === "warn"  ? "#d6c46c"
                           : kind === "ok"    ? "#6cd697"
                           : "#ffffff";
+      // Belt-and-braces visibility — inline display PLUS hidden attr —
+      // so the Cancel button never sneaks through on info/error notices
+      // even if a CSS rule overrides [hidden].
       cancelBtn.hidden = !confirm;
+      cancelBtn.style.display = confirm ? "" : "none";
       okBtn.textContent = confirm ? "Confirm" : "OK";
       modal.hidden = false;
       // Focus management — let Esc and Enter work
@@ -2468,9 +2472,16 @@
           await window.notice.error("Compact failed", j.error || "unknown");
           return;
         }
+        // Server returns ok:true with noop:true when there's nothing worth
+        // compacting (transcript too short). Show as info, not error.
+        if (j.noop) {
+          await window.notice("Nothing to compact", j.message || "Transcript is short enough already.");
+          return;
+        }
         while (log.firstChild) log.removeChild(log.firstChild);
         await rehydrateFromTranscript();
         refreshContext();
+        await window.notice("Compact complete", `Archived ${j.archived_count} messages, kept the last ${j.kept_msgs} turns.`);
       } catch (err) {
         await window.notice.error("Compact error", String(err));
       }
