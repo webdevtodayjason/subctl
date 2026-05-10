@@ -537,37 +537,56 @@ async function main() {
       }
 
       if (url.pathname === "/events" && req.method === "GET") {
+        // Per-connection state captured in closure scope so BOTH start() and
+        // cancel() can reach it. (Earlier version stashed cleanup on the
+        // controller, but ReadableStream.cancel() runs with `this` bound to
+        // the source object — not the controller — so the cleanup never
+        // fired and disconnected clients accumulated in sseClients forever.
+        // Verified by `/health.subscribers` climbing to 69 on a fresh
+        // daemon with one tab refreshed a few times.)
+        let client: { write: (data: string) => void } | null = null;
+        let keepAlive: ReturnType<typeof setInterval> | null = null;
+        let cleaned = false;
+        const cleanup = () => {
+          if (cleaned) return;
+          cleaned = true;
+          if (keepAlive) { clearInterval(keepAlive); keepAlive = null; }
+          if (client) { sseClients.delete(client); client = null; }
+        };
+        // Browser tab close fires AbortSignal on req.signal — wire that to
+        // cleanup so we don't depend solely on ReadableStream.cancel().
+        req.signal?.addEventListener("abort", cleanup);
+
         const stream = new ReadableStream({
           start(controller) {
             const encoder = new TextEncoder();
-            const client = {
-              write: (data: string) => controller.enqueue(encoder.encode(data)),
+            client = {
+              write: (data: string) => {
+                try {
+                  controller.enqueue(encoder.encode(data));
+                } catch {
+                  // controller closed (client gone) — prune ourselves
+                  cleanup();
+                }
+              },
             };
             sseClients.add(client);
-            // Initial hello so the client knows it's connected
             client.write(`event: connected\ndata: ${JSON.stringify({
               ts: new Date().toISOString(),
               transcript_msgs: agent.state.messages.length,
             })}\n\n`);
-            // Send last assistant message preview so a fresh tab has context
             const lastAssistant = [...agent.state.messages].reverse().find(
               (m: any) => m.role === "assistant",
             );
             if (lastAssistant) {
               client.write(`event: snapshot_last\ndata: ${JSON.stringify(lastAssistant)}\n\n`);
             }
-            // Keep-alive comment every 25s — survives proxy buffering
-            const ka = setInterval(() => {
-              try { client.write(`: keep-alive ${Date.now()}\n\n`); } catch { clearInterval(ka); }
+            keepAlive = setInterval(() => {
+              if (client) client.write(`: keep-alive ${Date.now()}\n\n`);
             }, 25_000);
-            (controller as any)._cleanup = () => {
-              clearInterval(ka);
-              sseClients.delete(client);
-            };
           },
           cancel() {
-            const cleanup = (this as any)._cleanup;
-            if (cleanup) cleanup();
+            cleanup();
           },
         });
         return new Response(stream, {
