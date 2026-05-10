@@ -4,6 +4,20 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.5.1] — 2026-05-10
+
+Patch — three backlog cleanups.
+
+### Changed
+
+- **`detached` label renamed to `running · headless`** in dashboard team rows + tmux preview meta. Operators read "detached" as "broken/disconnected"; it actually means "no operator terminal currently attached, work continues." New wording matches expectation. (One of two backlog items called out 2026-05-10.)
+- **`lms version` parser now extracts a real semver instead of a banner line.** Previously the dashboard's install-checks tile picked the first line containing a digit, which in `lms`'s ASCII-art banner output (box-drawing chars + version inside a frame) ended up being a line like `│ Version 1.4.1 │`. Now: strip ANSI → strip box-drawing/block chars → match `/\b\d+\.\d+(?:\.\d+)?(?:[-+]\w+)?\b/` per line → return the first hit. Falls back to first non-empty line if no semver shape found.
+
+### Added
+
+- **`system_my_tools(filter?)`** — master tool that introspects the live tool registry. Use case: when Jason asks "what tools do you have?" or "what can you do?", master can answer accurately from the registry instead of recall. SKILL updated to mandate calling this for capability questions (reinforces anti-hallucination rule #2). Optional `filter` arg does case-insensitive substring match — e.g. `system_my_tools({filter: "subctl_orch"})` returns just the orchestration tools.
+- **Late-binder pattern in `tools/system.ts`** — `bindToolRegistry(reg)` exposed by the module, called once by `server.ts` after the registry is built. Avoids a circular import (system → server → systemTools).
+
 ## [2.5.0] — 2026-05-10
 
 Minor — Phase 3n ships (MVP): **in-browser Obsidian vault viewer.**

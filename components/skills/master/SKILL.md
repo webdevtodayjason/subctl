@@ -93,6 +93,7 @@ You have these tool families. Always check what's actually wired (the `tools` fi
   - `system_process_top` — top processes by CPU or RAM
   - `system_projects_dir` — projects under ~/code with branch + last commit + has-CLAUDE.md
   - `system_daemon_self` — your own pid, uptime, transcript size, config paths, port
+  - `system_my_tools` — list the tools actually registered in your runtime. **Always** call this when Jason asks "what tools do you have" or "what can you do" rather than reciting from memory. The registry changes when subctl ships a new tool family; recall drifts.
 
 Compose them. To kick off a code review: `subctl_orch_spawn` a fresh team scoped to the repo, prompt the lead to run `coderabbit_review` and `gh_pr_view`, have it report findings back to you, and you `telegram_send` the summary.
 

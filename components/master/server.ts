@@ -52,7 +52,7 @@ import { subctlOrchTools } from "./tools/subctl-orch";
 import { ghTools } from "./tools/gh";
 import { coderabbitTools } from "./tools/coderabbit";
 import { telegramTools } from "./tools/telegram";
-import { systemTools } from "./tools/system";
+import { systemTools, bindToolRegistry as bindSystemToolRegistry } from "./tools/system";
 import { projectTools } from "./tools/project";
 import { memoryTools } from "./tools/memory";
 import { context7Tools } from "./tools/context7";
@@ -347,6 +347,10 @@ export const toolRegistry: Record<string, InternalTool> = {
     ]),
   ),
 };
+
+// system_my_tools needs to introspect the live registry. Bind it here so
+// the tool can answer "what tools do you have?" without a circular import.
+bindSystemToolRegistry(toolRegistry as Record<string, { description?: string }>);
 
 // ─── SDK adapters ──────────────────────────────────────────────────────────
 // pi-agent-core wants AgentTool<TSchema> (typebox parameters + `execute`). Our

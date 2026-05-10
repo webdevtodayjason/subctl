@@ -270,4 +270,52 @@ export const systemTools = {
       };
     },
   },
+
+  my_tools: {
+    description:
+      "List the tools currently registered in this master daemon's tool registry. Use when asked 'what tools do you have', 'what can you do', or before claiming a specific tool exists. Returns each tool's name + description so you can answer accurately. Names come from the live registry, not from memory — master SKILL anti-hallucination rule #2 (don't claim capabilities you don't have) is enforced by calling this.",
+    schema: {
+      type: "object",
+      properties: {
+        filter: {
+          type: "string",
+          description: "Optional substring to filter tool names by (case-insensitive). E.g. 'subctl_orch' to see just the orchestration tools.",
+        },
+      },
+      required: [],
+    },
+    invoke: async (args: { filter?: string }) => {
+      const reg = _toolRegistryRef;
+      if (!reg) {
+        return {
+          ok: false,
+          error: "tool registry not yet bound — daemon is mid-boot. Try again in a moment.",
+        };
+      }
+      const filter = (args.filter ?? "").trim().toLowerCase();
+      const out = Object.entries(reg)
+        .filter(([name]) => !filter || name.toLowerCase().includes(filter))
+        .map(([name, t]) => ({
+          name,
+          description: (t as { description?: string }).description ?? "(no description)",
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      return {
+        ok: true,
+        total: Object.keys(reg).length,
+        count: out.length,
+        tools: out,
+      };
+    },
+  },
 };
+
+// Late-binder pattern: server.ts calls bindToolRegistry(registry) at boot
+// so my_tools can introspect the live registry without creating a circular
+// import. Without this binder my_tools would have to import from server.ts,
+// which already imports systemTools — Bun's ESM cycle handling would make
+// the registry undefined at import time.
+let _toolRegistryRef: Record<string, { description?: string }> | null = null;
+export function bindToolRegistry(reg: Record<string, { description?: string }>): void {
+  _toolRegistryRef = reg;
+}

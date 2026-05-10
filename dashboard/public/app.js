@@ -2060,7 +2060,7 @@
         statusEl.textContent = "live";
         statusEl.className = "tmux-preview-status live";
         const ageMin = s.created ? Math.floor((Date.now() / 1000 - s.created) / 60) : null;
-        metaEl.textContent = `${s.path || "?"}  ·  ${s.attached ? "attached" : "detached"}  ·  ${s.windows ?? "?"} windows  ·  ${s.panes?.length ?? "?"} panes${ageMin !== null ? `  ·  ${ageMin}min old` : ""}`;
+        metaEl.textContent = `${s.path || "?"}  ·  ${s.attached ? "operator attached" : "running · headless"}  ·  ${s.windows ?? "?"} windows  ·  ${s.panes?.length ?? "?"} panes${ageMin !== null ? `  ·  ${ageMin}min old` : ""}`;
         paneEl.textContent = s.preview || "(empty pane)";
       } catch (err) {
         statusEl.textContent = "error";
@@ -2451,7 +2451,7 @@
 
       // Dev teams
       const teamRows = (p.dev_teams || []).map((t) =>
-        `<div class="team-row"><strong>${escapeText(t.name)}</strong> <span class="dim small">${t.attached ? "attached" : "detached"}</span></div>`,
+        `<div class="team-row"><strong>${escapeText(t.name)}</strong> <span class="dim small">${t.attached ? "operator attached" : "running · headless"}</span></div>`,
       ).join("") || "<div class=\"dim small\">no dev teams running for this project</div>";
 
       // Decisions

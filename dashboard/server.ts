@@ -2762,13 +2762,24 @@ const server = Bun.serve({
       // Strip ANSI escape codes — lms's --version emits a colored ASCII
       // banner that renders as garbage in the dashboard's plain-text rows.
       const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
-      // Also extract a sensible single-line version from output that may be
-      // multi-line (lms prints a banner). Prefer a line containing a digit.
+      // Extract a sensible single-line version from output that may be
+      // multi-line + box-drawing-decorated (lms prints a banner like
+      // `│ Version 1.4.1 │`). Strategy:
+      //   1. Strip ANSI
+      //   2. Remove unicode box-drawing chars (─│┃╭╮╰╯┌┐└┘├┤┬┴┼ etc)
+      //   3. Look for a semver-shaped substring in any non-empty line
+      //   4. Fall back to first non-empty line trimmed to 80 chars
+      const SEMVER_RE = /\b(\d+\.\d+(?:\.\d+)?(?:[-+][\w.]+)?)\b/;
       const cleanVersion = (raw: string): string => {
-        const cleaned = stripAnsi(raw).trim();
-        const lines = cleaned.split("\n").filter((l) => l.trim());
-        const versionLine = lines.find((l) => /\d+\.\d+/.test(l)) ?? lines[0] ?? "";
-        return versionLine.trim().slice(0, 80);
+        const cleaned = stripAnsi(raw)
+          .replace(/[─-╿▀-▟]/g, "") // box-drawing + block elements
+          .trim();
+        const lines = cleaned.split("\n").map((l) => l.trim()).filter(Boolean);
+        for (const line of lines) {
+          const m = line.match(SEMVER_RE);
+          if (m) return m[1]!;
+        }
+        return (lines[0] ?? "").slice(0, 80);
       };
 
       async function probeOne(t: typeof tools[number]) {
