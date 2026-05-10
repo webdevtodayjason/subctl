@@ -1574,6 +1574,65 @@ body[data-active-tab="logs"]          section[data-tab]:not([data-tab="logs"])  
 
 .modal-wide { max-width: 800px; }
 .modal-narrow { max-width: 460px; }
+.tmux-preview { max-width: 1100px; }
+.tmux-preview-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #1a1a1a;
+}
+.tmux-preview-status {
+  display: inline-block;
+  padding: 2px 9px;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border-radius: 11px;
+  background: #1a1a1a;
+  color: #888;
+}
+.tmux-preview-status.live { background: #0e2a16; color: #6cd697; }
+.tmux-preview-status.err  { background: #2a1010; color: #d66c6c; }
+.tmux-preview-meta { color: #777; font-size: 11px; flex: 1; }
+.tmux-preview-pane {
+  background: #050505;
+  border: 1px solid #1a1a1a;
+  border-radius: 4px;
+  padding: 12px 14px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: #cdd0d0;
+  white-space: pre;
+  overflow: auto;
+  max-height: 70vh;
+  min-height: 360px;
+  margin: 0;
+}
+
+/* Per-team card actions in the orchestration cockpit */
+.orch-team-card .actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+.orch-team-card .actions button {
+  background: transparent;
+  border: 1px solid #2a2a2a;
+  color: #888;
+  padding: 2px 9px;
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.orch-team-card .actions button:hover { color: #c4c4c4; border-color: #555; }
+.orch-team-card .actions .view-btn { color: #5fd7ff; border-color: #2a4a5a; }
+.orch-team-card .actions .view-btn:hover { background: #1f4256; }
 .notice-body {
   color: #c4c4c4;
   font-size: 13px;

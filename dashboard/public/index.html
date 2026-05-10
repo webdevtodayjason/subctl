@@ -7,6 +7,27 @@
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
+  <!-- Live tmux pane preview modal. Polls /api/orchestration/<name> every
+       2s while open, renders the latest captured pane content as monospace.
+       Read-only — for actual interaction use the SSH attach command from
+       the same card. -->
+  <div class="modal-backdrop" id="tmux-preview-modal" hidden>
+    <div class="modal modal-wide tmux-preview">
+      <header class="modal-header">
+        <h3>Live tmux pane <span class="dim small" id="tmux-preview-name">—</span></h3>
+        <button type="button" class="modal-close" id="tmux-preview-close">✕</button>
+      </header>
+      <div class="modal-body">
+        <div class="tmux-preview-toolbar">
+          <span class="tmux-preview-status" id="tmux-preview-status">connecting…</span>
+          <span class="tmux-preview-meta" id="tmux-preview-meta">—</span>
+          <button type="button" class="secondary-btn" id="tmux-preview-attach">copy ssh attach command</button>
+        </div>
+        <pre class="tmux-preview-pane" id="tmux-preview-pane">loading…</pre>
+      </div>
+    </div>
+  </div>
+
   <!-- Generic notice/confirm modal — replaces browser alert() and confirm()
        so popups match the dashboard's dark theme instead of jarring
        OS-level dialogs. Driven by window.notice() defined in app.js. -->

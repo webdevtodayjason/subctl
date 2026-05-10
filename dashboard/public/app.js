@@ -1472,6 +1472,21 @@
             meta.textContent = "no reports yet";
             card.appendChild(meta);
           }
+          // Per-team actions: view live tmux + copy ssh attach
+          const actions = document.createElement("div");
+          actions.className = "actions";
+          const viewBtn = document.createElement("button");
+          viewBtn.className = "view-btn";
+          viewBtn.textContent = "view";
+          viewBtn.title = "Live read-only preview of this team's tmux pane (polled every 2s)";
+          viewBtn.addEventListener("click", () => openTmuxPreview(t.name));
+          const attachBtn = document.createElement("button");
+          attachBtn.textContent = "copy ssh attach";
+          attachBtn.title = "Copy SSH command to attach to this team's tmux directly";
+          attachBtn.addEventListener("click", () => copyAttachCommand(t.name, attachBtn));
+          actions.appendChild(viewBtn);
+          actions.appendChild(attachBtn);
+          card.appendChild(actions);
           return card;
         }));
       } catch {
@@ -1601,6 +1616,92 @@
   function escapeText(s) {
     return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   }
+
+  // ---------- tmux preview modal ----------
+  // Shared between the orchestration cockpit cards and the dashboard
+  // Dev Teams panel. Polls /api/orchestration/<name> every 2s while open
+  // and renders the captured pane content.
+  let _tmuxPollTimer = null;
+  let _tmuxCurrent = null;
+  function openTmuxPreview(name) {
+    const modal = document.getElementById("tmux-preview-modal");
+    const nameEl = document.getElementById("tmux-preview-name");
+    const statusEl = document.getElementById("tmux-preview-status");
+    const metaEl = document.getElementById("tmux-preview-meta");
+    const paneEl = document.getElementById("tmux-preview-pane");
+    const closeBtn = document.getElementById("tmux-preview-close");
+    const attachBtn = document.getElementById("tmux-preview-attach");
+    if (!modal || !paneEl) return;
+    _tmuxCurrent = name;
+    nameEl.textContent = name;
+    statusEl.textContent = "connecting…";
+    statusEl.className = "tmux-preview-status";
+    metaEl.textContent = "—";
+    paneEl.textContent = "loading…";
+    modal.hidden = false;
+
+    async function tick() {
+      if (_tmuxCurrent !== name) return; // stale, modal moved on
+      try {
+        const r = await fetch("/api/orchestration/" + encodeURIComponent(name));
+        const j = await r.json();
+        if (!j.ok) {
+          statusEl.textContent = "error";
+          statusEl.className = "tmux-preview-status err";
+          paneEl.textContent = "load failed: " + (j.error || "?");
+          return;
+        }
+        const s = j.session || {};
+        statusEl.textContent = "live";
+        statusEl.className = "tmux-preview-status live";
+        const ageMin = s.created ? Math.floor((Date.now() / 1000 - s.created) / 60) : null;
+        metaEl.textContent = `${s.path || "?"}  ·  ${s.attached ? "attached" : "detached"}  ·  ${s.windows ?? "?"} windows  ·  ${s.panes?.length ?? "?"} panes${ageMin !== null ? `  ·  ${ageMin}min old` : ""}`;
+        paneEl.textContent = s.preview || "(empty pane)";
+      } catch (err) {
+        statusEl.textContent = "error";
+        statusEl.className = "tmux-preview-status err";
+        paneEl.textContent = "fetch error: " + err;
+      }
+    }
+    tick();
+    if (_tmuxPollTimer) clearInterval(_tmuxPollTimer);
+    _tmuxPollTimer = setInterval(tick, 2000);
+
+    function close() {
+      if (_tmuxPollTimer) { clearInterval(_tmuxPollTimer); _tmuxPollTimer = null; }
+      _tmuxCurrent = null;
+      modal.hidden = true;
+      closeBtn.removeEventListener("click", close);
+      modal.removeEventListener("click", onBackdrop);
+      document.removeEventListener("keydown", onKey);
+      attachBtn.removeEventListener("click", onAttach);
+    }
+    function onBackdrop(e) { if (e.target === modal) close(); }
+    function onKey(e) { if (e.key === "Escape") close(); }
+    function onAttach() {
+      const cmd = `ssh argent-m3-ultra-dev -t tmux attach -t ${name}`;
+      navigator.clipboard.writeText(cmd);
+      attachBtn.textContent = "copied ✓";
+      setTimeout(() => { attachBtn.textContent = "copy ssh attach command"; }, 1500);
+    }
+    closeBtn.addEventListener("click", close);
+    modal.addEventListener("click", onBackdrop);
+    document.addEventListener("keydown", onKey);
+    attachBtn.addEventListener("click", onAttach);
+  }
+  function copyAttachCommand(name, btn) {
+    const cmd = `ssh argent-m3-ultra-dev -t tmux attach -t ${name}`;
+    navigator.clipboard.writeText(cmd);
+    if (btn) {
+      const original = btn.textContent;
+      btn.textContent = "copied ✓";
+      setTimeout(() => { btn.textContent = original; }, 1500);
+    }
+  }
+  // Expose for the legacy Dev Teams panel renderer + anything else that
+  // wants to surface these affordances on a row.
+  window.__subctlOpenTmuxPreview = openTmuxPreview;
+  window.__subctlCopyAttachCommand = copyAttachCommand;
 
   // ---------- notice/confirm modal ----------
   // Replaces browser alert() and confirm() so popups match the dashboard
@@ -3321,16 +3422,41 @@
       }
       tr.appendChild(evCell);
 
-      // actions: kill button
+      // actions: view (live tmux preview), copy attach, kill
       const wrap = document.createElement("div");
       wrap.className = "resume-actions";
+
+      const btnView = document.createElement("button");
+      btnView.className = "btn-resume";
+      btnView.textContent = "view";
+      btnView.title = "Live read-only tmux pane preview";
+      btnView.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (window.__subctlOpenTmuxPreview) window.__subctlOpenTmuxPreview(o.name);
+      });
+      wrap.appendChild(btnView);
+
+      const btnAttach = document.createElement("button");
+      btnAttach.className = "btn-resume";
+      btnAttach.textContent = "attach";
+      btnAttach.title = "Copy SSH command to attach to this team's tmux";
+      btnAttach.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (window.__subctlCopyAttachCommand) window.__subctlCopyAttachCommand(o.name, btnAttach);
+      });
+      wrap.appendChild(btnAttach);
+
       const btnKill = document.createElement("button");
       btnKill.className = "btn-resume";
       btnKill.textContent = "kill";
       btnKill.title = "tmux kill-session -t " + o.name;
       btnKill.addEventListener("click", async (e) => {
         e.stopPropagation();
-        if (!confirm("Kill dev-team session " + o.name + "?")) return;
+        const ok = await window.notice.confirm(
+          "Kill dev-team session",
+          `Kill tmux session "${o.name}"? This stops the lead Claude Code instance and all its workers immediately.`,
+        );
+        if (!ok) return;
         btnKill.disabled = true;
         btnKill.textContent = "killing…";
         try {
