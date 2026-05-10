@@ -2251,6 +2251,214 @@ const server = Bun.serve({
       return Response.json({ ok: true, code_root: codeRoot, projects });
     }
 
+    // ── Settings page endpoints ─────────────────────────────────────────
+
+    // /api/settings/install-checks — broad install matrix beyond /diag.
+    // Each entry: {name, ok, version, install_cmd}
+    if (url.pathname === "/api/settings/install-checks" && req.method === "GET") {
+      const tools = [
+        { name: "git",        check: ["git", "--version"],            install: "preinstalled on macOS / xcode-select --install" },
+        { name: "tmux",       check: ["tmux", "-V"],                  install: "brew install tmux" },
+        { name: "bun",        check: ["bun", "--version"],            install: "curl -fsSL https://bun.sh/install | bash" },
+        { name: "jq",         check: ["jq", "--version"],             install: "brew install jq" },
+        { name: "gh",         check: ["gh", "--version"],             install: "brew install gh && gh auth login" },
+        { name: "claude",     check: ["claude", "--version"],         install: "https://claude.com/claude-code" },
+        { name: "coderabbit", check: ["coderabbit", "--version"],     install: "brew install coderabbitai/coderabbit/coderabbit  (or: npm i -g @coderabbitai/cli)" },
+        { name: "obsidian",   check: ["test", "-d", "/Applications/Obsidian.app"], install: "brew install --cask obsidian", checkType: "app" },
+        { name: "lms",        check: ["lms", "version"],              install: "Open LM Studio app → Settings → Developer mode → Use lms in terminal" },
+      ];
+      const results = await Promise.all(tools.map(async (t) => {
+        try {
+          const r = spawnSync(t.check[0]!, t.check.slice(1), {
+            encoding: "utf8",
+            timeout: 2500,
+            env: { ...process.env, PATH: "/usr/sbin:/usr/bin:/bin:/sbin:/opt/homebrew/bin:/usr/local/bin" },
+          });
+          if (r.status === 0) {
+            const version = (r.stdout || "").trim().split("\n")[0]!.slice(0, 80);
+            return { name: t.name, ok: true, version: version || "ok", install: t.install };
+          }
+          return { name: t.name, ok: false, version: null, install: t.install, detail: ((r.stderr || r.stdout) ?? "").slice(0, 120) };
+        } catch (err) {
+          return { name: t.name, ok: false, version: null, install: t.install, detail: (err as Error).message };
+        }
+      }));
+      return Response.json({ ok: true, checks: results, summary: `${results.filter((r) => r.ok).length}/${results.length} installed` });
+    }
+
+    // /api/settings/keys — STATUS only (presence flag, never the value)
+    if (url.pathname === "/api/settings/keys" && req.method === "GET") {
+      const vars = [
+        { name: "ANTHROPIC_API_KEY",    purpose: "Anthropic direct API (claude-sonnet, claude-opus)" },
+        { name: "OPENAI_API_KEY",       purpose: "OpenAI direct API (gpt-4, gpt-5, codex)" },
+        { name: "GEMINI_API_KEY",       purpose: "Google Gemini" },
+        { name: "GROQ_API_KEY",         purpose: "Groq inference" },
+        { name: "OPENROUTER_API_KEY",   purpose: "OpenRouter (200+ models via one key)" },
+        { name: "GITHUB_TOKEN",         purpose: "gh CLI fallback (usually authed via gh auth login)" },
+      ];
+      // Read from process.env on the dashboard process. NOTE: env vars set
+      // in shell profiles for the user's interactive shell are NOT
+      // automatically inherited by launchd-spawned processes. Hint at that.
+      const results = vars.map((v) => {
+        const val = process.env[v.name];
+        return {
+          name: v.name,
+          ok: !!val,
+          length: val ? val.length : 0,
+          purpose: v.purpose,
+        };
+      });
+      return Response.json({
+        ok: true,
+        keys: results,
+        note: "These reflect the dashboard process environment. Keys set in your shell ~/.zshrc may NOT be inherited by launchd services. Set them in ~/Library/LaunchAgents/com.subctl.master.plist EnvironmentVariables for the master to use them.",
+      });
+    }
+
+    // /api/settings/oauth — Claude/OpenAI account auth status from accounts.conf
+    // Format: pipe-delimited "alias | provider | email | config_dir | description"
+    // (whitespace around pipes is normal — strip after split)
+    if (url.pathname === "/api/settings/oauth" && req.method === "GET") {
+      const accountsPath = join(SUBCTL_CONFIG_DIR, "accounts.conf");
+      const accounts: Array<{ alias: string; provider: string; email: string; config_dir: string; auth_status: string; description: string }> = [];
+      try {
+        if (existsSync(accountsPath)) {
+          const raw = readFileSync(accountsPath, "utf8");
+          for (const line of raw.split("\n")) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith("#")) continue;
+            const parts = trimmed.split("|").map((p) => p.trim());
+            if (parts.length < 4) continue;
+            const [alias, provider, email, configDirRaw, description = ""] = parts;
+            const configDir = configDirRaw!.replace(/^~/, process.env.HOME ?? "");
+            // Different providers store creds differently:
+            //   claude: <config_dir>/.credentials.json  (mac keychain too, but this file is the disk signal)
+            //   openai (codex): <config_dir>/auth.json with .tokens
+            let authStatus = "not_authenticated";
+            const claudeCred = join(configDir, ".credentials.json");
+            const codexAuth = join(configDir, "auth.json");
+            if (existsSync(claudeCred)) {
+              authStatus = "ready";
+            } else if (existsSync(codexAuth)) {
+              try {
+                const j = JSON.parse(readFileSync(codexAuth, "utf8"));
+                if (j && (j.tokens || j.access_token)) authStatus = "ready";
+              } catch { /* ignore */ }
+            }
+            accounts.push({
+              alias: alias!,
+              provider: provider!,
+              email: email!,
+              config_dir: configDirRaw!,
+              auth_status: authStatus,
+              description: description,
+            });
+          }
+        }
+      } catch (err) {
+        return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+      }
+      return Response.json({ ok: true, accounts });
+    }
+
+    // /api/settings/telegram — update bot_token / chat_id in master-notify.json
+    if (url.pathname === "/api/settings/telegram" && req.method === "POST") {
+      let body: { bot_token?: string; chat_id?: string };
+      try { body = await req.json(); }
+      catch { return Response.json({ ok: false, error: "invalid JSON body" }, { status: 400 }); }
+      const notifyPath = join(SUBCTL_CONFIG_DIR, "master-notify.json");
+      let cur: Record<string, unknown> = {};
+      try {
+        if (existsSync(notifyPath)) cur = JSON.parse(readFileSync(notifyPath, "utf8"));
+      } catch { /* ignore */ }
+      const newToken = (body.bot_token ?? "").trim();
+      const newChatId = (body.chat_id ?? "").trim();
+      if (newToken) cur.bot_token = newToken;
+      if (newChatId) cur.chat_id = newChatId;
+      // Test the resulting config by hitting Telegram /getMe
+      const testToken = (cur.bot_token as string | undefined) ?? null;
+      if (!testToken) {
+        return Response.json({ ok: false, error: "bot_token missing — provide one or set previously" }, { status: 400 });
+      }
+      try {
+        const r = await fetch(`https://api.telegram.org/bot${testToken}/getMe`, {
+          signal: AbortSignal.timeout(4000),
+        });
+        const j = (await r.json()) as { ok: boolean; result?: { username?: string }; description?: string };
+        if (!j.ok) {
+          return Response.json({ ok: false, error: `getMe failed: ${j.description ?? "unknown"}` }, { status: 400 });
+        }
+        // Persist
+        const { writeFileSync } = require("node:fs") as typeof import("node:fs");
+        writeFileSync(notifyPath, JSON.stringify(cur, null, 2));
+        // Bounce master so the listener picks up new config
+        const label = "com.subctl.master";
+        const plist = `${process.env.HOME}/Library/LaunchAgents/${label}.plist`;
+        if (existsSync(plist)) {
+          spawnSync("launchctl", ["unload", plist], { encoding: "utf8", timeout: 5000 });
+          for (let i = 0; i < 5; i++) {
+            const ps = spawnSync("pgrep", ["-f", "subctl.*master/server.ts"], { encoding: "utf8", timeout: 1000 });
+            if (!ps.stdout?.trim()) break;
+            await new Promise((r) => setTimeout(r, 1000));
+          }
+          spawnSync("launchctl", ["load", plist], { encoding: "utf8", timeout: 5000 });
+        }
+        return Response.json({
+          ok: true,
+          bot_username: j.result?.username ?? null,
+          chat_id_set: !!cur.chat_id,
+          message: "saved + master restarted",
+        });
+      } catch (err) {
+        return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+      }
+    }
+
+    // /api/settings/telegram/test — test the CURRENT config without changing
+    if (url.pathname === "/api/settings/telegram/test" && req.method === "POST") {
+      const notifyPath = join(SUBCTL_CONFIG_DIR, "master-notify.json");
+      if (!existsSync(notifyPath)) return Response.json({ ok: false, error: "master-notify.json missing" }, { status: 404 });
+      try {
+        const cfg = JSON.parse(readFileSync(notifyPath, "utf8")) as { bot_token?: string; chat_id?: string };
+        const token = cfg.bot_token;
+        if (!token) return Response.json({ ok: false, error: "no bot_token in master-notify.json" }, { status: 400 });
+        const r = await fetch(`https://api.telegram.org/bot${token}/getMe`, { signal: AbortSignal.timeout(4000) });
+        const j = (await r.json()) as { ok: boolean; result?: { username?: string }; description?: string };
+        return Response.json({
+          ok: !!j.ok,
+          bot_username: j.result?.username ?? null,
+          chat_id: cfg.chat_id ?? null,
+          error: j.ok ? undefined : (j.description ?? "getMe failed"),
+        });
+      } catch (err) {
+        return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+      }
+    }
+
+    // /api/settings/config/:name — return raw config file content (read-only)
+    {
+      const m = url.pathname.match(/^\/api\/settings\/config\/(\w+)\/?$/);
+      if (m && req.method === "GET") {
+        const name = m[1]!;
+        const map: Record<string, string> = {
+          policy:    join(SUBCTL_CONFIG_DIR, "master", "policy.json"),
+          providers: join(SUBCTL_CONFIG_DIR, "master", "providers.json"),
+          notify:    join(SUBCTL_CONFIG_DIR, "master-notify.json"),
+        };
+        const path = map[name];
+        if (!path) return Response.json({ ok: false, error: "unknown config" }, { status: 400 });
+        if (!existsSync(path)) return Response.json({ ok: false, error: `${name} not found at ${path}` }, { status: 404 });
+        try {
+          let content = readFileSync(path, "utf8");
+          // Redact obvious secrets in the displayed content
+          content = content.replace(/("bot_token"\s*:\s*")[^"]+(")/g, "$1<redacted>$2");
+          return Response.json({ ok: true, name, path, content });
+        } catch (err) {
+          return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+        }
+      }
+    }
+
     // ── /api/projects/create — wizard endpoint ───────────────────────────
     // Body: {name, git_url?, autonomy_level: "drive"|"ask"|"shadow",
     //        create_vault: boolean, add_to_policy: boolean}

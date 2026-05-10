@@ -164,6 +164,225 @@
   wireMemoryTab();
   wireChatModelSelector();
   wireOrchestrationCockpit();
+  wireSettingsTab();
+
+  // ----- Settings tab -----
+  function wireSettingsTab() {
+    const refreshBtn = $("settings-refresh-btn");
+    if (!refreshBtn) return;
+
+    async function loadHealth() {
+      const body = $("settings-health-body");
+      const summary = $("settings-health-summary");
+      try {
+        const r = await fetch("/api/settings/install-checks");
+        const j = await r.json();
+        if (!j.ok) { body.innerHTML = "<div class=\"dim\">checks unreachable</div>"; return; }
+        if (summary) summary.textContent = j.summary;
+        body.replaceChildren(...j.checks.map((c) => {
+          const row = document.createElement("div");
+          row.className = "health-row " + (c.ok ? "ok" : "err");
+          row.innerHTML =
+            "<span class=\"mark\">" + (c.ok ? "✓" : "✗") + "</span>" +
+            "<span class=\"name\">" + escapeText(c.name) + "</span>" +
+            "<span class=\"detail\">" + escapeText(c.ok ? c.version : (c.detail || "not installed")) + "</span>";
+          if (!c.ok && c.install) {
+            const cmd = document.createElement("code");
+            cmd.className = "install-cmd";
+            cmd.textContent = c.install;
+            cmd.title = "click to copy";
+            cmd.addEventListener("click", () => {
+              navigator.clipboard.writeText(c.install);
+              cmd.textContent = "copied ✓";
+              setTimeout(() => cmd.textContent = c.install, 1500);
+            });
+            row.appendChild(cmd);
+          }
+          return row;
+        }));
+      } catch (err) {
+        body.innerHTML = "<div class=\"dim\">error: " + escapeText(String(err)) + "</div>";
+      }
+    }
+
+    async function loadKeys() {
+      const body = $("settings-keys-body");
+      try {
+        const r = await fetch("/api/settings/keys");
+        const j = await r.json();
+        if (!j.ok) { body.innerHTML = "<div class=\"dim\">unreachable</div>"; return; }
+        const rows = j.keys.map((k) => {
+          const row = document.createElement("div");
+          row.className = "key-row " + (k.ok ? "ok" : "warn");
+          row.innerHTML =
+            "<span class=\"mark\">" + (k.ok ? "✓" : "○") + "</span>" +
+            "<span class=\"name\">" + escapeText(k.name) + "</span>" +
+            "<span class=\"detail\">" + escapeText(k.ok ? `set (${k.length} chars)` : "unset · " + k.purpose) + "</span>";
+          return row;
+        });
+        const note = document.createElement("div");
+        note.className = "dim small";
+        note.style.marginTop = "10px";
+        note.textContent = j.note;
+        body.replaceChildren(...rows, note);
+      } catch (err) {
+        body.innerHTML = "<div class=\"dim\">error: " + escapeText(String(err)) + "</div>";
+      }
+    }
+
+    async function loadOAuth() {
+      const body = $("settings-oauth-body");
+      try {
+        const r = await fetch("/api/settings/oauth");
+        const j = await r.json();
+        if (!j.ok) { body.innerHTML = "<div class=\"dim\">unreachable</div>"; return; }
+        if (!j.accounts.length) {
+          body.innerHTML = "<div class=\"dim\">no accounts in <code>~/.config/subctl/accounts.conf</code></div>";
+          return;
+        }
+        body.replaceChildren(...j.accounts.map((a) => {
+          const row = document.createElement("div");
+          const ok = a.auth_status === "ready";
+          row.className = "oauth-row " + (ok ? "ok" : "err");
+          row.innerHTML =
+            "<span class=\"mark\">" + (ok ? "✓" : "✗") + "</span>" +
+            "<span class=\"name\">" + escapeText(a.alias) + "</span>" +
+            "<span class=\"detail\">" + escapeText(a.email + " · " + (ok ? "authed" : "not authenticated")) + "</span>";
+          if (!ok) {
+            const cmd = document.createElement("code");
+            cmd.className = "install-cmd";
+            cmd.textContent = "subctl auth claude " + a.alias;
+            cmd.title = "click to copy";
+            cmd.addEventListener("click", () => {
+              navigator.clipboard.writeText("subctl auth claude " + a.alias);
+              cmd.textContent = "copied ✓";
+              setTimeout(() => cmd.textContent = "subctl auth claude " + a.alias, 1500);
+            });
+            row.appendChild(cmd);
+          }
+          return row;
+        }));
+      } catch (err) {
+        body.innerHTML = "<div class=\"dim\">error: " + escapeText(String(err)) + "</div>";
+      }
+    }
+
+    async function loadTelegramStatus() {
+      const status = $("settings-tg-status");
+      try {
+        const r = await fetch("/api/settings/telegram/test", { method: "POST" });
+        const j = await r.json();
+        if (j.ok) {
+          status.textContent = `@${j.bot_username || "?"} ok · chat ${j.chat_id || "(unset)"}`;
+          status.style.color = "#6cd697";
+        } else {
+          status.textContent = "error: " + (j.error || "?");
+          status.style.color = "#d66c6c";
+        }
+      } catch {
+        status.textContent = "unreachable";
+        status.style.color = "#d66c6c";
+      }
+    }
+
+    function wireTelegramForm() {
+      const save = $("settings-tg-save");
+      const test = $("settings-tg-test");
+      const result = $("settings-tg-result");
+      const tokenIn = $("settings-tg-token");
+      const chatIn = $("settings-tg-chatid");
+
+      function showResult(ok, text) {
+        result.hidden = false;
+        result.className = "settings-result " + (ok ? "ok" : "err");
+        result.textContent = text;
+      }
+
+      save?.addEventListener("click", async () => {
+        const payload = { bot_token: tokenIn.value, chat_id: chatIn.value };
+        if (!payload.bot_token && !payload.chat_id) {
+          showResult(false, "nothing to save — provide a token, chat id, or both");
+          return;
+        }
+        save.disabled = true;
+        save.textContent = "saving…";
+        try {
+          const r = await fetch("/api/settings/telegram", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          const j = await r.json();
+          if (j.ok) {
+            showResult(true, `✓ saved + master restarted\n@${j.bot_username || "?"} reachable, chat_id ${j.chat_id_set ? "set" : "unchanged"}`);
+            tokenIn.value = "";
+            loadTelegramStatus();
+          } else {
+            showResult(false, "Failed: " + (j.error || "?"));
+          }
+        } catch (err) {
+          showResult(false, "Error: " + err);
+        } finally {
+          save.disabled = false;
+          save.textContent = "save & test";
+        }
+      });
+
+      test?.addEventListener("click", async () => {
+        test.disabled = true;
+        test.textContent = "testing…";
+        try {
+          const r = await fetch("/api/settings/telegram/test", { method: "POST" });
+          const j = await r.json();
+          showResult(j.ok, j.ok
+            ? `✓ @${j.bot_username || "?"} reachable\nchat_id ${j.chat_id || "(unset)"}`
+            : "✗ " + (j.error || "test failed"));
+        } catch (err) {
+          showResult(false, "Error: " + err);
+        } finally {
+          test.disabled = false;
+          test.textContent = "test current";
+        }
+      });
+    }
+    wireTelegramForm();
+
+    function wireConfigViewer() {
+      const view = $("settings-config-view");
+      const tabs = document.querySelectorAll("#settings-config-tabs .config-tab");
+      let active = "policy";
+
+      async function load(name) {
+        view.textContent = "loading…";
+        try {
+          const r = await fetch("/api/settings/config/" + name);
+          const j = await r.json();
+          if (!j.ok) { view.textContent = "error: " + (j.error || "?"); return; }
+          view.textContent = `// ${j.path}\n\n${j.content}`;
+        } catch (err) {
+          view.textContent = "error: " + err;
+        }
+      }
+      tabs.forEach((t) => {
+        t.addEventListener("click", () => {
+          tabs.forEach((x) => x.classList.toggle("active", x === t));
+          active = t.dataset.config;
+          load(active);
+        });
+      });
+      load(active);
+    }
+    wireConfigViewer();
+
+    function refreshAll() {
+      loadHealth();
+      loadKeys();
+      loadOAuth();
+      loadTelegramStatus();
+    }
+    refreshBtn.addEventListener("click", refreshAll);
+    refreshAll();
+  }
 
   // ----- Chat model selector (top of Chat screen) -----
   function wireChatModelSelector() {

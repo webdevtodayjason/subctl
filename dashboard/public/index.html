@@ -48,6 +48,9 @@
         <button type="button" class="nav-btn" data-tab="memory">
           <span class="nav-icon">✦</span><span class="nav-label">Memory</span>
         </button>
+        <button type="button" class="nav-btn" data-tab="settings">
+          <span class="nav-icon">⚒</span><span class="nav-label">Settings</span>
+        </button>
         <div class="sidebar-divider"></div>
         <a class="nav-btn nav-link" href="/cheat" title="Scannable one-pager: every command, shim, shortcut">
           <span class="nav-icon">?</span><span class="nav-label">Cheat sheet</span>
@@ -463,6 +466,82 @@
         <span class="memory-status" id="memory-status">checking…</span>
       </h2>
       <div class="memory-content" id="memory-content">loading…</div>
+    </section>
+
+    <!-- ── Settings tab ────────────────────────────────────────────── -->
+    <section class="settings-screen" data-tab="settings">
+      <header class="screen-header">
+        <h2>Settings <span class="screen-sub">system health · channels · API keys · OAuth · config files</span></h2>
+        <button type="button" class="secondary-btn" id="settings-refresh-btn">refresh all</button>
+      </header>
+
+      <div class="settings-grid">
+        <!-- 1. System health: are required tools installed? -->
+        <section class="settings-card">
+          <div class="settings-card-head">
+            <h3>System health</h3>
+            <span class="settings-card-meta" id="settings-health-summary">checking…</span>
+          </div>
+          <div class="settings-card-body" id="settings-health-body">loading…</div>
+        </section>
+
+        <!-- 2. Telegram channel -->
+        <section class="settings-card">
+          <div class="settings-card-head">
+            <h3>Telegram</h3>
+            <span class="settings-card-meta" id="settings-tg-status">checking…</span>
+          </div>
+          <div class="settings-card-body" id="settings-tg-body">
+            <div class="form-row">
+              <label>Bot token <span class="dim">(BotFather)</span></label>
+              <input type="password" id="settings-tg-token" placeholder="paste new token to replace, or leave blank to keep current" autocomplete="new-password" />
+            </div>
+            <div class="form-row">
+              <label>Chat ID</label>
+              <input type="text" id="settings-tg-chatid" placeholder="numeric chat id (your DM)" autocomplete="off" />
+            </div>
+            <div class="settings-actions">
+              <button type="button" class="primary-btn" id="settings-tg-save">save & test</button>
+              <button type="button" class="secondary-btn" id="settings-tg-test">test current</button>
+            </div>
+            <div class="settings-result" id="settings-tg-result" hidden></div>
+          </div>
+        </section>
+
+        <!-- 3. API keys / cloud providers (status only, set via shell) -->
+        <section class="settings-card">
+          <div class="settings-card-head">
+            <h3>API keys (cloud providers)</h3>
+            <span class="settings-card-meta dim small">read-only — set via shell profile</span>
+          </div>
+          <div class="settings-card-body" id="settings-keys-body">loading…</div>
+        </section>
+
+        <!-- 4. OAuth connections per Claude account -->
+        <section class="settings-card">
+          <div class="settings-card-head">
+            <h3>OAuth (Claude accounts)</h3>
+            <span class="settings-card-meta dim small">run <code>subctl auth claude &lt;alias&gt;</code> to authenticate</span>
+          </div>
+          <div class="settings-card-body" id="settings-oauth-body">loading…</div>
+        </section>
+
+        <!-- 5. Config files -->
+        <section class="settings-card settings-card-wide">
+          <div class="settings-card-head">
+            <h3>Config files</h3>
+            <span class="settings-card-meta dim small">read-only viewer · edit on disk + restart to apply</span>
+          </div>
+          <div class="settings-card-body" id="settings-configs-body">
+            <div class="settings-config-tabs" id="settings-config-tabs">
+              <button type="button" class="config-tab active" data-config="policy">policy.json</button>
+              <button type="button" class="config-tab" data-config="providers">providers.json</button>
+              <button type="button" class="config-tab" data-config="notify">master-notify.json</button>
+            </div>
+            <pre class="settings-config-view" id="settings-config-view">loading…</pre>
+          </div>
+        </section>
+      </div>
     </section>
   </main>
   </div><!-- /.app-shell -->
