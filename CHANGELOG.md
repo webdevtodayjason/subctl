@@ -4,6 +4,24 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.3.0] — 2026-05-10
+
+Minor — Phase 3m ships (MVP): **multi-team camera view** in the Orchestration tab.
+
+### Added
+
+- **NVR-style grid of every active dev team's tmux pane** at the top of the Orchestration tab. Polls `/api/orchestration/captures` every 2 s while the tab is visible, renders ~22-row tiles per team in monospace. Tiles auto-fit via `grid-template-columns: repeat(auto-fit, minmax(420px, 1fr))` — 1 team gets a full-row tile, 2 sit side-by-side, 4 form a 2×2, etc.
+- **Status pill per tile** — `active` (green, last activity <60 s), `idle` (gray, <15 min), `stale` (yellow, >15 min), `error` (red, last 10 lines match `/error|failed|fatal:/i`), `ended` (faded, session disappeared). Left border colour mirrors the pill so the grid is glanceable.
+- **Click a tile to expand** — fills the viewport with a single team's pane content, larger font, full capture height. Esc / click-backdrop / ✕ closes. Polling continues on the expanded view so it stays live.
+- **`GET /api/orchestration/captures`** bulk endpoint in dashboard: returns ANSI-stripped capture content for every tracked session in one call. `?lines=N` (default 40, clamped 8..200). Backed by a new `tmuxCaptureFrame(session, lines)` helper.
+- **Tab-aware polling** — the grid only fetches while the Orchestration tab is visible (watched via `MutationObserver` on `body[data-active-tab]`). Saves network + tmux-capture cost when the operator is on Chat or any other tab.
+
+### Out of scope for MVP (deferred per spec §3m)
+
+- xterm.js per tile (real ANSI colour + ligatures) — Phase 2; current tiles use plain `<pre>` with ANSI stripped.
+- SSE delta streaming — current implementation is plain polling at 2 Hz.
+- Pinning, sound alerts, recording/replay, audio overlay.
+
 ## [2.2.0] — 2026-05-10
 
 Minor — Phase 3k ships: **personality presets for the master daemon.**

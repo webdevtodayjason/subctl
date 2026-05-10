@@ -621,6 +621,18 @@ function tmuxCapturePreview(session: string): string {
   return stripAnsi(r.stdout).replace(/\s+$/g, "");
 }
 
+// Capture N lines from a tmux session for the camera-grid view.
+// Used by /api/orchestration/captures (the Orchestration tab's NVR-style
+// multi-team grid). Returns ANSI-stripped content suitable for rendering
+// in a <pre> tile; phase-2 xterm.js per tile would skip the strip and
+// render real terminal escapes.
+function tmuxCaptureFrame(session: string, lines: number): string {
+  const n = Math.max(8, Math.min(200, Math.floor(lines || 40)));
+  const r = tmuxRun(["capture-pane", "-p", "-t", session, "-S", `-${n}`]);
+  if (!r.ok) return "";
+  return stripAnsi(r.stdout).replace(/\s+$/g, "");
+}
+
 // Naive Claude session-status detector — same logic as lib/session-preview.sh.
 function detectStatus(preview: string): "working" | "idle" | "waiting" | "unknown" {
   const last = preview.split("\n").slice(-10).join("\n");
@@ -4182,6 +4194,44 @@ const server = Bun.serve({
 
     if (url.pathname === "/api/orchestration" && req.method === "GET") {
       return new Response(JSON.stringify({ orchestrations: buildOrchestrations() }), {
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+      });
+    }
+
+    // ── /api/orchestration/captures — bulk NVR-style frame fetch ──────────
+    // Returns the last N lines of pane content for EVERY tracked session in
+    // one call. Frontend polls every 2s for the camera-grid view. Captured
+    // text is ANSI-stripped — phase 2 xterm.js per tile would skip the
+    // strip and render real escapes. ?lines=N (default 40, clamped 8..200).
+    if (url.pathname === "/api/orchestration/captures" && req.method === "GET") {
+      const linesParam = parseInt(url.searchParams.get("lines") ?? "40", 10);
+      const orchs = buildOrchestrations();
+      const captures = orchs.map((o) => {
+        const capture = tmuxCaptureFrame(o.name, linesParam);
+        const lastFew = capture.split("\n").slice(-10).join("\n");
+        // Cheap status heuristic — same family as detectStatus() below but
+        // adapted to the per-tile context: red if visible error patterns,
+        // yellow for stale, green if recently changed.
+        const ageS = o.last_activity_seconds_ago ?? null;
+        let status: "active" | "idle" | "stale" | "error" | "ended" = "idle";
+        if (/error\b|Error:|failed\b|fatal:/i.test(lastFew)) status = "error";
+        else if (typeof ageS === "number") {
+          if (ageS < 60) status = "active";
+          else if (ageS < 900) status = "idle";   // < 15min
+          else status = "stale";                  // > 15min
+        }
+        return {
+          name: o.name,
+          status,
+          last_activity_seconds_ago: o.last_activity_seconds_ago ?? null,
+          path: o.path ?? null,
+          claude_account_dir: o.claude_account_dir ?? null,
+          windows: o.windows ?? null,
+          attached: o.attached ?? false,
+          capture,
+        };
+      });
+      return new Response(JSON.stringify({ ok: true, count: captures.length, captures }), {
         headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
       });
     }

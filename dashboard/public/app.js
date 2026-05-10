@@ -164,6 +164,7 @@
   wireMemoryTab();
   wireChatModelSelector();
   wireOrchestrationCockpit();
+  wireOrchCameraGrid();
   wireSettingsTab();
   wireSkillsTab();
   wireProvidersTab();
@@ -1410,6 +1411,127 @@
         await window.notice.error("Switch error", String(err));
       }
     });
+  }
+
+  // ----- Camera View — NVR grid of dev-team tmux panes (Phase 3m) -----
+  function wireOrchCameraGrid() {
+    const grid = $("orch-camera-grid");
+    const countEl = $("orch-camera-count");
+    const exp = $("orch-camera-expanded");
+    const expName = $("orch-camera-expanded-name");
+    const expStatus = $("orch-camera-expanded-status");
+    const expPane = $("orch-camera-expanded-pane");
+    const expClose = $("orch-camera-expanded-close");
+    if (!grid) return;
+
+    let expandedName = null;        // currently expanded session, or null
+    let pollTimer = null;
+
+    function escForHtml(s) {
+      return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function fmtAge(secAgo) {
+      if (typeof secAgo !== "number") return "";
+      if (secAgo < 60) return `${Math.round(secAgo)}s ago`;
+      if (secAgo < 3600) return `${Math.round(secAgo / 60)}m ago`;
+      return `${Math.round(secAgo / 3600)}h ago`;
+    }
+
+    function openExpanded(name) {
+      expandedName = name;
+      exp.hidden = false;
+      // Force an immediate refresh so the expanded pane shows fresh content.
+      void refresh();
+    }
+    function closeExpanded() {
+      expandedName = null;
+      exp.hidden = true;
+    }
+
+    expClose.addEventListener("click", closeExpanded);
+    exp.addEventListener("click", (e) => {
+      // Click on the overlay backdrop (not the inner pane) closes.
+      if (e.target === exp) closeExpanded();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && !exp.hidden) closeExpanded();
+    });
+
+    async function refresh() {
+      try {
+        const r = await fetch("/api/orchestration/captures?lines=60");
+        const j = await r.json();
+        if (!j.ok) {
+          grid.innerHTML = `<div class="orch-empty">error: ${escForHtml(j.error || "unknown")}</div>`;
+          return;
+        }
+        const caps = j.captures || [];
+        countEl.textContent = `${caps.length} team${caps.length === 1 ? "" : "s"}`;
+        if (caps.length === 0) {
+          grid.innerHTML = `<div class="orch-empty">no dev teams running — chat with master to spawn one</div>`;
+          if (!exp.hidden) closeExpanded();
+          return;
+        }
+        // Render tiles (idempotent — replace whole grid each tick; cheap at
+        // typical team counts, lets us avoid manual diffing).
+        const html = caps.map((c) => {
+          const meta = fmtAge(c.last_activity_seconds_ago);
+          return `<div class="orch-camera-tile status-${c.status}" data-team="${escForHtml(c.name)}">
+            <div class="tile-head">
+              <span class="tile-name">${escForHtml(c.name)}</span>
+              <span class="tile-status">${c.status}</span>
+              ${meta ? `<span class="tile-meta">${meta}</span>` : ""}
+            </div>
+            <pre class="tile-pane">${escForHtml(c.capture || "(empty)")}</pre>
+          </div>`;
+        }).join("");
+        grid.innerHTML = html;
+        // Wire tile click → expand. Listeners attach per render; cheap.
+        for (const tile of grid.querySelectorAll(".orch-camera-tile")) {
+          tile.addEventListener("click", () => openExpanded(tile.getAttribute("data-team")));
+        }
+        // If currently expanded, refresh that pane too.
+        if (expandedName) {
+          const cur = caps.find((c) => c.name === expandedName);
+          if (!cur) {
+            // Session ended while expanded — close.
+            closeExpanded();
+          } else {
+            expName.textContent = cur.name;
+            expStatus.textContent = cur.status;
+            expStatus.className = `orch-camera-status status-${cur.status}`;
+            expPane.textContent = cur.capture || "(empty)";
+          }
+        }
+      } catch (err) {
+        // Network failure — leave the previous render in place rather than
+        // wiping; user gets stale-but-readable instead of a blank panel.
+        console.warn("[camera-grid] poll error:", err);
+      }
+    }
+
+    function startPolling() {
+      if (pollTimer) return;
+      void refresh();
+      pollTimer = setInterval(() => void refresh(), 2000);
+    }
+    function stopPolling() {
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    }
+
+    // Only poll while the Orchestration tab is visible. Saves network +
+    // tmux capture cost when the operator is on another tab.
+    function checkActive() {
+      const isActive = document.body.getAttribute("data-active-tab") === "orchestration";
+      if (isActive) startPolling(); else stopPolling();
+    }
+    new MutationObserver(checkActive).observe(document.body, { attributes: true, attributeFilter: ["data-active-tab"] });
+    checkActive();
   }
 
   // ----- Orchestration cockpit -----

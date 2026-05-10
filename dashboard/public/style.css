@@ -2901,6 +2901,163 @@ main {
   .orchestration-sidecar { order: 2; }
 }
 
+/* ── Camera View (Phase 3m) — NVR-style grid of every dev-team tmux pane.
+   Click a tile to expand to full-viewport via .orch-camera-expanded overlay.
+   Tile sizing: auto-fit minmax(420px, 1fr) so the grid adapts to viewport
+   and team count (1 team = full row, 2 = side-by-side, 4 = 2x2, etc.). */
+.orch-camera-section {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 18px 22px;
+  margin-bottom: 18px;
+}
+.orch-camera-head {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+.orch-camera-head h3 {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--ink-mute);
+  font-weight: 500;
+}
+.orch-camera-head .dim { color: #555; font-size: 11px; margin-left: 6px; }
+.orch-camera-meta { color: #666; font-size: 11px; }
+.orch-camera-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  gap: 14px;
+}
+.orch-camera-tile {
+  background: #050505;
+  border: 1px solid #1a1a1a;
+  border-left: 3px solid #2a2a2a;
+  border-radius: 4px;
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+.orch-camera-tile:hover {
+  background: #0a0a0a;
+  border-left-color: #5fd7ff;
+}
+.orch-camera-tile.status-active   { border-left-color: #6cd697; }
+.orch-camera-tile.status-idle     { border-left-color: #555; }
+.orch-camera-tile.status-stale    { border-left-color: #d6c46c; }
+.orch-camera-tile.status-error    { border-left-color: #d66c6c; }
+.orch-camera-tile.status-ended    { border-left-color: #333; opacity: 0.6; }
+.orch-camera-tile .tile-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+.orch-camera-tile .tile-name {
+  color: #c4c4c4;
+  font-weight: 500;
+  font-family: var(--mono);
+  word-break: break-word;
+  flex: 1;
+  min-width: 0;
+}
+.orch-camera-tile .tile-status {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 1px 7px;
+  border-radius: 9px;
+  background: #1a1a1a;
+  color: #888;
+}
+.orch-camera-tile.status-active .tile-status { background: #0e2a16; color: #6cd697; }
+.orch-camera-tile.status-stale  .tile-status { background: #2a230e; color: #d6c46c; }
+.orch-camera-tile.status-error  .tile-status { background: #2a1010; color: #d66c6c; }
+.orch-camera-tile.status-ended  .tile-status { background: #1a1a1a; color: #555; }
+.orch-camera-tile .tile-meta { color: #555; font-size: 10.5px; margin-left: 4px; }
+.orch-camera-tile .tile-pane {
+  background: transparent;
+  border: none;
+  margin: 0;
+  padding: 0;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: #888;
+  white-space: pre;
+  overflow: hidden;
+  /* Limit each tile to ~22 rows of content. Anything beyond gets clipped;
+     operator can click to expand and see the full capture. */
+  max-height: 22em;
+  min-height: 16em;
+}
+
+/* Expanded view — full-viewport overlay matching the modal styling. */
+.orch-camera-expanded {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(0, 0, 0, 0.92);
+  backdrop-filter: blur(6px);
+  display: flex;
+  flex-direction: column;
+  padding: 24px 32px;
+}
+.orch-camera-expanded[hidden] { display: none; }
+.orch-camera-expanded-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 0 14px;
+  border-bottom: 1px solid #1a1a1a;
+  margin-bottom: 14px;
+}
+.orch-camera-expanded-head h3 {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 14px;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.orch-camera-status {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 2px 9px;
+  border-radius: 11px;
+  background: #1a1a1a;
+  color: #888;
+}
+.orch-camera-status.status-active { background: #0e2a16; color: #6cd697; }
+.orch-camera-status.status-stale  { background: #2a230e; color: #d6c46c; }
+.orch-camera-status.status-error  { background: #2a1010; color: #d66c6c; }
+.orch-camera-expanded-pane {
+  background: #050505;
+  border: 1px solid #1a1a1a;
+  border-radius: 6px;
+  padding: 16px 20px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: #cdd0d0;
+  white-space: pre;
+  overflow: auto;
+  flex: 1 1 auto;
+  margin: 0;
+}
+
 /* ── Models / Projects / Memory tab styling ─────────────────────────── */
 .models-status, .memory-status {
   display: inline-block;

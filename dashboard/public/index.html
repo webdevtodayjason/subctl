@@ -47,6 +47,20 @@
     </div>
   </div>
 
+  <!-- Camera-View expanded overlay — click a tile in the Orchestration tab
+       to fill the viewport with that single team's pane content. Esc or the
+       backdrop closes. Phase 3m. -->
+  <div class="orch-camera-expanded" id="orch-camera-expanded" hidden>
+    <header class="orch-camera-expanded-head">
+      <h3>
+        <span id="orch-camera-expanded-name">—</span>
+        <span class="orch-camera-status" id="orch-camera-expanded-status">idle</span>
+      </h3>
+      <button type="button" class="modal-close" id="orch-camera-expanded-close" aria-label="close">✕</button>
+    </header>
+    <pre class="orch-camera-expanded-pane" id="orch-camera-expanded-pane">…</pre>
+  </div>
+
   <header class="topbar">
     <div class="brand">
       <span class="brand-name">subctl</span>
@@ -177,6 +191,19 @@
       <header class="screen-header">
         <h2>Orchestration <span class="screen-sub">live ops view of every dev team in flight, watchdog state, and pending decisions</span></h2>
       </header>
+
+      <!-- Camera View — NVR-style grid of every active dev team's tmux pane.
+           Polls /api/orchestration/captures every 2s. Click a tile to expand
+           to full-pane view; Esc collapses back to the grid. Phase 3m, MVP. -->
+      <section class="orch-camera-section">
+        <div class="orch-camera-head">
+          <h3>Camera View <span class="dim small" id="orch-camera-count">0 teams</span></h3>
+          <span class="orch-camera-meta">click a tile to expand · Esc to close · polls every 2 s</span>
+        </div>
+        <div class="orch-camera-grid" id="orch-camera-grid">
+          <div class="orch-empty">no dev teams running — chat with master to spawn one</div>
+        </div>
+      </section>
 
       <div class="orch-grid">
         <section class="orch-card">
