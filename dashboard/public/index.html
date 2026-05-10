@@ -538,12 +538,50 @@
     </section>
 
     <!-- ── Memory tab ──────────────────────────────────────────────── -->
-    <section class="panel" data-tab="memory" id="memory-panel">
-      <h2>Memory
-        <span class="panel-hint">Obsidian vaults — long-term notes, decisions, project portfolios</span>
-        <span class="memory-status" id="memory-status">checking…</span>
-      </h2>
-      <div class="memory-content" id="memory-content">loading…</div>
+    <section class="memory-screen" data-tab="memory">
+      <header class="screen-header">
+        <h2>Memory <span class="screen-sub">tier 1: always-in-context (memory.md + user.md) · tier 2: claude-mem (semantic recall) · tier 3: Obsidian vault (operator-curated)</span></h2>
+      </header>
+
+      <div class="memory-grid">
+        <section class="memory-card">
+          <div class="memory-card-head">
+            <h3>Operator profile <span class="dim small">user.md</span></h3>
+            <span class="memory-card-meta" id="user-md-meta">— / 1375 chars</span>
+          </div>
+          <div class="memory-card-body">
+            <p class="memory-card-doc">Stable description of Jason — role, infrastructure, work style, preferences. Master sees this every turn so it doesn't have to re-discover the basics. Edit conservatively; this is durable context.</p>
+            <textarea id="user-md-textarea" rows="10" placeholder="Jason — MSP owner, AI application developer. Runs subctl on the M3 Ultra (256GB RAM, 400Gbps backbone). Deeply technical (30+ yrs IT). Prefers FREE/open-source first..."></textarea>
+            <div class="memory-card-actions">
+              <button type="button" class="primary-btn" data-mem-save="user">save</button>
+              <span class="memory-card-result" id="user-md-result"></span>
+            </div>
+          </div>
+        </section>
+
+        <section class="memory-card">
+          <div class="memory-card-head">
+            <h3>Learned facts <span class="dim small">memory.md</span></h3>
+            <span class="memory-card-meta" id="memory-md-meta">— / 2200 chars</span>
+          </div>
+          <div class="memory-card-body">
+            <p class="memory-card-doc">Things master has remembered as durable across sessions — recurring decisions, project facts, gotchas. Master can edit this itself via memory_remember / memory_forget tools; you can edit here directly. Use the § character (Option-6 on Mac) between entries.</p>
+            <textarea id="memory-md-textarea" rows="14" placeholder="Down-Time-Arena's primary branch is `main`; Speartip is the prospective sponsor.&#10;§&#10;LM Studio's loaded_context_length resets to 4K on JIT — auto-pin via /api/v1/models/load handles this; if drift happens, hit /reload-supervisor."></textarea>
+            <div class="memory-card-actions">
+              <button type="button" class="primary-btn" data-mem-save="memory">save</button>
+              <span class="memory-card-result" id="memory-md-result"></span>
+            </div>
+          </div>
+        </section>
+
+        <section class="memory-card memory-card-wide">
+          <div class="memory-card-head">
+            <h3>Obsidian vault <span class="dim small">tier 3 — long-form operator notes</span></h3>
+            <span class="memory-status" id="memory-status">checking…</span>
+          </div>
+          <div class="memory-card-body" id="memory-content">loading…</div>
+        </section>
+      </div>
     </section>
 
     <!-- ── Providers tab ───────────────────────────────────────────── -->

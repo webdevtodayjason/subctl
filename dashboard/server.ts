@@ -3356,6 +3356,55 @@ const server = Bun.serve({
       }
     }
 
+    // ── /api/memory/tier1 — read/write master's always-in-context memory ──
+    // memory.md (learned facts, ~2200 char limit) and user.md (operator
+    // profile, ~1375 char limit). Both auto-injected into master's
+    // system prompt every turn. Edits land in the next turn without
+    // master restart.
+    if (url.pathname === "/api/memory/tier1" && req.method === "GET") {
+      const home = process.env.HOME ?? "";
+      const memPath = join(home, ".config/subctl/master/memory.md");
+      const userPath = join(home, ".config/subctl/master/user.md");
+      const readSafe = (p: string, limit: number) => {
+        if (!existsSync(p)) return { exists: false, content: "", char_count: 0, char_limit: limit };
+        try {
+          const c = readFileSync(p, "utf8");
+          return { exists: true, content: c, char_count: c.length, char_limit: limit };
+        } catch (e) {
+          return { exists: false, content: "", char_count: 0, char_limit: limit, error: (e as Error).message };
+        }
+      };
+      return Response.json({
+        ok: true,
+        memory: { path: memPath, ...readSafe(memPath, 2200) },
+        user_profile: { path: userPath, ...readSafe(userPath, 1375) },
+      });
+    }
+    if (url.pathname === "/api/memory/tier1" && req.method === "POST") {
+      let body: { which?: "memory" | "user"; content?: string };
+      try { body = await req.json(); } catch { return Response.json({ ok: false, error: "invalid JSON" }, { status: 400 }); }
+      if (body.which !== "memory" && body.which !== "user") {
+        return Response.json({ ok: false, error: "which must be 'memory' or 'user'" }, { status: 400 });
+      }
+      const home = process.env.HOME ?? "";
+      const path = body.which === "memory"
+        ? join(home, ".config/subctl/master/memory.md")
+        : join(home, ".config/subctl/master/user.md");
+      const limit = body.which === "memory" ? 2200 : 1375;
+      const content = (body.content ?? "").trim();
+      if (content.length > limit) {
+        return Response.json({ ok: false, error: `content exceeds char limit (${content.length} > ${limit})` }, { status: 400 });
+      }
+      try {
+        const { mkdirSync, writeFileSync } = require("node:fs") as typeof import("node:fs");
+        mkdirSync(join(home, ".config/subctl/master"), { recursive: true });
+        writeFileSync(path, content);
+        return Response.json({ ok: true, path, char_count: content.length, char_limit: limit, message: "next agent prompt will pick up the new content" });
+      } catch (err) {
+        return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+      }
+    }
+
     // ── /api/memory — Obsidian + vault state ─────────────────────────────
     if (url.pathname === "/api/memory") {
       const obsidianApp = "/Applications/Obsidian.app";

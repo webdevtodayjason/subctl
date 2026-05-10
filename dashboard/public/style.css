@@ -1612,6 +1612,77 @@ body[data-active-tab="logs"]          section[data-tab]:not([data-tab="logs"])  
   margin: 0;
 }
 
+/* ── Memory screen ───────────────────────────────────────────────────── */
+.memory-screen { display: flex; flex-direction: column; gap: 18px; }
+.memory-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.memory-card {
+  background: #0c0c0c;
+  border: 1px solid #1a1a1a;
+  border-radius: 4px;
+  display: flex;
+  flex-direction: column;
+}
+.memory-card-wide { grid-column: 1 / -1; }
+.memory-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid #1a1a1a;
+}
+.memory-card-head h3 {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #aaa;
+}
+.memory-card-head h3 .dim { color: #555; font-size: 10px; margin-left: 6px; text-transform: lowercase; letter-spacing: 0; }
+.memory-card-meta { color: #777; font-size: 11px; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+.memory-card-meta.warn { color: #d6c46c; }
+.memory-card-meta.crit { color: #d66c6c; }
+.memory-card-body { padding: 14px 16px; flex: 1; display: flex; flex-direction: column; }
+.memory-card-doc {
+  color: #999;
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0 0 12px;
+}
+.memory-card-body textarea {
+  flex: 1;
+  background: #0a0a0a;
+  border: 1px solid #2a2a2a;
+  color: #c4c4c4;
+  padding: 10px 12px;
+  border-radius: 3px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+  min-height: 160px;
+}
+.memory-card-body textarea:focus { outline: none; border-color: #5fd7ff; }
+.memory-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+}
+.memory-card-result {
+  font-size: 11px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.memory-card-result.ok { color: #6cd697; }
+.memory-card-result.err { color: #d66c6c; }
+
+@media (max-width: 1100px) {
+  .memory-grid { grid-template-columns: 1fr; }
+}
+
 /* Per-team card actions in the orchestration cockpit */
 .orch-team-card .actions {
   display: flex;

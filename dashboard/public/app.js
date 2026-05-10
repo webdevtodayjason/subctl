@@ -2322,10 +2322,81 @@
   }
 
   // ----- Memory tab — Obsidian vault status -----
+  // Tier-1 memory: user.md + memory.md editors. Master also writes these
+  // via memory_remember / memory_user_update tool calls; this is the
+  // operator-facing edit surface.
+  function wireTier1MemoryCards() {
+    const userTa = $("user-md-textarea");
+    const memTa = $("memory-md-textarea");
+    const userMeta = $("user-md-meta");
+    const memMeta = $("memory-md-meta");
+    const userResult = $("user-md-result");
+    const memResult = $("memory-md-result");
+    if (!userTa || !memTa) return;
+
+    function updateMeta(meta, used, limit) {
+      if (!meta) return;
+      meta.textContent = `${used} / ${limit} chars`;
+      meta.classList.toggle("warn", used > limit * 0.7 && used <= limit);
+      meta.classList.toggle("crit", used > limit);
+    }
+
+    async function load() {
+      try {
+        const r = await fetch("/api/memory/tier1");
+        const j = await r.json();
+        if (!j.ok) return;
+        userTa.value = j.user_profile?.content || "";
+        memTa.value = j.memory?.content || "";
+        updateMeta(userMeta, userTa.value.length, j.user_profile?.char_limit || 1375);
+        updateMeta(memMeta, memTa.value.length, j.memory?.char_limit || 2200);
+      } catch { /* silent — endpoint may not be deployed yet */ }
+    }
+    load();
+
+    userTa.addEventListener("input", () => updateMeta(userMeta, userTa.value.length, 1375));
+    memTa.addEventListener("input", () => updateMeta(memMeta, memTa.value.length, 2200));
+
+    async function save(which) {
+      const ta = which === "user" ? userTa : memTa;
+      const result = which === "user" ? userResult : memResult;
+      try {
+        const r = await fetch("/api/memory/tier1", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ which, content: ta.value }),
+        });
+        const j = await r.json();
+        if (!j.ok) {
+          result.className = "memory-card-result err";
+          result.textContent = "✗ " + (j.error || "save failed");
+        } else {
+          result.className = "memory-card-result ok";
+          result.textContent = "✓ saved · master will see it on next prompt";
+          setTimeout(() => { result.textContent = ""; }, 4000);
+        }
+      } catch (err) {
+        result.className = "memory-card-result err";
+        result.textContent = "✗ " + err;
+      }
+    }
+    document.querySelectorAll("[data-mem-save]").forEach((btn) => {
+      btn.addEventListener("click", () => save(btn.dataset.memSave));
+    });
+
+    // Refresh from disk every 15s while the Memory tab is visible — picks
+    // up master's own memory_remember writes without operator action.
+    setInterval(() => {
+      const panel = document.querySelector("section[data-tab=\"memory\"]");
+      if (panel && getComputedStyle(panel).display !== "none") load();
+    }, 15000);
+  }
+
   function wireMemoryTab() {
     const status = $("memory-status");
     const content = $("memory-content");
     if (!content) return;
+    wireTier1MemoryCards();
 
     async function refresh() {
       try {

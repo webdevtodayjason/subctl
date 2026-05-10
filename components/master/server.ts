@@ -56,6 +56,7 @@ import { systemTools } from "./tools/system";
 import { projectTools } from "./tools/project";
 import { memoryTools } from "./tools/memory";
 import { context7Tools } from "./tools/context7";
+import { tier1MemoryTools, buildMemoryBlock } from "./tools/tier1-memory";
 import {
   startMasterNotifyListener,
   stopMasterNotifyListener,
@@ -268,6 +269,12 @@ export const toolRegistry: Record<string, InternalTool> = {
   ...Object.fromEntries(
     Object.entries(context7Tools).map(([k, v]) => [
       k, // already prefixed (context7_resolve, context7_docs, context7_health)
+      v as unknown as InternalTool,
+    ]),
+  ),
+  ...Object.fromEntries(
+    Object.entries(tier1MemoryTools).map(([k, v]) => [
+      k, // already prefixed (memory_show, memory_remember, memory_forget, memory_user_update)
       v as unknown as InternalTool,
     ]),
   ),
@@ -512,9 +519,18 @@ async function main() {
     return undefined;
   };
 
+  // Compose the initial system prompt: master persona + tier-1 memory
+  // (user profile + learned facts). Both memory files are re-read on
+  // every dispatchToAgent call below, so writes from operator OR master
+  // tools land in the next turn without restart.
+  function composeSystemPrompt(): string {
+    const memBlock = buildMemoryBlock();
+    return memBlock + skill;
+  }
+
   const agent = new Agent({
     initialState: {
-      systemPrompt: skill,
+      systemPrompt: composeSystemPrompt(),
       model: supervisorModel,
       tools,
       messages: loadAgentTranscript(),
@@ -732,6 +748,13 @@ async function main() {
 
   async function processOnePrompt(p: PendingPrompt): Promise<{ ok: boolean; error?: string }> {
     try {
+      // Refresh the system prompt with current tier-1 memory before every
+      // prompt. Both memory.md and user.md are re-read fresh — operator
+      // edits via the dashboard Memory tab AND master's own memory_*
+      // tool writes both flow into the next turn without restart.
+      try {
+        (agent.state as any).systemPrompt = composeSystemPrompt();
+      } catch { /* if pi-agent-core ever locks state.systemPrompt, we'll see it loud */ }
       broadcast("inbound", { source: p.source, text: p.text, ts: new Date().toISOString() });
       await agent.prompt(p.text);
       let { stop, err } = lastStopReason();
