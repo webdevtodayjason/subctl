@@ -4,6 +4,14 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.1.6] — 2026-05-10
+
+Patch — modal stacking context fix.
+
+### Fixed
+
+- **Modals no longer get rendered behind the chat panel.** Operator inspector dive 2026-05-10: the tmux-preview modal's header was being overlapped by the chat input form below it in the DOM. The `.modal-backdrop` had `position: fixed; z-index: 1000` which *should* have layered it above, but some other paint context was pinning that layer behind the rest of the page. Two-layer fix: bumped the backdrop to `z-index: 9999` (safely above any other element in the document), and gave the inner `.modal` its own stacking context via `position: relative; z-index: 1` so its descendants always render above non-modal siblings regardless of DOM order.
+
 ## [2.1.5] — 2026-05-10
 
 Patch — three dogfood-driven fixes.

@@ -2530,7 +2530,13 @@ body.chat-fullscreen .chat-toolbar-btn-icon { background: #1f4256; color: #5fd7f
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 1000;
+  /* Bumped 1000 → 9999. Operator inspector dive 2026-05-10 caught the
+     tmux-preview modal rendering BEHIND the chat panel's input form even
+     though the backdrop is fixed + positioned. Some other element on the
+     page was establishing a stacking context that pinned z:1000 to a
+     lower paint layer. 9999 is safely above any other layer in this
+     document. */
+  z-index: 9999;
   backdrop-filter: blur(4px);
 }
 .modal-backdrop[hidden] { display: none; }
@@ -2543,6 +2549,14 @@ body.chat-fullscreen .chat-toolbar-btn-icon { background: #1f4256; color: #5fd7f
   max-height: 92vh;
   overflow-y: auto;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+  /* Defensive: give the modal its own stacking context within the
+     backdrop. Without these, the modal is position:static + z-index:auto,
+     so its descendants (header / body / footer) stack purely by DOM
+     order against any later siblings of the backdrop in the document.
+     With position:relative + z-index, the modal owns its layer and the
+     header/input/etc. always render above outside-the-modal content. */
+  position: relative;
+  z-index: 1;
 }
 .modal-header {
   display: flex;
