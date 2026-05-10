@@ -1224,6 +1224,46 @@ async function main() {
               return { name: "tmux", ok: false, detail: `not on PATH: ${(err as Error).message}` };
             }
           })(),
+          // 6. docker — required for dev-team work that spins up containers
+          // (FOOTHOLD's dockerode bridge, future per-level images, etc.).
+          // Two failure modes: binary missing, or daemon not running.
+          // Distinguish them so the install hint is actionable.
+          (async () => {
+            try {
+              const versionProc = Bun.spawnSync(["docker", "--version"], { stdout: "pipe", stderr: "pipe" });
+              if (versionProc.exitCode !== 0) {
+                return {
+                  name: "docker",
+                  ok: false,
+                  detail: "docker binary not on PATH — install Docker Desktop: https://docs.docker.com/desktop/setup/install/mac-install/",
+                };
+              }
+              const versionLine = versionProc.stdout.toString().trim();
+              const infoProc = Bun.spawnSync(["docker", "info", "--format", "{{.ServerVersion}}"], {
+                stdout: "pipe",
+                stderr: "pipe",
+              });
+              if (infoProc.exitCode !== 0) {
+                return {
+                  name: "docker",
+                  ok: false,
+                  detail: `${versionLine} — daemon not responding (start Docker Desktop: \`open -a Docker\`)`,
+                };
+              }
+              const serverVer = infoProc.stdout.toString().trim();
+              return {
+                name: "docker",
+                ok: true,
+                detail: `${versionLine}, daemon ${serverVer}`,
+              };
+            } catch (err) {
+              return {
+                name: "docker",
+                ok: false,
+                detail: `not on PATH: ${(err as Error).message}`,
+              };
+            }
+          })(),
         ]);
 
         return Response.json({

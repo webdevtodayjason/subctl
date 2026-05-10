@@ -2732,6 +2732,15 @@ const server = Bun.serve({
           fallback_paths: [`${home}/.npm-global/bin/codex`, `/opt/homebrew/bin/codex`, `/usr/local/bin/codex`] },
         { name: "coderabbit", check: ["coderabbit", "--version"],     install: "curl -fsSL https://cli.coderabbit.ai/install.sh | sh", required: true,
           fallback_paths: [`${home}/.local/bin/coderabbit`] },
+        // Docker is required for dev teams that spin up containers
+        // (FOOTHOLD bridge, per-level wargame images, anything containerized
+        // a worker builds). The check has to verify both: (a) the docker
+        // binary exists and (b) the daemon is responsive — `docker info`
+        // exits non-zero when Desktop is installed but not running.
+        // Operators commonly hit this after a reboot. Listed BEFORE obsidian
+        // so the order in the table reads "core tools, then optional UX".
+        { name: "docker",     check: ["docker", "--version"],         install: "brew install --cask docker  (then start Docker Desktop: open -a Docker)", required: true,
+          fallback_paths: ["/Applications/Docker.app/Contents/Resources/bin/docker", "/opt/homebrew/bin/docker", "/usr/local/bin/docker"] },
         { name: "obsidian",   check: ["test", "-d", "/Applications/Obsidian.app"], install: "brew install --cask obsidian", required: false },
         { name: "lms",        check: ["lms", "version"],              install: "Open LM Studio app → Power user → Developer → Use lms in terminal (CLI lands at ~/.lmstudio/bin/lms)",
           required: false,
