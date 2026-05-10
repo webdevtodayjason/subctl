@@ -2044,10 +2044,15 @@ body[data-active-tab="logs"]          section[data-tab]:not([data-tab="logs"])  
 .chat-toolbar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;       /* let buttons + ctx pill wrap to a 2nd row instead
+                            of overflowing the chat column and bleeding into
+                            the right sidecar — fixes pill-overlapping-team
+                            -name reported 2026-05-10 */
   gap: 12px;
   padding-bottom: 10px;
   border-bottom: 1px solid #1a1a1a;
   margin-bottom: 12px;
+  overflow: hidden;      /* defensive clip in case any child still oversteps */
 }
 .chat-model-label {
   display: flex;
@@ -2066,7 +2071,11 @@ body[data-active-tab="logs"]          section[data-tab]:not([data-tab="logs"])  
   font-size: 12px;
   padding: 4px 8px;
   border-radius: 3px;
-  min-width: 280px;
+  min-width: 220px;      /* reduced from 280px so the toolbar fits on a single
+                            row at typical viewport widths; longer model names
+                            still display correctly via the option list when
+                            opened */
+  max-width: 100%;
 }
 .chat-toolbar-btn {
   background: #1a3a4a;

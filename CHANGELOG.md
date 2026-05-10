@@ -4,6 +4,14 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.1.1] — 2026-05-10
+
+Patch — chat-toolbar overflow into right sidecar.
+
+### Fixed
+
+- **Chat toolbar no longer spills into the dev-teams panel.** The toolbar's `display: flex` had no `flex-wrap`, and the child min-widths (model selector 280px, ctx meter 220px) summed to more than the chat column on typical viewports. With no wrap, no overflow clip, the ctx pill `ctx 33,422 / 65,536 tok (51%)` rendered on top of the team name `claude-Down-Time-Arena` in the right sidecar. Added `flex-wrap: wrap` + `overflow: hidden` on the toolbar, and reduced `chat-model-select` min-width from 280px → 220px so the row fits on a single line at most viewport widths and wraps gracefully when it can't.
+
 ## [2.1.0] — 2026-05-10
 
 Minor — close the dogfood-exposed gap where the subctl-built skills and slash commands lived only on the operator's laptop. Fresh installs now get them automatically. New: `orchestrator-mode` skill in repo, `/team` slash command in repo, and `subctl install` symlinks all repo skills + commands into every per-account cfg_dir.
