@@ -1,14 +1,22 @@
 // subctl master — the master daemon entry point.
 //
-// Boots a persistent supervisor process that:
-//   1. Loads providers.json (multi-model routing) + policy.json (per-project autonomy)
-//   2. Initializes pi-agent-core with the master SKILL prompt + the four tool modules
-//   3. Runs the review loop on `review_interval_minutes` cadence
-//   4. Polls the master Telegram bot for incoming chat (handled in master-notify-listener.ts)
+// A persistent, conversational orchestrator running on the M3 Ultra:
+//   1. Loads providers.json + policy.json + the master SKILL prompt
+//   2. Initializes pi-agent-core with multi-tool registry (subctl_orch_*, gh_*,
+//      coderabbit_*, telegram_*) and a transcript that survives restarts
+//   3. Exposes HTTP/SSE so the dashboard browser tab and Telegram listener can
+//      both push messages in (POST /chat) and subscribe to streaming agent
+//      events (GET /events).
+//   4. Runs a watchdog ticker that scans open dev teams + tracked projects for
+//      staleness and fires synthetic agent prompts so the master can ping the
+//      lead, escalate to Jason, or take corrective action. Master is reactive
+//      to user chat AND proactive about keeping projects moving — that's the KPI.
 //
 // Lives at: /Users/sem/code/subctl/components/master/
 // Started by: launchd plist (com.subctl.master.plist) at boot
 // Logs to:    /Users/sem/Library/Logs/subctl/master.log
+// HTTP at:    127.0.0.1:8788 (configurable via SUBCTL_MASTER_PORT) — kept on
+//             localhost on purpose; dashboard server proxies the public surface.
 
 import {
   readFileSync,
@@ -380,8 +388,24 @@ async function main() {
     getApiKey,
   });
 
-  // Persist transcript whenever the agent completes a run.
+  // ── event bus: agent → SSE subscribers ──────────────────────────────────
+  // Every connected /events client gets every agent event (text deltas, tool
+  // calls, decisions, watchdog firings) as Server-Sent Events. Persist the
+  // transcript on agent_end so a restart resumes the conversation.
+  const sseClients = new Set<{ write: (data: string) => void }>();
+
+  function broadcast(eventType: string, payload: unknown) {
+    const line = `event: ${eventType}\ndata: ${JSON.stringify(payload)}\n\n`;
+    for (const c of sseClients) {
+      try { c.write(line); } catch { /* client dropped, will GC on next iter */ }
+    }
+  }
+
   agent.subscribe((event) => {
+    // Stream every event to subscribers — the dashboard chat panel renders
+    // text deltas live, the tool-call ticker shows what the master is doing,
+    // and the decision log captures rationale.
+    broadcast(event.type, event);
     if (event.type === "agent_end") {
       saveAgentTranscript(agent.state.messages);
     }
@@ -397,14 +421,8 @@ async function main() {
     rationale: `daemon started — ${tools.length} tools, ${policy.projects.length} projects in portfolio, supervisor=${supervisorCfg.provider}/${supervisorCfg.model}`,
   });
 
-  // ── review loop ─────────────────────────────────────────────────────────
-  const intervalMin = policy.global_defaults.review_interval_minutes;
-  const intervalMs = Math.max(1, intervalMin) * 60 * 1000;
   let stopped = false;
-  let inFlight = false;
-
-  const REVIEW_PROMPT =
-    "Walk the project portfolio, decide next action, send digest if status changed, return.";
+  let promptInFlight = false;
 
   // Errors that mean "the call didn't go through, try again" — not "the model
   // refused / produced bad output". LM Studio evicts idle models under memory
@@ -434,62 +452,190 @@ async function main() {
     return TRANSIENT_ERROR_PATTERNS.some((re) => re.test(errMsg));
   }
 
-  async function runReviewTick() {
-    if (stopped || inFlight) return;
-    inFlight = true;
-    const tickStarted = new Date().toISOString();
-    console.error(`[master] review-tick start ${tickStarted}`);
+  // Single funnel for any inbound message: user chat from dashboard, Telegram,
+  // or synthetic watchdog prompts. Serializes calls (one prompt at a time)
+  // because pi-agent-core doesn't support concurrent runs on the same agent.
+  async function dispatchToAgent(
+    text: string,
+    source: "chat" | "telegram" | "watchdog",
+  ): Promise<{ ok: boolean; error?: string }> {
+    if (stopped) return { ok: false, error: "daemon shutting down" };
+    if (promptInFlight) return { ok: false, error: "agent busy with prior prompt" };
+    promptInFlight = true;
     try {
-      await agent.prompt(REVIEW_PROMPT);
-      // SDK swallows provider errors and records them on the assistant message
-      // (stopReason="error"). Retry once for transient classes — gives LM Studio
-      // time to JIT-reload an evicted model, etc.
+      broadcast("inbound", { source, text, ts: new Date().toISOString() });
+      await agent.prompt(text);
       let { stop, err } = lastStopReason();
       if (stop === "error" && isTransient(err) && !stopped) {
-        console.error(`[master] review-tick transient error "${err}", retrying in 5s`);
+        console.error(`[master] transient error "${err}" (source=${source}), retrying in 5s`);
         await new Promise((r) => setTimeout(r, 5000));
-        await agent.prompt(REVIEW_PROMPT);
+        await agent.prompt(text);
         ({ stop, err } = lastStopReason());
       }
       if (stop === "error") {
-        console.error(`[master] review-tick ended with error: ${err}`);
         logDecision({
           project: "_master",
-          action: "review_tick_error",
+          action: `prompt_error_${source}`,
           rationale: err ?? "unknown",
         });
-      } else {
-        updateLastReviewTs();
-        console.error(`[master] review-tick ok ${new Date().toISOString()}`);
+        return { ok: false, error: err ?? "unknown error" };
       }
+      return { ok: true };
     } catch (err) {
-      // Per SDK contract, streamFn should never throw — but tool failures or
-      // listener errors can. Don't let one bad tick kill the daemon.
-      console.error(
-        `[master] review-tick failed: ${(err as Error).message ?? err}`,
-      );
+      const msg = (err as Error).message ?? String(err);
       logDecision({
         project: "_master",
-        action: "review_tick_failed",
-        rationale: (err as Error).message ?? String(err),
+        action: `prompt_failed_${source}`,
+        rationale: msg,
       });
+      return { ok: false, error: msg };
     } finally {
-      inFlight = false;
+      promptInFlight = false;
     }
   }
 
-  // Kick off the first tick immediately so launchd sees activity in the log,
-  // then schedule subsequent ticks on the policy interval.
-  void runReviewTick();
-  const reviewInterval = setInterval(() => void runReviewTick(), intervalMs);
+  // ── HTTP server: chat in, events out ───────────────────────────────────
+  const masterPort = Number(process.env.SUBCTL_MASTER_PORT ?? 8788);
+  // Default 127.0.0.1 — master is the brain; the dashboard server proxies
+  // public traffic. Keeps the agent off the open LAN by default.
+  const masterHost = process.env.SUBCTL_MASTER_HOST ?? "127.0.0.1";
 
-  // Heartbeat — keeps launchd / log-watchers happy between review ticks.
-  const beat = setInterval(() => {
-    console.error(`[master] heartbeat ${new Date().toISOString()}`);
-  }, 60_000);
+  const httpServer = Bun.serve({
+    port: masterPort,
+    hostname: masterHost,
+    // SSE connections are long-lived. Default 10s idleTimeout drops them
+    // and the dashboard chat panel would lose its event stream every 10s
+    // when there's no agent activity to send. Disable.
+    idleTimeout: 0,
+    async fetch(req) {
+      const url = new URL(req.url);
 
+      if (url.pathname === "/health") {
+        return Response.json({
+          ok: true,
+          version: "0.1.0",
+          uptime_s: Math.floor(process.uptime()),
+          transcript_msgs: agent.state.messages.length,
+          subscribers: sseClients.size,
+          prompt_in_flight: promptInFlight,
+        });
+      }
+
+      if (url.pathname === "/chat" && req.method === "POST") {
+        let body: { text?: string; source?: "chat" | "telegram" | "watchdog" };
+        try {
+          body = await req.json();
+        } catch {
+          return Response.json({ ok: false, error: "invalid JSON body" }, { status: 400 });
+        }
+        const text = (body.text ?? "").trim();
+        const source = body.source ?? "chat";
+        if (!text) return Response.json({ ok: false, error: "empty text" }, { status: 400 });
+        // Fire and forget — caller subscribes to /events to watch the response stream.
+        void dispatchToAgent(text, source);
+        return Response.json({ ok: true, source, accepted_at: new Date().toISOString() }, { status: 202 });
+      }
+
+      if (url.pathname === "/events" && req.method === "GET") {
+        const stream = new ReadableStream({
+          start(controller) {
+            const encoder = new TextEncoder();
+            const client = {
+              write: (data: string) => controller.enqueue(encoder.encode(data)),
+            };
+            sseClients.add(client);
+            // Initial hello so the client knows it's connected
+            client.write(`event: connected\ndata: ${JSON.stringify({
+              ts: new Date().toISOString(),
+              transcript_msgs: agent.state.messages.length,
+            })}\n\n`);
+            // Send last assistant message preview so a fresh tab has context
+            const lastAssistant = [...agent.state.messages].reverse().find(
+              (m: any) => m.role === "assistant",
+            );
+            if (lastAssistant) {
+              client.write(`event: snapshot_last\ndata: ${JSON.stringify(lastAssistant)}\n\n`);
+            }
+            // Keep-alive comment every 25s — survives proxy buffering
+            const ka = setInterval(() => {
+              try { client.write(`: keep-alive ${Date.now()}\n\n`); } catch { clearInterval(ka); }
+            }, 25_000);
+            (controller as any)._cleanup = () => {
+              clearInterval(ka);
+              sseClients.delete(client);
+            };
+          },
+          cancel() {
+            const cleanup = (this as any)._cleanup;
+            if (cleanup) cleanup();
+          },
+        });
+        return new Response(stream, {
+          headers: {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+          },
+        });
+      }
+
+      return new Response("not found", { status: 404 });
+    },
+  });
+
+  console.error(`[master] http listening on http://${masterHost}:${httpServer.port} — POST /chat, GET /events, GET /health`);
+
+  // ── watchdog ticker ────────────────────────────────────────────────────
+  // Master's KPI is "keep projects moving forward". Periodically scan open
+  // dev teams + tracked projects; if anything looks stuck (no lead report
+  // recently, no git activity, etc.), synthesize a prompt so the agent can
+  // decide what to do — ping the lead, escalate to Jason, take corrective
+  // action. The actual scan logic gets richer as dev teams come online.
+  const watchdogIntervalMin = Math.max(
+    1,
+    policy.global_defaults.review_interval_minutes ?? 5,
+  );
+  const watchdogIntervalMs = watchdogIntervalMin * 60 * 1000;
+  const stalenessThresholdMin =
+    policy.global_defaults.stall_detection_minutes ?? 60;
+
+  async function runWatchdogTick() {
+    if (stopped || promptInFlight) return;
+    // For now this is a stub that fires only when there are dev teams to
+    // watch. The real scan logic — tail lead-report inboxes, check git
+    // activity — lands in the next slice once teams actually exist.
+    const inboxDir = join(MASTER_STATE_DIR, "inbox");
+    let stale: Array<{ team: string; lastSeenMin: number }> = [];
+    try {
+      if (existsSync(inboxDir)) {
+        const { readdirSync, statSync } = require("node:fs") as typeof import("node:fs");
+        for (const f of readdirSync(inboxDir)) {
+          if (!f.endsWith(".jsonl")) continue;
+          const fp = join(inboxDir, f);
+          const ageMin = (Date.now() - statSync(fp).mtimeMs) / 60_000;
+          if (ageMin > stalenessThresholdMin) {
+            stale.push({ team: f.replace(/\.jsonl$/, ""), lastSeenMin: Math.round(ageMin) });
+          }
+        }
+      }
+    } catch (err) {
+      console.error(`[master] watchdog scan error: ${(err as Error).message}`);
+    }
+    if (stale.length === 0) {
+      broadcast("watchdog_ok", { ts: new Date().toISOString(), open_teams: 0, stale: 0 });
+      return;
+    }
+    const summary = stale
+      .map((s) => `${s.team} (last activity ${s.lastSeenMin}min ago)`)
+      .join(", ");
+    const synthPrompt = `[watchdog] ${stale.length} dev team(s) appear stale: ${summary}. Decide whether to ping the lead, escalate to Jason via telegram, or take corrective action. Use the tools available.`;
+    broadcast("watchdog_fire", { ts: new Date().toISOString(), stale, prompt: synthPrompt });
+    await dispatchToAgent(synthPrompt, "watchdog");
+  }
+
+  const watchdog = setInterval(() => void runWatchdogTick(), watchdogIntervalMs);
   console.error(
-    `[master] review loop armed — interval=${intervalMin}m (${intervalMs}ms)`,
+    `[master] watchdog armed — interval=${watchdogIntervalMin}m, staleness_threshold=${stalenessThresholdMin}m`,
   );
 
   // ── graceful shutdown ───────────────────────────────────────────────────
@@ -497,10 +643,9 @@ async function main() {
     if (stopped) return;
     stopped = true;
     console.error(`[master] caught ${signal}, shutting down`);
-    clearInterval(reviewInterval);
-    clearInterval(beat);
+    clearInterval(watchdog);
+    httpServer.stop(true);
     agent.abort();
-    // Flush transcript so the next boot resumes the conversation.
     try {
       saveAgentTranscript(agent.state.messages);
     } catch (err) {
@@ -513,7 +658,6 @@ async function main() {
       action: "shutdown",
       rationale: `signal=${signal}`,
     });
-    // Give in-flight listeners a moment to settle before we exit.
     agent
       .waitForIdle()
       .catch(() => undefined)
