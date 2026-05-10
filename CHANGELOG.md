@@ -4,6 +4,20 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.5.2] — 2026-05-10
+
+Patch — three v2.5.0 bugs surfaced by operator the moment the Vault tab landed.
+
+### Fixed
+
+- **Vault tab now hides other tabs.** Missed adding the `body[data-active-tab="vault"] section[data-tab]:not([data-tab="vault"]) { display: none; }` rule in v2.5.0. Result: clicking Vault left the body in "no rule matched" state, every section rendered stacked + scrollable. Fixed by adding the missing rule.
+- **Projects → "Open Vault Path" button now actually opens the Vault viewer.** Was renamed to **"Open in Vault Viewer"** and rewired: clicks now call `window.openVaultDeepLink("master", "<project>/decisions.md")` which sets the hash + clicks the sidebar Vault button. Old behavior copied the path to clipboard (which was the placeholder before Phase 3n existed).
+- **Chat toolbar padding bumped from 22 → 28px top.** Defensive fix — operators kept reporting the chat toolbar buttons appearing clipped against the panel's rounded top edge. Likely a stale-CSS-cache + flex-wrap interaction, but extra top breathing room makes it impossible regardless.
+
+### Added (helper for cross-tab navigation)
+
+- **`window.openVaultDeepLink(root, path)`** — exposed by the Vault tab module so other tabs (Projects, future ones) can route the user to a specific note: sets the URL hash, programmatically clicks the Vault sidebar button, lets the existing tab-activation logic + hash-aware `checkActive()` pick up the navigation. The Vault tab's `checkActive()` was extended to re-evaluate the hash on every activation (not just first load) so deep-links from outside work even when the vault is already loaded.
+
 ## [2.5.1] — 2026-05-10
 
 Patch — three backlog cleanups.

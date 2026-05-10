@@ -1348,6 +1348,7 @@ body[data-active-tab="skills"]        section[data-tab]:not([data-tab="skills"])
 body[data-active-tab="providers"]     section[data-tab]:not([data-tab="providers"])     { display: none; }
 body[data-active-tab="teams"]         section[data-tab]:not([data-tab="teams"])         { display: none; }
 body[data-active-tab="logs"]          section[data-tab]:not([data-tab="logs"])          { display: none; }
+body[data-active-tab="vault"]         section[data-tab]:not([data-tab="vault"])         { display: none; }
 
 /* ── Logs screen ──────────────────────────────────────────────────────── */
 .logs-screen { display: flex; flex-direction: column; gap: 12px; }
@@ -2766,11 +2767,11 @@ main {
   min-width: 0;     /* allow toolbar contents to shrink rather than overflow */
   height: 100%;     /* fill the row defined by .orchestration-screen height */
   min-height: 0;    /* allow children to shrink in flex layout */
-  /* No max-height needed — parent .orchestration-screen now fixes the height
-     exactly, and master-log's flex: 1 1 auto + overflow-y: auto bounds the
-     scroll internally. The old calc(100vh - 184px) magic number was wrong
-     once the toolbar wrapped to a 2nd row, leaving dead space and pushing
-     the toolbar off-screen. */
+  /* Explicit padding override (.panel base is 22px). Bumped to 28px so the
+     toolbar never visually collides with the panel's rounded top edge when
+     flex-wrap puts the toolbar onto a second row. Diagnosed 2026-05-10 from
+     a screenshot where APPLY/COMPACT/+NEW CHAT looked clipped at the top. */
+  padding: 28px 24px 22px;
 }
 .orchestration-screen .master-log {
   flex: 1 1 auto;

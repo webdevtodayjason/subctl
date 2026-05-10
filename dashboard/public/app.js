@@ -1685,12 +1685,44 @@
       }
     }
     // Only load when the tab first becomes visible (saves boot cost).
+    // ALSO re-checks the hash on every tab activation so deep-links from
+    // outside (e.g. Projects → "Open in Vault Viewer") navigate even when
+    // the vault is already loaded.
     function checkActive() {
       const isActive = document.body.getAttribute("data-active-tab") === "vault";
-      if (isActive && !currentVault) ready();
+      if (!isActive) return;
+      if (!currentVault) {
+        ready();
+        return;
+      }
+      // Already loaded — honor any new hash deep-link.
+      const hashMatch = location.hash.match(/^#vault\?(.*)$/);
+      if (!hashMatch) return;
+      const params = new URLSearchParams(hashMatch[1]);
+      const reqRoot = params.get("root");
+      const reqPath = params.get("path");
+      if (reqRoot && reqRoot !== currentVault) {
+        void openVault(reqRoot).then(() => { if (reqPath) void openNote(reqPath); });
+      } else if (reqPath && (!currentNote || currentNote.path !== reqPath)) {
+        void openNote(reqPath);
+      }
     }
     new MutationObserver(checkActive).observe(document.body, { attributes: true, attributeFilter: ["data-active-tab"] });
     checkActive();
+
+    // Expose a global navigation helper so other tabs (e.g. Projects) can
+    // route the user to a specific note. Sets the hash, switches to the
+    // Vault tab, lets checkActive() pick up the navigation.
+    window.openVaultDeepLink = function(root, path) {
+      const r = encodeURIComponent(root || "master");
+      const p = encodeURIComponent(path || "");
+      try {
+        history.replaceState(null, "", `#vault?root=${r}&path=${p}`);
+      } catch {}
+      const navBtn = document.querySelector('.nav-btn[data-tab="vault"]');
+      if (navBtn) navBtn.click();
+      else checkActive(); // fallback if nav button isn't found
+    };
   }
 
   // ----- Camera View — NVR grid of dev-team tmux panes (Phase 3m) -----
@@ -2482,7 +2514,7 @@
             </div>
             <div class="pdh-actions">
               <button type="button" class="primary-btn" data-action="spawn-team">Spawn dev team</button>
-              <button type="button" class="secondary-btn" data-action="open-vault">Open vault path</button>
+              <button type="button" class="secondary-btn" data-action="open-vault">Open in Vault Viewer</button>
               ${p.github_repo ? `<a class="secondary-btn" href="https://github.com/${escapeText(p.github_repo)}" target="_blank">Open on GitHub</a>` : ""}
             </div>
           </header>
@@ -2589,8 +2621,18 @@
         alert("Asked master. Switch to Chat to follow the response.");
       });
       detailEl.querySelector('[data-action="open-vault"]')?.addEventListener("click", () => {
-        navigator.clipboard.writeText(vault.project_dir);
-        alert("Vault path copied: " + vault.project_dir + (vault.exists ? "" : "\n(does not exist yet)"));
+        // Project's vault subdir is <vault_root>/master/<project_name>/.
+        // Open the Vault tab and try to land on decisions.md by default;
+        // if the file doesn't exist yet, the viewer just shows the tree.
+        const target = `${p.name}/decisions.md`;
+        if (typeof window.openVaultDeepLink === "function") {
+          window.openVaultDeepLink("master", target);
+        } else {
+          // Fallback if vault tab wiring didn't load
+          location.hash = `#vault?root=master&path=${encodeURIComponent(target)}`;
+          const navBtn = document.querySelector('.nav-btn[data-tab="vault"]');
+          if (navBtn) navBtn.click();
+        }
       });
     }
 
