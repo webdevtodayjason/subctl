@@ -717,7 +717,120 @@ Orchestration tab and see all three tiles updating roughly in
 sync. Click one — it expands. Hit Esc — back to grid. Stop one of
 the teams — its tile transitions to ⚫ ended within ~2 s.
 
+### Phase 3n — In-browser Obsidian vault viewer (Perlite-inspired)
+
+Operator request 2026-05-10: the "Open Vault Path" button on the
+Projects tab spawns Obsidian locally, which is useless when subctl
+is being driven remotely (dashboard + Telegram). Need an
+in-browser vault viewer so any note in any vault is reachable from
+the dashboard without ever opening a desktop app.
+
+Reference: [Perlite](https://github.com/secure-77/Perlite) — a
+PHP-based Obsidian vault viewer that's been stagnant ~2 years but
+captured the right design pattern (server-rendered Markdown with
+Obsidian-flavoured extensions: `[[wikilinks]]`, `![[embeds]]`,
+callouts, tags, backlinks). Reimplement the *concept* with the
+modern stack subctl already uses; don't fork the PHP.
+
+**Stack (matches existing subctl conventions — no build step):**
+
+- Backend: extend `dashboard/server.ts` (Bun + TypeScript). New
+  endpoints under `/api/vault/`:
+  ```
+  GET  /api/vault/roots                  → configured roots from obsidian.json
+  GET  /api/vault/<root>/tree            → folder tree, file index
+  GET  /api/vault/<root>/note?path=…     → rendered HTML + frontmatter + backlinks
+  GET  /api/vault/<root>/search?q=…      → full-text + filename + tag matches
+  GET  /api/vault/<root>/backlinks?path  → notes linking TO this note
+  GET  /api/vault/<root>/graph           → nodes + edges for graph view
+  GET  /api/vault/<root>/asset?path=…    → image/pdf passthrough
+  GET  /api/vault/<root>/stream          → SSE: vault file-watch events
+  ```
+- Markdown rendering server-side via `markdown-it` + small set of
+  Obsidian-syntax plugins (rolled here, not pulled — Obsidian's
+  markdown is documented and the surface is small):
+  - `[[wikilink]]` and `[[wikilink|alias]]` → `<a href="?path=…">`
+  - `![[embed.png]]` and `![[note]]` → inline image / inline note
+  - `> [!note] Title` callouts → styled `<aside>` with theme class
+  - `#tag` → `<span class="tag">` with click-to-search
+  - `^block-id` → anchored fragment
+  - YAML frontmatter parsed and surfaced as a metadata header
+- Frontend: vanilla JS module under `dashboard/public/vault/`,
+  loaded inside the dashboard's existing single-page shell. Three
+  panes: file tree (left), rendered note (center), backlinks +
+  outgoing-links + tag list (right). Resizeable splits.
+- Search: server-side index built on first request per root,
+  cached in-process, invalidated by SSE file-watch events.
+
+**Where it slots into the dashboard:**
+
+- "Memory" tab gets a sub-tab "Browse" showing the viewer pinned
+  to the master's default vault root. Existing Memory stats stay.
+- "Projects" tab's `Open Vault Path` button becomes
+  `Open in Vault Viewer` → routes to
+  `/dashboard#vault?root=<root>&path=<project>/decisions.md`.
+- New top-level "Vault" tab when more than one vault root is
+  configured. Switches roots via dropdown.
+
+**Master integration:**
+
+- New tool `vault_link(note_path: string, root?: string) → url`.
+  Returns a deep-linkable dashboard URL the master can include in
+  chat or Telegram messages. "I logged the decision — see
+  https://192.168.100.98:8787/dashboard#vault?root=master&path=Down-Time-Arena/decisions.md".
+- Existing `vault_append` is unchanged.
+
+**URL contract (deep-linkable, Telegram-friendly):**
+
+```
+/dashboard#vault?root=<root-slug>&path=<rel-path>
+/dashboard#vault?root=<root-slug>&path=<rel-path>&q=<search>
+/dashboard#vault?root=<root-slug>&view=graph
+```
+
+The `#vault` hash route + query-string variant lets Telegram's
+inline browser open it without round-tripping through subctl auth
+(the dashboard's existing auth posture applies).
+
+**Out of scope for first cut:**
+
+- **Editing.** Read-only viewer. The master writes via
+  `vault_append`; humans edit via the Obsidian desktop app
+  whenever they're at the M3 Ultra. Don't dual-source edits.
+- **Plugin parity.** Obsidian-specific plugins (Excalidraw,
+  DataView, Templater) are not rendered. If a note relies on
+  them, render the source as code-fenced and note that the
+  preview is partial.
+- **Live collaboration.** This is a viewer, not a doc editor.
+- **Auth separate from the dashboard.** Anyone who can reach the
+  dashboard sees every vault subctl knows about — same posture as
+  every other dashboard tab. ACLs are a Phase 4+ feature.
+
+**Acceptance:**
+
+- Click "Open in Vault Viewer" on the Down-Time-Arena project →
+  see `Down-Time-Arena/decisions.md` rendered in-page with
+  wikilinks navigating to other notes, backlinks panel populated,
+  tag list interactive.
+- Edit a file in Obsidian on the M3 Ultra → SSE event fires →
+  the open viewer refreshes the tree and (if the open note is
+  the edited one) re-renders within 2 s.
+- Master sends a Telegram message with a `vault_link()` URL → the
+  recipient taps it → Telegram in-app browser shows the note.
+
+**Why this also unblocks Phase 3l (attachments) UX:**
+
+The attachments feature needs a place to *show* uploaded
+documents. This viewer is that place. Attachments become
+first-class notes in the master's vault when the operator wants
+them durable.
+
 ### Backlog (non-blocking)
+
+- Rename the dashboard's `detached` team-status label to
+  `running · headless` or similar. Operators interpret "detached"
+  as broken when it actually means "no terminal is currently
+  attached, work continues fine" — flagged 2026-05-10.
 
 - Sweep remaining `alert()` / `confirm()` calls in Projects + Teams + Skills tabs to use `window.notice` (the Chat tab is done)
 - `lms --version` ANSI banner stripping is imperfect — first line with a digit picks up an ASCII-art fragment
