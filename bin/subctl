@@ -117,6 +117,13 @@ Usage:
   subctl team inbox <team> [--tail N] Show recent events for a team
   subctl team list                    List teams with an inbox
 
+  subctl skills import <repo>         Import a skills repo (e.g. mattpocock/skills)
+                                      into the local catalog at
+                                      ~/.config/subctl/skills/
+  subctl skills list                  List imported skills
+  subctl skills info <id>             Show one skill's frontmatter + content
+  subctl skills sources               List skill sources (each imported repo)
+
   subctl update                       Pull origin/main, rebuild, restart daemons,
                                       doctor on the way out (no manual ssh+rsync)
   subctl uninstall                    Remove subctl
@@ -520,6 +527,11 @@ case "$cmd" in
   team)
     . "$SUBCTL_REPO_ROOT/components/team/team.sh"
     subctl_team "$@"
+    ;;
+
+  skills)
+    . "$SUBCTL_REPO_ROOT/components/skills/skills.sh"
+    subctl_skills "$@"
     ;;
 
   master)

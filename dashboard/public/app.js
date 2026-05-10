@@ -165,6 +165,199 @@
   wireChatModelSelector();
   wireOrchestrationCockpit();
   wireSettingsTab();
+  wireSkillsTab();
+
+  // ----- Skills tab — catalog + import flow -----
+  function wireSkillsTab() {
+    const sourcesList = $("skills-sources-list");
+    const sourcesCount = $("skills-sources-count");
+    const skillsList = $("skills-list");
+    const skillsMeta = $("skills-meta");
+    const filter = $("skills-filter");
+    const detailPane = $("skills-detail-pane");
+    const refreshBtn = $("skills-refresh-btn");
+    const importBtn = $("skills-import-btn");
+    const modal = $("skills-import-modal");
+    const importForm = $("skills-import-form");
+    const importClose = $("skills-import-close");
+    const importCancel = $("skills-import-cancel");
+    const importStatus = $("skills-import-status");
+    const importSubmit = $("skills-import-submit");
+    if (!sourcesList || !skillsList) return;
+
+    let allSkills = [];
+    let allSources = [];
+    let activeSource = null;
+    let activeSkillId = null;
+    let filterText = "";
+
+    function applyFilter() {
+      const q = filterText.toLowerCase();
+      const filtered = allSkills.filter((s) => {
+        if (activeSource && s.source !== activeSource) return false;
+        if (!q) return true;
+        return s.id.toLowerCase().includes(q) ||
+               (s.description || "").toLowerCase().includes(q) ||
+               (s.name || "").toLowerCase().includes(q);
+      });
+      skillsMeta.textContent = `${filtered.length} skill${filtered.length === 1 ? "" : "s"}`;
+      if (!filtered.length) {
+        skillsList.innerHTML = "<div class=\"dim small\" style=\"padding:24px\">no matches</div>";
+        return;
+      }
+      skillsList.replaceChildren(...filtered.map((s) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "skill-row";
+        if (s.id === activeSkillId) btn.classList.add("active");
+        const id = document.createElement("div");
+        id.className = "skill-id";
+        // Color-code source / category in the id display
+        const segs = s.id.split("/");
+        id.innerHTML =
+          `<span class="src-tag">${escapeText(segs[0] || "")}</span>` +
+          (segs.length > 2 ? ` / <span class="cat-tag">${escapeText(segs[1] || "")}</span>` : "") +
+          ` / ${escapeText(segs.slice(segs.length > 2 ? 2 : 1).join("/"))}`;
+        btn.appendChild(id);
+        if (s.description) {
+          const desc = document.createElement("div");
+          desc.className = "skill-desc";
+          desc.textContent = s.description;
+          btn.appendChild(desc);
+        }
+        btn.addEventListener("click", () => selectSkill(s.id));
+        return btn;
+      }));
+    }
+
+    async function refresh() {
+      try {
+        const [sR, kR] = await Promise.all([
+          fetch("/api/skills/sources"),
+          fetch("/api/skills"),
+        ]);
+        const sJ = await sR.json();
+        const kJ = await kR.json();
+        if (sJ.ok) {
+          allSources = sJ.sources || [];
+          sourcesCount.textContent = allSources.length;
+          if (!allSources.length) {
+            sourcesList.innerHTML = "<div class=\"dim small\" style=\"padding:12px\">no sources imported yet</div>";
+          } else {
+            const rows = [];
+            // "All" row at top
+            const all = document.createElement("button");
+            all.type = "button";
+            all.className = "skills-source-row";
+            if (!activeSource) all.classList.add("active");
+            all.innerHTML = `<div class="src-name">All sources</div><div class="src-meta">${allSkills.length} skills</div>`;
+            all.addEventListener("click", () => { activeSource = null; refresh(); });
+            rows.push(all);
+            for (const s of allSources) {
+              const btn = document.createElement("button");
+              btn.type = "button";
+              btn.className = "skills-source-row";
+              if (activeSource === s.name) btn.classList.add("active");
+              btn.innerHTML = `<div class="src-name">${escapeText(s.name)}</div><div class="src-meta">${s.skill_count} skills · ${s.origin ? "git" : "local"}</div>`;
+              btn.addEventListener("click", () => { activeSource = s.name; refresh(); });
+              rows.push(btn);
+            }
+            sourcesList.replaceChildren(...rows);
+          }
+        }
+        if (kJ.ok) {
+          allSkills = kJ.skills || [];
+        }
+        applyFilter();
+      } catch (err) {
+        sourcesList.innerHTML = "<div class=\"dim small\" style=\"padding:12px\">error: " + escapeText(String(err)) + "</div>";
+      }
+    }
+
+    async function selectSkill(id) {
+      activeSkillId = id;
+      applyFilter();
+      detailPane.textContent = "loading…";
+      try {
+        const r = await fetch("/api/skills/" + id.split("/").map(encodeURIComponent).join("/"));
+        const j = await r.json();
+        if (!j.ok) {
+          detailPane.textContent = "load failed: " + (j.error || "?");
+          return;
+        }
+        detailPane.textContent = `// ${j.path}\n\n${j.content}`;
+      } catch (err) {
+        detailPane.textContent = "error: " + err;
+      }
+    }
+
+    if (filter) {
+      filter.addEventListener("input", () => { filterText = filter.value; applyFilter(); });
+    }
+    if (refreshBtn) refreshBtn.addEventListener("click", refresh);
+
+    // Import modal wiring
+    function openImport() { if (modal) modal.hidden = false; }
+    function closeImport() {
+      if (!modal) return;
+      modal.hidden = true;
+      importForm.reset();
+      importStatus.hidden = true;
+      importStatus.textContent = "";
+      importStatus.className = "form-status";
+      importSubmit.disabled = false;
+      importSubmit.textContent = "import";
+    }
+    if (importBtn) importBtn.addEventListener("click", openImport);
+    if (importClose) importClose.addEventListener("click", closeImport);
+    if (importCancel) importCancel.addEventListener("click", closeImport);
+    if (modal) modal.addEventListener("click", (e) => { if (e.target === modal) closeImport(); });
+    if (importForm) {
+      importForm.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const repo = $("skills-import-repo").value.trim();
+        const source = $("skills-import-source").value.trim();
+        if (!repo) return;
+        importSubmit.disabled = true;
+        importSubmit.textContent = "cloning…";
+        importStatus.hidden = false;
+        importStatus.className = "form-status form-status-info";
+        importStatus.textContent = "Cloning " + repo + "…";
+        try {
+          const r = await fetch("/api/skills/import", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ repo, source: source || undefined }),
+          });
+          const j = await r.json();
+          if (!j.ok) {
+            importStatus.className = "form-status form-status-err";
+            importStatus.textContent = "Failed: " + (j.error || "?");
+            importSubmit.disabled = false;
+            importSubmit.textContent = "import";
+            return;
+          }
+          importStatus.className = "form-status form-status-ok";
+          importStatus.textContent = "✓ " + (j.output || "imported");
+          importSubmit.textContent = "done ✓";
+          await refresh();
+          setTimeout(closeImport, 2200);
+        } catch (err) {
+          importStatus.className = "form-status form-status-err";
+          importStatus.textContent = "Error: " + err;
+          importSubmit.disabled = false;
+          importSubmit.textContent = "import";
+        }
+      });
+    }
+
+    refresh();
+    // Light auto-refresh while the tab is visible (catches CLI imports)
+    setInterval(() => {
+      const panel = document.querySelector("section[data-tab=\"skills\"]");
+      if (panel && getComputedStyle(panel).display !== "none") refresh();
+    }, 30000);
+  }
 
   // ----- Settings tab -----
   function wireSettingsTab() {

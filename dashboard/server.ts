@@ -2255,6 +2255,163 @@ const server = Bun.serve({
       return Response.json({ ok: true, code_root: codeRoot, projects });
     }
 
+    // ── Skills catalog endpoints ────────────────────────────────────────
+    // GET /api/skills        — list all skills with frontmatter
+    // GET /api/skills/sources — list imported sources
+    // GET /api/skills/<id>   — get one skill's full SKILL.md content
+    // POST /api/skills/import — { repo, source?, branch? } → clone + register
+
+    const SKILLS_DIR = process.env.SUBCTL_SKILLS_DIR ?? `${process.env.HOME}/.config/subctl/skills`;
+
+    if (url.pathname === "/api/skills" && req.method === "GET") {
+      const skills: Array<{
+        id: string;
+        source: string;
+        category: string;
+        name: string;
+        description: string;
+        path: string;
+      }> = [];
+      try {
+        if (existsSync(SKILLS_DIR)) {
+          const stack = [SKILLS_DIR];
+          while (stack.length) {
+            const cur = stack.pop()!;
+            const entries = readdirSync(cur, { withFileTypes: true });
+            for (const e of entries) {
+              if (e.name.startsWith(".")) continue;
+              const p = join(cur, e.name);
+              if (e.isDirectory()) {
+                stack.push(p);
+              } else if (e.name === "SKILL.md") {
+                // p = <SKILLS_DIR>/<source>/skills/<rest>/SKILL.md
+                const rel = p.slice(SKILLS_DIR.length + 1);
+                const segs = rel.split("/");
+                const source = segs[0]!;
+                // segs: [source, "skills", ...rest, "SKILL.md"]
+                const inner = segs.slice(2, -1).join("/");
+                const id = `${source}/${inner}`;
+                const category = segs.length > 4 ? segs[2]! : "general";
+                // Parse frontmatter
+                const raw = readFileSync(p, "utf8");
+                let name = "", description = "";
+                const fmMatch = raw.match(/^---\s*\n([\s\S]*?)\n---/);
+                if (fmMatch) {
+                  for (const line of fmMatch[1]!.split("\n")) {
+                    const nm = line.match(/^name:\s*(.*)$/);
+                    if (nm) name = nm[1]!.trim();
+                    const dm = line.match(/^description:\s*(.*)$/);
+                    if (dm) description = dm[1]!.trim();
+                  }
+                }
+                skills.push({
+                  id,
+                  source,
+                  category,
+                  name: name || (segs.at(-2) ?? "?"),
+                  description: description.replace(/^['"]|['"]$/g, ""),
+                  path: p,
+                });
+              }
+            }
+          }
+        }
+      } catch (err) {
+        return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+      }
+      skills.sort((a, b) => a.id.localeCompare(b.id));
+      return Response.json({ ok: true, skills_dir: SKILLS_DIR, total: skills.length, skills });
+    }
+
+    if (url.pathname === "/api/skills/sources" && req.method === "GET") {
+      const sources: Array<{ name: string; origin: string | null; skill_count: number; path: string }> = [];
+      try {
+        if (existsSync(SKILLS_DIR)) {
+          for (const entry of readdirSync(SKILLS_DIR, { withFileTypes: true })) {
+            if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+            const sourceDir = join(SKILLS_DIR, entry.name);
+            // Count SKILL.md files
+            let count = 0;
+            const stack = [join(sourceDir, "skills")];
+            while (stack.length) {
+              const cur = stack.pop()!;
+              if (!existsSync(cur)) continue;
+              try {
+                for (const e of readdirSync(cur, { withFileTypes: true })) {
+                  if (e.name.startsWith(".")) continue;
+                  const p = join(cur, e.name);
+                  if (e.isDirectory()) stack.push(p);
+                  else if (e.name === "SKILL.md") count++;
+                }
+              } catch { /* ignore */ }
+            }
+            // git origin if present
+            let origin: string | null = null;
+            const gitDir = join(sourceDir, ".git");
+            if (existsSync(gitDir)) {
+              const r = spawnSync("git", ["-C", sourceDir, "config", "--get", "remote.origin.url"], { encoding: "utf8", timeout: 1500 });
+              if (r.status === 0) origin = r.stdout.trim();
+            }
+            sources.push({ name: entry.name, origin, skill_count: count, path: sourceDir });
+          }
+        }
+      } catch (err) {
+        return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+      }
+      return Response.json({ ok: true, skills_dir: SKILLS_DIR, sources });
+    }
+
+    {
+      const m = url.pathname.match(/^\/api\/skills\/(.+)$/);
+      if (m && req.method === "GET" && m[1] !== "sources") {
+        const id = decodeURIComponent(m[1]!);
+        // Resolve id → on-disk path
+        // id format: <source>/<rest>  → SKILLS_DIR/<source>/skills/<rest>/SKILL.md
+        const segs = id.split("/");
+        if (segs.length < 2) return Response.json({ ok: false, error: "invalid skill id" }, { status: 400 });
+        const source = segs[0]!;
+        const rest = segs.slice(1).join("/");
+        const path = join(SKILLS_DIR, source, "skills", rest, "SKILL.md");
+        if (!existsSync(path)) {
+          return Response.json({ ok: false, error: `skill not found: ${id}` }, { status: 404 });
+        }
+        try {
+          const raw = readFileSync(path, "utf8");
+          return Response.json({ ok: true, id, path, content: raw });
+        } catch (err) {
+          return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+        }
+      }
+    }
+
+    if (url.pathname === "/api/skills/import" && req.method === "POST") {
+      let body: { repo?: string; source?: string; branch?: string };
+      try { body = await req.json(); }
+      catch { return Response.json({ ok: false, error: "invalid JSON body" }, { status: 400 }); }
+      const repo = (body.repo ?? "").trim();
+      if (!repo) return Response.json({ ok: false, error: "repo required" }, { status: 400 });
+      // Use the subctl CLI so all the validation + fallback logic stays in one place
+      const subctlBin = join(REPO_ROOT, "bin", "subctl");
+      const args = ["skills", "import", repo];
+      if (body.source) args.push("--source", body.source);
+      if (body.branch) args.push("--branch", body.branch);
+      const r = spawnSync(subctlBin, args, {
+        encoding: "utf8",
+        timeout: 120_000,
+        env: { ...process.env, PATH: "/usr/sbin:/usr/bin:/bin:/sbin:/opt/homebrew/bin:/usr/local/bin", SUBCTL_SKILLS_DIR },
+      });
+      if (r.status !== 0) {
+        return Response.json(
+          { ok: false, error: ((r.stderr || r.stdout) ?? "").slice(0, 1500) },
+          { status: 500 },
+        );
+      }
+      return Response.json({
+        ok: true,
+        output: ((r.stdout || "") + (r.stderr || "")).slice(-500),
+      });
+    }
+
     // ── Settings page endpoints ─────────────────────────────────────────
 
     // /api/settings/install-checks — broad install matrix beyond /diag.

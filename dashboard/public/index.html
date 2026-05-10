@@ -48,6 +48,9 @@
         <button type="button" class="nav-btn" data-tab="memory">
           <span class="nav-icon">✦</span><span class="nav-label">Memory</span>
         </button>
+        <button type="button" class="nav-btn" data-tab="skills">
+          <span class="nav-icon">★</span><span class="nav-label">Skills</span>
+        </button>
         <button type="button" class="nav-btn" data-tab="settings">
           <span class="nav-icon">⚒</span><span class="nav-label">Settings</span>
         </button>
@@ -472,6 +475,70 @@
         <span class="memory-status" id="memory-status">checking…</span>
       </h2>
       <div class="memory-content" id="memory-content">loading…</div>
+    </section>
+
+    <!-- ── Skills tab ──────────────────────────────────────────────── -->
+    <section class="skills-screen" data-tab="skills">
+      <header class="screen-header">
+        <h2>Skills <span class="screen-sub">catalog of imported Claude Code skills · used by team templates to give dev-team leads scoped capabilities</span></h2>
+        <div class="screen-header-actions">
+          <button type="button" class="secondary-btn" id="skills-refresh-btn">refresh</button>
+          <button type="button" class="primary-btn" id="skills-import-btn">+ Import from GitHub</button>
+        </div>
+      </header>
+
+      <!-- Import modal -->
+      <div class="modal-backdrop" id="skills-import-modal" hidden>
+        <div class="modal" role="dialog" aria-labelledby="skills-import-title">
+          <header class="modal-header">
+            <h3 id="skills-import-title">Import skills from a GitHub repo</h3>
+            <button type="button" class="modal-close" id="skills-import-close" aria-label="close">✕</button>
+          </header>
+          <form class="modal-body" id="skills-import-form">
+            <div class="form-row">
+              <label>Repository</label>
+              <input type="text" id="skills-import-repo" placeholder="owner/repo or full https URL" autocomplete="off" required />
+              <div class="form-hint">Examples: <code>mattpocock/skills</code>, <code>affaan-m/everything-claude-code</code>. The repo must have a top-level <code>skills/</code> directory of <code>SKILL.md</code> files.</div>
+            </div>
+            <div class="form-row">
+              <label>Source name <span class="dim">(optional)</span></label>
+              <input type="text" id="skills-import-source" placeholder="defaults to the owner name" autocomplete="off" />
+              <div class="form-hint">Local label for this collection. Used to namespace skill IDs (e.g. <code>mattpocock/engineering/grill-with-docs</code>).</div>
+            </div>
+            <div class="form-status" id="skills-import-status" hidden></div>
+            <footer class="modal-footer">
+              <button type="button" class="secondary-btn" id="skills-import-cancel">cancel</button>
+              <button type="submit" class="primary-btn" id="skills-import-submit">import</button>
+            </footer>
+          </form>
+        </div>
+      </div>
+
+      <div class="skills-layout">
+        <aside class="skills-sources-pane">
+          <div class="skills-sources-head">
+            <h3>Sources</h3>
+            <span class="dim small" id="skills-sources-count">0</span>
+          </div>
+          <div class="skills-sources-list" id="skills-sources-list">
+            <div class="dim small" style="padding:12px">no sources imported</div>
+          </div>
+        </aside>
+
+        <section class="skills-main-pane">
+          <div class="skills-toolbar">
+            <input type="text" id="skills-filter" placeholder="filter skills by name or description…" />
+            <span class="skills-meta" id="skills-meta">0 skills</span>
+          </div>
+          <div class="skills-list" id="skills-list">
+            <div class="dim small" style="padding:24px">no skills imported yet — click <strong>+ Import from GitHub</strong> above</div>
+          </div>
+        </section>
+
+        <section class="skills-detail-pane" id="skills-detail-pane">
+          <div class="dim small" style="padding:24px">select a skill to preview its SKILL.md</div>
+        </section>
+      </div>
     </section>
 
     <!-- ── Settings tab ────────────────────────────────────────────── -->
