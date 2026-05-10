@@ -3264,7 +3264,13 @@
           if (d.source === "watchdog") {
             appendMessage("watchdog", d.text, { label: "watchdog" });
           } else if (d.source === "telegram") {
-            appendMessage("user", d.text, { label: "you · telegram" });
+            // Telegram-sourced messages get a distinct badge so the operator
+            // can tell at a glance that a reply belongs to a Telegram thread
+            // rather than the dashboard's own input. Bubble also gets the
+            // .from-telegram class for accent-border styling.
+            const body = appendMessage("user", d.text, { label: "✈ you · telegram" });
+            const bubble = body?.parentElement;
+            if (bubble) bubble.classList.add("from-telegram");
           }
           // chat-source inbounds are echoed by our own POST below; skip duplicate
         } catch {}

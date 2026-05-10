@@ -51,7 +51,7 @@ registerBuiltInApiProviders();
 import { subctlOrchTools } from "./tools/subctl-orch";
 import { ghTools } from "./tools/gh";
 import { coderabbitTools } from "./tools/coderabbit";
-import { telegramTools } from "./tools/telegram";
+import { telegramTools, sendTelegramOutbound } from "./tools/telegram";
 import { systemTools, bindToolRegistry as bindSystemToolRegistry } from "./tools/system";
 import { projectTools } from "./tools/project";
 import { memoryTools } from "./tools/memory";
@@ -958,6 +958,35 @@ async function main() {
           }
         }
       }
+
+      // ── Telegram auto-relay ────────────────────────────────────────────
+      // If the inbound came from Telegram, mirror the assistant's final
+      // text response back to the same Telegram chat. Without this, an
+      // operator who texted from their phone has to switch to the
+      // dashboard to see the reply — defeats the purpose of having a
+      // Telegram channel. Diagnosed 2026-05-10. Skip for internal synth
+      // prompts ([verifier]/[watchdog]/[scheduled]) since those don't
+      // represent a Telegram conversation turn.
+      if (p.source === "telegram" && !isInternalSynthPrompt && !stopped) {
+        try {
+          const turn = extractLastTurn(agent.state.messages as ReadonlyArray<{ role?: string; content?: unknown }>);
+          const text = (turn.text || "").trim();
+          if (text) {
+            // Telegram has a 4096-char limit per message — truncate with
+            // an ellipsis hint rather than failing if the response is
+            // huge. The dashboard sees the full text via SSE.
+            const out = text.length > 3900
+              ? text.slice(0, 3900) + "\n\n…[truncated; full reply in dashboard chat]"
+              : text;
+            void sendTelegramOutbound(out).catch((err) => {
+              console.error(`[master] telegram auto-relay failed: ${err.message}`);
+            });
+          }
+        } catch (err) {
+          console.error(`[master] telegram auto-relay setup failed: ${(err as Error).message}`);
+        }
+      }
+
       return { ok: true };
     } catch (err) {
       const msg = (err as Error).message ?? String(err);

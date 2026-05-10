@@ -2061,13 +2061,21 @@ body[data-active-tab="vault"]         section[data-tab]:not([data-tab="vault"]) 
   align-items: center;
   flex-wrap: wrap;       /* let buttons + ctx pill wrap to a 2nd row instead
                             of overflowing the chat column and bleeding into
-                            the right sidecar — fixes pill-overlapping-team
-                            -name reported 2026-05-10 */
+                            the right sidecar */
   gap: 12px;
-  padding-bottom: 10px;
+  padding: 10px 0;
   border-bottom: 1px solid #1a1a1a;
   margin-bottom: 12px;
   overflow: hidden;      /* defensive clip in case any child still oversteps */
+  /* Sticky — toolbar stays anchored at the top of the chat panel even
+     when the master-log scrolls. Without this the operator reported the
+     toolbar visually overlapping scrolled content AND becoming unclickable
+     (z-stacking confusion). Sticky + explicit background = clean band the
+     scroll can't bleed past. Diagnosed 2026-05-10 (third occurrence). */
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: var(--bg-1);
 }
 .chat-model-label {
   display: flex;
@@ -3461,6 +3469,15 @@ tr.project-in-policy td { background: rgba(108, 214, 151, 0.03); }
   align-self: flex-end;
 }
 .master-msg-user .master-msg-label { color: #5fd7ff; }
+/* Telegram-sourced user messages get a distinct purple accent so the
+   operator can see at a glance that a reply belongs to a Telegram thread
+   not the dashboard input. Side benefit: helps Jason debug "did this
+   message come from chat or Telegram" without inspecting the source field. */
+.master-msg-user.from-telegram {
+  border-left-color: #b074d6;
+  background: #16101e;
+}
+.master-msg-user.from-telegram .master-msg-label { color: #b074d6; }
 .master-msg-assistant {
   border-left-color: #6cd697;
 }

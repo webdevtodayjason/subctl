@@ -3510,28 +3510,57 @@ const server = Bun.serve({
         }
       } catch { /* ignore */ }
       if (!existsSync(vaultRoot)) return [];
-      const out: Array<{ slug: string; name: string; path: string; note_count: number }> = [];
-      try {
-        for (const entry of readdirSync(vaultRoot, { withFileTypes: true })) {
-          if (!entry.isDirectory()) continue;
-          const sub = join(vaultRoot, entry.name);
-          if (!existsSync(join(sub, ".obsidian"))) continue;
-          let count = 0;
-          const stack = [sub];
-          while (stack.length && count < 5000) {
-            const cur = stack.pop()!;
+
+      // Count .md files under a directory (depth-bounded for safety).
+      const countNotes = (dir: string): number => {
+        let count = 0;
+        const stack = [dir];
+        while (stack.length && count < 5000) {
+          const cur = stack.pop()!;
+          try {
             for (const e of readdirSync(cur, { withFileTypes: true })) {
               if (e.name.startsWith(".")) continue;
               const p = join(cur, e.name);
               if (e.isDirectory()) stack.push(p);
               else if (e.name.endsWith(".md")) count++;
             }
-          }
+          } catch { /* skip unreadable */ }
+        }
+        return count;
+      };
+
+      const out: Array<{ slug: string; name: string; path: string; note_count: number }> = [];
+
+      // Case A: vault_root IS a single Obsidian vault (has .obsidian/ directly).
+      if (existsSync(join(vaultRoot, ".obsidian"))) {
+        const name = vaultRoot.replace(/^.*\//, "") || "vault";
+        out.push({
+          slug: name,
+          name,
+          path: vaultRoot,
+          note_count: countNotes(vaultRoot),
+        });
+      }
+
+      // Case B: vault_root is a CONTAINER of vaults — enumerate child dirs.
+      // Recognize a subdir as a vault if it has .obsidian/ (canonical) OR
+      // contains any .md files (looser fallback, common when master's
+      // vault_append created the dir but no human opened Obsidian on it
+      // yet so .obsidian/ doesn't exist).
+      try {
+        for (const entry of readdirSync(vaultRoot, { withFileTypes: true })) {
+          if (!entry.isDirectory()) continue;
+          if (entry.name.startsWith(".")) continue;
+          const sub = join(vaultRoot, entry.name);
+          // Skip if we already added vault_root and this is a subdir we'd double-count
+          const isCanonical = existsSync(join(sub, ".obsidian"));
+          const noteCount = countNotes(sub);
+          if (!isCanonical && noteCount === 0) continue;
           out.push({
             slug: entry.name,
             name: entry.name,
             path: sub,
-            note_count: count,
+            note_count: noteCount,
           });
         }
       } catch { /* ignore */ }

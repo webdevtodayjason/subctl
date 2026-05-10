@@ -4,6 +4,22 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.5.4] — 2026-05-10
+
+Patch — three operator-reported issues from the post-recovery playtest.
+
+### Fixed
+
+- **Chat toolbar now sticky-anchored at the top of the chat panel.** Operator reported (third occurrence) that scrolling chat content visually overlapped the toolbar AND made the MODEL dropdown unclickable. Root cause was the toolbar living in flex flow with no z-stacking — scrolled content rendered over it under certain content lengths. Fixed via `position: sticky; top: 0; z-index: 5; background: var(--bg-1)` on `.chat-toolbar`. The toolbar now anchors at the top of the panel regardless of scroll position, content scrolls under it, clicks always land.
+- **Vault tab now finds vaults even without a `.obsidian/` marker.** v2.5.0's detection required every subdirectory of `vault_root` to have a `.obsidian/` dir to count as a vault — strict but brittle. The master's `vault_append` tool creates project subdirs WITHOUT a `.obsidian/`, so any vault populated only by the master would show empty in the viewer. New detection: (a) treat `vault_root` itself as a vault if it has `.obsidian/`, (b) treat each subdir with EITHER `.obsidian/` OR ≥1 `.md` file as a vault. Existing canonical Obsidian vaults still detected correctly; master-only project dirs now visible.
+- **Live fix on M3 Ultra:** dropped `.obsidian/` markers into `Down-Time-Arena/` and a fresh `master/` subdirectory inside the vault root so the operator can see both vaults immediately without waiting for a fresh install.
+
+### Added
+
+- **Telegram source badge + auto-relay.** Two-part fix for "I sent from Telegram but the master replied in the dashboard, not Telegram":
+  - **Frontend:** Telegram-sourced messages in the chat panel get a `from-telegram` class with purple left-border + the label `✈ you · telegram` so the operator can see at a glance which channel a message arrived from.
+  - **Master daemon:** after the assistant settles a turn, if `source: "telegram"`, the response text is now automatically relayed back to the Telegram chat via the existing `sendTelegramOutbound` helper. No tool call required by the model. Truncates to 3900 chars (Telegram's 4096 cap minus padding) with `…[truncated; full reply in dashboard chat]` if longer. Skipped for internal synth prompts (`[verifier]` / `[watchdog]` / `[scheduled]`).
+
 ## [2.5.3] — 2026-05-10
 
 Patch — master daemon survives LM Studio crashes cleanly.

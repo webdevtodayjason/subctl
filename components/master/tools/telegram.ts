@@ -33,6 +33,17 @@ function getCreds(): MasterNotifyCreds {
   return parsed;
 }
 
+// Exported so the master daemon can auto-relay assistant replies to
+// Telegram when the inbound prompt came from there (so the operator
+// reading on their phone doesn't have to wait for the master to
+// remember to call the `telegram_send` tool).
+export async function sendTelegramOutbound(
+  text: string,
+  opts: { parse_mode?: "MarkdownV2" | "HTML" } = {},
+): Promise<{ ok: boolean; message_id?: number; error?: string }> {
+  return sendMessage(text, opts);
+}
+
 async function sendMessage(
   text: string,
   opts: { parse_mode?: "MarkdownV2" | "HTML" } = {},
