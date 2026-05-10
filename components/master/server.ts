@@ -54,6 +54,7 @@ import { coderabbitTools } from "./tools/coderabbit";
 import { telegramTools } from "./tools/telegram";
 import { systemTools } from "./tools/system";
 import { projectTools } from "./tools/project";
+import { memoryTools } from "./tools/memory";
 import {
   startMasterNotifyListener,
   stopMasterNotifyListener,
@@ -243,6 +244,12 @@ export const toolRegistry: Record<string, InternalTool> = {
   ...Object.fromEntries(
     Object.entries(projectTools).map(([k, v]) => [
       k, // already prefixed (project_create, vault_append)
+      v as unknown as InternalTool,
+    ]),
+  ),
+  ...Object.fromEntries(
+    Object.entries(memoryTools).map(([k, v]) => [
+      k, // already prefixed (memory_search, memory_timeline, etc.)
       v as unknown as InternalTool,
     ]),
   ),
@@ -739,13 +746,13 @@ async function main() {
         // sit in every prompt window. Approximate as 2500 tokens for
         // SKILL.md + 24-tool schema bundle. Empirical from prior /v1/chat/completions logs.
         const fixedOverheadTokens = 2500;
-        // Get loaded context window from LM Studio (cached briefly)
+        // Get loaded context window from LM Studio. Earlier version used
+        // a /v1/../api/v0 string-replace that quietly failed when the
+        // host string didn't end in /v1; just strip /v1 cleanly.
         let loadedContext: number | null = null;
         try {
-          const r = await fetch(
-            `${supervisorCfg.host ?? "http://localhost:1234/v1"}/../api/v0/models`.replace(/\/v1\/\.\.\//, "/"),
-            { signal: AbortSignal.timeout(1500) },
-          );
+          const host = (supervisorCfg.host ?? "http://localhost:1234/v1").replace(/\/v1\/?$/, "");
+          const r = await fetch(`${host}/api/v0/models`, { signal: AbortSignal.timeout(1500) });
           if (r.ok) {
             const j = (await r.json()) as { data?: Array<{ id: string; loaded_context_length?: number }> };
             const found = (j.data ?? []).find((m) => m.id === supervisorCfg.model);
