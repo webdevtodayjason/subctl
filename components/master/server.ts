@@ -136,7 +136,18 @@ function ensureConfigFiles(): { ok: boolean; warnings: string[] } {
 // ─── load configuration ─────────────────────────────────────────────────────
 
 interface Providers {
-  models: Record<string, { provider: string; model: string; host?: string }>;
+  models: Record<string, {
+    provider: string;
+    model: string;
+    host?: string;
+    // Optional per-role load-time context window (tokens). When the
+    // provider is "lmstudio", master calls POST /api/v1/models/load on
+    // boot + on switch to force the model to be loaded with this exact
+    // context. Defaults: supervisor 65536, reviewer 32768, router 8192,
+    // embeddings keeps whatever LM Studio chose. Set explicitly per
+    // role in providers.json to override.
+    context_length?: number;
+  }>;
   escalate: { provider: string; model: string; auth?: string };
   fallback: { provider: string; model: string; auth?: string };
   routing_policy?: Record<string, string>;
@@ -338,6 +349,79 @@ function buildModel(cfg: {
   };
 }
 
+// ─── LM Studio model lifecycle ────────────────────────────────────────
+//
+// Force-load an LM Studio model with an exact context window via the
+// native /api/v1/models/load endpoint. The CLI flag (lms load
+// --context-length N) and the UI per-model defaults both work, but the
+// REST endpoint is the most reliable for daemon use — explicit, no
+// shell-out, no race with operator UI changes.
+//
+// We call this at master boot for `supervisor` and `reviewer` roles
+// (any role with a configured context_length), and again on supervisor
+// switch via the dashboard's /api/master/supervisor endpoint. Solves
+// the recurring 4K JIT trap where LM Studio quietly evicts the model
+// under memory pressure and reloads it at default 4K — master then
+// silently truncates everything past that.
+const ROLE_DEFAULT_CONTEXT: Record<string, number> = {
+  supervisor: 65536,
+  reviewer: 32768,
+  router: 8192,
+  embeddings: 0, // 0 = don't enforce; LM Studio's default is fine
+};
+
+async function ensureModelLoaded(cfg: { provider: string; model: string; host?: string; context_length?: number }, role: string): Promise<{ ok: boolean; detail: string }> {
+  if (cfg.provider !== "lmstudio") {
+    return { ok: true, detail: `${role} is ${cfg.provider} (cloud) — no local load needed` };
+  }
+  const desired = cfg.context_length ?? ROLE_DEFAULT_CONTEXT[role] ?? 0;
+  if (!desired) return { ok: true, detail: `${role} context_length=0; not enforcing` };
+  const apiBase = (cfg.host ?? "http://localhost:1234/v1").replace(/\/v1\/?$/, "");
+  // 1. Check current load state — skip the reload if it's already where we want it.
+  try {
+    const r = await fetch(`${apiBase}/api/v0/models`, { signal: AbortSignal.timeout(2500) });
+    if (r.ok) {
+      const j = (await r.json()) as { data?: Array<{ id: string; state?: string; loaded_context_length?: number }> };
+      const current = (j.data ?? []).find((m) => m.id === cfg.model);
+      if (current?.state === "loaded" && current.loaded_context_length === desired) {
+        return { ok: true, detail: `${role}=${cfg.model} already loaded with ctx ${desired.toLocaleString()}` };
+      }
+    }
+  } catch { /* fall through to reload */ }
+  // 2. Unload first (safe reload pattern).
+  try {
+    await fetch(`${apiBase}/api/v1/models/unload`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: cfg.model }),
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch { /* unload failures are non-fatal — load below will replace */ }
+  // 3. Load with explicit context_length.
+  try {
+    const r = await fetch(`${apiBase}/api/v1/models/load`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: cfg.model,
+        context_length: desired,
+        flash_attention: true,
+        echo_load_config: true,
+      }),
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (!r.ok) {
+      const text = await r.text().catch(() => "");
+      return { ok: false, detail: `load HTTP ${r.status}: ${text.slice(0, 300)}` };
+    }
+    const j = await r.json() as { load_config?: { context_length?: number } };
+    const got = j.load_config?.context_length;
+    return { ok: true, detail: `${role}=${cfg.model} loaded with ctx ${(got ?? desired).toLocaleString()}` };
+  } catch (err) {
+    return { ok: false, detail: `load error: ${(err as Error).message}` };
+  }
+}
+
 // ─── agent transcript persistence ──────────────────────────────────────────
 
 function loadAgentTranscript(): AgentMessage[] {
@@ -403,6 +487,17 @@ async function main() {
   const tools = Object.entries(toolRegistry).map(([name, t]) =>
     adaptTool(name, t),
   );
+
+  // Pre-flight: ensure LM Studio has the supervisor (and reviewer if
+  // configured) loaded with the right context window. Protects against
+  // the recurring 4K JIT trap. Non-blocking — if LM Studio is offline
+  // the agent boots anyway; first user message will fail loudly.
+  for (const role of ["supervisor", "reviewer"] as const) {
+    const cfg = providers.models[role];
+    if (!cfg) continue;
+    const result = await ensureModelLoaded(cfg, role);
+    console.error(`[master] ${result.ok ? "ctx-pin" : "ctx-pin FAILED"} ${role}: ${result.detail}`);
+  }
 
   // Local-runtime providers (mlx/ollama/lmstudio/vllm) don't need real API
   // keys — LM Studio and Ollama accept any value, and the request never leaves
@@ -925,6 +1020,28 @@ async function main() {
         } catch (err) {
           return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
         }
+      }
+
+      // /reload-supervisor — force a fresh /api/v1/models/load on
+      // LM Studio for the supervisor (and reviewer) roles. Use this if
+      // LM Studio drifted or you bumped context_length in providers.json.
+      // Body: {role?: "supervisor"|"reviewer"|"all"} — default "all".
+      if (url.pathname === "/reload-supervisor" && req.method === "POST") {
+        let body: { role?: string } = {};
+        try { body = await req.json(); } catch { /* empty body OK */ }
+        const target = body.role ?? "all";
+        const roles = target === "all" ? ["supervisor", "reviewer"] : [target];
+        const results: Array<{ role: string; ok: boolean; detail: string }> = [];
+        for (const role of roles) {
+          const cfg = providers.models[role];
+          if (!cfg) {
+            results.push({ role, ok: false, detail: "no such role in providers.json" });
+            continue;
+          }
+          const r = await ensureModelLoaded(cfg, role);
+          results.push({ role, ...r });
+        }
+        return Response.json({ ok: results.every((r) => r.ok), results });
       }
 
       if (url.pathname === "/teams" && req.method === "GET") {

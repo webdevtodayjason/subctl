@@ -78,7 +78,24 @@ The conversational layer. Lives at `127.0.0.1:8788` on the host (the dashboard a
 | `master/providers.json` | model routing per role: router, supervisor, reviewer, embeddings, escalate (cloud), fallback |
 | `master-notify.json` | Telegram bot token + chat_id |
 
-**Reasoning models need context room.** When using LM Studio with a reasoning model like qwen3.6-35b-a3b, **eject and reload it with Context Length 32K+** (32768 minimum, 65536 recommended). With the default 4K window the model burns its entire output budget on `<think>` tokens before producing a tool call.
+**Reasoning models need context room.** Master auto-pins the supervisor's context window via `POST /api/v1/models/load` at boot — set `context_length` per role in `providers.json` (defaults: supervisor 65536, reviewer 32768, router 8192). This solves the "LM Studio JIT'd at 4K and master can't see anything" trap that plagued earlier versions.
+
+```jsonc
+// ~/.config/subctl/master/providers.json
+"supervisor": {
+  "provider": "lmstudio",
+  "model": "qwen/qwen3.6-35b-a3b",
+  "host": "http://localhost:1234/v1",
+  "context_length": 65536  // ← force-loaded at this size on boot
+}
+```
+
+Manual re-pin:
+```bash
+curl -sS -X POST http://localhost:8788/reload-supervisor \
+  -H 'Content-Type: application/json' \
+  -d '{"role":"all"}'
+```
 
 ---
 

@@ -424,12 +424,54 @@ shows install commands; click any line to copy.
 
 ### 5.3 LM Studio configuration
 
-- Loaded model must be one with `tool_use` capability (currently
-  `qwen/qwen3.5-35b-a3b` or `qwen/qwen3.6-35b-a3b`)
-- `loaded_context_length` ≥ 32K minimum, 64K+ recommended (Jason runs
-  73K). Set in LM Studio app: select model → context length slider
-  → reload model
-- Auto-compact at 90% utilization keeps the working window healthy
+**Master auto-pins the supervisor's context window on boot.** The
+recurring 4K JIT trap (LM Studio quietly evicts a model under memory
+pressure and reloads it at default 4K) is solved as of Phase 3c.3:
+master calls `POST /api/v1/models/load` with an explicit
+`context_length` from `providers.json` at boot, on supervisor switch,
+and via the `/reload-supervisor` HTTP endpoint.
+
+Configure context per role in `~/.config/subctl/master/providers.json`:
+
+```jsonc
+{
+  "models": {
+    "supervisor": {
+      "provider": "lmstudio",
+      "model": "qwen/qwen3.6-35b-a3b",
+      "host": "http://localhost:1234/v1",
+      "context_length": 65536
+    },
+    "reviewer":   { "...": "...", "context_length": 32768 },
+    "router":     { "...": "...", "context_length": 8192 },
+    "embeddings": { "...": "..." }
+  }
+}
+```
+
+Defaults if `context_length` is omitted: supervisor 65536, reviewer
+32768, router 8192, embeddings unenforced.
+
+**Manual reload** (after editing providers.json):
+
+```bash
+curl -sS -X POST http://localhost:8788/reload-supervisor \
+  -H 'Content-Type: application/json' \
+  -d '{"role":"all"}'
+```
+
+Or restart master via `subctl update` / `launchctl unload+load`.
+
+**Other config points:**
+- Loaded model should have `tool_use` capability (qwen3.5/3.6 a3b
+  variants do; gemma-4-e4b does not — use it for router only)
+- LM Studio's "Always-on Local LLM Service" must be enabled
+- For programmatic per-model defaults, set Context Length in the
+  LM Studio UI's gear icon — these are honored by `lms load` even
+  without the `--context-length` flag, useful as a backstop in case
+  master's force-load misses (e.g. LM Studio API regression)
+- Auto-compact at 90% utilization is the second line of defense once
+  the working transcript fills the window
 
 ### 5.4 Adding a new account
 

@@ -3645,11 +3645,13 @@ const server = Bun.serve({
         (cfg as any)._comment = `models.supervisor switched via /api/master/supervisor at ${new Date().toISOString()} (was: ${prev})`;
         const { writeFileSync } = require("node:fs") as typeof import("node:fs");
         writeFileSync(providersPath, JSON.stringify(cfg, null, 2));
-        // Bounce master via launchctl
+        // Bounce master via launchctl. The new daemon's boot-time
+        // ensureModelLoaded() will re-pin the LM Studio context for the
+        // supervisor (and reviewer) using the freshly-written providers.json,
+        // so the new model lands at the right context window automatically.
         const label = "com.subctl.master";
         const plist = `${process.env.HOME}/Library/LaunchAgents/${label}.plist`;
         spawnSync("launchctl", ["unload", plist], { encoding: "utf8", timeout: 5000 });
-        // Wait briefly for clean exit
         for (let i = 0; i < 5; i++) {
           const ps = spawnSync("pgrep", ["-f", "subctl.*master/server.ts"], { encoding: "utf8", timeout: 1000 });
           if (!ps.stdout?.trim()) break;
@@ -3660,7 +3662,7 @@ const server = Bun.serve({
           ok: true,
           previous: prev,
           new: modelId,
-          message: "providers.json updated and master daemon restarted",
+          message: "providers.json updated, master daemon restarted, supervisor will be re-pinned at the configured context_length on first boot tick",
         });
       } catch (err) {
         return Response.json(
