@@ -2057,10 +2057,17 @@ main {
   margin: 0;
   display: flex;
   flex-direction: column;
+  /* Fit within the viewport so the log scrolls inside instead of pushing
+     the whole page taller. 56px topbar + 24px*2 main padding + ~80px for
+     header/toolbar/input = ~184px of chrome to subtract. */
+  max-height: calc(100vh - 184px);
+  min-height: 0; /* allow children to shrink in flex layout */
 }
 .orchestration-screen .master-log {
   flex: 1 1 auto;
-  max-height: none;
+  min-height: 0;
+  max-height: none; /* the parent's max-height is what bounds this */
+  overflow-y: auto;
 }
 .orchestration-sidecar {
   display: flex;

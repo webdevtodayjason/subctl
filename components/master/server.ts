@@ -53,6 +53,7 @@ import { ghTools } from "./tools/gh";
 import { coderabbitTools } from "./tools/coderabbit";
 import { telegramTools } from "./tools/telegram";
 import { systemTools } from "./tools/system";
+import { projectTools } from "./tools/project";
 import {
   startMasterNotifyListener,
   stopMasterNotifyListener,
@@ -236,6 +237,12 @@ export const toolRegistry: Record<string, InternalTool> = {
   ...Object.fromEntries(
     Object.entries(systemTools).map(([k, v]) => [
       `system_${k}`,
+      v as unknown as InternalTool,
+    ]),
+  ),
+  ...Object.fromEntries(
+    Object.entries(projectTools).map(([k, v]) => [
+      k, // already prefixed (project_create, vault_append)
       v as unknown as InternalTool,
     ]),
   ),
