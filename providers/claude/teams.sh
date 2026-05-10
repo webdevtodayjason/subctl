@@ -8,6 +8,37 @@ _SUBCTL_CLAUDE_TEAMS_LOADED=1
 . "$(dirname "${BASH_SOURCE[0]}")/../../lib/core.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/../../lib/settings.sh"
 
+# Write a .mcp.json into the worker's CLAUDE_CONFIG_DIR so MCP servers
+# (Context7 today, more later) register at Claude Code session boot.
+# Idempotent — overwrites every spawn so updated keys land without
+# operator surgery. Only includes a server entry if its API key is
+# present in the spawning shell's env; otherwise the entry is omitted
+# (Claude Code is happy with an empty mcpServers map).
+_provider_claude_drop_mcp_config() {
+  local cfg_dir="$1"
+  [[ -z "$cfg_dir" || ! -d "$cfg_dir" ]] && return 0
+  local mcp_file="$cfg_dir/.mcp.json"
+  local context7_block=""
+  if [[ -n "${CONTEXT7_API_KEY:-}" ]]; then
+    # Context7 MCP is HTTP-transport. Header name is the literal key name
+    # (matches their gateway expectation).
+    context7_block=$(jq -nc \
+      --arg key "$CONTEXT7_API_KEY" \
+      '{
+        type: "http",
+        url: "https://mcp.context7.com/mcp",
+        headers: {CONTEXT7_API_KEY: $key}
+      }')
+  fi
+  if [[ -n "$context7_block" ]]; then
+    jq -n --argjson c7 "$context7_block" '{mcpServers: {context7: $c7}}' > "$mcp_file"
+  else
+    # No keys to populate — write an empty map so Claude Code doesn't
+    # complain about a missing file when it expects one.
+    echo '{"mcpServers": {}}' > "$mcp_file"
+  fi
+}
+
 # Implements the provider interface: provider_teams [opts]
 # Opts:
 #   -a, --account <alias>   Required. Account to pin this session to.
@@ -80,6 +111,13 @@ provider_claude_teams() {
   # Team*/SendMessage tools surface no matter how this account is launched
   # (teams subcommand, claude-<alias> alias, or anything else).
   subctl_settings_ensure_teams "$cfg_dir"
+
+  # Drop a .mcp.json into the per-account config dir so dev-team leads
+  # have Context7 (and any future MCP servers) registered automatically
+  # at session boot. CONTEXT7_API_KEY must be set in the master process
+  # env (configured via the launchd plist or a shell rc that launchd
+  # inherits — set it in Settings → API keys then restart launchd).
+  _provider_claude_drop_mcp_config "$cfg_dir"
 
   # Build claude command (use `command claude` to bypass shell function shadow)
   local CLAUDE_CMD="command claude"

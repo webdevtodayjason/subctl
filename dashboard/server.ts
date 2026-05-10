@@ -2834,6 +2834,7 @@ const server = Bun.serve({
         { name: "GROQ_API_KEY",         purpose: "Groq inference" },
         { name: "OPENROUTER_API_KEY",   purpose: "OpenRouter (200+ models via one key)" },
         { name: "GITHUB_TOKEN",         purpose: "gh CLI fallback (usually authed via gh auth login)" },
+        { name: "CONTEXT7_API_KEY",     purpose: "Context7 — up-to-date library docs (master tool + MCP for dev-team Claude leads)" },
       ];
       // Read from process.env on the dashboard process. NOTE: env vars set
       // in shell profiles for the user's interactive shell are NOT

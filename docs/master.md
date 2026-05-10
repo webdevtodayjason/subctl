@@ -312,9 +312,80 @@ to claude-mem.
 
 ### Phase 3h — End-to-end live test on real project
 
-Spawn a dev team on a real project (Down-Time-Arena?), watch the full
-loop: master → spawn → lead works → reports → master nudges/escalates →
-operator gets summary. Validate every link.
+Dogfood on Down-Time-Arena. Operator (Jason) wants to spawn a dev team
+to build a new cybersecurity game inside the existing arena (Speartip
+sponsorship lined up; need to expand beyond the current single game).
+Watch the full loop: master → spawn → lead works → reports → master
+nudges/escalates → operator gets summary. Validate every link.
+
+### Phase 3j — Plugin system (CLI-anything, AOS-style)
+
+Operator's strong preference: plug-anything pattern over baking
+integrations into core. Reference: ArgentOS's three-tier plugin system
+on this Mac:
+
+- `~/argentos/tools/aos/aos-<service>/` — CLI-anything connectors.
+  Each is its own self-contained CLI binary (60+ shipping: anthropic,
+  slack, github, asana, calendar, etc.) with a uniform argv surface.
+  Discoverable; no central registration.
+- `~/argentos/extensions/<name>/` — heavier integrations with their
+  own `package.json` manifest (matrix, signal, whatsapp, voice-call).
+- `~/argentos/plugins/<name>/` — drop-in feature packs with manifest.
+
+Mirror for subctl:
+- `~/.config/subctl/plugins/<name>/` discovered at master + dashboard
+  boot. Manifest declares: master tools to register, dashboard sidebar
+  tabs to add, slash commands, CLI subverbs, dev-team skills to merge
+  into the catalog under a `<plugin-name>` source. Permission model
+  TBD — start with operator-installed-only; signed plugin marketplace
+  can come later.
+- `~/.config/subctl/connectors/subctl-<service>/` for CLI-anything
+  connectors. Master tools auto-bind them as `connector_<service>`.
+
+Reference files (local): `~/argentos/docs/plugins/{building-plugins.md,
+manifest.md}`. Read those before designing our manifest format.
+
+### Phase 3i — Spec Forge mode (greenfield / brownfield)
+
+Mirror ArgentOS's spec-forge pattern. Operator opens a spec-forge
+session for a project; master conducts a structured interview
+(domain → constraints → success criteria → high-level architecture
+→ work breakdown → risks). Output is a plan saved to
+`<vault>/<project>/SPEC.md` plus per-decision ADRs under
+`<vault>/<project>/design/`. The plan becomes the canonical reference
+that dev-team templates spawn off — instead of "spawn a feature-dev
+team for project X with a freeform prompt," it's "spawn off Step 4
+of <project>/SPEC.md."
+
+Two entry modes:
+- **Greenfield**: "what should we build?" Master starts from product/
+  market/risk questions, drafts a vision, then converges to scope.
+- **Brownfield**: "what should we extend?" Master reads the existing
+  codebase + RESUME.md, then proposes incremental scope.
+
+**Pattern to mirror** (from ArgentOS at `~/argentos/src/infra/specforge-conductor.ts`):
+
+5-stage state machine:
+1. `project_type_gate` — classify GREENFIELD vs BROWNFIELD
+2. `intake_interview` — collect problem / users / success criteria /
+   constraints / scope / non-scope / technical context
+3. `draft_review` — draft or revise the PRD/spec
+4. `awaiting_approval` — wait for explicit operator approval
+5. `approved_execution` — implementation handoff unlocked; templates
+   spawn off the saved SPEC.md
+
+Tool surface mirrors ArgentOS's: a single `specforge` tool with
+actions `handle` / `status` / `exit`. State persists to
+`~/.config/subctl/master/specforge/<session>.json`. On
+`approved_execution`, master copies the final SPEC into
+`<vault>/<project>/SPEC.md` and ADRs to `<vault>/<project>/design/`.
+
+Reference files (local, on this Mac):
+- `~/argentos/src/infra/specforge-conductor.ts` — the conductor
+- `~/argentos/src/agents/tools/specforge-tool.ts` — agent tool surface
+- `~/argentos/skills/specforge-project/` — the skill that primes the
+  agent to call specforge before any project-build work
+- `~/argentos/docs/tools/specforge.md` — design doc
 
 ### Backlog (non-blocking)
 

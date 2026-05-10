@@ -55,6 +55,7 @@ import { telegramTools } from "./tools/telegram";
 import { systemTools } from "./tools/system";
 import { projectTools } from "./tools/project";
 import { memoryTools } from "./tools/memory";
+import { context7Tools } from "./tools/context7";
 import {
   startMasterNotifyListener,
   stopMasterNotifyListener,
@@ -250,6 +251,12 @@ export const toolRegistry: Record<string, InternalTool> = {
   ...Object.fromEntries(
     Object.entries(memoryTools).map(([k, v]) => [
       k, // already prefixed (memory_search, memory_timeline, etc.)
+      v as unknown as InternalTool,
+    ]),
+  ),
+  ...Object.fromEntries(
+    Object.entries(context7Tools).map(([k, v]) => [
+      k, // already prefixed (context7_resolve, context7_docs, context7_health)
       v as unknown as InternalTool,
     ]),
   ),
