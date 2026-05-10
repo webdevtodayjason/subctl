@@ -3642,6 +3642,7 @@ const server = Bun.serve({
           else if (newProvider && newProvider !== "lmstudio") delete cfg.models.reviewer.host;
         }
         (cfg as any)._comment = `models.supervisor switched via /api/master/supervisor at ${new Date().toISOString()} (was: ${prev})`;
+        const { writeFileSync } = require("node:fs") as typeof import("node:fs");
         writeFileSync(providersPath, JSON.stringify(cfg, null, 2));
         // Bounce master via launchctl
         const label = "com.subctl.master";

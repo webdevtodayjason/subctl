@@ -1573,6 +1573,14 @@ body[data-active-tab="logs"]          section[data-tab]:not([data-tab="logs"])  
 .team-skill-chip .x:hover { color: #fff; }
 
 .modal-wide { max-width: 800px; }
+.modal-narrow { max-width: 460px; }
+.notice-body {
+  color: #c4c4c4;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  margin-bottom: 16px;
+}
 @media (max-width: 1000px) {
   .teams-layout { grid-template-columns: 1fr; }
   .team-tools-grid { grid-template-columns: 1fr; }

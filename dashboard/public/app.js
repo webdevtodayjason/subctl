@@ -1377,14 +1377,14 @@
     apply.addEventListener("click", async () => {
       const picked = sel.value;
       if (!picked) return;
-      // Value is "<provider>|<model>" — split so the server can update
-      // providers.json's models.supervisor.{provider, model, host} all at
-      // once. For LM Studio we keep the existing host; for cloud the
-      // server clears host so requests don't try localhost.
       const [provider, ...modelParts] = picked.split("|");
       const model = modelParts.join("|");
       if (!provider || !model) return;
-      if (!confirm(`Switch master supervisor to ${provider}/${model}?\nThis edits providers.json and restarts the master daemon. Transcript is preserved.`)) return;
+      const ok = await window.notice.confirm(
+        "Switch supervisor model",
+        `New supervisor: ${provider} / ${model}\n\nThis edits providers.json and restarts the master daemon. Your transcript is preserved.`,
+      );
+      if (!ok) return;
       apply.disabled = true;
       apply.textContent = "applying…";
       try {
@@ -1396,7 +1396,7 @@
         const j = await r.json().catch(() => ({}));
         if (!j.ok) {
           apply.textContent = "failed";
-          alert("Switch failed: " + (j.error || r.status));
+          await window.notice.error("Switch failed", j.error || ("HTTP " + r.status));
           setTimeout(() => { apply.disabled = false; apply.textContent = "apply"; }, 2000);
         } else {
           apply.textContent = "switched ✓";
@@ -1404,7 +1404,7 @@
         }
       } catch (err) {
         apply.textContent = "error";
-        alert("Switch error: " + err);
+        await window.notice.error("Switch error", String(err));
       }
     });
   }
@@ -1601,6 +1601,74 @@
   function escapeText(s) {
     return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   }
+
+  // ---------- notice/confirm modal ----------
+  // Replaces browser alert() and confirm() so popups match the dashboard
+  // theme. Returns a Promise<boolean> for confirm-style usage; resolves
+  // true on OK, false on cancel/escape/close.
+  //
+  // Usage:
+  //   await notice("Title", "Plain message")           — info, single OK
+  //   await notice.error("Switch failed", err.message) — red header
+  //   await notice.confirm("Delete?", "This is permanent.") — returns bool
+  //
+  // The dashboard already has alert() / confirm() calls scattered through
+  // the legacy widgets; we sweep the most user-visible ones (chat,
+  // supervisor switch, delete buttons) to use this helper. Background
+  // dialogs (e.g. minor errors in low-traffic admin views) can keep
+  // alert() until needed.
+  function _showNotice({ title, body, kind = "info", confirm = false }) {
+    return new Promise((resolve) => {
+      const modal = document.getElementById("notice-modal");
+      const titleEl = document.getElementById("notice-title");
+      const bodyEl = document.getElementById("notice-body");
+      const okBtn = document.getElementById("notice-ok");
+      const cancelBtn = document.getElementById("notice-cancel");
+      const closeBtn = document.getElementById("notice-close");
+      if (!modal || !titleEl || !bodyEl || !okBtn) {
+        // Fallback to native if the modal element somehow isn't in the DOM
+        if (confirm) resolve(window.confirm((title ? title + "\n\n" : "") + body));
+        else { window.alert((title ? title + "\n\n" : "") + body); resolve(true); }
+        return;
+      }
+      titleEl.textContent = title || "Notice";
+      bodyEl.textContent = body || "";
+      // Color the header by kind
+      titleEl.style.color = kind === "error" ? "#d66c6c"
+                          : kind === "warn"  ? "#d6c46c"
+                          : kind === "ok"    ? "#6cd697"
+                          : "#ffffff";
+      cancelBtn.hidden = !confirm;
+      okBtn.textContent = confirm ? "Confirm" : "OK";
+      modal.hidden = false;
+      // Focus management — let Esc and Enter work
+      const close = (val) => {
+        modal.hidden = true;
+        okBtn.removeEventListener("click", onOk);
+        cancelBtn.removeEventListener("click", onCancel);
+        closeBtn.removeEventListener("click", onCancel);
+        modal.removeEventListener("click", onBackdrop);
+        document.removeEventListener("keydown", onKey);
+        resolve(val);
+      };
+      const onOk = () => close(true);
+      const onCancel = () => close(false);
+      const onBackdrop = (e) => { if (e.target === modal) close(false); };
+      const onKey = (e) => {
+        if (e.key === "Escape") close(false);
+        else if (e.key === "Enter") close(true);
+      };
+      okBtn.addEventListener("click", onOk);
+      cancelBtn.addEventListener("click", onCancel);
+      closeBtn.addEventListener("click", onCancel);
+      modal.addEventListener("click", onBackdrop);
+      document.addEventListener("keydown", onKey);
+      setTimeout(() => okBtn.focus(), 50);
+    });
+  }
+  window.notice = (title, body, opts = {}) => _showNotice({ title, body, kind: opts.kind ?? "info", confirm: false });
+  window.notice.error = (title, body) => _showNotice({ title, body, kind: "error", confirm: false });
+  window.notice.confirm = (title, body) => _showNotice({ title, body, kind: "warn", confirm: true });
 
   // CSS-escape (subset) — ids in our project chat logs include / : etc. and
   // querySelector chokes on them. Replace anything non-alphanumeric+dash+underscore.
@@ -2388,23 +2456,23 @@
     // Compact transcript button: summarize older turns into a single
     // message so the supervisor's prompt window stays manageable.
     async function runCompact(initiator) {
-      if (!confirm("Compact older turns of this conversation?\n\nMaster will keep the last 6 messages intact and replace everything before them with a structured summary (user asks + assistant highlights + tools used). The original transcript is archived to ~/.config/subctl/master/agent-state.archive-compact-*.json.\n\nProceed?")) return;
+      const ok = await window.notice.confirm(
+        "Compact transcript",
+        "Master will keep the last 6 messages intact and replace everything before them with a structured summary (your asks + assistant highlights + tools used). The original transcript is archived to ~/.config/subctl/master/agent-state.archive-compact-*.json.",
+      );
+      if (!ok) return;
       try {
         const r = await fetch("/api/master/transcript/compact", { method: "POST" });
         const j = await r.json();
         if (!j.ok) {
-          alert("Compact failed: " + (j.error || "?"));
+          await window.notice.error("Compact failed", j.error || "unknown");
           return;
         }
-        // Wipe local log and re-render from the new compact transcript
         while (log.firstChild) log.removeChild(log.firstChild);
         await rehydrateFromTranscript();
         refreshContext();
-        if (initiator === "banner") {
-          // Already implicit, no extra UX
-        }
       } catch (err) {
-        alert("Compact error: " + err);
+        await window.notice.error("Compact error", String(err));
       }
     }
     const compactBtn = $("chat-compact-btn");
@@ -2415,14 +2483,18 @@
     // New Chat button: archive the transcript and start fresh.
     if (newBtn) {
       newBtn.addEventListener("click", async () => {
-        if (!confirm("Archive the current conversation and start fresh?\n\nYour transcript is saved to ~/.config/subctl/master/agent-state.archive-*.json — nothing is lost. The chat log here will clear and the master daemon's working memory resets.")) return;
+        const ok = await window.notice.confirm(
+          "Start a fresh conversation",
+          "Archive the current transcript and start fresh? Your transcript is saved to ~/.config/subctl/master/agent-state.archive-*.json — nothing is lost. The chat log here will clear and the master daemon's working memory resets.",
+        );
+        if (!ok) return;
         newBtn.disabled = true;
         newBtn.textContent = "clearing…";
         try {
           const r = await fetch("/api/master/transcript/clear", { method: "POST" });
           const j = await r.json();
           if (!j.ok) {
-            alert("Clear failed: " + (j.error || "?"));
+            await window.notice.error("Clear failed", j.error || "unknown");
           } else {
             // Wipe local UI
             while (log.firstChild) log.removeChild(log.firstChild);
@@ -2433,7 +2505,7 @@
             refreshContext();
           }
         } catch (err) {
-          alert("Clear error: " + err);
+          await window.notice.error("Clear error", String(err));
         } finally {
           newBtn.disabled = false;
           newBtn.textContent = "+ new chat";

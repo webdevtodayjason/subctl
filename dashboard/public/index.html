@@ -7,6 +7,25 @@
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
+  <!-- Generic notice/confirm modal — replaces browser alert() and confirm()
+       so popups match the dashboard's dark theme instead of jarring
+       OS-level dialogs. Driven by window.notice() defined in app.js. -->
+  <div class="modal-backdrop" id="notice-modal" hidden>
+    <div class="modal modal-narrow" role="dialog" aria-labelledby="notice-title" aria-describedby="notice-body">
+      <header class="modal-header">
+        <h3 id="notice-title">Notice</h3>
+        <button type="button" class="modal-close" id="notice-close" aria-label="close">✕</button>
+      </header>
+      <div class="modal-body">
+        <div id="notice-body" class="notice-body">…</div>
+        <footer class="modal-footer">
+          <button type="button" class="secondary-btn" id="notice-cancel" hidden>cancel</button>
+          <button type="button" class="primary-btn" id="notice-ok">OK</button>
+        </footer>
+      </div>
+    </div>
+  </div>
+
   <header class="topbar">
     <div class="brand">
       <span class="brand-name">subctl</span>
