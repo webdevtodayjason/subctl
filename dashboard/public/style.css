@@ -1464,6 +1464,18 @@ body[data-active-tab="sessions"] section[data-tab="dashboard"] { display: none; 
 }
 .master-msg-error .master-msg-label,
 .master-msg-error .master-msg-body { color: #d66c6c; }
+.master-msg-system {
+  border-left-color: #888;
+  background: #0c0c0c;
+}
+.master-msg-system .master-msg-label { color: #888; }
+.master-msg-system .master-msg-body {
+  color: #aaa;
+  white-space: pre;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11.5px;
+  overflow-x: auto;
+}
 .master-input {
   display: flex;
   gap: 8px;

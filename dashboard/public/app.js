@@ -279,9 +279,13 @@
           // chat-source inbounds are echoed by our own POST below; skip duplicate
         } catch {}
       });
-      es.addEventListener("message_start", () => {
-        startAssistantBubble();
-      });
+      // NOTE: do NOT eagerly create a bubble on message_start. The agent
+      // sometimes emits a message-shell event before any text_delta arrives,
+      // and if the assistant turn ends up being purely a tool call (no text),
+      // we'd have orphan empty bubbles. Instead let appendDelta below
+      // lazy-create the bubble on the FIRST text_delta. Side-effect: also
+      // stops the "empty bubble + filled bubble" doubling that showed up
+      // when a turn included both a tool-call message and a text message.
       es.addEventListener("message_update", (e) => {
         try {
           const d = JSON.parse(e.data);
@@ -312,11 +316,212 @@
     }
     connect();
 
-    form.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const text = input.value.trim();
-      if (!text) return;
-      input.value = "";
+    // Slash commands: a thin client-side layer on top of natural-language
+    // chat. Most commands translate to a directive prompt for the master
+    // (so the agent stays in the loop and tool-calls flow normally). A few
+    // are pure client-side (/clear, /help, /attach) — those don't round-trip.
+    const SLASH_HELP = [
+      "/help                          — this help",
+      "/clear                         — clear the chat log (client-side only)",
+      "/status                        — quick health check (uptime, transcript, subscribers)",
+      "/diag                          — full diagnostic: LM Studio, Telegram, coderabbit, gh, tmux",
+      "/teams                         — list dev teams the master is tracking",
+      "/spawn <account> <project> [prompt]",
+      "                                 ask master to spawn a dev team",
+      "/kill <team>                   — ask master to kill a dev team session",
+      "/attach <team>                 — show the SSH command to attach to a team's tmux on the M3 Ultra",
+      "/config                        — show config file paths and what each controls",
+      "",
+      "How dev teams work:",
+      "  • Master spawns tmux sessions on the M3 Ultra via subctl_orch_spawn",
+      "  • The lead Claude Code in pane 0 uses TeamCreate + Agent(team_name=\"…\") to make workers",
+      "  • Each lead writes status to ~/.config/subctl/master/inbox/<team>.jsonl",
+      "  • Master tails inboxes (2s poll), reacts to blocked/error events, watchdog at 30min",
+      "  • Attach manually with: ssh argent-m3-ultra-dev tmux attach -t <team>",
+      "",
+      "Config (all on the M3 Ultra):",
+      "  ~/.config/subctl/master/policy.json     operator + projects + autonomy + intervals",
+      "  ~/.config/subctl/master/providers.json  model routing (router/supervisor/reviewer/embeddings/escalate/fallback)",
+      "  ~/.config/subctl/master-notify.json     Telegram bot token + chat_id",
+    ].join("\n");
+
+    function appendSystemBlock(text) {
+      clearEmpty();
+      const el = document.createElement("div");
+      el.className = "master-msg master-msg-system";
+      const label = document.createElement("div");
+      label.className = "master-msg-label";
+      label.textContent = "system";
+      const body = document.createElement("div");
+      body.className = "master-msg-body";
+      body.textContent = text;
+      body.style.fontFamily = "ui-monospace, 'SF Mono', Menlo, monospace";
+      body.style.fontSize = "11.5px";
+      el.appendChild(label);
+      el.appendChild(body);
+      log.appendChild(el);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    async function fetchAndRenderJSON(url, label, formatter) {
+      try {
+        const r = await fetch(url);
+        const j = await r.json();
+        if (!r.ok || j.ok === false) {
+          appendMessage("error", `${label} failed: ${j.error || r.status}`, { label: "error" });
+          return;
+        }
+        appendSystemBlock(formatter(j));
+      } catch (err) {
+        appendMessage("error", `${label} error: ${err}`, { label: "error" });
+      }
+    }
+
+    function fmtSecsAgo(s) {
+      if (s == null) return "never";
+      if (s < 60) return s + "s ago";
+      if (s < 3600) return Math.floor(s / 60) + "m ago";
+      return Math.floor(s / 3600) + "h" + Math.floor((s % 3600) / 60) + "m ago";
+    }
+
+    async function handleSlashCommand(line) {
+      const parts = line.match(/^\/(\w+)(?:\s+(.*))?$/);
+      if (!parts) {
+        appendMessage("error", "malformed slash command — try /help", { label: "error" });
+        return;
+      }
+      const cmd = parts[1].toLowerCase();
+      const args = (parts[2] || "").trim();
+
+      switch (cmd) {
+        case "help":
+          appendSystemBlock(SLASH_HELP);
+          return;
+
+        case "clear": {
+          // Pure client-side — server transcript is preserved.
+          while (log.firstChild) log.removeChild(log.firstChild);
+          const empty = document.createElement("div");
+          empty.className = "master-log-empty";
+          empty.innerHTML = "cleared (client-side; master's transcript still intact) — try <code>/help</code>";
+          log.appendChild(empty);
+          return;
+        }
+
+        case "status":
+          await fetchAndRenderJSON("/api/master/health", "status", (j) =>
+            `master ${j.ok ? "OK" : "DEGRADED"}  v${j.version}\n` +
+            `  uptime          ${j.uptime_s}s\n` +
+            `  transcript      ${j.transcript_msgs} messages\n` +
+            `  SSE subscribers ${j.subscribers}\n` +
+            `  teams tracked   ${j.teams_tracked}\n` +
+            `  prompt in flight ${j.prompt_in_flight ? "yes" : "no"}`,
+          );
+          return;
+
+        case "diag":
+          appendSystemBlock("running diagnostics (LM Studio + Telegram + coderabbit + gh + tmux)…");
+          await fetchAndRenderJSON("/api/master/diag", "diag", (j) => {
+            const header =
+              `master ${j.ok ? "ALL CHECKS PASSED" : "DEGRADED"} · v0.1.0\n` +
+              `  supervisor      ${j.supervisor}\n` +
+              `  uptime          ${j.uptime_s}s\n` +
+              `  tools loaded    ${j.tools_loaded}\n` +
+              `  transcript      ${j.transcript_msgs} msgs\n` +
+              `  subscribers     ${j.subscribers}\n` +
+              `  teams tracked   ${j.teams_tracked}\n\n` +
+              `checks:`;
+            const rows = (j.checks || []).map((c) => {
+              const mark = c.ok ? "✓" : "✗";
+              return `  ${mark}  ${c.name.padEnd(12)} ${c.detail}`;
+            });
+            return [header, ...rows].join("\n");
+          });
+          return;
+
+        case "teams":
+          await fetchAndRenderJSON("/api/master/teams", "teams", (j) => {
+            if (!j.teams || j.teams.length === 0) return "no dev teams tracked yet";
+            const rows = j.teams.map((t) => {
+              const ev = t.last_event ? `${t.last_event.type}: ${(t.last_event.text || "").slice(0, 60)}` : "—";
+              return `  ${t.name.padEnd(28)} ${fmtSecsAgo(t.last_activity_seconds_ago).padEnd(10)} ${ev}`;
+            });
+            return `${j.teams.length} team(s) tracked:\n` + rows.join("\n");
+          });
+          return;
+
+        case "attach": {
+          if (!args) {
+            appendMessage("error", "usage: /attach <team>", { label: "error" });
+            return;
+          }
+          appendSystemBlock(
+            `Attach to dev team "${args}" on the M3 Ultra:\n\n` +
+            `  ssh argent-m3-ultra-dev -t tmux attach -t ${args}\n\n` +
+            `Detach with Ctrl-b then d. The master and team keep running after detach.`,
+          );
+          return;
+        }
+
+        case "config":
+          appendSystemBlock([
+            "config files (all on the M3 Ultra at ~/.config/subctl/master/):",
+            "",
+            "  policy.json",
+            "    operator info, project portfolio, autonomy levels (drive/ask/shadow),",
+            "    review_interval_minutes, stall_detection_minutes, max_concurrent_workers,",
+            "    escalation_triggers. master reads at boot.",
+            "",
+            "  providers.json",
+            "    model routing per role: router (cheap dispatch), supervisor (the brain),",
+            "    reviewer (PR review), embeddings, escalate (cloud), fallback. switch via",
+            "    .models.<role>.{provider, model, host} fields.",
+            "",
+            "  master-notify.json (one level up at ~/.config/subctl/master-notify.json)",
+            "    bot_token + chat_id for the master Telegram bot.",
+            "",
+            "  inbox/ (auto-created)",
+            "    one .jsonl per dev team. master tails for status events.",
+            "",
+            "edit the file directly on the M3 Ultra, then restart with:",
+            "  launchctl unload  ~/Library/LaunchAgents/com.subctl.master.plist",
+            "  launchctl load    ~/Library/LaunchAgents/com.subctl.master.plist",
+          ].join("\n"));
+          return;
+
+        case "spawn": {
+          if (!args) {
+            appendMessage("error", "usage: /spawn <account> <project_path> [prompt]", { label: "error" });
+            return;
+          }
+          // Translate to natural-language directive for the master agent.
+          const m = args.match(/^(\S+)\s+(\S+)(?:\s+(.+))?$/);
+          if (!m) {
+            appendMessage("error", "usage: /spawn <account> <project_path> [prompt]", { label: "error" });
+            return;
+          }
+          const [, account, project, prompt] = m;
+          const directive = `Spawn a dev team using subctl_orch_spawn with account="${account}", project="${project}"${prompt ? `, and an initial prompt: ${prompt}` : ""}. Confirm the team name once spawned, and tell me how to attach.`;
+          await sendChat(directive);
+          return;
+        }
+
+        case "kill": {
+          if (!args) {
+            appendMessage("error", "usage: /kill <team>", { label: "error" });
+            return;
+          }
+          const directive = `Kill the dev-team tmux session named "${args}" using subctl_orch_kill, and confirm.`;
+          await sendChat(directive);
+          return;
+        }
+
+        default:
+          appendMessage("error", `unknown command: /${cmd} — try /help`, { label: "error" });
+      }
+    }
+
+    async function sendChat(text) {
       sendBtn.disabled = true;
       appendMessage("user", text, { label: "you" });
       try {
@@ -334,6 +539,19 @@
       } finally {
         sendBtn.disabled = false;
         input.focus();
+      }
+    }
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const text = input.value.trim();
+      if (!text) return;
+      input.value = "";
+      if (text.startsWith("/")) {
+        await handleSlashCommand(text);
+        input.focus();
+      } else {
+        await sendChat(text);
       }
     });
   }

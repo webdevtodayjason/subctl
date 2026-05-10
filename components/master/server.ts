@@ -388,6 +388,11 @@ async function main() {
     getApiKey,
   });
 
+  // ── shared lifecycle flags (declared early so the inbox tailer below
+  //     can reference dispatchToAgent which checks `stopped`) ─────────────
+  let stopped = false;
+  let promptInFlight = false;
+
   // ── event bus: agent → SSE subscribers ──────────────────────────────────
   // Every connected /events client gets every agent event (text deltas, tool
   // calls, decisions, watchdog firings) as Server-Sent Events. Persist the
@@ -524,8 +529,7 @@ async function main() {
     rationale: `daemon started — ${tools.length} tools, ${policy.projects.length} projects in portfolio, supervisor=${supervisorCfg.provider}/${supervisorCfg.model}`,
   });
 
-  let stopped = false;
-  let promptInFlight = false;
+  // (`stopped` and `promptInFlight` declared earlier in this function)
 
   // Errors that mean "the call didn't go through, try again" — not "the model
   // refused / produced bad output". LM Studio evicts idle models under memory
@@ -633,6 +637,119 @@ async function main() {
           last_event: v.lastEvent ?? null,
         }));
         return Response.json({ ok: true, teams });
+      }
+
+      if (url.pathname === "/diag" && req.method === "GET") {
+        // Fan out connectivity + readiness checks in parallel. Each check
+        // returns {name, ok, detail} — UI renders a green/red row per check.
+        const checks = await Promise.all([
+          // 1. LM Studio reachability + supervisor model present
+          (async () => {
+            const host = supervisorCfg.host ?? "http://localhost:1234/v1";
+            try {
+              const r = await fetch(`${host.replace(/\/$/, "")}/models`, {
+                signal: AbortSignal.timeout(2000),
+              });
+              if (!r.ok) return { name: "lmstudio", ok: false, detail: `HTTP ${r.status}` };
+              const j = (await r.json()) as { data?: Array<{ id: string }> };
+              const ids = (j.data ?? []).map((m) => m.id);
+              const found = ids.includes(supervisorCfg.model);
+              return {
+                name: "lmstudio",
+                ok: true,
+                detail: `${ids.length} models loaded${found ? `, supervisor "${supervisorCfg.model}" present` : `, supervisor "${supervisorCfg.model}" NOT loaded (will JIT-load on first call)`}`,
+              };
+            } catch (err) {
+              return { name: "lmstudio", ok: false, detail: (err as Error).message };
+            }
+          })(),
+          // 2. Telegram bot reachable
+          (async () => {
+            try {
+              const notifyPath = join(SUBCTL_CONFIG_DIR, "master-notify.json");
+              if (!existsSync(notifyPath)) {
+                return { name: "telegram", ok: false, detail: "master-notify.json missing" };
+              }
+              const cfg = JSON.parse(readFileSync(notifyPath, "utf8")) as { bot_token?: string };
+              if (!cfg.bot_token) {
+                return { name: "telegram", ok: false, detail: "bot_token missing in master-notify.json" };
+              }
+              const r = await fetch(`https://api.telegram.org/bot${cfg.bot_token}/getMe`, {
+                signal: AbortSignal.timeout(3000),
+              });
+              if (!r.ok) return { name: "telegram", ok: false, detail: `HTTP ${r.status}` };
+              const j = (await r.json()) as { ok: boolean; result?: { username?: string } };
+              return {
+                name: "telegram",
+                ok: !!j.ok,
+                detail: j.ok ? `bot @${j.result?.username ?? "?"} reachable` : "getMe returned not-ok",
+              };
+            } catch (err) {
+              return { name: "telegram", ok: false, detail: (err as Error).message };
+            }
+          })(),
+          // 3. coderabbit CLI installed
+          (async () => {
+            try {
+              const proc = Bun.spawnSync(["coderabbit", "--version"], {
+                stdout: "pipe",
+                stderr: "pipe",
+              });
+              if (proc.exitCode === 0) {
+                const out = proc.stdout.toString().trim();
+                return { name: "coderabbit", ok: true, detail: out || "CLI on PATH" };
+              }
+              return {
+                name: "coderabbit",
+                ok: false,
+                detail: `exit=${proc.exitCode}: ${proc.stderr.toString().slice(0, 120)}`,
+              };
+            } catch (err) {
+              return { name: "coderabbit", ok: false, detail: `not on PATH: ${(err as Error).message}` };
+            }
+          })(),
+          // 4. gh (GitHub CLI) installed + authed
+          (async () => {
+            try {
+              const proc = Bun.spawnSync(["gh", "auth", "status"], {
+                stdout: "pipe",
+                stderr: "pipe",
+              });
+              const combined = proc.stdout.toString() + proc.stderr.toString();
+              if (proc.exitCode === 0) {
+                const m = combined.match(/Logged in to .* as ([^\s]+)/);
+                return { name: "gh", ok: true, detail: m ? `authed as ${m[1]}` : "authed" };
+              }
+              return { name: "gh", ok: false, detail: combined.slice(0, 160).trim() || `exit=${proc.exitCode}` };
+            } catch (err) {
+              return { name: "gh", ok: false, detail: `not on PATH: ${(err as Error).message}` };
+            }
+          })(),
+          // 5. tmux installed (needed to spawn dev teams)
+          (async () => {
+            try {
+              const proc = Bun.spawnSync(["tmux", "-V"], { stdout: "pipe", stderr: "pipe" });
+              if (proc.exitCode === 0) {
+                return { name: "tmux", ok: true, detail: proc.stdout.toString().trim() };
+              }
+              return { name: "tmux", ok: false, detail: `exit=${proc.exitCode}` };
+            } catch (err) {
+              return { name: "tmux", ok: false, detail: `not on PATH: ${(err as Error).message}` };
+            }
+          })(),
+        ]);
+
+        return Response.json({
+          ok: checks.every((c) => c.ok),
+          ts: new Date().toISOString(),
+          uptime_s: Math.floor(process.uptime()),
+          tools_loaded: tools.length,
+          transcript_msgs: agent.state.messages.length,
+          subscribers: sseClients.size,
+          teams_tracked: teamLastActivity.size,
+          supervisor: `${supervisorCfg.provider}/${supervisorCfg.model}`,
+          checks,
+        });
       }
 
       if (url.pathname === "/chat" && req.method === "POST") {
