@@ -37,15 +37,42 @@ subctl_settings_install_claude_dir() {
   local scripts="$cfg_dir/scripts"
   local hooks="$cfg_dir/hooks"
   local commands="$cfg_dir/commands"
+  local skills="$cfg_dir/skills"
   local settings="$cfg_dir/settings.json"
 
-  mkdir -p "$scripts" "$hooks" "$commands"
+  mkdir -p "$scripts" "$hooks" "$commands" "$skills"
 
   ln -sfn "$SUBCTL_REPO_ROOT/providers/claude/statusline.sh"            "$scripts/statusline.sh"
   ln -sfn "$SUBCTL_REPO_ROOT/providers/claude/dispatch-check.sh"        "$scripts/dispatch-check.sh"
   ln -sfn "$SUBCTL_REPO_ROOT/lib/radar.sh"                              "$scripts/signals.sh"
   ln -sfn "$SUBCTL_REPO_ROOT/providers/claude/hooks/log-rate-limits.sh" "$hooks/log-rate-limits.sh"
-  ln -sfn "$SUBCTL_REPO_ROOT/providers/claude/commands/dispatch-check.md" "$commands/dispatch-check.md"
+
+  # Slash commands: symlink every .md from providers/claude/commands/ into
+  # the cfg_dir's commands/ — operator's hand-rolled commands are kept
+  # untouched (only files matching repo names get re-symlinked).
+  if compgen -G "$SUBCTL_REPO_ROOT/providers/claude/commands/*.md" >/dev/null 2>&1; then
+    for cmd_md in "$SUBCTL_REPO_ROOT/providers/claude/commands/"*.md; do
+      ln -sfn "$cmd_md" "$commands/$(basename "$cmd_md")"
+    done
+  fi
+
+  # Skills: symlink every repo-built skill into the cfg_dir's skills/.
+  # Excludes "master" — that's the master daemon's own system prompt,
+  # loaded at boot by components/master/server.ts; workers must not have
+  # it (would confuse them about their role). Operator-personal skills
+  # in <cfg_dir>/skills/ are untouched (only directories matching repo
+  # skill names get symlinked).
+  if [[ -d "$SUBCTL_REPO_ROOT/components/skills" ]]; then
+    for skill_dir in "$SUBCTL_REPO_ROOT/components/skills"/*/; do
+      [[ -d "$skill_dir" ]] || continue
+      local skill_name
+      skill_name=$(basename "$skill_dir")
+      [[ "$skill_name" == "master" ]] && continue
+      [[ -f "$skill_dir/SKILL.md" ]] || continue
+      mkdir -p "$skills/$skill_name"
+      ln -sfn "$skill_dir/SKILL.md" "$skills/$skill_name/SKILL.md"
+    done
+  fi
 
   if [[ -f "$settings" ]]; then
     local backup="$settings.bak.$(date +%Y%m%d-%H%M%S)"

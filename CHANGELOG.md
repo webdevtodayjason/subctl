@@ -4,6 +4,22 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.1.0] — 2026-05-10
+
+Minor — close the dogfood-exposed gap where the subctl-built skills and slash commands lived only on the operator's laptop. Fresh installs now get them automatically. New: `orchestrator-mode` skill in repo, `/team` slash command in repo, and `subctl install` symlinks all repo skills + commands into every per-account cfg_dir.
+
+### Added
+
+- **`components/skills/orchestrator-mode/SKILL.md`** — the multi-pane orchestrator + team-agent protocol. Critical: it includes the `SUBCTL_AGENT_ROLE=worker` activation guard that prevents the orchestrator-mode-deadlock pattern (workers self-loading the orchestrator role and waiting forever for approval to dispatch sub-workers they have no right to dispatch). Diagnosed and solved 2026-05-09 in the master/lead-deadlock incident.
+- **`providers/claude/commands/team.md`** — the `/team` slash command. Routes to the `orchestrator-mode` skill.
+- **`subctl_settings_install_claude_dir` now symlinks the repo's full skill + command catalog into every Claude cfg_dir.** Iterates every directory in `components/skills/` (excluding `master`, which is the daemon's own system prompt and would confuse workers) and every `.md` in `providers/claude/commands/`. Idempotent — symlinks overwrite cleanly, operator-personal skills/commands not in the repo are untouched. Each per-account cfg_dir now has `subctl`, `autonomy`, and `orchestrator-mode` available the moment it's created.
+
+### Notes
+
+- Only ships content I created for subctl. Sub-agents like `bug-analyzer` / `code-reviewer` / `dev-planner` (dated 2026-01-30, pre-subctl) and slash commands like `/commit` / `/code-review` / `/security-review` are operator-personal — they stay in `~/.claude/` and don't get pulled into the repo.
+- Workers spawned via `subctl orch spawn` on a fresh install (e.g., the M3 Ultra) will now have `subctl`, `autonomy`, and `orchestrator-mode` in their skill catalog. Verifiable via "what skills do you have?" in a worker's chat.
+- The master daemon's own SKILL (`components/skills/master/`) is intentionally excluded from the worker symlink loop — only the daemon process loads it via `components/master/server.ts`, never a worker. A worker that thought it was the master would loop into bad coordination patterns.
+
 ## [2.0.5] — 2026-05-10
 
 Patch — three operator-reported bugs from continued FOOTHOLD dogfood, plus a roadmap entry that captures the bigger gap they exposed.
