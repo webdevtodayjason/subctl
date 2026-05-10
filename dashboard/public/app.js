@@ -1863,12 +1863,35 @@
             // matching tool bubble.
           }
         }
-        log.scrollTop = log.scrollHeight;
+        // Defer scroll-to-bottom past two RAFs so layout has fully
+        // settled. setting scrollTop synchronously after innerHTML
+        // sometimes runs before the browser computes scrollHeight,
+        // which leaves the user at the top.
+        const stickToBottom = () => { log.scrollTop = log.scrollHeight; };
+        requestAnimationFrame(() => requestAnimationFrame(stickToBottom));
       } catch {
         // If the master is unreachable just leave the empty-state alone.
       }
     }
     rehydrateFromTranscript();
+
+    // Also scroll-to-bottom whenever the Chat tab becomes visible — the
+    // rehydrate runs once on mount, but if the user lands on Settings
+    // first and switches over, the initial scroll has long since fired
+    // before the panel had any height.
+    const chatPanel = document.querySelector("section[data-tab=\"chat\"]");
+    if (chatPanel) {
+      const observer = new MutationObserver(() => {
+        if (getComputedStyle(chatPanel).display !== "none") {
+          requestAnimationFrame(() => { log.scrollTop = log.scrollHeight; });
+        }
+      });
+      observer.observe(document.body, { attributes: true, attributeFilter: ["data-active-tab"] });
+      // Also handle the very first render where data-active-tab may set BEFORE this code runs
+      if (getComputedStyle(chatPanel).display !== "none") {
+        requestAnimationFrame(() => requestAnimationFrame(() => { log.scrollTop = log.scrollHeight; }));
+      }
+    }
 
     // Context window meter — poll every 5s while the chat tab is visible.
     async function refreshContext() {
