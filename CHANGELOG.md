@@ -4,6 +4,27 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.5.3] — 2026-05-10
+
+Patch — master daemon survives LM Studio crashes cleanly.
+
+### Why
+
+Surfaced during today's session: LM Studio crashed under memory pressure (probably from the day's camera-view polling stacking duplicate qwen instances). Master daemon then entered a death spiral — ctx-pin for the reviewer hung 60 s on `/api/v1/models/load`, daemon eventually crashed, launchd hit its restart-throttle limit and gave up retrying. Both subctl services were down. The recurring symptom: `ctx-pin FAILED reviewer: load error: The operation timed out.`
+
+### Fixed
+
+- **`ensureModelLoaded` short-circuits when LM Studio is unreachable.** Tight 2 s timeout on the initial `/api/v0/models` reachability check; if it doesn't respond we skip the pin entirely and let JIT-on-first-prompt handle it. Old code charged into a 60 s `/load` request even when LM Studio was clearly dead.
+- **Treat "already loaded at ≥ desired context" as a hit.** When the supervisor pins at 65 K and the reviewer also points at the same model but wants 32 K, the reviewer no longer triggers an unload+reload — it accepts the already-loaded 65 K instance. Avoids the recurring "supervisor succeeds, reviewer evicts + reloads + hangs" cascade.
+- **Role pins run in parallel.** Wrapped supervisor + reviewer ctx-pins in `Promise.allSettled`. Boot is now bounded by the SLOWEST single role, not the sum. Previously a hung reviewer pin would block the supervisor's pin output for a minute even though they're independent.
+- **Load fetch timeout 60 s → 20 s.** If LM Studio can't load in 20 s the daemon shouldn't block boot — first user prompt will JIT it. The 60 s cap was inherited from the original force-pin patch where we wanted to ride out a slow model load; in retrospect the supervisor's pin succeeds in ~2 s when LM Studio is healthy, and 20 s is plenty even for the worst cold-start case we've actually observed.
+
+### Notes for the operator
+
+- **No re-auth or config changes needed.** Code-only fix.
+- If you've had providers.json with both supervisor + reviewer pointing at the same model with different `context_length` values, v2.5.3 will gracefully share one loaded instance instead of trying to double-load. Removing the reviewer block entirely is also fine — supervisor handles everything.
+- **launchd recovery on the M3 Ultra:** today's death spiral exhausted launchd's restart-throttle and `launchctl bootstrap` failed via SSH (GUI domain unreachable from a non-attached session). Recovery path: open Terminal locally on the M3 Ultra and run `launchctl load ~/Library/LaunchAgents/com.subctl.master.plist`. Or keep using the detached-tmux daemons set up today (`tmux ls` — sessions `subctl-master` and `subctl-dashboard`).
+
 ## [2.5.2] — 2026-05-10
 
 Patch — three v2.5.0 bugs surfaced by operator the moment the Vault tab landed.

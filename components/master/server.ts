@@ -456,27 +456,52 @@ async function ensureModelLoaded(cfg: { provider: string; model: string; host?: 
   const desired = cfg.context_length ?? ROLE_DEFAULT_CONTEXT[role] ?? 0;
   if (!desired) return { ok: true, detail: `${role} context_length=0; not enforcing` };
   const apiBase = (cfg.host ?? "http://localhost:1234/v1").replace(/\/v1\/?$/, "");
-  // 1. Check current load state — skip the reload if it's already where we want it.
+  // 1. Check current load state — skip the reload if it's already where we
+  //    want it. Tight 2s timeout: if LM Studio isn't even responding to a
+  //    GET we shouldn't dump a load request into it — bail to JIT.
+  let lmReachable = false;
   try {
-    const r = await fetch(`${apiBase}/api/v0/models`, { signal: AbortSignal.timeout(2500) });
+    const r = await fetch(`${apiBase}/api/v0/models`, { signal: AbortSignal.timeout(2000) });
     if (r.ok) {
+      lmReachable = true;
       const j = (await r.json()) as { data?: Array<{ id: string; state?: string; loaded_context_length?: number }> };
       const current = (j.data ?? []).find((m) => m.id === cfg.model);
       if (current?.state === "loaded" && current.loaded_context_length === desired) {
         return { ok: true, detail: `${role}=${cfg.model} already loaded with ctx ${desired.toLocaleString()}` };
       }
+      // Already loaded but at a different context — and another role may
+      // share this exact model. If desired <= currently-loaded, treat as
+      // good enough (no need to evict + reload). This avoids the
+      // supervisor-at-65K-then-reviewer-wants-32K cascade that crashed
+      // the daemon during the LM Studio recovery 2026-05-10.
+      if (current?.state === "loaded" &&
+          typeof current.loaded_context_length === "number" &&
+          current.loaded_context_length >= desired) {
+        return {
+          ok: true,
+          detail: `${role}=${cfg.model} already loaded with ctx ${current.loaded_context_length.toLocaleString()} (≥ desired ${desired.toLocaleString()}) — skipping reload`,
+        };
+      }
     }
-  } catch { /* fall through to reload */ }
+  } catch { /* fall through */ }
+  if (!lmReachable) {
+    return {
+      ok: false,
+      detail: `LM Studio at ${apiBase} did not respond to /api/v0/models within 2s — skipping pin, JIT will handle on first prompt`,
+    };
+  }
   // 2. Unload first (safe reload pattern).
   try {
     await fetch(`${apiBase}/api/v1/models/unload`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model: cfg.model }),
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(5_000),
     });
   } catch { /* unload failures are non-fatal — load below will replace */ }
-  // 3. Load with explicit context_length.
+  // 3. Load with explicit context_length. Cap at 20s (was 60) — if LM Studio
+  //    can't load in 20s the daemon shouldn't block boot. JIT-on-first-prompt
+  //    is the fallback.
   try {
     const r = await fetch(`${apiBase}/api/v1/models/load`, {
       method: "POST",
@@ -487,7 +512,7 @@ async function ensureModelLoaded(cfg: { provider: string; model: string; host?: 
         flash_attention: true,
         echo_load_config: true,
       }),
-      signal: AbortSignal.timeout(60_000),
+      signal: AbortSignal.timeout(20_000),
     });
     if (!r.ok) {
       const text = await r.text().catch(() => "");
@@ -571,12 +596,23 @@ async function main() {
   // configured) loaded with the right context window. Protects against
   // the recurring 4K JIT trap. Non-blocking — if LM Studio is offline
   // the agent boots anyway; first user message will fail loudly.
-  for (const role of ["supervisor", "reviewer"] as const) {
-    const cfg = providers.models[role];
-    if (!cfg) continue;
-    const result = await ensureModelLoaded(cfg, role);
-    console.error(`[master] ${result.ok ? "ctx-pin" : "ctx-pin FAILED"} ${role}: ${result.detail}`);
-  }
+  //
+  // Run role pins in PARALLEL so a slow/dead reviewer can't block the
+  // supervisor pin OR the rest of boot. Diagnosed 2026-05-10 when LM
+  // Studio crashed, supervisor pin succeeded immediately ("already
+  // loaded") but reviewer pin hung for 60s on /api/v1/models/load
+  // timeout. With Promise.allSettled boot is bounded by the SLOWEST
+  // single role, not the sum.
+  const rolesToPin = (["supervisor", "reviewer"] as const).filter(
+    (role) => providers.models[role],
+  );
+  await Promise.allSettled(
+    rolesToPin.map(async (role) => {
+      const cfg = providers.models[role]!;
+      const result = await ensureModelLoaded(cfg, role);
+      console.error(`[master] ${result.ok ? "ctx-pin" : "ctx-pin FAILED"} ${role}: ${result.detail}`);
+    }),
+  );
 
   // Local-runtime providers (mlx/ollama/lmstudio/vllm) don't need real API
   // keys — LM Studio and Ollama accept any value, and the request never leaves
