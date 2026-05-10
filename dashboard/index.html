@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>subctl</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-name">subctl</span>
+      <span class="brand-version" id="version">v0.0.0</span>
+    </div>
+    <div class="topbar-right">
+      <span class="pulse-dot" id="pulse-dot" aria-hidden="true"></span>
+      <span class="uptime" id="uptime">running --</span>
+      <span class="clock" id="clock">--:--:--</span>
+      <button class="refresh-btn" id="refresh-btn" title="Force a fresh /api/oauth/usage call (bypasses 5-min cache)" aria-label="Refresh usage">↻</button>
+      <span class="status-pill" id="status-pill">
+        <span class="dot dim"></span>
+        <span class="status-text">connecting</span>
+      </span>
+    </div>
+  </header>
+
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <nav class="sidebar-nav" id="sidebar-nav">
+        <button type="button" class="nav-btn active" data-tab="chat">
+          <span class="nav-icon">◉</span><span class="nav-label">Chat</span>
+        </button>
+        <button type="button" class="nav-btn" data-tab="orchestration">
+          <span class="nav-icon">⚙</span><span class="nav-label">Orchestration</span>
+        </button>
+        <button type="button" class="nav-btn" data-tab="dashboard">
+          <span class="nav-icon">▣</span><span class="nav-label">Dashboard</span>
+        </button>
+        <button type="button" class="nav-btn" data-tab="projects">
+          <span class="nav-icon">⌘</span><span class="nav-label">Projects</span>
+        </button>
+        <button type="button" class="nav-btn" data-tab="sessions">
+          <span class="nav-icon">≡</span><span class="nav-label">Sessions</span>
+        </button>
+        <button type="button" class="nav-btn" data-tab="models">
+          <span class="nav-icon">◈</span><span class="nav-label">Models</span>
+        </button>
+        <button type="button" class="nav-btn" data-tab="memory">
+          <span class="nav-icon">✦</span><span class="nav-label">Memory</span>
+        </button>
+        <div class="sidebar-divider"></div>
+        <a class="nav-btn nav-link" href="/cheat" title="Scannable one-pager: every command, shim, shortcut">
+          <span class="nav-icon">?</span><span class="nav-label">Cheat sheet</span>
+        </a>
+        <a class="nav-btn nav-link" href="/help" title="Full documentation">
+          <span class="nav-icon">i</span><span class="nav-label">Docs</span>
+        </a>
+      </nav>
+      <button class="sidebar-collapse-btn" id="sidebar-collapse-btn" type="button" aria-label="Collapse sidebar" title="Collapse sidebar">‹</button>
+    </aside>
+
+  <main>
+
+    <!-- ── Chat: master conversation, model picker, full-height with sidecar ─── -->
+    <section class="orchestration-screen chat-screen" data-tab="chat">
+      <section class="panel master-chat" id="master-chat-panel">
+        <div class="chat-toolbar">
+          <label class="chat-model-label">model
+            <select id="chat-model-select" class="chat-model-select">
+              <option value="">loading…</option>
+            </select>
+          </label>
+          <button type="button" class="chat-toolbar-btn" id="chat-model-apply" title="Switch the master's supervisor model. Edits providers.json and restarts the master daemon (transcript preserved).">apply</button>
+          <span class="chat-toolbar-hint" id="chat-model-current">supervisor: --</span>
+        </div>
+      <h2>Master <span class="panel-hint">conversational dev-team orchestrator on the M3 Ultra · streams from <code>/api/master/events</code></span>
+        <span class="master-conn-state" id="master-conn-state">disconnected</span>
+      </h2>
+      <div class="master-log" id="master-log">
+        <div class="master-log-empty">no messages yet — type below to start a conversation, or try <code>/help</code> for slash commands</div>
+      </div>
+      <form class="master-input" id="master-input-form" autocomplete="off">
+        <input type="text" id="master-input" placeholder="message subctl master… (enter to send)" autocomplete="off">
+        <button type="submit" id="master-send">send</button>
+      </form>
+    </section>
+
+      <!-- right-side context: active dev teams + recent decisions -->
+      <aside class="orchestration-sidecar" id="orchestration-sidecar">
+        <section class="orch-sidecar-block">
+          <h3>Active dev teams <span class="dim" id="orch-teams-count">0</span></h3>
+          <div class="orch-teams-list" id="orch-teams-list">
+            <div class="dim small">no teams running</div>
+          </div>
+        </section>
+        <section class="orch-sidecar-block">
+          <h3>Recent activity</h3>
+          <div class="orch-activity-list" id="orch-activity-list">
+            <div class="dim small">no activity yet</div>
+          </div>
+        </section>
+      </aside>
+    </section>
+    <!-- ── /Chat ──────────────────────────────────────────────────────── -->
+
+    <!-- ── Orchestration: live ops cockpit ────────────────────────────── -->
+    <section class="orch-screen" data-tab="orchestration">
+      <header class="screen-header">
+        <h2>Orchestration <span class="screen-sub">live ops view of every dev team in flight, watchdog state, and pending decisions</span></h2>
+      </header>
+
+      <div class="orch-grid">
+        <section class="orch-card">
+          <div class="orch-card-head">
+            <h3>Active Dev Teams <span class="dim" id="orch-active-count">0</span></h3>
+            <span class="orch-card-meta" id="orch-active-meta">—</span>
+          </div>
+          <div class="orch-card-body" id="orch-active-body">
+            <div class="orch-empty">no dev teams running — chat with master to spawn one</div>
+          </div>
+        </section>
+
+        <section class="orch-card">
+          <div class="orch-card-head">
+            <h3>Watchdog</h3>
+            <span class="orch-card-meta" id="orch-watchdog-meta">interval --</span>
+          </div>
+          <div class="orch-card-body" id="orch-watchdog-body">
+            <div class="orch-empty">no recent watchdog firings</div>
+          </div>
+        </section>
+
+        <section class="orch-card orch-card-wide">
+          <div class="orch-card-head">
+            <h3>Live Activity <span class="dim small">last 50 events from /api/master/events</span></h3>
+            <button type="button" class="orch-clear-btn" id="orch-activity-clear">clear</button>
+          </div>
+          <div class="orch-card-body orch-activity-feed" id="orch-live-activity">
+            <div class="orch-empty">waiting for activity…</div>
+          </div>
+        </section>
+
+        <section class="orch-card">
+          <div class="orch-card-head">
+            <h3>Master daemon</h3>
+            <span class="orch-card-meta" id="orch-daemon-meta">--</span>
+          </div>
+          <div class="orch-card-body" id="orch-daemon-body">
+            <table class="orch-kv">
+              <tbody>
+                <tr><td>uptime</td><td id="orch-daemon-uptime">—</td></tr>
+                <tr><td>transcript</td><td id="orch-daemon-transcript">—</td></tr>
+                <tr><td>queue depth</td><td id="orch-daemon-queue">—</td></tr>
+                <tr><td>SSE subs</td><td id="orch-daemon-subs">—</td></tr>
+                <tr><td>telegram</td><td id="orch-daemon-tg">—</td></tr>
+                <tr><td>supervisor</td><td id="orch-daemon-sup">—</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="orch-card">
+          <div class="orch-card-head">
+            <h3>Diagnostics</h3>
+            <button type="button" class="orch-clear-btn" id="orch-diag-refresh">refresh</button>
+          </div>
+          <div class="orch-card-body" id="orch-diag-body">
+            <div class="dim small">click refresh to run full /diag</div>
+          </div>
+        </section>
+      </div>
+    </section>
+    <!-- ── /Orchestration ─────────────────────────────────────────────── -->
+
+    <!-- ── Dashboard view ─────────────────────────────────────────────── -->
+    <section class="panel dispatch" data-tab="dashboard" id="dispatch-panel">
+      <div class="dispatch-row">
+        <div class="dispatch-verdict" id="dispatch-verdict">--</div>
+        <div class="dispatch-summary">
+          <div class="dispatch-tagline" id="dispatch-tagline">--</div>
+          <ul class="dispatch-reasons" id="dispatch-reasons"></ul>
+        </div>
+      </div>
+      <div class="info-strip" id="info-strip">
+        <span class="info-cell"><span class="info-num" id="info-tmux">0</span> tmux</span>
+        <span class="info-sep">·</span>
+        <span class="info-cell"><span class="info-num" id="info-ready">0</span> ready accounts</span>
+        <span class="info-sep">·</span>
+        <span class="info-cell"><span class="info-num" id="info-rl">0</span> RL today</span>
+      </div>
+    </section>
+
+    <section class="panel" data-tab="dashboard">
+      <h2>Accounts</h2>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>alias</th>
+            <th>provider</th>
+            <th>auth</th>
+            <th>dispatch</th>
+            <th class="copy-col">switch</th>
+            <th class="num">5h · resets</th>
+            <th class="num">week · resets</th>
+            <th class="num">active</th>
+            <th class="num">RL today</th>
+            <th>last activity</th>
+          </tr>
+        </thead>
+        <tbody id="accounts-body">
+          <tr><td colspan="10" class="empty">no data yet</td></tr>
+        </tbody>
+      </table>
+      <div class="warning" id="accounts-warning" hidden></div>
+    </section>
+
+    <section class="panel" data-tab="dashboard">
+      <h2>Active TMUX sessions <span class="panel-hint">click row to expand preview</span></h2>
+      <table class="data-table sessions-table">
+        <thead>
+          <tr>
+            <th class="expander-col"></th>
+            <th>session</th>
+            <th>account</th>
+            <th>project</th>
+            <th>branch</th>
+            <th class="num">ctx</th>
+            <th class="num">age</th>
+            <th>status</th>
+            <th>cmd</th>
+          </tr>
+        </thead>
+        <tbody id="sessions-body">
+          <tr><td colspan="9" class="empty">no tmux sessions</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" data-tab="dashboard" id="orchestrations-panel">
+      <h2>Dev Teams <span class="panel-hint">tmux sessions spawned by the master · last activity from <code>~/.config/subctl/master/inbox/&lt;team&gt;.jsonl</code> · row turns yellow at 15min stale, red at 30min</span></h2>
+      <table class="data-table" id="orchestrations-table">
+        <thead>
+          <tr>
+            <th>team</th>
+            <th>account</th>
+            <th>project</th>
+            <th class="num">windows</th>
+            <th>last activity</th>
+            <th>last event</th>
+            <th>actions</th>
+          </tr>
+        </thead>
+        <tbody id="orchestrations-body">
+          <tr><td colspan="7" class="empty">no dev teams running — master will spawn them via <code>subctl_orch_spawn</code> when conversations conclude one is needed</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" data-tab="dashboard" id="conversations-panel">
+      <h2>Active conversations <span class="panel-hint">claude code sessions with file activity in the last 5min — includes ones outside tmux (this dashboard tab counts!)</span></h2>
+      <table class="data-table" id="conversations-table">
+        <thead>
+          <tr>
+            <th>account</th>
+            <th>project</th>
+            <th>last activity</th>
+            <th class="num">age</th>
+            <th class="num">size</th>
+            <th>sid</th>
+            <th>preview</th>
+            <th>resume</th>
+          </tr>
+        </thead>
+        <tbody id="conversations-body">
+          <tr><td colspan="8" class="empty">no active conversations</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" data-tab="sessions" id="search-panel">
+      <h2>Session browser <span class="panel-hint">search every claude code session across all accounts · copy the resume command</span></h2>
+      <div class="search-controls">
+        <input type="text" id="search-input" placeholder="filter by project name, account, session id, or preview…" />
+        <select id="search-account">
+          <option value="">all accounts</option>
+        </select>
+        <label class="search-toggle" title="Workers are sessions spawned by an orchestrator via Team* / SendMessage tools — usually NOT what you want to resume.">
+          <input type="checkbox" id="search-show-workers" />
+          show team-agent workers
+        </label>
+        <span id="search-count" class="search-count"></span>
+      </div>
+      <table class="data-table" id="search-table">
+        <thead>
+          <tr>
+            <th>account</th>
+            <th>project</th>
+            <th class="num">modified</th>
+            <th class="num">size</th>
+            <th>sid</th>
+            <th>preview</th>
+            <th>actions</th>
+          </tr>
+        </thead>
+        <tbody id="search-body">
+          <tr><td colspan="7" class="empty">load sessions to start browsing</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" data-tab="dashboard" id="cost-panel">
+      <h2>Cost analysis (this month) <span class="panel-hint">API list-price equivalent vs subscription · what you'd pay buying tokens at retail</span></h2>
+      <div class="cost-summary" id="cost-summary"></div>
+      <table class="data-table" id="cost-table">
+        <thead>
+          <tr>
+            <th>alias</th>
+            <th class="num">turns</th>
+            <th class="num">input</th>
+            <th class="num">output</th>
+            <th class="num">cache R/W</th>
+            <th class="num">API $</th>
+            <th class="num">subscription $</th>
+            <th class="num">savings</th>
+          </tr>
+        </thead>
+        <tbody id="cost-body">
+          <tr><td colspan="8" class="empty">scanning transcripts…</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" data-tab="dashboard">
+      <h2>Utilization (24h) <span class="panel-hint">5h-window peak per hour · red dot = 429/529 event</span></h2>
+      <div id="rate-limits-body" class="rl-list">
+        <div class="empty">no data yet</div>
+      </div>
+      <div class="rl-total" id="rl-total"></div>
+    </section>
+
+    <section class="panel" data-tab="dashboard">
+      <h2>Recent events <span class="panel-sub">today, newest first</span></h2>
+      <table class="events-table">
+        <thead>
+          <tr>
+            <th>WHEN</th>
+            <th>TYPE</th>
+            <th>SEVERITY</th>
+            <th>ACCOUNT</th>
+            <th>SESSION</th>
+          </tr>
+        </thead>
+        <tbody id="events-body">
+          <tr><td colspan="5" class="empty">no rate-limit events today</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- ── Models tab ──────────────────────────────────────────────── -->
+    <section class="panel" data-tab="models" id="models-panel">
+      <h2>LM Studio models
+        <span class="panel-hint">read-only catalog from <code>/api/v0/models</code> on the M3 Ultra</span>
+        <span class="models-status" id="models-status">loading…</span>
+      </h2>
+      <div class="models-summary" id="models-summary"></div>
+      <table class="data-table" id="models-table">
+        <thead>
+          <tr>
+            <th>id</th>
+            <th>type</th>
+            <th>state</th>
+            <th>publisher</th>
+            <th>arch</th>
+            <th>quant</th>
+            <th class="num">max ctx</th>
+            <th class="num">loaded ctx</th>
+            <th>capabilities</th>
+          </tr>
+        </thead>
+        <tbody id="models-body">
+          <tr><td colspan="9" class="empty">loading model catalog…</td></tr>
+        </tbody>
+      </table>
+      <div class="models-note">
+        <strong>Load/unload control</strong> requires the <code>lms</code> CLI on the M3 Ultra (LM Studio app → Developer → Use lms in terminal). Once installed, this panel can wire load/unload buttons.
+      </div>
+    </section>
+
+    <!-- ── Projects tab ────────────────────────────────────────────── -->
+    <section class="panel" data-tab="projects" id="projects-panel">
+      <h2>Projects
+        <span class="panel-hint">code projects on the M3 Ultra at <code id="projects-root">~/code</code> · rows with <code>in policy ✓</code> are tracked by master</span>
+      </h2>
+      <table class="data-table" id="projects-table">
+        <thead>
+          <tr>
+            <th>name</th>
+            <th>branch</th>
+            <th>last commit</th>
+            <th>in policy</th>
+            <th>flags</th>
+            <th>actions</th>
+          </tr>
+        </thead>
+        <tbody id="projects-body">
+          <tr><td colspan="6" class="empty">loading projects…</td></tr>
+        </tbody>
+      </table>
+      <div class="projects-note">
+        Projects with <code>in policy ✓</code> are visible to the master daemon (read from <code>~/.config/subctl/master/policy.json</code>). To add a project, edit policy.json directly for now — an in-place editor is on the roadmap.
+      </div>
+    </section>
+
+    <!-- ── Memory tab ──────────────────────────────────────────────── -->
+    <section class="panel" data-tab="memory" id="memory-panel">
+      <h2>Memory
+        <span class="panel-hint">Obsidian vaults — long-term notes, decisions, project portfolios</span>
+        <span class="memory-status" id="memory-status">checking…</span>
+      </h2>
+      <div class="memory-content" id="memory-content">loading…</div>
+    </section>
+  </main>
+  </div><!-- /.app-shell -->
+
+  <footer class="footer">
+    <span>subctl <span id="footer-version">v0.0.0</span></span>
+    <span class="sep">/</span>
+    <a href="https://github.com/REPLACE_WITH_OWNER/subctl" target="_blank" rel="noopener">github</a>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>
