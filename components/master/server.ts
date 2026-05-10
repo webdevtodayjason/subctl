@@ -62,6 +62,7 @@ import { notifyTools, bindNotifyBroadcast } from "./tools/notify";
 import { specforgeTools } from "./tools/specforge";
 import { schedulerTools, popDueFollowups } from "./tools/scheduler";
 import { attachmentsTools } from "./tools/attachments";
+import { vaultLinkTools } from "./tools/vault-link";
 import {
   saveAttachment,
   listAttachments,
@@ -336,6 +337,12 @@ export const toolRegistry: Record<string, InternalTool> = {
   ...Object.fromEntries(
     Object.entries(attachmentsTools).map(([k, v]) => [
       k, // read_attachment, list_attachments
+      v as unknown as InternalTool,
+    ]),
+  ),
+  ...Object.fromEntries(
+    Object.entries(vaultLinkTools).map(([k, v]) => [
+      k, // vault_link
       v as unknown as InternalTool,
     ]),
   ),

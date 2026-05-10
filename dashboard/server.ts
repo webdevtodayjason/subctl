@@ -3475,6 +3475,208 @@ const server = Bun.serve({
       }
     }
 
+    // ── /api/vault — In-browser Obsidian vault viewer (Phase 3n) ─────────
+    //
+    // Treats each subdirectory of vault_root with a .obsidian/ dir as a
+    // discrete vault. Per-vault tree + raw-markdown note fetch. Frontend
+    // renders the markdown with Marked.js from CDN + wikilink post-render
+    // transforms. No file watching for MVP — refresh on click.
+    //
+    // Endpoints:
+    //   GET /api/vault/roots                          → list vaults
+    //   GET /api/vault/<vault>/tree                   → folder tree
+    //   GET /api/vault/<vault>/note?path=rel/path.md  → raw markdown + frontmatter
+    //   GET /api/vault/<vault>/asset?path=rel/img.png → passthrough (image/pdf)
+
+    function listVaultRoots(): Array<{ slug: string; name: string; path: string; note_count: number }> {
+      // Resolve the configured root from obsidian.json (or default).
+      let vaultRoot = `${process.env.HOME}/Documents/Obsidian Vault`;
+      try {
+        const cfgPath = join(SUBCTL_CONFIG_DIR, "master", "obsidian.json");
+        if (existsSync(cfgPath)) {
+          const j = JSON.parse(readFileSync(cfgPath, "utf8")) as { vault_root?: string };
+          if (j.vault_root) vaultRoot = j.vault_root.replace(/^~/, process.env.HOME ?? "");
+        }
+      } catch { /* ignore */ }
+      if (!existsSync(vaultRoot)) return [];
+      const out: Array<{ slug: string; name: string; path: string; note_count: number }> = [];
+      try {
+        for (const entry of readdirSync(vaultRoot, { withFileTypes: true })) {
+          if (!entry.isDirectory()) continue;
+          const sub = join(vaultRoot, entry.name);
+          if (!existsSync(join(sub, ".obsidian"))) continue;
+          let count = 0;
+          const stack = [sub];
+          while (stack.length && count < 5000) {
+            const cur = stack.pop()!;
+            for (const e of readdirSync(cur, { withFileTypes: true })) {
+              if (e.name.startsWith(".")) continue;
+              const p = join(cur, e.name);
+              if (e.isDirectory()) stack.push(p);
+              else if (e.name.endsWith(".md")) count++;
+            }
+          }
+          out.push({
+            slug: entry.name,
+            name: entry.name,
+            path: sub,
+            note_count: count,
+          });
+        }
+      } catch { /* ignore */ }
+      return out;
+    }
+
+    function resolveVaultPath(vaultSlug: string): string | null {
+      const vaults = listVaultRoots();
+      const v = vaults.find((x) => x.slug === vaultSlug);
+      return v ? v.path : null;
+    }
+
+    // Path safety — reject anything containing `..` or absolute references.
+    // Returns the resolved absolute path if safe, null otherwise.
+    function safeJoinUnder(root: string, rel: string): string | null {
+      if (!rel) return null;
+      if (rel.includes("\0") || rel.startsWith("/") || rel.startsWith("~")) return null;
+      const normalized = rel.replace(/\\/g, "/");
+      if (normalized.split("/").some((seg) => seg === "..")) return null;
+      const abs = join(root, normalized);
+      // Defensive: confirm the resolved path actually lives under root.
+      if (!abs.startsWith(root + "/") && abs !== root) return null;
+      return abs;
+    }
+
+    if (url.pathname === "/api/vault/roots" && req.method === "GET") {
+      return Response.json({ ok: true, vaults: listVaultRoots() });
+    }
+
+    {
+      const m = url.pathname.match(/^\/api\/vault\/([^/]+)\/tree$/);
+      if (m && req.method === "GET") {
+        const vaultSlug = decodeURIComponent(m[1]!);
+        const root = resolveVaultPath(vaultSlug);
+        if (!root) return Response.json({ ok: false, error: "vault not found" }, { status: 404 });
+        // Recursive .md tree, depth-first, sorted dirs-before-files alphabetical.
+        type Node =
+          | { kind: "dir"; name: string; path: string; children: Node[] }
+          | { kind: "note"; name: string; path: string; size: number; mtime: string };
+        function walk(dir: string, relPrefix: string): Node[] {
+          const out: Node[] = [];
+          let entries;
+          try {
+            entries = readdirSync(dir, { withFileTypes: true });
+          } catch {
+            return out;
+          }
+          const dirs: Node[] = [];
+          const notes: Node[] = [];
+          for (const e of entries) {
+            if (e.name.startsWith(".")) continue;
+            const full = join(dir, e.name);
+            const rel = relPrefix ? `${relPrefix}/${e.name}` : e.name;
+            if (e.isDirectory()) {
+              const children = walk(full, rel);
+              if (children.length > 0) {
+                dirs.push({ kind: "dir", name: e.name, path: rel, children });
+              }
+            } else if (e.name.endsWith(".md")) {
+              try {
+                const st = require("node:fs").statSync(full);
+                notes.push({
+                  kind: "note",
+                  name: e.name,
+                  path: rel,
+                  size: st.size,
+                  mtime: new Date(st.mtimeMs).toISOString(),
+                });
+              } catch { /* skip */ }
+            }
+          }
+          dirs.sort((a, b) => a.name.localeCompare(b.name));
+          notes.sort((a, b) => a.name.localeCompare(b.name));
+          out.push(...dirs, ...notes);
+          return out;
+        }
+        return Response.json({
+          ok: true,
+          vault: vaultSlug,
+          root,
+          tree: walk(root, ""),
+        });
+      }
+    }
+
+    {
+      const m = url.pathname.match(/^\/api\/vault\/([^/]+)\/note$/);
+      if (m && req.method === "GET") {
+        const vaultSlug = decodeURIComponent(m[1]!);
+        const rel = url.searchParams.get("path") || "";
+        const root = resolveVaultPath(vaultSlug);
+        if (!root) return Response.json({ ok: false, error: "vault not found" }, { status: 404 });
+        const abs = safeJoinUnder(root, rel);
+        if (!abs || !abs.endsWith(".md") || !existsSync(abs)) {
+          return Response.json({ ok: false, error: "note not found" }, { status: 404 });
+        }
+        let raw: string;
+        try {
+          raw = readFileSync(abs, "utf8");
+        } catch (err) {
+          return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+        }
+        // Parse YAML frontmatter (between leading --- … ---). Naive parser:
+        // supports key: value pairs, no nesting / multiline. Anything fancier
+        // can be added when a note actually uses it.
+        let frontmatter: Record<string, string> | null = null;
+        let body = raw;
+        const fmMatch = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+        if (fmMatch) {
+          frontmatter = {};
+          for (const line of fmMatch[1].split(/\r?\n/)) {
+            const kv = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
+            if (kv) frontmatter[kv[1]] = kv[2].trim();
+          }
+          body = raw.slice(fmMatch[0].length);
+        }
+        const st = require("node:fs").statSync(abs);
+        return Response.json({
+          ok: true,
+          vault: vaultSlug,
+          path: rel,
+          size: st.size,
+          mtime: new Date(st.mtimeMs).toISOString(),
+          frontmatter,
+          body,
+        });
+      }
+    }
+
+    {
+      const m = url.pathname.match(/^\/api\/vault\/([^/]+)\/asset$/);
+      if (m && req.method === "GET") {
+        const vaultSlug = decodeURIComponent(m[1]!);
+        const rel = url.searchParams.get("path") || "";
+        const root = resolveVaultPath(vaultSlug);
+        if (!root) return new Response("vault not found", { status: 404 });
+        const abs = safeJoinUnder(root, rel);
+        if (!abs || !existsSync(abs)) return new Response("asset not found", { status: 404 });
+        const lower = abs.toLowerCase();
+        let mime = "application/octet-stream";
+        if (lower.endsWith(".png")) mime = "image/png";
+        else if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) mime = "image/jpeg";
+        else if (lower.endsWith(".gif")) mime = "image/gif";
+        else if (lower.endsWith(".svg")) mime = "image/svg+xml";
+        else if (lower.endsWith(".pdf")) mime = "application/pdf";
+        else if (lower.endsWith(".webp")) mime = "image/webp";
+        try {
+          return new Response(readFileSync(abs), {
+            headers: { "Content-Type": mime, "Cache-Control": "max-age=300" },
+          });
+        } catch {
+          return new Response("read error", { status: 500 });
+        }
+      }
+    }
+
     // ── /api/memory — Obsidian + vault state ─────────────────────────────
     if (url.pathname === "/api/memory") {
       const obsidianApp = "/Applications/Obsidian.app";

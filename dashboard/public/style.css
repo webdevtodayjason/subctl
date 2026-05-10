@@ -2901,6 +2901,219 @@ main {
   .orchestration-sidecar { order: 2; }
 }
 
+/* ── Vault viewer (Phase 3n) — two-pane Obsidian-flavoured note browser. */
+.vault-screen { display: block; }
+.vault-root-select {
+  background: #0c0c0c;
+  border: 1px solid #2a2a2a;
+  color: #c4c4c4;
+  font-family: inherit;
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 3px;
+  min-width: 220px;
+}
+.vault-layout {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: 16px;
+  height: calc(100vh - 56px - 48px - 80px); /* topbar + main padding + screen header */
+}
+.vault-tree {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 10px;
+  overflow-y: auto;
+  font-size: 12.5px;
+  min-width: 0;
+}
+.vault-tree-dir {
+  margin: 2px 0;
+}
+.vault-tree-dir > .dir-label {
+  cursor: pointer;
+  color: #c4c4c4;
+  padding: 2px 4px;
+  border-radius: 3px;
+  user-select: none;
+  font-weight: 500;
+}
+.vault-tree-dir > .dir-label:hover { background: #1a1a1a; }
+.vault-tree-dir > .dir-label::before {
+  content: "▸ ";
+  display: inline-block;
+  width: 12px;
+  color: #666;
+  transition: transform 100ms ease;
+}
+.vault-tree-dir.open > .dir-label::before { content: "▾ "; }
+.vault-tree-dir > .dir-children {
+  padding-left: 14px;
+  display: none;
+}
+.vault-tree-dir.open > .dir-children { display: block; }
+.vault-tree-note {
+  cursor: pointer;
+  color: #888;
+  padding: 2px 4px 2px 18px;
+  border-radius: 3px;
+  user-select: none;
+  display: block;
+}
+.vault-tree-note:hover { background: #1a1a1a; color: #c4c4c4; }
+.vault-tree-note.active { background: #1a2a3a; color: #5fd7ff; }
+.vault-content {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 22px 28px;
+  overflow-y: auto;
+  min-width: 0;
+}
+.vault-empty {
+  color: #777;
+  max-width: 600px;
+}
+.vault-empty h3 {
+  color: #c4c4c4;
+  font-size: 14px;
+  margin: 0 0 8px;
+  font-weight: 500;
+}
+.vault-empty p { line-height: 1.6; margin: 8px 0; }
+.vault-empty code {
+  background: #1a1a1a;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 11.5px;
+  color: #5fd7ff;
+}
+
+/* Rendered-note styling (markdown → HTML output). */
+.vault-note-meta {
+  margin-bottom: 18px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #1a1a1a;
+  font-size: 11.5px;
+  color: #777;
+}
+.vault-note-meta .meta-title {
+  font-family: var(--mono);
+  color: #c4c4c4;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+.vault-note-meta .meta-kv {
+  display: inline-block;
+  margin-right: 14px;
+}
+.vault-note-meta .meta-key { color: #555; }
+.vault-note-meta .meta-val { color: #888; margin-left: 4px; }
+.vault-note-body {
+  line-height: 1.65;
+  color: #cdd0d0;
+  font-size: 14px;
+}
+.vault-note-body h1, .vault-note-body h2, .vault-note-body h3,
+.vault-note-body h4, .vault-note-body h5, .vault-note-body h6 {
+  color: #fff;
+  margin: 24px 0 12px;
+  font-weight: 500;
+}
+.vault-note-body h1 { font-size: 22px; }
+.vault-note-body h2 { font-size: 18px; border-bottom: 1px solid #1a1a1a; padding-bottom: 6px; }
+.vault-note-body h3 { font-size: 15px; }
+.vault-note-body h4 { font-size: 14px; color: #c4c4c4; }
+.vault-note-body p { margin: 10px 0; }
+.vault-note-body a {
+  color: #5fd7ff;
+  text-decoration: none;
+  border-bottom: 1px dotted #2a4a5a;
+}
+.vault-note-body a:hover { color: #8ee5ff; border-bottom-color: #5fd7ff; }
+.vault-note-body a.vault-wikilink {
+  color: #b074d6;
+  border-bottom-color: #3a2a4a;
+  background: #1a1024;
+  padding: 0 4px;
+  border-radius: 3px;
+}
+.vault-note-body a.vault-wikilink:hover { color: #cdb0e0; background: #251434; }
+.vault-note-body a.vault-wikilink-missing {
+  color: #d66c6c;
+  border-bottom: 1px dashed #d66c6c;
+  background: #2a1010;
+}
+.vault-note-body .vault-tag {
+  display: inline-block;
+  font-size: 11.5px;
+  background: #1a2a3a;
+  color: #5fd7ff;
+  padding: 0 6px;
+  border-radius: 9px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  margin: 0 2px;
+}
+.vault-note-body code {
+  background: #1a1a1a;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 12.5px;
+  color: #cdd0d0;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.vault-note-body pre {
+  background: #050505;
+  border: 1px solid #1a1a1a;
+  border-radius: 6px;
+  padding: 12px 16px;
+  overflow-x: auto;
+  font-size: 12.5px;
+  line-height: 1.5;
+  margin: 14px 0;
+}
+.vault-note-body pre code { background: none; padding: 0; }
+.vault-note-body ul, .vault-note-body ol { margin: 10px 0; padding-left: 22px; }
+.vault-note-body li { margin: 4px 0; }
+.vault-note-body blockquote {
+  border-left: 3px solid #2a2a2a;
+  padding: 4px 14px;
+  color: #888;
+  margin: 12px 0;
+}
+.vault-note-body blockquote.vault-callout {
+  border-left-width: 4px;
+  background: #0c0c0c;
+  border-radius: 0 6px 6px 0;
+  padding: 10px 16px;
+}
+.vault-note-body blockquote.callout-note { border-left-color: #5fd7ff; }
+.vault-note-body blockquote.callout-warning { border-left-color: #d6c46c; }
+.vault-note-body blockquote.callout-danger { border-left-color: #d66c6c; }
+.vault-note-body blockquote .callout-title {
+  display: block;
+  font-weight: 500;
+  color: #c4c4c4;
+  margin-bottom: 6px;
+  font-size: 12.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.vault-note-body table { border-collapse: collapse; margin: 12px 0; }
+.vault-note-body th, .vault-note-body td {
+  border: 1px solid #2a2a2a;
+  padding: 6px 12px;
+  font-size: 13px;
+}
+.vault-note-body th { background: #0c0c0c; color: #c4c4c4; font-weight: 500; }
+.vault-note-body img { max-width: 100%; border-radius: 4px; margin: 8px 0; }
+.vault-note-body hr { border: none; border-top: 1px solid #1a1a1a; margin: 24px 0; }
+
+@media (max-width: 900px) {
+  .vault-layout { grid-template-columns: 1fr; }
+}
+
 /* ── Camera View (Phase 3m) — NVR-style grid of every dev-team tmux pane.
    Click a tile to expand to full-viewport via .orch-camera-expanded overlay.
    Tile sizing: auto-fit minmax(420px, 1fr) so the grid adapts to viewport

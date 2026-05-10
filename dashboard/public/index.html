@@ -108,6 +108,9 @@
         <button type="button" class="nav-btn" data-tab="memory">
           <span class="nav-icon">✦</span><span class="nav-label">Memory</span>
         </button>
+        <button type="button" class="nav-btn" data-tab="vault">
+          <span class="nav-icon">⊞</span><span class="nav-label">Vault</span>
+        </button>
         <button type="button" class="nav-btn" data-tab="skills">
           <span class="nav-icon">★</span><span class="nav-label">Skills</span>
         </button>
@@ -778,6 +781,30 @@
       </div>
     </section>
 
+    <!-- ── Vault tab (Phase 3n) — in-browser Obsidian vault viewer ─────── -->
+    <section class="vault-screen" data-tab="vault">
+      <header class="screen-header">
+        <h2>Vault <span class="screen-sub">in-page Obsidian viewer · click a note in the tree to render it · wikilinks navigate</span></h2>
+        <div class="screen-header-actions">
+          <select id="vault-root-select" class="vault-root-select">
+            <option value="">no vault configured</option>
+          </select>
+        </div>
+      </header>
+      <div class="vault-layout">
+        <aside class="vault-tree" id="vault-tree">
+          <div class="dim small">pick a vault to load…</div>
+        </aside>
+        <main class="vault-content" id="vault-content">
+          <div class="vault-empty">
+            <h3>No note open</h3>
+            <p>Pick a note from the tree to render it. <code>[[wikilinks]]</code> click-navigate; tags render but aren't yet filterable.</p>
+            <p class="dim small">Backed by <code>/api/vault/&lt;vault&gt;/note</code>. The master can also drop you straight into a specific note via the <code>vault_link</code> tool — chat URLs look like <code>/dashboard#vault?root=master&amp;path=Down-Time-Arena/decisions.md</code>.</p>
+          </div>
+        </main>
+      </div>
+    </section>
+
     <!-- ── Skills tab ──────────────────────────────────────────────── -->
     <section class="skills-screen" data-tab="skills">
       <header class="screen-header">
@@ -945,6 +972,10 @@
     <a href="https://github.com/REPLACE_WITH_OWNER/subctl" target="_blank" rel="noopener">github</a>
   </footer>
 
+  <!-- marked: lazy-loaded markdown→HTML renderer for the Vault tab (Phase 3n).
+       Pinned to 13.0.0 because Marked changed its API surface in v14. The
+       Vault tab calls window.marked.parse(md, {...}). -->
+  <script src="https://cdn.jsdelivr.net/npm/marked@13.0.0/marked.min.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

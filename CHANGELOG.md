@@ -4,6 +4,45 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.5.0] — 2026-05-10
+
+Minor — Phase 3n ships (MVP): **in-browser Obsidian vault viewer.**
+
+### Added
+
+- **New "Vault" sidebar tab** with two-pane layout: file tree (left, 280 px) + rendered note (center). Auto-opens the first two levels of the tree for discoverability.
+- **Backend endpoints** in `dashboard/server.ts`:
+  - `GET /api/vault/roots` — every sub-directory of `vault_root` with a `.obsidian/` dir is enumerated as a discrete vault.
+  - `GET /api/vault/<vault>/tree` — full folder tree of `.md` files, dirs sorted before notes alphabetical.
+  - `GET /api/vault/<vault>/note?path=…` — raw markdown + parsed YAML frontmatter + file stats.
+  - `GET /api/vault/<vault>/asset?path=…` — passthrough for images (png/jpg/gif/svg/webp/pdf), with caching headers.
+  - All paths sanitised via `safeJoinUnder()` — rejects `..`, absolute paths, null bytes.
+- **Frontend renderer** uses Marked.js 13.0.0 from CDN (no build step). Pre-render transforms cover the Obsidian-specific syntax Marked doesn't know about:
+  - `[[wikilink]]` and `[[wikilink|alias]]` → click-navigable anchors (purple). Resolver matches exact path first, then any note whose final segment matches case-insensitively. Missing targets render with a red dashed underline.
+  - `![[embed.png]]` → `<img>` via the asset endpoint. Non-image embeds become click-to-open links.
+  - `> [!note]` / `> [!warning]` / `> [!danger]` callouts → styled blockquotes with coloured left borders and uppercase titles.
+  - `#tag` (in body text, not headings or URLs) → coloured pill spans.
+  - YAML frontmatter parsed and rendered as a metadata header above the note.
+- **Deep-linkable URLs:** `/dashboard#vault?root=<slug>&path=<rel-path>` opens straight to a specific note. History is updated on every navigation so back/forward work.
+- **New master tool `vault_link(note_path, root?)`** — returns the deep-link URL the master can include in chat or Telegram messages. Defaults `root` to `master` (the daemon's own vault). Reports whether the note actually exists at the resolved path.
+
+### Out of scope for v2.5.0 (deferred per spec §3n)
+
+- **Right-pane backlinks + outgoing-links panel.**
+- **Search** (full-text + filename + tag filter).
+- **Graph view.**
+- **File-watching SSE** for live tree/note updates — currently refresh-on-click.
+- **Edit-in-browser** — Vault viewer is read-only by design. The master writes via `vault_append`; humans edit via the Obsidian desktop app.
+
+### Try it
+
+```
+# Sidebar → Vault. Pick the auto-created "master" vault.
+# Browse the tree, click a note. Wikilinks navigate.
+# Or jump directly:
+#   http://192.168.100.98:8787/dashboard#vault?root=master&path=Down-Time-Arena/decisions.md
+```
+
 ## [2.4.0] — 2026-05-10
 
 Minor — Phase 3l ships (MVP): **document attachments in chat.**
