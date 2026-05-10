@@ -1511,6 +1511,166 @@ body[data-active-tab="memory"]        section[data-tab]:not([data-tab="memory"])
   .orch-grid { grid-template-columns: 1fr; }
 }
 
+/* ── Projects screen: master/detail layout ────────────────────────────── */
+.projects-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+.primary-btn {
+  background: #1a3a4a;
+  border: 1px solid #2a4a5a;
+  color: #5fd7ff;
+  padding: 8px 18px;
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.primary-btn:hover { background: #1f4256; }
+.secondary-btn {
+  background: transparent;
+  border: 1px solid #2a2a2a;
+  color: #aaa;
+  padding: 6px 14px;
+  border-radius: 3px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-block;
+}
+.secondary-btn:hover { color: #c4c4c4; border-color: #555; }
+
+.projects-layout {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 18px;
+  align-items: stretch;
+  min-height: calc(100vh - 56px - 100px);
+}
+.projects-list-pane {
+  background: #0c0c0c;
+  border: 1px solid #1a1a1a;
+  border-radius: 4px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.projects-list-search {
+  padding: 10px;
+  border-bottom: 1px solid #1a1a1a;
+}
+.projects-list-search input {
+  width: 100%;
+  background: #0a0a0a;
+  border: 1px solid #2a2a2a;
+  color: #c4c4c4;
+  padding: 6px 10px;
+  border-radius: 3px;
+  font-family: inherit;
+  font-size: 12px;
+}
+.projects-list-search input:focus { outline: none; border-color: #5fd7ff; }
+.projects-list { flex: 1; overflow-y: auto; }
+.project-list-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-left: 3px solid transparent;
+  padding: 10px 14px;
+  cursor: pointer;
+  border-bottom: 1px solid #141414;
+}
+.project-list-item:hover { background: #111; }
+.project-list-item.selected {
+  background: #0e1814;
+  border-left-color: #6cd697;
+}
+.project-list-item.in-policy .project-list-name { color: #c4c4c4; }
+.project-list-name { color: #aaa; font-size: 13px; font-weight: 500; }
+.project-list-meta { color: #666; font-size: 11px; margin-top: 2px; }
+
+.project-detail-pane {
+  background: #0a0a0a;
+  border: 1px solid #1a1a1a;
+  border-radius: 4px;
+  overflow-y: auto;
+  min-height: 400px;
+}
+.project-detail-empty { padding: 40px; text-align: center; }
+.project-detail { padding: 22px 24px; }
+.project-detail-header { margin-bottom: 18px; padding-bottom: 16px; border-bottom: 1px solid #1a1a1a; }
+.pdh-title { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+.pdh-title h2 { margin: 0; color: #ffffff; font-size: 20px; font-weight: 500; }
+.pdh-pills { display: flex; gap: 6px; }
+.pdh-meta { margin: 8px 0 12px; color: #888; font-size: 12px; line-height: 1.7; }
+.pdh-meta code { background: #161616; color: #5fd7ff; padding: 1px 6px; border-radius: 3px; }
+.pdh-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.pill {
+  display: inline-block;
+  padding: 1px 8px;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border-radius: 3px;
+}
+.pill-ok   { background: #102a18; color: #6cd697; }
+.pill-warn { background: #2a230e; color: #d6c46c; }
+.pill-info { background: #102236; color: #5fd7ff; }
+.pill-dim  { background: #1a1a1a; color: #888; }
+
+.project-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.pd-card {
+  background: #0c0c0c;
+  border: 1px solid #1a1a1a;
+  border-radius: 4px;
+  padding: 14px 16px;
+}
+.pd-card-wide { grid-column: 1 / -1; }
+.pd-card h3 {
+  margin: 0 0 12px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #aaa;
+}
+.pd-card .dim { color: #666; }
+.pr-row, .issue-row, .commit-row, .team-row, .decision-row {
+  padding: 6px 0;
+  border-bottom: 1px dashed #1a1a1a;
+  color: #aaa;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.pr-row:last-child, .issue-row:last-child, .commit-row:last-child,
+.team-row:last-child, .decision-row:last-child { border-bottom: none; }
+.pr-row a, .issue-row a { color: #5fd7ff; text-decoration: none; margin-right: 8px; }
+.pr-row a:hover, .issue-row a:hover { text-decoration: underline; }
+.pr-title { color: #c4c4c4; }
+.ci-stack { display: inline-flex; gap: 4px; margin-left: 8px; }
+.ci-pill { display: inline-block; padding: 0 6px; font-size: 9.5px; letter-spacing: 0.06em; text-transform: uppercase; border-radius: 2px; background: #1a1a1a; color: #888; }
+.ci-pill.ci-ok   { background: #102a18; color: #6cd697; }
+.ci-pill.ci-err  { background: #2a1010; color: #d66c6c; }
+.ci-pill.ci-warn { background: #2a230e; color: #d6c46c; }
+.commit-row code { background: #141414; color: #5fd7ff; padding: 1px 5px; border-radius: 2px; margin-right: 8px; }
+
+@media (max-width: 1000px) {
+  .projects-layout { grid-template-columns: 1fr; }
+  .project-detail-grid { grid-template-columns: 1fr; }
+}
+
 /* ── App shell: left sidebar + main content ───────────────────────────── */
 .app-shell {
   display: flex;

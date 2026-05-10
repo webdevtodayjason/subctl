@@ -386,28 +386,28 @@
       </div>
     </section>
 
-    <!-- ── Projects tab ────────────────────────────────────────────── -->
-    <section class="panel" data-tab="projects" id="projects-panel">
-      <h2>Projects
-        <span class="panel-hint">code projects on the M3 Ultra at <code id="projects-root">~/code</code> · rows with <code>in policy ✓</code> are tracked by master</span>
-      </h2>
-      <table class="data-table" id="projects-table">
-        <thead>
-          <tr>
-            <th>name</th>
-            <th>branch</th>
-            <th>last commit</th>
-            <th>in policy</th>
-            <th>flags</th>
-            <th>actions</th>
-          </tr>
-        </thead>
-        <tbody id="projects-body">
-          <tr><td colspan="6" class="empty">loading projects…</td></tr>
-        </tbody>
-      </table>
-      <div class="projects-note">
-        Projects with <code>in policy ✓</code> are visible to the master daemon (read from <code>~/.config/subctl/master/policy.json</code>). To add a project, edit policy.json directly for now — an in-place editor is on the roadmap.
+    <!-- ── Projects tab: master/detail with drill-down ─────────────── -->
+    <section class="projects-screen" data-tab="projects">
+      <header class="screen-header projects-header">
+        <h2>Projects <span class="screen-sub">code projects on the M3 Ultra at <code id="projects-root">~/code</code></span></h2>
+        <button type="button" class="primary-btn" id="project-new-btn">+ New Project</button>
+      </header>
+
+      <div class="projects-layout">
+        <aside class="projects-list-pane">
+          <div class="projects-list-search">
+            <input type="text" id="project-list-filter" placeholder="filter projects…" />
+          </div>
+          <div class="projects-list" id="projects-list">
+            <div class="dim small" style="padding:12px">loading…</div>
+          </div>
+        </aside>
+
+        <section class="project-detail-pane" id="project-detail-pane">
+          <div class="project-detail-empty" id="project-detail-empty">
+            <div class="dim">select a project on the left to drill in, or click <strong>+ New Project</strong> to start a new one</div>
+          </div>
+        </section>
       </div>
     </section>
 

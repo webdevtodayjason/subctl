@@ -2251,6 +2251,144 @@ const server = Bun.serve({
       return Response.json({ ok: true, code_root: codeRoot, projects });
     }
 
+    // ── /api/projects/:name — drill-down detail for one project ──────────
+    {
+      const m = url.pathname.match(/^\/api\/projects\/([^/]+)\/?$/);
+      if (m && req.method === "GET") {
+        const name = decodeURIComponent(m[1]!);
+        const codeRoot = process.env.SUBCTL_CODE_ROOT ?? `${process.env.HOME}/code`;
+        const path = join(codeRoot, name);
+        if (!existsSync(path)) {
+          return Response.json({ ok: false, error: "project not found" }, { status: 404 });
+        }
+        const gitOut = (args: string[]) => {
+          const r = spawnSync("git", ["-C", path, ...args], { encoding: "utf8", timeout: 1500 });
+          return r.status === 0 ? r.stdout.trim() : "";
+        };
+        const branch = gitOut(["rev-parse", "--abbrev-ref", "HEAD"]) || null;
+        const lastCommit = gitOut(["log", "-1", "--format=%h%x09%s%x09%cr%x09%an"]) || null;
+        const remoteUrl = gitOut(["config", "--get", "remote.origin.url"]) || null;
+        const dirty = gitOut(["status", "--porcelain"]).length > 0;
+        // ahead / behind
+        const aheadBehind = gitOut(["rev-list", "--left-right", "--count", `HEAD...@{u}`]).split("\t");
+        const ahead = parseInt(aheadBehind[0] ?? "0", 10) || 0;
+        const behind = parseInt(aheadBehind[1] ?? "0", 10) || 0;
+        // last 10 commits
+        const log10 = gitOut(["log", "-10", "--format=%h%x09%s%x09%cr%x09%an"])
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => {
+            const [sha, subject, when, author] = line.split("\t");
+            return { sha, subject, when, author };
+          });
+        const has = (rel: string) => existsSync(join(path, rel));
+        // Policy lookup
+        let policyEntry: Record<string, unknown> | null = null;
+        try {
+          const policyPath = join(SUBCTL_CONFIG_DIR, "master", "policy.json");
+          if (existsSync(policyPath)) {
+            const raw = readFileSync(policyPath, "utf8");
+            const stripped = raw.split("\n").filter((l) => !/^\s*"_comment[^"]*"\s*:/.test(l)).join("\n").replace(/,(\s*[}\]])/g, "$1");
+            const policy = JSON.parse(stripped) as { projects?: Array<{ path: string; [k: string]: unknown }> };
+            const expanded = path;
+            policyEntry = (policy.projects ?? []).find((p) => {
+              const pPath = (p.path as string).replace(/^~/, process.env.HOME ?? "");
+              return pPath === expanded;
+            }) ?? null;
+          }
+        } catch { /* ignore parse errors */ }
+
+        // Pull recent decisions from master decisions log, filtered by project
+        const decisions: Array<Record<string, unknown>> = [];
+        try {
+          const decPath = join(SUBCTL_CONFIG_DIR, "master", "decisions.jsonl");
+          if (existsSync(decPath)) {
+            const raw = readFileSync(decPath, "utf8");
+            const lines = raw.split("\n").filter(Boolean).slice(-200); // last 200 lines
+            for (const line of lines) {
+              try {
+                const d = JSON.parse(line) as Record<string, unknown>;
+                if (d.project === name || d.project === path) decisions.push(d);
+              } catch { /* skip */ }
+            }
+            decisions.reverse(); // newest first
+          }
+        } catch { /* ignore */ }
+
+        // Identify dev teams targeting this project (tmux session whose path == project path)
+        const teamsForThis: Array<Record<string, unknown>> = [];
+        try {
+          const allOrch = buildOrchestrations();
+          for (const o of allOrch) {
+            if (o.path === path) teamsForThis.push(o);
+          }
+        } catch { /* ignore */ }
+
+        // Vault status
+        const vaultRoot = `${process.env.HOME}/Documents/Obsidian Vault`;
+        const vaultProjectDir = join(vaultRoot, name);
+        const vaultExists = existsSync(vaultProjectDir);
+
+        // GitHub PR list (best-effort) — only if remoteUrl looks like github.com/owner/repo
+        let ghRepo: string | null = null;
+        const ghMatch = remoteUrl?.match(/github\.com[:/]([^/]+)\/([^/.]+)(?:\.git)?$/);
+        if (ghMatch) ghRepo = `${ghMatch[1]}/${ghMatch[2]}`;
+        let prs: Array<Record<string, unknown>> = [];
+        let issues: Array<Record<string, unknown>> = [];
+        if (ghRepo) {
+          try {
+            const r = spawnSync(
+              "gh",
+              ["pr", "list", "--repo", ghRepo, "--state", "open", "--limit", "10",
+               "--json", "number,title,state,isDraft,headRefName,statusCheckRollup,url,updatedAt"],
+              { encoding: "utf8", timeout: 4000 },
+            );
+            if (r.status === 0) prs = JSON.parse(r.stdout || "[]");
+          } catch { /* gh unavail */ }
+          try {
+            const r = spawnSync(
+              "gh",
+              ["issue", "list", "--repo", ghRepo, "--state", "open", "--limit", "10",
+               "--json", "number,title,state,labels,url,updatedAt"],
+              { encoding: "utf8", timeout: 4000 },
+            );
+            if (r.status === 0) issues = JSON.parse(r.stdout || "[]");
+          } catch { /* gh unavail */ }
+        }
+
+        return Response.json({
+          ok: true,
+          name,
+          path,
+          remote_url: remoteUrl,
+          github_repo: ghRepo,
+          branch,
+          last_commit: lastCommit,
+          dirty,
+          ahead,
+          behind,
+          recent_commits: log10,
+          flags: {
+            has_claude_md: has("CLAUDE.md"),
+            has_package_json: has("package.json"),
+            has_pyproject: has("pyproject.toml") || has("requirements.txt"),
+            has_readme: has("README.md") || has("README"),
+          },
+          in_policy: !!policyEntry,
+          policy: policyEntry,
+          decisions: decisions.slice(0, 20),
+          dev_teams: teamsForThis,
+          vault: {
+            project_dir: vaultProjectDir,
+            exists: vaultExists,
+            root: vaultRoot,
+          },
+          prs,
+          issues,
+        });
+      }
+    }
+
     // ── /api/memory — Obsidian + vault state ─────────────────────────────
     if (url.pathname === "/api/memory") {
       const obsidianApp = "/Applications/Obsidian.app";

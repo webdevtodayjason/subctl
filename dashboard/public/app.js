@@ -523,110 +523,233 @@
     }, 5000);
   }
 
-  // ----- Projects tab — ~/code scan -----
+  // ----- Projects screen — master/detail with drill-down -----
   function wireProjectsTab() {
-    const body = $("projects-body");
+    const listEl = $("projects-list");
+    const detailEl = $("project-detail-pane");
+    const detailEmpty = $("project-detail-empty");
+    const filterEl = $("project-list-filter");
     const rootEl = $("projects-root");
-    if (!body) return;
+    if (!listEl || !detailEl) return;
 
-    async function refresh() {
+    let allProjects = [];
+    let selectedName = null;
+    let filterText = "";
+
+    function applyFilter() {
+      const q = filterText.toLowerCase();
+      const items = !q
+        ? allProjects
+        : allProjects.filter((p) => (p.name || "").toLowerCase().includes(q));
+      if (!items.length) {
+        listEl.innerHTML = "<div class=\"dim small\" style=\"padding:12px\">no matches</div>";
+        return;
+      }
+      listEl.replaceChildren(...items.map((p) => {
+        const item = document.createElement("button");
+        item.type = "button";
+        item.className = "project-list-item";
+        if (p.name === selectedName) item.classList.add("selected");
+        if (p.in_policy) item.classList.add("in-policy");
+        const name = document.createElement("div");
+        name.className = "project-list-name";
+        name.textContent = p.name;
+        item.appendChild(name);
+        const meta = document.createElement("div");
+        meta.className = "project-list-meta";
+        meta.textContent = (p.branch || "—") + " · " + (p.in_policy ? "tracked" : "untracked");
+        item.appendChild(meta);
+        item.addEventListener("click", () => selectProject(p.name));
+        return item;
+      }));
+    }
+
+    async function refreshList() {
       try {
         const r = await fetch("/api/projects");
         const j = await r.json();
         if (!j.ok) {
-          body.replaceChildren(emptyRow(6, j.error || "scan failed"));
+          listEl.innerHTML = "<div class=\"dim small\" style=\"padding:12px\">scan failed: " + escapeText(j.error || "?") + "</div>";
           return;
         }
         if (rootEl) rootEl.textContent = j.code_root;
-        const projects = j.projects || [];
-        if (!projects.length) {
-          body.replaceChildren(emptyRow(6, "no projects under " + j.code_root));
-          return;
-        }
-        body.replaceChildren(...projects.map((p) => {
-          const tr = document.createElement("tr");
-          if (p.in_policy) tr.classList.add("project-in-policy");
-          tr.appendChild(td(p.name));
-          tr.appendChild(td(p.branch || "—"));
-          const lcCell = td(p.last_commit || "(no commits)");
-          lcCell.classList.add("project-commit");
-          lcCell.title = p.last_commit || "";
-          tr.appendChild(lcCell);
-          const policyCell = document.createElement("td");
-          if (p.in_policy) {
-            const pill = document.createElement("span");
-            pill.className = "project-policy-pill";
-            pill.textContent = "✓ " + (p.autonomy_level || "tracked");
-            policyCell.appendChild(pill);
-          } else {
-            policyCell.textContent = "—";
-            policyCell.classList.add("dim");
-          }
-          tr.appendChild(policyCell);
-          const flagsCell = document.createElement("td");
-          flagsCell.classList.add("project-flags");
-          const flag = (cond, label, title) => {
-            if (!cond) return;
-            const f = document.createElement("span");
-            f.className = "project-flag";
-            f.textContent = label;
-            f.title = title;
-            flagsCell.appendChild(f);
-          };
-          flag(p.has_claude_md, "CLAUDE", "has CLAUDE.md");
-          flag(p.has_package_json, "node", "has package.json");
-          flag(p.has_pyproject, "py", "has pyproject.toml or requirements.txt");
-          flag(p.has_readme, "readme", "has README");
-          if (!flagsCell.children.length) { flagsCell.textContent = "—"; flagsCell.classList.add("dim"); }
-          tr.appendChild(flagsCell);
-          // Actions: Spawn dev team for this project (sends a directive to master)
-          const actionsCell = document.createElement("td");
-          const wrap = document.createElement("div");
-          wrap.className = "resume-actions";
-          const btnSpawn = document.createElement("button");
-          btnSpawn.className = "btn-resume";
-          btnSpawn.textContent = "spawn team";
-          btnSpawn.title = "Ask master to spawn a dev team for this project";
-          btnSpawn.addEventListener("click", async (e) => {
-            e.stopPropagation();
-            if (!confirm(`Ask master to spawn a dev team for "${p.name}" (${p.path})?`)) return;
-            btnSpawn.disabled = true;
-            btnSpawn.textContent = "asking…";
-            try {
-              const r2 = await fetch("/api/master/chat", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  text: `Spawn a dev team for project "${p.name}" at path "${p.path}". Pick the right account, use subctl_orch_spawn, and tell me the team name + how to attach.`,
-                  source: "chat",
-                }),
-              });
-              if (!r2.ok) {
-                btnSpawn.textContent = "failed";
-              } else {
-                btnSpawn.textContent = "asked ✓";
-                setTimeout(() => { btnSpawn.disabled = false; btnSpawn.textContent = "spawn team"; }, 3000);
-              }
-            } catch (err2) {
-              btnSpawn.textContent = "error";
-              btnSpawn.title = String(err2);
-            }
-          });
-          wrap.appendChild(btnSpawn);
-          actionsCell.appendChild(wrap);
-          tr.appendChild(actionsCell);
-          return tr;
-        }));
+        allProjects = j.projects || [];
+        applyFilter();
       } catch (err) {
-        body.replaceChildren(emptyRow(6, "fetch error: " + err));
+        listEl.innerHTML = "<div class=\"dim small\" style=\"padding:12px\">error: " + escapeText(String(err)) + "</div>";
       }
     }
 
-    refresh();
+    if (filterEl) {
+      filterEl.addEventListener("input", () => {
+        filterText = filterEl.value;
+        applyFilter();
+      });
+    }
+
+    async function selectProject(name) {
+      selectedName = name;
+      applyFilter();
+      detailEl.innerHTML = "<div class=\"dim small\" style=\"padding:24px\">loading project…</div>";
+      try {
+        const r = await fetch("/api/projects/" + encodeURIComponent(name));
+        const j = await r.json();
+        if (!j.ok) {
+          detailEl.innerHTML = "<div class=\"dim\" style=\"padding:24px\">load failed: " + escapeText(j.error || "?") + "</div>";
+          return;
+        }
+        renderProjectDetail(j);
+      } catch (err) {
+        detailEl.innerHTML = "<div class=\"dim\" style=\"padding:24px\">error: " + escapeText(String(err)) + "</div>";
+      }
+    }
+
+    function fmtCommit(c) {
+      if (!c) return "(no commits)";
+      const parts = String(c).split("\t");
+      return parts.length === 4
+        ? `${parts[0]}  ${parts[1]} (${parts[2]} · ${parts[3]})`
+        : c;
+    }
+
+    function renderProjectDetail(p) {
+      const ghLink = p.github_repo
+        ? `<a href="https://github.com/${escapeText(p.github_repo)}" target="_blank">github.com/${escapeText(p.github_repo)}</a>`
+        : "<span class=\"dim\">no GitHub remote</span>";
+      const dirtyPill = p.dirty ? "<span class=\"pill pill-warn\">dirty</span>" : "<span class=\"pill pill-ok\">clean</span>";
+      const aheadBehind =
+        (p.ahead ? `<span class=\"pill pill-info\">↑ ${p.ahead}</span>` : "") +
+        (p.behind ? `<span class=\"pill pill-warn\">↓ ${p.behind}</span>` : "");
+      const policyPill = p.in_policy
+        ? `<span class=\"pill pill-ok\">tracked · ${escapeText(p.policy?.autonomy_level || "")}</span>`
+        : "<span class=\"pill pill-dim\">untracked</span>";
+
+      // PRs
+      const prRows = (p.prs || []).map((pr) => {
+        const ci = (pr.statusCheckRollup || []).slice(0, 5).map((c) => {
+          const cls = c.conclusion === "SUCCESS" ? "ok" : c.conclusion === "FAILURE" ? "err" : "warn";
+          return `<span class="ci-pill ci-${cls}" title="${escapeText(c.name || "")}">${escapeText(c.conclusion || c.status || "?")}</span>`;
+        }).join("");
+        return `<div class="pr-row">
+          <a href="${escapeText(pr.url)}" target="_blank">#${pr.number}</a>
+          <span class="pr-title">${escapeText(pr.title || "")}</span>
+          ${pr.isDraft ? "<span class=\"pill pill-dim\">draft</span>" : ""}
+          <span class="ci-stack">${ci}</span>
+        </div>`;
+      }).join("") || "<div class=\"dim small\">no open PRs</div>";
+
+      // Issues
+      const issueRows = (p.issues || []).slice(0, 8).map((iss) =>
+        `<div class="issue-row"><a href="${escapeText(iss.url)}" target="_blank">#${iss.number}</a> ${escapeText(iss.title || "")}</div>`,
+      ).join("") || "<div class=\"dim small\">no open issues</div>";
+
+      // Recent commits
+      const commitRows = (p.recent_commits || []).slice(0, 8).map((c) =>
+        `<div class="commit-row"><code>${escapeText(c.sha)}</code> ${escapeText(c.subject)} <span class="dim">· ${escapeText(c.when)} · ${escapeText(c.author)}</span></div>`,
+      ).join("") || "<div class=\"dim small\">no commits</div>";
+
+      // Dev teams
+      const teamRows = (p.dev_teams || []).map((t) =>
+        `<div class="team-row"><strong>${escapeText(t.name)}</strong> <span class="dim small">${t.attached ? "attached" : "detached"}</span></div>`,
+      ).join("") || "<div class=\"dim small\">no dev teams running for this project</div>";
+
+      // Decisions
+      const decisionRows = (p.decisions || []).slice(0, 10).map((d) =>
+        `<div class="decision-row"><span class="dim small">${escapeText(d.ts || "")}</span> <strong>${escapeText(d.action || "")}</strong> — ${escapeText(d.rationale || "")}</div>`,
+      ).join("") || "<div class=\"dim small\">no decisions logged for this project yet</div>";
+
+      // Vault
+      const vault = p.vault || {};
+      const vaultBlock = vault.exists
+        ? `<div><code>${escapeText(vault.project_dir)}</code> <span class="pill pill-ok">exists</span></div>`
+        : `<div><span class="dim">no vault yet at</span> <code>${escapeText(vault.project_dir)}</code></div>`;
+
+      detailEl.innerHTML = `
+        <div class="project-detail">
+          <header class="project-detail-header">
+            <div class="pdh-title">
+              <h2>${escapeText(p.name)}</h2>
+              <div class="pdh-pills">
+                ${policyPill}
+                ${dirtyPill}
+                ${aheadBehind}
+              </div>
+            </div>
+            <div class="pdh-meta">
+              <div><span class="dim">path</span> <code>${escapeText(p.path)}</code></div>
+              <div><span class="dim">branch</span> ${escapeText(p.branch || "—")} · ${ghLink}</div>
+            </div>
+            <div class="pdh-actions">
+              <button type="button" class="primary-btn" data-action="spawn-team">Spawn dev team</button>
+              <button type="button" class="secondary-btn" data-action="open-vault">Open vault path</button>
+              ${p.github_repo ? `<a class="secondary-btn" href="https://github.com/${escapeText(p.github_repo)}" target="_blank">Open on GitHub</a>` : ""}
+            </div>
+          </header>
+
+          <div class="project-detail-grid">
+            <section class="pd-card">
+              <h3>Open PRs <span class="dim small">${(p.prs || []).length}</span></h3>
+              ${prRows}
+            </section>
+            <section class="pd-card">
+              <h3>Open Issues <span class="dim small">${(p.issues || []).length}</span></h3>
+              ${issueRows}
+            </section>
+            <section class="pd-card">
+              <h3>Dev teams</h3>
+              ${teamRows}
+            </section>
+            <section class="pd-card">
+              <h3>Vault</h3>
+              ${vaultBlock}
+            </section>
+            <section class="pd-card pd-card-wide">
+              <h3>Recent commits</h3>
+              ${commitRows}
+            </section>
+            <section class="pd-card pd-card-wide">
+              <h3>Master decisions <span class="dim small">${(p.decisions || []).length}</span></h3>
+              ${decisionRows}
+            </section>
+          </div>
+        </div>
+      `;
+      // Wire action buttons
+      detailEl.querySelector('[data-action="spawn-team"]')?.addEventListener("click", async () => {
+        if (!confirm(`Ask master to spawn a dev team for "${p.name}"?`)) return;
+        await fetch("/api/master/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            text: `Spawn a dev team for project "${p.name}" at path "${p.path}". Pick the right account, use subctl_orch_spawn, and tell me the team name + how to attach.`,
+            source: "chat",
+          }),
+        });
+        alert("Asked master. Switch to Chat to follow the response.");
+      });
+      detailEl.querySelector('[data-action="open-vault"]')?.addEventListener("click", () => {
+        navigator.clipboard.writeText(vault.project_dir);
+        alert("Vault path copied: " + vault.project_dir + (vault.exists ? "" : "\n(does not exist yet)"));
+      });
+    }
+
+    refreshList();
     setInterval(() => {
-      const panel = $("projects-panel");
-      if (panel && getComputedStyle(panel).display !== "none") refresh();
-    }, 15000);
+      const panel = document.querySelector("section[data-tab=\"projects\"]");
+      if (panel && getComputedStyle(panel).display !== "none") {
+        refreshList();
+        if (selectedName) selectProject(selectedName);
+      }
+    }, 30000);
+
+    // + New Project button — Phase 2c will wire the wizard. For now a stub
+    // so the button doesn't look dead.
+    const newBtn = $("project-new-btn");
+    if (newBtn) {
+      newBtn.addEventListener("click", () => {
+        alert("Coming next: New Project wizard (clone + Obsidian vault init + policy.json entry).");
+      });
+    }
   }
 
   // ----- Memory tab — Obsidian vault status -----
