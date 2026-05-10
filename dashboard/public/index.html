@@ -393,6 +393,51 @@
         <button type="button" class="primary-btn" id="project-new-btn">+ New Project</button>
       </header>
 
+      <!-- New Project wizard modal -->
+      <div class="modal-backdrop" id="new-project-modal" hidden>
+        <div class="modal" role="dialog" aria-labelledby="new-project-title">
+          <header class="modal-header">
+            <h3 id="new-project-title">New Project</h3>
+            <button type="button" class="modal-close" id="new-project-close" aria-label="close">✕</button>
+          </header>
+          <form class="modal-body" id="new-project-form">
+            <div class="form-row">
+              <label for="np-name">Name <span class="required">*</span></label>
+              <input type="text" id="np-name" name="name" placeholder="my-new-project" autocomplete="off" required pattern="[a-zA-Z0-9._-]+" />
+              <div class="form-hint">Becomes <code>~/code/<span id="np-name-preview">my-new-project</span></code> on the M3 Ultra. Alphanumerics + dots, dashes, underscores only.</div>
+            </div>
+            <div class="form-row">
+              <label for="np-git-url">Git URL <span class="dim">(optional)</span></label>
+              <input type="text" id="np-git-url" name="git_url" placeholder="git@github.com:owner/repo.git or https://…" autocomplete="off" />
+              <div class="form-hint">If set, the project is cloned. If blank, an empty directory is created with a README and a fresh <code>git init</code>.</div>
+            </div>
+            <div class="form-row">
+              <label for="np-autonomy">Autonomy</label>
+              <select id="np-autonomy" name="autonomy_level">
+                <option value="ask" selected>ask — master proposes, you approve every action</option>
+                <option value="drive">drive — master can act on most things, escalates push/merge/deploy</option>
+                <option value="shadow">shadow — master observes only, never spawns workers without explicit go</option>
+              </select>
+            </div>
+            <div class="form-row form-checks">
+              <label class="form-check">
+                <input type="checkbox" id="np-create-vault" checked />
+                Create Obsidian vault folder at <code>~/Documents/Obsidian Vault/<span class="np-name-mirror">my-new-project</span>/</code> with RESUME.md + design/, reviews/, postmortems/
+              </label>
+              <label class="form-check">
+                <input type="checkbox" id="np-add-policy" checked />
+                Add to <code>policy.json</code> so master watches it (also restarts master to pick it up)
+              </label>
+            </div>
+            <div class="form-status" id="np-status" hidden></div>
+            <footer class="modal-footer">
+              <button type="button" class="secondary-btn" id="new-project-cancel">cancel</button>
+              <button type="submit" class="primary-btn" id="new-project-submit">create</button>
+            </footer>
+          </form>
+        </div>
+      </div>
+
       <div class="projects-layout">
         <aside class="projects-list-pane">
           <div class="projects-list-search">

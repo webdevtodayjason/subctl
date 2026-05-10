@@ -442,6 +442,69 @@
     return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   }
 
+  // CSS-escape (subset) — ids in our project chat logs include / : etc. and
+  // querySelector chokes on them. Replace anything non-alphanumeric+dash+underscore.
+  function cssEscape(s) {
+    return String(s).replace(/[^a-zA-Z0-9_-]/g, "_");
+  }
+
+  // One-shot SSE listener that captures the next assistant turn (from the
+  // first message_start through agent_end) into a target log element. Used
+  // by the per-project chat panels — they piggyback on the same master
+  // /events stream the main Chat panel consumes, but render only the
+  // current turn into their own scoped log.
+  function attachOneShotAssistantCapture(logEl) {
+    const es = new EventSource("/api/master/events");
+    let bubble = null;
+    let toolBubbles = new Map();
+    let active = false;
+    let acc = "";
+    const cleanup = () => { try { es.close(); } catch {} };
+    const ensureBubble = () => {
+      if (bubble) return bubble;
+      const m = document.createElement("div");
+      m.className = "pd-chat-msg pd-chat-master";
+      m.innerHTML = `<div class="pd-chat-label">master</div><div class="pd-chat-body"></div>`;
+      logEl.appendChild(m);
+      logEl.scrollTop = logEl.scrollHeight;
+      bubble = m.querySelector(".pd-chat-body");
+      return bubble;
+    };
+    es.addEventListener("message_start", () => {
+      active = true;
+      acc = "";
+      bubble = null;
+    });
+    es.addEventListener("message_update", (e) => {
+      if (!active) return;
+      try {
+        const d = JSON.parse(e.data);
+        const ev = d.assistantMessageEvent;
+        if (!ev) return;
+        if (ev.type === "text_delta" && typeof ev.delta === "string") {
+          acc += ev.delta;
+          ensureBubble().textContent = acc;
+          logEl.scrollTop = logEl.scrollHeight;
+        } else if (ev.type === "toolcall_start") {
+          const tc = ev.partial?.content?.[ev.contentIndex];
+          if (tc?.id && tc?.name) {
+            const tcEl = document.createElement("div");
+            tcEl.className = "pd-chat-msg pd-chat-tool";
+            tcEl.innerHTML = `<div class="pd-chat-label">tool · ${escapeText(tc.name)}</div>`;
+            logEl.appendChild(tcEl);
+            toolBubbles.set(tc.id, tcEl);
+            logEl.scrollTop = logEl.scrollHeight;
+          }
+        }
+      } catch {}
+    });
+    es.addEventListener("agent_end", () => { cleanup(); });
+    es.addEventListener("error", () => { setTimeout(cleanup, 1000); });
+    // Safety timeout — if nothing happens within 90s, give up (in case the
+    // user never receives an assistant turn for any reason).
+    setTimeout(cleanup, 90000);
+  }
+
   // ----- Models tab — LM Studio model catalog -----
   function wireModelsTab() {
     const body = $("models-body");
@@ -711,9 +774,69 @@
               <h3>Master decisions <span class="dim small">${(p.decisions || []).length}</span></h3>
               ${decisionRows}
             </section>
+
+            <!-- Per-project chat: scope master to this specific project -->
+            <section class="pd-card pd-card-wide pd-chat">
+              <h3>Talk to master about this project</h3>
+              <div class="pd-chat-log" id="pd-chat-log-${escapeText(p.name)}">
+                <div class="dim small">messages here are pre-scoped to <strong>${escapeText(p.name)}</strong> — master gets your text plus project metadata so it can call the right tools without you re-stating context</div>
+              </div>
+              <form class="pd-chat-form" data-project="${escapeText(p.name)}" data-path="${escapeText(p.path)}">
+                <input type="text" class="pd-chat-input" placeholder="ask master about ${escapeText(p.name)}…" autocomplete="off" />
+                <button type="submit" class="primary-btn">send</button>
+              </form>
+            </section>
           </div>
         </div>
       `;
+      // Wire per-project chat form
+      const pdForm = detailEl.querySelector(".pd-chat-form");
+      const pdInput = detailEl.querySelector(".pd-chat-input");
+      const pdLog = detailEl.querySelector(`#pd-chat-log-${cssEscape(p.name)}`);
+      if (pdForm && pdInput && pdLog) {
+        pdForm.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const text = pdInput.value.trim();
+          if (!text) return;
+          pdInput.value = "";
+          // Append user bubble to the project chat log
+          const empty = pdLog.querySelector(".dim");
+          if (empty) empty.remove();
+          const u = document.createElement("div");
+          u.className = "pd-chat-msg pd-chat-user";
+          u.innerHTML = `<div class="pd-chat-label">you</div><div class="pd-chat-body"></div>`;
+          u.querySelector(".pd-chat-body").textContent = text;
+          pdLog.appendChild(u);
+          pdLog.scrollTop = pdLog.scrollHeight;
+          // Compose a project-scoped directive
+          const scopedText =
+            `[project: ${p.name} | path: ${p.path}${p.github_repo ? ` | repo: ${p.github_repo}` : ""}${p.branch ? ` | branch: ${p.branch}` : ""}]\n\n${text}`;
+          try {
+            const r = await fetch("/api/master/chat", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ text: scopedText, source: "chat" }),
+            });
+            if (!r.ok) {
+              const j = await r.json().catch(() => ({}));
+              const err = document.createElement("div");
+              err.className = "pd-chat-msg pd-chat-err";
+              err.textContent = "send failed: " + (j.error || r.status);
+              pdLog.appendChild(err);
+            }
+            // The master's response streams to /api/master/events. We tap it
+            // below via a one-shot SSE listener that watches for the next
+            // assistant turn after our submission.
+            attachOneShotAssistantCapture(pdLog);
+          } catch (err) {
+            const e2 = document.createElement("div");
+            e2.className = "pd-chat-msg pd-chat-err";
+            e2.textContent = "send error: " + err;
+            pdLog.appendChild(e2);
+          }
+        });
+      }
+
       // Wire action buttons
       detailEl.querySelector('[data-action="spawn-team"]')?.addEventListener("click", async () => {
         if (!confirm(`Ask master to spawn a dev team for "${p.name}"?`)) return;
@@ -742,12 +865,91 @@
       }
     }, 30000);
 
-    // + New Project button — Phase 2c will wire the wizard. For now a stub
-    // so the button doesn't look dead.
+    // + New Project button — wizard modal
     const newBtn = $("project-new-btn");
-    if (newBtn) {
-      newBtn.addEventListener("click", () => {
-        alert("Coming next: New Project wizard (clone + Obsidian vault init + policy.json entry).");
+    const modal = $("new-project-modal");
+    const modalClose = $("new-project-close");
+    const modalCancel = $("new-project-cancel");
+    const form = $("new-project-form");
+    const nameInput = $("np-name");
+    const namePreview = $("np-name-preview");
+    const submitBtn = $("new-project-submit");
+    const statusEl = $("np-status");
+    function openModal() {
+      if (!modal) return;
+      modal.hidden = false;
+      setTimeout(() => nameInput && nameInput.focus(), 50);
+    }
+    function closeModal() {
+      if (!modal) return;
+      modal.hidden = true;
+      if (form) form.reset();
+      if (statusEl) { statusEl.hidden = true; statusEl.textContent = ""; statusEl.className = "form-status"; }
+      if (namePreview) namePreview.textContent = "my-new-project";
+      document.querySelectorAll(".np-name-mirror").forEach((el) => el.textContent = "my-new-project");
+    }
+    if (newBtn) newBtn.addEventListener("click", openModal);
+    if (modalClose) modalClose.addEventListener("click", closeModal);
+    if (modalCancel) modalCancel.addEventListener("click", closeModal);
+    if (modal) modal.addEventListener("click", (e) => { if (e.target === modal) closeModal(); });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && modal && !modal.hidden) closeModal();
+    });
+    if (nameInput && namePreview) {
+      nameInput.addEventListener("input", () => {
+        const v = nameInput.value || "my-new-project";
+        namePreview.textContent = v;
+        document.querySelectorAll(".np-name-mirror").forEach((el) => el.textContent = v);
+      });
+    }
+    if (form) {
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const payload = {
+          name: nameInput.value.trim(),
+          git_url: ($("np-git-url")?.value || "").trim(),
+          autonomy_level: $("np-autonomy")?.value || "ask",
+          create_vault: $("np-create-vault")?.checked !== false,
+          add_to_policy: $("np-add-policy")?.checked !== false,
+        };
+        if (!payload.name) return;
+        submitBtn.disabled = true;
+        submitBtn.textContent = "creating…";
+        statusEl.hidden = false;
+        statusEl.className = "form-status form-status-info";
+        statusEl.textContent = payload.git_url
+          ? "Cloning " + payload.git_url + " into ~/code/" + payload.name + "…"
+          : "Initializing ~/code/" + payload.name + "…";
+        try {
+          const r = await fetch("/api/projects/create", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          const j = await r.json();
+          if (!j.ok) {
+            statusEl.className = "form-status form-status-err";
+            statusEl.textContent = "Failed: " + (j.error || r.status);
+            if (j.steps && j.steps.length) {
+              statusEl.textContent += "\n\n" + j.steps.map((s) => `${s.ok ? "✓" : "✗"} ${s.step}: ${s.detail || ""}`).join("\n");
+            }
+            submitBtn.disabled = false;
+            submitBtn.textContent = "create";
+            return;
+          }
+          statusEl.className = "form-status form-status-ok";
+          statusEl.textContent = "✓ Created.\n" + (j.steps || []).map((s) => `${s.ok ? "✓" : "✗"} ${s.step}: ${s.detail || ""}`).join("\n");
+          submitBtn.textContent = "done ✓";
+          // Refresh the project list and select the new one
+          await refreshList();
+          selectProject(payload.name);
+          setTimeout(closeModal, 1800);
+        } catch (err) {
+          statusEl.className = "form-status form-status-err";
+          statusEl.textContent = "Error: " + err;
+          submitBtn.disabled = false;
+          submitBtn.textContent = "create";
+        }
       });
     }
   }

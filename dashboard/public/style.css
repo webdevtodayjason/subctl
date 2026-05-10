@@ -1671,6 +1671,163 @@ body[data-active-tab="memory"]        section[data-tab]:not([data-tab="memory"])
   .project-detail-grid { grid-template-columns: 1fr; }
 }
 
+/* Per-project chat embed (inside project detail page) */
+.pd-chat .pd-chat-log {
+  max-height: 360px;
+  overflow-y: auto;
+  background: #0a0a0a;
+  border: 1px solid #1a1a1a;
+  border-radius: 3px;
+  padding: 12px;
+  margin-bottom: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.pd-chat-msg {
+  padding: 8px 12px;
+  border-radius: 3px;
+  border-left: 3px solid #1f1f1f;
+  background: #111;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.pd-chat-msg .pd-chat-label {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #777;
+  margin-bottom: 3px;
+}
+.pd-chat-msg .pd-chat-body {
+  color: #c4c4c4;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+.pd-chat-user { border-left-color: #5fd7ff; align-self: flex-end; max-width: 90%; }
+.pd-chat-user .pd-chat-label { color: #5fd7ff; }
+.pd-chat-master { border-left-color: #6cd697; }
+.pd-chat-master .pd-chat-label { color: #6cd697; }
+.pd-chat-tool { border-left-color: #b074d6; background: #14101a; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11.5px; }
+.pd-chat-tool .pd-chat-label { color: #b074d6; }
+.pd-chat-err { border-left-color: #d66c6c; color: #d66c6c; padding: 6px 10px; font-size: 12px; }
+.pd-chat-form {
+  display: flex;
+  gap: 8px;
+}
+.pd-chat-input {
+  flex: 1;
+  padding: 8px 12px;
+  background: #0c0c0c;
+  border: 1px solid #2a2a2a;
+  border-radius: 3px;
+  color: #c4c4c4;
+  font-family: inherit;
+  font-size: 13px;
+}
+.pd-chat-input:focus { outline: none; border-color: #5fd7ff; }
+
+/* ── Modal: New Project wizard ────────────────────────────────────────── */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  backdrop-filter: blur(4px);
+}
+.modal-backdrop[hidden] { display: none; }
+.modal {
+  background: #0c0c0c;
+  border: 1px solid #2a2a2a;
+  border-radius: 6px;
+  width: 90%;
+  max-width: 580px;
+  max-height: 92vh;
+  overflow-y: auto;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+}
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid #1a1a1a;
+}
+.modal-header h3 { margin: 0; font-size: 14px; color: #ffffff; font-weight: 500; letter-spacing: 0.04em; }
+.modal-close {
+  background: transparent;
+  border: none;
+  color: #777;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 3px;
+}
+.modal-close:hover { color: #c4c4c4; background: #1a1a1a; }
+.modal-body {
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.form-row { display: flex; flex-direction: column; gap: 6px; }
+.form-row label {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #888;
+}
+.form-row label .required { color: #d66c6c; }
+.form-row label .dim { color: #555; text-transform: none; letter-spacing: 0; font-size: 11px; }
+.form-row input[type="text"], .form-row select {
+  background: #0a0a0a;
+  border: 1px solid #2a2a2a;
+  color: #c4c4c4;
+  padding: 8px 12px;
+  border-radius: 3px;
+  font-family: inherit;
+  font-size: 13px;
+}
+.form-row input:focus, .form-row select:focus { outline: none; border-color: #5fd7ff; }
+.form-hint { color: #666; font-size: 11px; }
+.form-hint code { background: #141414; color: #5fd7ff; padding: 0 4px; border-radius: 2px; }
+.form-checks { gap: 10px; }
+.form-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 12px;
+  color: #aaa;
+  text-transform: none;
+  letter-spacing: 0;
+  cursor: pointer;
+  line-height: 1.4;
+}
+.form-check input { margin-top: 3px; flex-shrink: 0; }
+.form-check code { background: #141414; color: #5fd7ff; padding: 0 4px; border-radius: 2px; }
+.form-status {
+  padding: 10px 12px;
+  border-radius: 3px;
+  font-size: 12px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  white-space: pre-wrap;
+}
+.form-status-info { background: #102236; color: #5fd7ff; border: 1px solid #1a3a4a; }
+.form-status-ok   { background: #102a18; color: #6cd697; border: 1px solid #1f4226; }
+.form-status-err  { background: #2a1010; color: #d66c6c; border: 1px solid #4a1f1f; }
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 4px;
+  border-top: 1px solid #1a1a1a;
+  margin-top: 4px;
+  padding-top: 14px;
+}
+
 /* ── App shell: left sidebar + main content ───────────────────────────── */
 .app-shell {
   display: flex;

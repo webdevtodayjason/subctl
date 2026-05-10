@@ -2251,6 +2251,170 @@ const server = Bun.serve({
       return Response.json({ ok: true, code_root: codeRoot, projects });
     }
 
+    // ── /api/projects/create — wizard endpoint ───────────────────────────
+    // Body: {name, git_url?, autonomy_level: "drive"|"ask"|"shadow",
+    //        create_vault: boolean, add_to_policy: boolean}
+    // Steps:
+    //   1. Validate name (no shell-special chars, not already at ~/code/<name>)
+    //   2. Either git clone or mkdir into ~/code/<name>
+    //   3. If create_vault: mkdir ~/Documents/Obsidian Vault/<name>/{,design,reviews,postmortems}
+    //      and seed RESUME.md with a tiny template
+    //   4. If add_to_policy: append entry to ~/.config/subctl/master/policy.json
+    //   5. Return success + path + vault_path so the UI can refresh and select it
+    if (url.pathname === "/api/projects/create" && req.method === "POST") {
+      let body: {
+        name?: string;
+        git_url?: string;
+        autonomy_level?: "drive" | "ask" | "shadow";
+        create_vault?: boolean;
+        add_to_policy?: boolean;
+      };
+      try {
+        body = await req.json();
+      } catch {
+        return Response.json({ ok: false, error: "invalid JSON body" }, { status: 400 });
+      }
+      const name = (body.name ?? "").trim();
+      const gitUrl = (body.git_url ?? "").trim();
+      const autonomy = body.autonomy_level ?? "ask";
+      const createVault = body.create_vault !== false; // default true
+      const addToPolicy = body.add_to_policy !== false; // default true
+
+      // Validate
+      if (!name) return Response.json({ ok: false, error: "name required" }, { status: 400 });
+      if (!/^[a-zA-Z0-9._-]+$/.test(name)) {
+        return Response.json(
+          { ok: false, error: "name must be alphanumerics + dots/dashes/underscores only" },
+          { status: 400 },
+        );
+      }
+      if (!["drive", "ask", "shadow"].includes(autonomy)) {
+        return Response.json({ ok: false, error: "autonomy_level must be drive/ask/shadow" }, { status: 400 });
+      }
+
+      const codeRoot = process.env.SUBCTL_CODE_ROOT ?? `${process.env.HOME}/code`;
+      const projectPath = join(codeRoot, name);
+      if (existsSync(projectPath)) {
+        return Response.json({ ok: false, error: `~/code/${name} already exists` }, { status: 409 });
+      }
+
+      const steps: Array<{ step: string; ok: boolean; detail?: string }> = [];
+
+      // 1. Clone or mkdir
+      if (gitUrl) {
+        const r = spawnSync("git", ["clone", gitUrl, projectPath], {
+          encoding: "utf8",
+          timeout: 120_000,
+        });
+        if (r.status !== 0) {
+          steps.push({ step: "clone", ok: false, detail: (r.stderr || r.stdout || "").slice(0, 500) });
+          return Response.json({ ok: false, error: "git clone failed", steps }, { status: 500 });
+        }
+        steps.push({ step: "clone", ok: true, detail: gitUrl });
+      } else {
+        try {
+          const { mkdirSync, writeFileSync } = require("node:fs") as typeof import("node:fs");
+          mkdirSync(projectPath, { recursive: true });
+          // Seed README so it's not totally empty
+          writeFileSync(
+            join(projectPath, "README.md"),
+            `# ${name}\n\nCreated via subctl new-project wizard on ${new Date().toISOString()}.\n`,
+          );
+          // Init git so the project page can show branch / commits
+          spawnSync("git", ["-C", projectPath, "init", "--initial-branch=main"], { encoding: "utf8", timeout: 10_000 });
+          spawnSync("git", ["-C", projectPath, "add", "."], { encoding: "utf8", timeout: 5_000 });
+          spawnSync("git", ["-C", projectPath, "commit", "-m", "Initial commit"], { encoding: "utf8", timeout: 10_000 });
+          steps.push({ step: "mkdir+init", ok: true, detail: projectPath });
+        } catch (err) {
+          steps.push({ step: "mkdir+init", ok: false, detail: (err as Error).message });
+          return Response.json({ ok: false, error: "init failed", steps }, { status: 500 });
+        }
+      }
+
+      // 2. Vault
+      let vaultPath: string | null = null;
+      if (createVault) {
+        try {
+          const { mkdirSync, writeFileSync } = require("node:fs") as typeof import("node:fs");
+          const vaultRoot = `${process.env.HOME}/Documents/Obsidian Vault`;
+          vaultPath = join(vaultRoot, name);
+          mkdirSync(join(vaultPath, "design"), { recursive: true });
+          mkdirSync(join(vaultPath, "reviews"), { recursive: true });
+          mkdirSync(join(vaultPath, "postmortems"), { recursive: true });
+          writeFileSync(
+            join(vaultPath, "RESUME.md"),
+            [
+              `# ${name} — RESUME`,
+              "",
+              `**Path:** \`${projectPath}\``,
+              gitUrl ? `**Repo:** ${gitUrl}` : "**Repo:** (local-only)",
+              `**Created:** ${new Date().toISOString()}`,
+              "",
+              "## Current state",
+              "",
+              "_New project. Master will populate this as work progresses._",
+              "",
+              "## What's next",
+              "",
+              "- [ ] Define initial scope",
+              "- [ ] Spawn first dev team",
+              "",
+            ].join("\n"),
+          );
+          steps.push({ step: "vault", ok: true, detail: vaultPath });
+        } catch (err) {
+          steps.push({ step: "vault", ok: false, detail: (err as Error).message });
+          // non-fatal — vault is optional
+        }
+      }
+
+      // 3. policy.json append
+      if (addToPolicy) {
+        try {
+          const policyPath = join(SUBCTL_CONFIG_DIR, "master", "policy.json");
+          if (existsSync(policyPath)) {
+            const raw = readFileSync(policyPath, "utf8");
+            const stripped = raw.split("\n").filter((l) => !/^\s*"_comment[^"]*"\s*:/.test(l)).join("\n").replace(/,(\s*[}\]])/g, "$1");
+            const policy = JSON.parse(stripped) as { projects?: Array<Record<string, unknown>> };
+            policy.projects = policy.projects ?? [];
+            policy.projects.push({
+              path: projectPath,
+              autonomy_level: autonomy,
+              _comment_autonomy: `Added via dashboard wizard on ${new Date().toISOString().slice(0, 10)}`,
+            });
+            const { writeFileSync } = require("node:fs") as typeof import("node:fs");
+            writeFileSync(policyPath, JSON.stringify(policy, null, 2));
+            steps.push({ step: "policy", ok: true, detail: `appended ${name} (autonomy=${autonomy})` });
+            // Restart master so it picks up the new project
+            const label = "com.subctl.master";
+            const plist = `${process.env.HOME}/Library/LaunchAgents/${label}.plist`;
+            if (existsSync(plist)) {
+              spawnSync("launchctl", ["unload", plist], { encoding: "utf8", timeout: 5000 });
+              for (let i = 0; i < 5; i++) {
+                const ps = spawnSync("pgrep", ["-f", "subctl.*master/server.ts"], { encoding: "utf8", timeout: 1000 });
+                if (!ps.stdout?.trim()) break;
+                await new Promise((r) => setTimeout(r, 1000));
+              }
+              spawnSync("launchctl", ["load", plist], { encoding: "utf8", timeout: 5000 });
+              steps.push({ step: "master-restart", ok: true });
+            }
+          } else {
+            steps.push({ step: "policy", ok: false, detail: "policy.json missing" });
+          }
+        } catch (err) {
+          steps.push({ step: "policy", ok: false, detail: (err as Error).message });
+        }
+      }
+
+      return Response.json({
+        ok: true,
+        name,
+        path: projectPath,
+        vault_path: vaultPath,
+        steps,
+      });
+    }
+
     // ── /api/projects/:name — drill-down detail for one project ──────────
     {
       const m = url.pathname.match(/^\/api\/projects\/([^/]+)\/?$/);
