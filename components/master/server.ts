@@ -73,6 +73,17 @@ const SUBCTL_CONFIG_DIR =
 const MASTER_STATE_DIR = join(SUBCTL_CONFIG_DIR, "master");
 const MASTER_LOG = join(HOME, "Library", "Logs", "subctl", "master.log");
 
+// Single source of truth: VERSION file at repo root. lib/core.sh reads the
+// same file so bash + dashboard + master daemon all agree on the version.
+const SUBCTL_VERSION = (() => {
+  try {
+    return readFileSync(join(COMPONENT_DIR, "..", "..", "VERSION"), "utf8")
+      .trim();
+  } catch {
+    return "0.0.0-dev";
+  }
+})();
+
 const PROVIDERS_PATH = join(MASTER_STATE_DIR, "providers.json");
 const POLICY_PATH = join(MASTER_STATE_DIR, "policy.json");
 const STATE_PATH = join(MASTER_STATE_DIR, "state.json");
@@ -121,7 +132,7 @@ function ensureConfigFiles(): { ok: boolean; warnings: string[] } {
           last_review_ts: null,
           active_projects: {},
           known_workers: {},
-          version: "0.1.0",
+          version: SUBCTL_VERSION,
         },
         null,
         2,
@@ -489,7 +500,7 @@ function updateLastReviewTs() {
 // ─── main ───────────────────────────────────────────────────────────────────
 
 async function main() {
-  console.error(`[master] booting subctl master v0.1.0`);
+  console.error(`[master] booting subctl master v${SUBCTL_VERSION}`);
 
   const probe = ensureConfigFiles();
   if (!probe.ok) {
@@ -850,7 +861,7 @@ async function main() {
       if (url.pathname === "/health") {
         return Response.json({
           ok: true,
-          version: "0.1.0",
+          version: SUBCTL_VERSION,
           uptime_s: Math.floor(process.uptime()),
           transcript_msgs: agent.state.messages.length,
           subscribers: sseClients.size,
@@ -1218,6 +1229,7 @@ async function main() {
         return Response.json({
           ok: checks.every((c) => c.ok),
           ts: new Date().toISOString(),
+          version: SUBCTL_VERSION,
           uptime_s: Math.floor(process.uptime()),
           tools_loaded: tools.length,
           transcript_msgs: agent.state.messages.length,

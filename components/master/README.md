@@ -2,7 +2,7 @@
 
 > Persistent supervisor daemon. Drives subctl orchestrators across the operator's code projects, routes across local + remote LLMs, keeps the operator in the loop via a dedicated Telegram bot.
 
-**Status:** v0.1.0 scaffold. Configuration + tool layer in place. pi-agent-core SDK wiring pending (see TODO in `server.ts`).
+**Status:** shipping in subctl v2.0.0. pi-agent-core wired, 13 tool families registered, three-tier memory online, dashboard chat panel + Telegram listener share a single transcript. See `../../docs/master.md` for the canonical architecture document.
 
 ---
 

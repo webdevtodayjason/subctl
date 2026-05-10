@@ -81,8 +81,9 @@ EOF
   fi
 
   # ── 2. fetch + fast-forward ───────────────────────────────────────────────
-  local current_sha new_sha
+  local current_sha new_sha old_version new_version
   current_sha=$(git rev-parse HEAD)
+  old_version=$(tr -d '[:space:]' < "$SUBCTL_REPO_ROOT/VERSION" 2>/dev/null || echo "?")
 
   subctl_info "fetching origin..."
   if ! git fetch --quiet origin "$branch"; then
@@ -116,7 +117,12 @@ EOF
     return 0
   fi
 
-  subctl_ok "updated ${current_sha:0:8} → ${new_sha:0:8} ($(git rev-list --count "$current_sha".."$new_sha") commits)"
+  new_version=$(tr -d '[:space:]' < "$SUBCTL_REPO_ROOT/VERSION" 2>/dev/null || echo "?")
+  if [[ "$old_version" != "$new_version" ]]; then
+    subctl_ok "updated ${current_sha:0:8} → ${new_sha:0:8}  (v${old_version} → v${new_version}, $(git rev-list --count "$current_sha".."$new_sha") commits)"
+  else
+    subctl_ok "updated ${current_sha:0:8} → ${new_sha:0:8}  (v${new_version}, $(git rev-list --count "$current_sha".."$new_sha") commits)"
+  fi
   echo
   subctl_info "summary of incoming commits:"
   git log --oneline "$current_sha".."$new_sha" | head -15

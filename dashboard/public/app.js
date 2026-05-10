@@ -2996,7 +2996,7 @@
           appendSystemBlock("running diagnostics (LM Studio + Telegram + coderabbit + gh + tmux)…");
           await fetchAndRenderJSON("/api/master/diag", "diag", (j) => {
             const header =
-              `master ${j.ok ? "ALL CHECKS PASSED" : "DEGRADED"} · v0.1.0\n` +
+              `master ${j.ok ? "ALL CHECKS PASSED" : "DEGRADED"} · v${j.version || "?"}\n` +
               `  supervisor      ${j.supervisor}\n` +
               `  uptime          ${j.uptime_s}s\n` +
               `  tools loaded    ${j.tools_loaded}\n` +

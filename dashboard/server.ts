@@ -87,6 +87,13 @@ const PUBLIC_DIR = join(import.meta.dir, "public");
 // ---------- version (read once at startup) ----------
 
 function readSubctlVersion(): string {
+  // Single source of truth: VERSION file at repo root. lib/core.sh and the
+  // master daemon read the same file. Fall back to legacy core.sh literal
+  // for older checkouts that haven't been updated past v1.x yet.
+  try {
+    const v = readFileSync(join(REPO_ROOT, "VERSION"), "utf8").trim();
+    if (v) return v;
+  } catch { /* fall through to legacy probe */ }
   try {
     const raw = readFileSync(join(REPO_ROOT, "lib", "core.sh"), "utf8");
     const m = raw.match(/^\s*SUBCTL_VERSION\s*=\s*"([^"]+)"/m);

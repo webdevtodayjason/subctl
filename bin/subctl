@@ -571,6 +571,17 @@ case "$cmd" in
 
   version|--version|-v)
     echo "subctl v$SUBCTL_VERSION"
+    if (cd "$SUBCTL_REPO_ROOT" && git rev-parse --git-dir >/dev/null 2>&1); then
+      _branch=$(cd "$SUBCTL_REPO_ROOT" && git rev-parse --abbrev-ref HEAD 2>/dev/null)
+      _sha=$(cd "$SUBCTL_REPO_ROOT" && git rev-parse --short HEAD 2>/dev/null)
+      _dirty=""
+      if ! (cd "$SUBCTL_REPO_ROOT" && git diff --quiet 2>/dev/null) || \
+         ! (cd "$SUBCTL_REPO_ROOT" && git diff --cached --quiet 2>/dev/null); then
+        _dirty=" (dirty)"
+      fi
+      echo "  git: ${_branch}@${_sha}${_dirty}"
+      echo "  repo: $SUBCTL_REPO_ROOT"
+    fi
     ;;
 
   help|--help|-h)
