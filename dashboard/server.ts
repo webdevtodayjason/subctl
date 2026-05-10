@@ -3088,6 +3088,183 @@ const server = Bun.serve({
         headers: { "Content-Type": "application/json; charset=utf-8" },
       });
     }
+    // ── /api/providers — list available providers + their profiles + which
+    //    are usable as supervisor right now (auth status + load state) ─────
+    if (url.pathname === "/api/providers" && req.method === "GET") {
+      // Provider catalog. Local-first: lmstudio shows up with its model
+      // catalog; cloud providers show up if at least one ready profile.
+      const providers: Array<Record<string, unknown>> = [];
+
+      // 1. lmstudio — query LM Studio API directly for loaded state
+      const lmHost = process.env.SUBCTL_LMSTUDIO_HOST ?? "http://localhost:1234";
+      try {
+        const r = await fetch(`${lmHost}/api/v0/models`, { signal: AbortSignal.timeout(2500) });
+        if (r.ok) {
+          const j = (await r.json()) as { data?: Array<Record<string, unknown>> };
+          const models = (j.data ?? []).filter((m) => m.type === "vlm" || m.type === "llm");
+          providers.push({
+            id: "lmstudio",
+            display: "LM Studio (local)",
+            kind: "local",
+            host: lmHost,
+            available: true,
+            note: "Always-on local inference. Per-model availability depends on LM Studio's loaded state.",
+            models: models.map((m) => ({
+              id: m.id,
+              state: m.state,                  // "loaded" | "not-loaded"
+              loaded: m.state === "loaded",
+              quantization: m.quantization,
+              loaded_context_length: m.loaded_context_length,
+              max_context_length: m.max_context_length,
+              capabilities: m.capabilities ?? [],
+            })),
+          });
+        }
+      } catch { /* lmstudio offline; skip */ }
+
+      // 2. accounts.conf — find any cloud providers with at least one
+      //    authenticated profile. Pull the relevant profile metadata.
+      const accountsPath = join(SUBCTL_CONFIG_DIR, "accounts.conf");
+      const profilesByProvider: Record<string, Array<Record<string, unknown>>> = {};
+      try {
+        if (existsSync(accountsPath)) {
+          const raw = readFileSync(accountsPath, "utf8");
+          for (const line of raw.split("\n")) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith("#")) continue;
+            const parts = trimmed.split("|").map((p) => p.trim());
+            if (parts.length < 4) continue;
+            const [alias, provider, email, configDirRaw, description = ""] = parts;
+            const configDir = configDirRaw!.replace(/^~/, process.env.HOME ?? "");
+            // Auth detection per provider (matches /api/settings/oauth)
+            let authed = false;
+            if (provider === "claude") {
+              authed = existsSync(join(configDir, ".credentials.json"));
+            } else if (provider === "openai") {
+              const codexAuth = join(configDir, "auth.json");
+              if (existsSync(codexAuth)) {
+                try {
+                  const j = JSON.parse(readFileSync(codexAuth, "utf8"));
+                  authed = !!(j && (j.tokens || j.access_token));
+                } catch { authed = false; }
+              }
+            }
+            (profilesByProvider[provider!] ??= []).push({
+              alias, email, config_dir: configDirRaw, description, authed,
+            });
+          }
+        }
+      } catch { /* ignore */ }
+
+      // Curated cloud-provider catalog. Each entry maps to a default model
+      // suggestion, mostly so the chat dropdown has something to populate.
+      const CLOUD = [
+        { id: "anthropic",   display: "Anthropic Claude",      kind: "cloud", default_model: "claude-sonnet-4-6" },
+        { id: "openai-codex", display: "OpenAI Codex (ChatGPT)", kind: "cloud", default_model: "gpt-5.2" },
+        // Future: gemini, zai, minimax — add when accounts.conf has profiles for them
+      ];
+      // claude profiles in accounts.conf land under provider="claude"; the
+      // ANTHROPIC API surface uses provider="anthropic". For our purposes,
+      // any authed claude profile makes Anthropic "available" since Claude
+      // Code OAuth doubles for the master's Anthropic-API call path.
+      for (const cp of CLOUD) {
+        const profileKey = cp.id === "anthropic" ? "claude" : (cp.id === "openai-codex" ? "openai" : cp.id);
+        const profiles = profilesByProvider[profileKey] ?? [];
+        const anyAuthed = profiles.some((p) => p.authed);
+        providers.push({
+          id: cp.id,
+          display: cp.display,
+          kind: cp.kind,
+          default_model: cp.default_model,
+          available: anyAuthed,
+          profiles,
+          note: anyAuthed ? `${profiles.filter((p) => p.authed).length} authed profile(s)` : "no authed profile yet — run subctl auth on a profile first",
+        });
+      }
+
+      // Also surface any provider-scoped profile group the user has but
+      // we don't have a curated cloud entry for (so they're visible at all).
+      const known = new Set(["claude", "openai"]);
+      for (const [provider, profiles] of Object.entries(profilesByProvider)) {
+        if (known.has(provider)) continue;
+        providers.push({
+          id: provider,
+          display: provider,
+          kind: "cloud",
+          available: profiles.some((p) => p.authed),
+          profiles,
+          note: "no curated config in dashboard yet",
+        });
+      }
+
+      return Response.json({ ok: true, providers });
+    }
+
+    // ── /api/providers/profiles — accounts.conf CRUD ────────────────────
+    // GET: returns parsed profiles (same shape as /api/settings/oauth)
+    // POST: add/edit a profile
+    // DELETE: remove a profile
+    if (url.pathname === "/api/providers/profiles" && req.method === "POST") {
+      let body: { alias?: string; provider?: string; email?: string; config_dir?: string; description?: string; mode?: "add" | "edit" };
+      try { body = await req.json(); } catch { return Response.json({ ok: false, error: "invalid JSON" }, { status: 400 }); }
+      const { alias, provider, email, config_dir, description = "", mode = "add" } = body;
+      if (!alias || !provider || !email || !config_dir) {
+        return Response.json({ ok: false, error: "alias, provider, email, config_dir required" }, { status: 400 });
+      }
+      if (!/^[a-zA-Z0-9._-]+$/.test(alias)) {
+        return Response.json({ ok: false, error: "alias must be alphanumerics + . - _" }, { status: 400 });
+      }
+      const accountsPath = join(SUBCTL_CONFIG_DIR, "accounts.conf");
+      let lines: string[] = [];
+      if (existsSync(accountsPath)) lines = readFileSync(accountsPath, "utf8").split("\n");
+      const newRow = `${alias.padEnd(15)} | ${provider.padEnd(7)} | ${email.padEnd(32)} | ${config_dir.padEnd(25)} | ${description}`;
+      // Find existing line for this alias
+      const existingIdx = lines.findIndex((l) => {
+        const t = l.trim();
+        if (!t || t.startsWith("#")) return false;
+        const parts = t.split("|").map((p) => p.trim());
+        return parts[0] === alias;
+      });
+      if (mode === "edit") {
+        if (existingIdx === -1) return Response.json({ ok: false, error: "alias not found to edit" }, { status: 404 });
+        lines[existingIdx] = newRow;
+      } else {
+        if (existingIdx !== -1) return Response.json({ ok: false, error: `alias '${alias}' already exists` }, { status: 409 });
+        lines.push(newRow);
+      }
+      try {
+        const { writeFileSync, mkdirSync } = require("node:fs") as typeof import("node:fs");
+        mkdirSync(SUBCTL_CONFIG_DIR, { recursive: true });
+        writeFileSync(accountsPath, lines.join("\n"));
+        return Response.json({ ok: true, alias, mode });
+      } catch (err) {
+        return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+      }
+    }
+    if (url.pathname === "/api/providers/profiles" && req.method === "DELETE") {
+      let body: { alias?: string };
+      try { body = await req.json(); } catch { return Response.json({ ok: false, error: "invalid JSON" }, { status: 400 }); }
+      const { alias } = body;
+      if (!alias) return Response.json({ ok: false, error: "alias required" }, { status: 400 });
+      const accountsPath = join(SUBCTL_CONFIG_DIR, "accounts.conf");
+      if (!existsSync(accountsPath)) return Response.json({ ok: false, error: "accounts.conf missing" }, { status: 404 });
+      try {
+        const lines = readFileSync(accountsPath, "utf8").split("\n");
+        const filtered = lines.filter((l) => {
+          const t = l.trim();
+          if (!t || t.startsWith("#")) return true;
+          const parts = t.split("|").map((p) => p.trim());
+          return parts[0] !== alias;
+        });
+        if (filtered.length === lines.length) return Response.json({ ok: false, error: "alias not found" }, { status: 404 });
+        const { writeFileSync } = require("node:fs") as typeof import("node:fs");
+        writeFileSync(accountsPath, filtered.join("\n"));
+        return Response.json({ ok: true, alias });
+      } catch (err) {
+        return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+      }
+    }
+
     // ── /api/master/supervisor — switch the master's supervisor model ────
     // Edits ~/.config/subctl/master/providers.json (writes the picked id
     // into models.supervisor.model and models.reviewer.model — they share
@@ -3095,13 +3272,15 @@ const server = Bun.serve({
     // master's transcript persists across restart, so the switch is
     // effectively in-place.
     if (url.pathname === "/api/master/supervisor" && req.method === "POST") {
-      let body: { model?: string };
+      let body: { provider?: string; model?: string; host?: string };
       try {
         body = await req.json();
       } catch {
         return Response.json({ ok: false, error: "invalid JSON body" }, { status: 400 });
       }
+      const newProvider = (body.provider ?? "").trim();
       const modelId = (body.model ?? "").trim();
+      const newHost = (body.host ?? "").trim();
       if (!modelId) return Response.json({ ok: false, error: "model required" }, { status: 400 });
       const providersPath = join(SUBCTL_CONFIG_DIR, "master", "providers.json");
       if (!existsSync(providersPath)) {
@@ -3109,9 +3288,6 @@ const server = Bun.serve({
       }
       try {
         const raw = readFileSync(providersPath, "utf8");
-        // Strip comment lines so we can parse, but ALSO preserve them for
-        // the rewrite. Simplest: parse, rewrite, lose comments. Acceptable
-        // tradeoff — we add a leading _comment field instead.
         const stripped = raw.split("\n").filter((l) => !/^\s*"_comment[^"]*"\s*:/.test(l)).join("\n").replace(/,(\s*[}\]])/g, "$1");
         const cfg = JSON.parse(stripped) as {
           models?: Record<string, { provider?: string; model?: string; host?: string }>;
@@ -3119,10 +3295,21 @@ const server = Bun.serve({
         if (!cfg.models?.supervisor) {
           return Response.json({ ok: false, error: "no models.supervisor in providers.json" }, { status: 400 });
         }
-        const prev = cfg.models.supervisor.model;
+        const prev = `${cfg.models.supervisor.provider}/${cfg.models.supervisor.model}`;
         cfg.models.supervisor.model = modelId;
-        if (cfg.models.reviewer) cfg.models.reviewer.model = modelId;
-        // Annotation so future readers see this was set via the dashboard
+        if (newProvider) cfg.models.supervisor.provider = newProvider;
+        if (newHost) cfg.models.supervisor.host = newHost;
+        else if (newProvider && newProvider !== "lmstudio") {
+          // Cloud provider switch — clear the local host so the openai-completions
+          // path doesn't try to hit localhost:1234 for an Anthropic / Codex call.
+          delete cfg.models.supervisor.host;
+        }
+        if (cfg.models.reviewer) {
+          cfg.models.reviewer.model = modelId;
+          if (newProvider) cfg.models.reviewer.provider = newProvider;
+          if (newHost) cfg.models.reviewer.host = newHost;
+          else if (newProvider && newProvider !== "lmstudio") delete cfg.models.reviewer.host;
+        }
         (cfg as any)._comment = `models.supervisor switched via /api/master/supervisor at ${new Date().toISOString()} (was: ${prev})`;
         writeFileSync(providersPath, JSON.stringify(cfg, null, 2));
         // Bounce master via launchctl

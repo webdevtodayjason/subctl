@@ -166,6 +166,221 @@
   wireOrchestrationCockpit();
   wireSettingsTab();
   wireSkillsTab();
+  wireProvidersTab();
+
+  // ----- Providers tab — per-provider profile management -----
+  function wireProvidersTab() {
+    const list = $("providers-list");
+    const newBtn = $("provider-new-btn");
+    const modal = $("provider-profile-modal");
+    const modalClose = $("provider-profile-close");
+    const modalCancel = $("provider-profile-cancel");
+    const form = $("provider-profile-form");
+    const titleEl = $("provider-profile-title");
+    const submit = $("provider-profile-submit");
+    const result = $("profile-result");
+    const fAlias = $("profile-alias");
+    const fProvider = $("profile-provider");
+    const fEmail = $("profile-email");
+    const fConfigDir = $("profile-config-dir");
+    const fDescription = $("profile-description");
+    if (!list) return;
+
+    let editingMode = "add"; // or "edit"
+
+    function openModal(mode, prefill) {
+      editingMode = mode;
+      if (titleEl) titleEl.textContent = mode === "edit" ? `Edit profile: ${prefill?.alias || ""}` : "New profile";
+      if (prefill) {
+        fAlias.value = prefill.alias || "";
+        fAlias.disabled = mode === "edit"; // alias is the key; can't rename mid-edit
+        fProvider.value = prefill.provider || "claude";
+        fEmail.value = prefill.email || "";
+        fConfigDir.value = prefill.config_dir || "";
+        fDescription.value = prefill.description || "";
+      } else {
+        form.reset();
+        fAlias.disabled = false;
+      }
+      result.hidden = true;
+      submit.disabled = false;
+      submit.textContent = "save";
+      if (modal) modal.hidden = false;
+      setTimeout(() => fAlias && fAlias.focus(), 50);
+    }
+    function closeModal() {
+      if (modal) modal.hidden = true;
+      form.reset();
+      fAlias.disabled = false;
+      result.hidden = true;
+    }
+    if (newBtn) newBtn.addEventListener("click", () => openModal("add", null));
+    if (modalClose) modalClose.addEventListener("click", closeModal);
+    if (modalCancel) modalCancel.addEventListener("click", closeModal);
+    if (modal) modal.addEventListener("click", (e) => { if (e.target === modal) closeModal(); });
+
+    // Suggest a default config_dir based on provider + alias
+    if (fAlias && fProvider && fConfigDir) {
+      function suggest() {
+        if (fConfigDir.value && !fConfigDir.dataset.fresh) return;
+        const a = fAlias.value;
+        const p = fProvider.value;
+        if (!a) return;
+        if (p === "claude") fConfigDir.value = `~/.claude-${a.replace(/^claude-/, "")}`;
+        else if (p === "openai") fConfigDir.value = `~/.codex-${a.replace(/^openai-/, "")}`;
+        else fConfigDir.value = `~/.${p}-${a}`;
+        fConfigDir.dataset.fresh = "1";
+      }
+      fAlias.addEventListener("input", suggest);
+      fProvider.addEventListener("change", suggest);
+      fConfigDir.addEventListener("input", () => { fConfigDir.dataset.fresh = ""; });
+    }
+
+    if (form) {
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const payload = {
+          alias: fAlias.value.trim(),
+          provider: fProvider.value,
+          email: fEmail.value.trim(),
+          config_dir: fConfigDir.value.trim(),
+          description: fDescription.value.trim(),
+          mode: editingMode,
+        };
+        if (!payload.alias || !payload.provider || !payload.config_dir) {
+          result.hidden = false;
+          result.className = "form-status form-status-err";
+          result.textContent = "alias + provider + config_dir required";
+          return;
+        }
+        submit.disabled = true;
+        submit.textContent = "saving…";
+        try {
+          const r = await fetch("/api/providers/profiles", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          const j = await r.json();
+          result.hidden = false;
+          if (!j.ok) {
+            result.className = "form-status form-status-err";
+            result.textContent = "Failed: " + (j.error || "?");
+            submit.disabled = false;
+            submit.textContent = "save";
+            return;
+          }
+          result.className = "form-status form-status-ok";
+          result.textContent = "✓ saved (" + (j.mode || "added") + ")";
+          await refresh();
+          setTimeout(closeModal, 1100);
+        } catch (err) {
+          result.hidden = false;
+          result.className = "form-status form-status-err";
+          result.textContent = "Error: " + err;
+          submit.disabled = false;
+          submit.textContent = "save";
+        }
+      });
+    }
+
+    async function refresh() {
+      try {
+        const r = await fetch("/api/providers");
+        const j = await r.json();
+        if (!j.ok) {
+          list.innerHTML = "<div class=\"dim\">unreachable</div>";
+          return;
+        }
+        // Render each provider with kind=cloud (skip lmstudio since it has no profiles)
+        const cloud = (j.providers || []).filter((p) => p.kind === "cloud");
+        if (!cloud.length) {
+          list.innerHTML = "<div class=\"dim\">no cloud providers configured</div>";
+          return;
+        }
+        list.replaceChildren(...cloud.map((p) => {
+          const card = document.createElement("section");
+          card.className = "provider-card";
+          const head = document.createElement("header");
+          head.className = "provider-card-head";
+          const profiles = p.profiles || [];
+          const authedCount = profiles.filter((x) => x.authed).length;
+          head.innerHTML =
+            `<h3>${escapeText(p.display)} <span class="kind">${escapeText(p.id)}</span></h3>` +
+            `<span class="provider-card-meta">${authedCount}/${profiles.length} authenticated</span>`;
+          card.appendChild(head);
+          const body = document.createElement("div");
+          body.className = "provider-card-body";
+          if (!profiles.length) {
+            body.innerHTML = "<div class=\"dim small\" style=\"padding:8px 0\">no profiles yet — click <strong>+ New Profile</strong> above</div>";
+          } else {
+            for (const prof of profiles) {
+              const row = document.createElement("div");
+              row.className = "profile-row " + (prof.authed ? "authed" : "");
+              row.innerHTML =
+                "<span class=\"mark\">" + (prof.authed ? "✓" : "○") + "</span>" +
+                "<span class=\"alias\">" + escapeText(prof.alias) + "</span>" +
+                "<span class=\"email\">" + escapeText(prof.email || "—") + "</span>" +
+                "<span class=\"config-dir\">" + escapeText(prof.config_dir || "") + "</span>";
+              const actions = document.createElement("div");
+              actions.className = "actions";
+              if (!prof.authed) {
+                const auth = document.createElement("button");
+                auth.type = "button";
+                auth.className = "auth-btn";
+                auth.textContent = "auth";
+                const cmd = `subctl auth ${prof.provider || (p.id === "anthropic" ? "claude" : "openai")} ${prof.alias}`;
+                auth.title = "click to copy: " + cmd;
+                auth.addEventListener("click", () => {
+                  navigator.clipboard.writeText(cmd);
+                  auth.textContent = "copied ✓";
+                  setTimeout(() => auth.textContent = "auth", 1500);
+                });
+                actions.appendChild(auth);
+              }
+              const editBtn = document.createElement("button");
+              editBtn.type = "button";
+              editBtn.textContent = "edit";
+              editBtn.addEventListener("click", () => openModal("edit", { ...prof, provider: prof.provider || (p.id === "anthropic" ? "claude" : "openai") }));
+              actions.appendChild(editBtn);
+              const del = document.createElement("button");
+              del.type = "button";
+              del.className = "delete-btn";
+              del.textContent = "delete";
+              del.addEventListener("click", async () => {
+                if (!confirm(`Remove profile "${prof.alias}" from accounts.conf?\nThis does NOT delete the auth credentials in ${prof.config_dir}; you'd need to wipe that dir manually.`)) return;
+                try {
+                  const r = await fetch("/api/providers/profiles", {
+                    method: "DELETE",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ alias: prof.alias }),
+                  });
+                  const j = await r.json();
+                  if (!j.ok) alert("Delete failed: " + (j.error || "?"));
+                  await refresh();
+                } catch (err) {
+                  alert("Delete error: " + err);
+                }
+              });
+              actions.appendChild(del);
+              row.appendChild(actions);
+              body.appendChild(row);
+            }
+          }
+          card.appendChild(body);
+          return card;
+        }));
+      } catch (err) {
+        list.innerHTML = "<div class=\"dim\">error: " + escapeText(String(err)) + "</div>";
+      }
+    }
+
+    refresh();
+    setInterval(() => {
+      const panel = document.querySelector("section[data-tab=\"providers\"]");
+      if (panel && getComputedStyle(panel).display !== "none") refresh();
+    }, 30000);
+  }
 
   // ----- Skills tab — catalog + import flow -----
   function wireSkillsTab() {
@@ -657,42 +872,68 @@
 
     async function refresh() {
       try {
-        const [modelsR, healthR] = await Promise.all([
-          fetch("/api/models"),
-          fetch("/api/master/health"),
+        const [provR, diagR] = await Promise.all([
+          fetch("/api/providers"),
+          fetch("/api/master/diag"),
         ]);
-        const models = await modelsR.json();
-        const health = await healthR.json().catch(() => ({}));
-        // Best-effort: pull supervisor model from /diag (which already includes it)
-        let supervisor = null;
-        try {
-          const diagR = await fetch("/api/master/diag");
-          const diag = await diagR.json();
-          supervisor = diag.supervisor ?? null;
-        } catch {}
+        const provJ = await provR.json();
+        const diag = await diagR.json().catch(() => ({}));
+        const supervisor = diag.supervisor ?? null;
         currentSupervisor = supervisor;
         if (cur) cur.textContent = supervisor ? "supervisor: " + supervisor : "supervisor: (unknown)";
-        if (!models.ok) {
-          sel.innerHTML = "<option value=''>LM Studio unreachable</option>";
+        if (!provJ.ok) {
+          sel.innerHTML = "<option value=''>providers unreachable</option>";
           return;
         }
-        const opts = (models.models || [])
-          .filter((m) => m.type === "vlm" || m.type === "llm")
-          .sort((a, b) => {
-            if (a.state === "loaded" && b.state !== "loaded") return -1;
-            if (a.state !== "loaded" && b.state === "loaded") return 1;
-            return (a.id || "").localeCompare(b.id || "");
-          })
-          .map((m) => {
-            const id = m.id;
-            const fullId = m.publisher ? `${m.publisher}/${id}` : id;
-            // currentSupervisor format: "lmstudio/qwen/qwen3.6-35b-a3b"
-            const isCurrent = currentSupervisor && currentSupervisor.endsWith("/" + id);
-            const label = `${id}  · ${m.state}  · ${m.quantization || "?"}  · ctx ${m.loaded_context_length || "?"}`;
-            return `<option value="${id}" ${isCurrent ? "selected" : ""}>${escapeText(label)}</option>`;
-          })
-          .join("");
-        sel.innerHTML = opts || "<option value=''>(no chat models)</option>";
+        // Build optgroups: cloud (always-on, green) first, then LM Studio
+        // (per-model loaded indicator). Value format: "<provider>|<model>"
+        // so the apply handler can split.
+        const groups = [];
+        // Cloud first per Jason's "local first" instruction is actually
+        // about chat-priority — cloud is always available, but LOCAL is
+        // the default we steer toward. Show cloud at the TOP of the
+        // dropdown but mark them clearly so they're easy to skip past.
+        const cloud = (provJ.providers || []).filter((p) => p.kind === "cloud");
+        const local = (provJ.providers || []).filter((p) => p.kind === "local");
+
+        let html = "";
+        if (cloud.length) {
+          html += "<optgroup label=\"Cloud (always-on)\">";
+          for (const p of cloud) {
+            const dot = p.available ? "●" : "○";
+            const state = p.available ? "ready" : "not authed";
+            const model = p.default_model || "?";
+            const value = `${p.id}|${model}`;
+            const isCurrent = supervisor === `${p.id}/${model}`;
+            html += `<option value="${escapeText(value)}" ${isCurrent ? "selected" : ""}>${dot}  ${escapeText(p.display)} · ${escapeText(model)} · ${state}</option>`;
+          }
+          html += "</optgroup>";
+        }
+        if (local.length) {
+          for (const p of local) {
+            const models = (p.models || []).slice().sort((a, b) => {
+              if (a.loaded && !b.loaded) return -1;
+              if (!a.loaded && b.loaded) return 1;
+              return (a.id || "").localeCompare(b.id || "");
+            });
+            html += `<optgroup label="LM Studio (local · ${models.filter((m) => m.loaded).length}/${models.length} loaded)">`;
+            for (const m of models) {
+              const dot = m.loaded ? "●" : "○";
+              const ctx = m.loaded_context_length ? `ctx ${m.loaded_context_length.toLocaleString()}` : "";
+              const value = `${p.id}|${m.id}`;
+              const isCurrent = supervisor === `${p.id}/${m.id}`;
+              const parts = [
+                m.id,
+                m.loaded ? "loaded" : "not-loaded",
+                m.quantization,
+                ctx,
+              ].filter(Boolean).join(" · ");
+              html += `<option value="${escapeText(value)}" ${isCurrent ? "selected" : ""}>${dot}  ${escapeText(parts)}</option>`;
+            }
+            html += "</optgroup>";
+          }
+        }
+        sel.innerHTML = html || "<option value=''>(no providers reachable)</option>";
       } catch (err) {
         sel.innerHTML = "<option value=''>error: " + escapeText(String(err)) + "</option>";
       }
@@ -706,14 +947,21 @@
     apply.addEventListener("click", async () => {
       const picked = sel.value;
       if (!picked) return;
-      if (!confirm("Switch master supervisor to " + picked + "?\nThis edits providers.json and restarts the master daemon. Transcript is preserved.")) return;
+      // Value is "<provider>|<model>" — split so the server can update
+      // providers.json's models.supervisor.{provider, model, host} all at
+      // once. For LM Studio we keep the existing host; for cloud the
+      // server clears host so requests don't try localhost.
+      const [provider, ...modelParts] = picked.split("|");
+      const model = modelParts.join("|");
+      if (!provider || !model) return;
+      if (!confirm(`Switch master supervisor to ${provider}/${model}?\nThis edits providers.json and restarts the master daemon. Transcript is preserved.`)) return;
       apply.disabled = true;
       apply.textContent = "applying…";
       try {
         const r = await fetch("/api/master/supervisor", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model: picked }),
+          body: JSON.stringify({ provider, model }),
         });
         const j = await r.json().catch(() => ({}));
         if (!j.ok) {

@@ -45,6 +45,9 @@
         <button type="button" class="nav-btn" data-tab="models">
           <span class="nav-icon">◈</span><span class="nav-label">Models</span>
         </button>
+        <button type="button" class="nav-btn" data-tab="providers">
+          <span class="nav-icon">◐</span><span class="nav-label">Providers</span>
+        </button>
         <button type="button" class="nav-btn" data-tab="memory">
           <span class="nav-icon">✦</span><span class="nav-label">Memory</span>
         </button>
@@ -475,6 +478,64 @@
         <span class="memory-status" id="memory-status">checking…</span>
       </h2>
       <div class="memory-content" id="memory-content">loading…</div>
+    </section>
+
+    <!-- ── Providers tab ───────────────────────────────────────────── -->
+    <section class="providers-screen" data-tab="providers">
+      <header class="screen-header">
+        <h2>Providers <span class="screen-sub">OAuth profiles per provider · add / remove / authenticate · master uses these for chat + dev-team spawning</span></h2>
+        <button type="button" class="primary-btn" id="provider-new-btn">+ New Profile</button>
+      </header>
+
+      <!-- Add/edit profile modal -->
+      <div class="modal-backdrop" id="provider-profile-modal" hidden>
+        <div class="modal" role="dialog">
+          <header class="modal-header">
+            <h3 id="provider-profile-title">New profile</h3>
+            <button type="button" class="modal-close" id="provider-profile-close">✕</button>
+          </header>
+          <form class="modal-body" id="provider-profile-form">
+            <div class="form-row">
+              <label>Provider</label>
+              <select id="profile-provider">
+                <option value="claude">claude (Anthropic Claude Code)</option>
+                <option value="openai">openai (Codex CLI / ChatGPT subscription)</option>
+                <option value="gemini">gemini (future)</option>
+                <option value="zai">zai (future)</option>
+                <option value="minimax">minimax (future)</option>
+              </select>
+            </div>
+            <div class="form-row">
+              <label>Alias <span class="required">*</span></label>
+              <input type="text" id="profile-alias" placeholder="e.g. claude-jason or openai-personal" pattern="[a-zA-Z0-9._-]+" required />
+              <div class="form-hint">Local name for this profile. Used in <code>subctl auth claude &lt;alias&gt;</code> and similar.</div>
+            </div>
+            <div class="form-row">
+              <label>Email</label>
+              <input type="text" id="profile-email" placeholder="account@example.com" />
+              <div class="form-hint">Helps you identify which login this is — not used by master beyond display.</div>
+            </div>
+            <div class="form-row">
+              <label>Config dir</label>
+              <input type="text" id="profile-config-dir" placeholder="~/.claude-jason or ~/.codex-jason" />
+              <div class="form-hint">Per-account isolation dir. Each profile must have its own.</div>
+            </div>
+            <div class="form-row">
+              <label>Description <span class="dim">(optional)</span></label>
+              <input type="text" id="profile-description" placeholder="e.g. daily driver, work account" />
+            </div>
+            <div class="form-status" id="profile-result" hidden></div>
+            <footer class="modal-footer">
+              <button type="button" class="secondary-btn" id="provider-profile-cancel">cancel</button>
+              <button type="submit" class="primary-btn" id="provider-profile-submit">save</button>
+            </footer>
+          </form>
+        </div>
+      </div>
+
+      <div class="providers-list" id="providers-list">
+        <div class="dim small" style="padding:24px">loading…</div>
+      </div>
     </section>
 
     <!-- ── Skills tab ──────────────────────────────────────────────── -->
