@@ -768,21 +768,49 @@ async function main() {
 
       // /transcript/compact — summarize older turns into a single message,
       // archive the originals, and keep only the last K turns + the
-      // summary as the new transcript. Lets you stay in a conversation
-      // without ditching all context when the supervisor's loaded
-      // context window gets blown out (the 506% problem).
+      // summary as the new transcript. Body accepts:
+      //   target_tokens?: number  — try to compact down to this many
+      //                              estimated transcript tokens
+      //                              (default 50000, matches Jason's 73K
+      //                              loaded ctx with 23K headroom)
+      //   keep_recent?: number    — minimum recent turns to preserve
+      //                              (default 6)
+      // Algorithm: start with keep_recent, then expand the "compact" set
+      // backwards until estimated remaining tokens fits target_tokens.
       if (url.pathname === "/transcript/compact" && req.method === "POST") {
         if (promptInFlight) {
           return Response.json({ ok: false, error: "agent busy — try again in a moment" }, { status: 409 });
         }
+        let body: { target_tokens?: number; keep_recent?: number } = {};
+        try { body = await req.json(); } catch { /* empty body is fine */ }
+        const TARGET_TOKENS = Math.max(2000, Math.min(200_000, body.target_tokens ?? 50_000));
+        const KEEP_RECENT = Math.max(2, Math.min(40, body.keep_recent ?? 6));
         try {
           const messages = agent.state.messages as Array<Record<string, unknown>>;
-          if (messages.length < 8) {
-            return Response.json({ ok: false, error: `transcript too short (${messages.length} msgs) to bother compacting` }, { status: 400 });
+          if (messages.length < KEEP_RECENT + 2) {
+            return Response.json({ ok: false, error: `transcript too short (${messages.length} msgs) to bother compacting (need > ${KEEP_RECENT + 2})` }, { status: 400 });
           }
-          const KEEP_RECENT = 6; // keep last N turns intact
-          const toCompact = messages.slice(0, -KEEP_RECENT);
-          const recent = messages.slice(-KEEP_RECENT);
+          // Token estimator: chars/4 — same heuristic as /context.
+          const tokenize = (m: Record<string, unknown>): number => {
+            const content = (m.content as Array<Record<string, unknown>>) ?? [];
+            let chars = 0;
+            for (const b of content) {
+              if (typeof b.text === "string") chars += b.text.length;
+              if (typeof b.thinking === "string") chars += (b.thinking as string).length;
+              if (typeof b.arguments === "object") chars += JSON.stringify(b.arguments).length;
+            }
+            return Math.ceil(chars / 4);
+          };
+          // Expand the compact set backwards from KEEP_RECENT until we fit.
+          let keepN = KEEP_RECENT;
+          let recent = messages.slice(-keepN);
+          let recentTokens = recent.reduce((acc, m) => acc + tokenize(m), 0);
+          while (recentTokens > TARGET_TOKENS && keepN > 2) {
+            keepN--;
+            recent = messages.slice(-keepN);
+            recentTokens = recent.reduce((acc, m) => acc + tokenize(m), 0);
+          }
+          const toCompact = messages.slice(0, -keepN);
 
           // Naive deterministic compaction: extract just user texts +
           // last assistant text in each older turn, plus any tool names
@@ -1167,12 +1195,86 @@ async function main() {
     `[master] watchdog armed — interval=${watchdogIntervalMin}m, staleness_threshold=${stalenessThresholdMin}m`,
   );
 
+  // ── auto-compact watchdog ──────────────────────────────────────────────
+  // The supervisor model has a finite loaded context window in LM Studio.
+  // Once the transcript+system+tools exceeds ~90% of that window the model
+  // starts truncating silently and hallucinates "Standing by" non-answers.
+  // Every 5min, query the supervisor's loaded context, compute estimated
+  // total tokens, and auto-compact if we're past the threshold. Compact
+  // target is configurable via ~/.config/subctl/master/compact.json:
+  //   { "auto_compact": true, "threshold_pct": 90, "target_tokens": 50000, "keep_recent": 6 }
+  let autoCompactInFlight = false;
+  async function runAutoCompactTick() {
+    if (stopped || autoCompactInFlight || promptInFlight) return;
+    let cfg = { auto_compact: true, threshold_pct: 90, target_tokens: 50_000, keep_recent: 6 };
+    try {
+      const cfgPath = join(MASTER_STATE_DIR, "compact.json");
+      if (existsSync(cfgPath)) {
+        cfg = { ...cfg, ...JSON.parse(readFileSync(cfgPath, "utf8")) };
+      }
+    } catch { /* use defaults */ }
+    if (!cfg.auto_compact) return;
+    // Fetch loaded context length from LM Studio
+    let loadedContext: number | null = null;
+    try {
+      const host = (supervisorCfg.host ?? "http://localhost:1234/v1").replace(/\/v1\/?$/, "");
+      const r = await fetch(`${host}/api/v0/models`, { signal: AbortSignal.timeout(2000) });
+      if (r.ok) {
+        const j = (await r.json()) as { data?: Array<{ id: string; loaded_context_length?: number }> };
+        const found = (j.data ?? []).find((m) => m.id === supervisorCfg.model);
+        if (found?.loaded_context_length) loadedContext = found.loaded_context_length;
+      }
+    } catch { /* skip — local-only check */ }
+    if (!loadedContext) return; // can't decide without it (cloud supervisors)
+    // Estimate current transcript tokens
+    let chars = 0;
+    for (const m of agent.state.messages as Array<Record<string, unknown>>) {
+      const content = (m.content as Array<Record<string, unknown>>) ?? [];
+      for (const b of content) {
+        if (typeof b.text === "string") chars += b.text.length;
+        if (typeof b.thinking === "string") chars += (b.thinking as string).length;
+        if (typeof b.arguments === "object") chars += JSON.stringify(b.arguments).length;
+      }
+    }
+    const estTotal = Math.ceil(chars / 4) + 2500; // 2500 fixed overhead for SKILL + tool schemas
+    const utilPct = Math.round((estTotal / loadedContext) * 100);
+    if (utilPct < cfg.threshold_pct) return; // below threshold, do nothing
+    autoCompactInFlight = true;
+    try {
+      console.error(`[master] auto-compact: util=${utilPct}% (>= ${cfg.threshold_pct}%) — compacting toward ${cfg.target_tokens.toLocaleString()} tokens`);
+      // Reuse the same compaction logic as /transcript/compact via a fetch
+      // back to ourselves (clean separation; avoids duplicate code paths).
+      const r = await fetch(`http://${masterHost}:${masterPort}/transcript/compact`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target_tokens: cfg.target_tokens, keep_recent: cfg.keep_recent }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (j.ok) {
+        console.error(`[master] auto-compact ok — archived ${j.archived_count}, kept ${j.kept_msgs}`);
+      } else {
+        console.error(`[master] auto-compact failed: ${j.error ?? "unknown"}`);
+      }
+    } catch (err) {
+      console.error(`[master] auto-compact error: ${(err as Error).message}`);
+    } finally {
+      autoCompactInFlight = false;
+    }
+  }
+  const autoCompactInterval = setInterval(() => void runAutoCompactTick(), 5 * 60 * 1000);
+  // Also run shortly after boot so a freshly-restarted daemon catches an
+  // already-bloated transcript without waiting 5 minutes.
+  setTimeout(() => void runAutoCompactTick(), 30_000);
+  console.error("[master] auto-compact watchdog armed — every 5min, fires when transcript exceeds 90% of loaded ctx (configurable via compact.json)");
+
   // ── graceful shutdown ───────────────────────────────────────────────────
   const shutdown = (signal: string) => {
     if (stopped) return;
     stopped = true;
     console.error(`[master] caught ${signal}, shutting down`);
     clearInterval(watchdog);
+    clearInterval(autoCompactInterval);
     clearInterval(inboxPoll);
     if (inboxWatcher) try { inboxWatcher.close(); } catch { /* ignore */ }
     try { stopMasterNotifyListener(); } catch { /* ignore */ }
