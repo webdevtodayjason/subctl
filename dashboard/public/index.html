@@ -24,8 +24,75 @@
     </div>
   </header>
 
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <nav class="sidebar-nav" id="sidebar-nav">
+        <button type="button" class="nav-btn active" data-tab="orchestration">
+          <span class="nav-icon">◉</span><span class="nav-label">Orchestration</span>
+        </button>
+        <button type="button" class="nav-btn" data-tab="dashboard">
+          <span class="nav-icon">▣</span><span class="nav-label">Dashboard</span>
+        </button>
+        <button type="button" class="nav-btn" data-tab="projects">
+          <span class="nav-icon">⌘</span><span class="nav-label">Projects</span>
+        </button>
+        <button type="button" class="nav-btn" data-tab="sessions">
+          <span class="nav-icon">≡</span><span class="nav-label">Sessions</span>
+        </button>
+        <button type="button" class="nav-btn" data-tab="models">
+          <span class="nav-icon">◈</span><span class="nav-label">Models</span>
+        </button>
+        <button type="button" class="nav-btn" data-tab="memory">
+          <span class="nav-icon">✦</span><span class="nav-label">Memory</span>
+        </button>
+        <div class="sidebar-divider"></div>
+        <a class="nav-btn nav-link" href="/cheat" title="Scannable one-pager: every command, shim, shortcut">
+          <span class="nav-icon">?</span><span class="nav-label">Cheat sheet</span>
+        </a>
+        <a class="nav-btn nav-link" href="/help" title="Full documentation">
+          <span class="nav-icon">i</span><span class="nav-label">Docs</span>
+        </a>
+      </nav>
+      <button class="sidebar-collapse-btn" id="sidebar-collapse-btn" type="button" aria-label="Collapse sidebar" title="Collapse sidebar">‹</button>
+    </aside>
+
   <main>
-    <section class="panel dispatch" id="dispatch-panel">
+
+    <!-- ── Orchestration: dedicated full-height chat with right sidecar ─── -->
+    <section class="orchestration-screen" data-tab="orchestration">
+      <section class="panel master-chat" id="master-chat-panel">
+      <h2>Master <span class="panel-hint">conversational dev-team orchestrator on the M3 Ultra · streams from <code>/api/master/events</code></span>
+        <span class="master-conn-state" id="master-conn-state">disconnected</span>
+      </h2>
+      <div class="master-log" id="master-log">
+        <div class="master-log-empty">no messages yet — type below to start a conversation, or try <code>/help</code> for slash commands</div>
+      </div>
+      <form class="master-input" id="master-input-form" autocomplete="off">
+        <input type="text" id="master-input" placeholder="message subctl master… (enter to send)" autocomplete="off">
+        <button type="submit" id="master-send">send</button>
+      </form>
+    </section>
+
+      <!-- right-side context: active dev teams + recent decisions -->
+      <aside class="orchestration-sidecar" id="orchestration-sidecar">
+        <section class="orch-sidecar-block">
+          <h3>Active dev teams <span class="dim" id="orch-teams-count">0</span></h3>
+          <div class="orch-teams-list" id="orch-teams-list">
+            <div class="dim small">no teams running</div>
+          </div>
+        </section>
+        <section class="orch-sidecar-block">
+          <h3>Recent activity</h3>
+          <div class="orch-activity-list" id="orch-activity-list">
+            <div class="dim small">no activity yet</div>
+          </div>
+        </section>
+      </aside>
+    </section>
+    <!-- ── /Orchestration ─────────────────────────────────────────────── -->
+
+    <!-- ── Dashboard view ─────────────────────────────────────────────── -->
+    <section class="panel dispatch" data-tab="dashboard" id="dispatch-panel">
       <div class="dispatch-row">
         <div class="dispatch-verdict" id="dispatch-verdict">--</div>
         <div class="dispatch-summary">
@@ -39,29 +106,7 @@
         <span class="info-cell"><span class="info-num" id="info-ready">0</span> ready accounts</span>
         <span class="info-sep">·</span>
         <span class="info-cell"><span class="info-num" id="info-rl">0</span> RL today</span>
-        <nav class="tab-nav" id="tab-nav">
-          <button type="button" class="tab-btn active" data-tab="dashboard">Dashboard</button>
-          <button type="button" class="tab-btn" data-tab="sessions">Sessions</button>
-          <button type="button" class="tab-btn" data-tab="models">Models</button>
-          <button type="button" class="tab-btn" data-tab="projects">Projects</button>
-          <button type="button" class="tab-btn" data-tab="memory">Memory</button>
-          <a class="tab-btn" href="/cheat" title="Scannable one-pager: every command, shim, shortcut">Cheat sheet</a>
-          <a class="tab-btn" href="/help" title="Full documentation, signal reference, CLI commands">Docs</a>
-        </nav>
       </div>
-    </section>
-
-    <section class="panel master-chat" data-tab="dashboard" id="master-chat-panel">
-      <h2>Master <span class="panel-hint">conversational dev-team orchestrator on the M3 Ultra · streams from <code>/api/master/events</code></span>
-        <span class="master-conn-state" id="master-conn-state">disconnected</span>
-      </h2>
-      <div class="master-log" id="master-log">
-        <div class="master-log-empty">no messages yet — type below to start a conversation, or try <code>/help</code> for slash commands</div>
-      </div>
-      <form class="master-input" id="master-input-form" autocomplete="off">
-        <input type="text" id="master-input" placeholder="message subctl master… (enter to send)" autocomplete="off">
-        <button type="submit" id="master-send">send</button>
-      </form>
     </section>
 
     <section class="panel" data-tab="dashboard">
@@ -294,6 +339,7 @@
       <div class="memory-content" id="memory-content">loading…</div>
     </section>
   </main>
+  </div><!-- /.app-shell -->
 
   <footer class="footer">
     <span>subctl <span id="footer-version">v0.0.0</span></span>

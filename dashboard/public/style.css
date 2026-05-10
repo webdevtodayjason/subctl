@@ -1336,11 +1336,167 @@ tr:hover .kill-btn { opacity: 1; }
 
 /* Hide panels not matching the active tab. */
 /* Tab visibility: each tab hides every panel that doesn't match */
-body[data-active-tab="dashboard"] section[data-tab]:not([data-tab="dashboard"]) { display: none; }
-body[data-active-tab="sessions"]  section[data-tab]:not([data-tab="sessions"])  { display: none; }
-body[data-active-tab="models"]    section[data-tab]:not([data-tab="models"])    { display: none; }
-body[data-active-tab="projects"]  section[data-tab]:not([data-tab="projects"])  { display: none; }
-body[data-active-tab="memory"]    section[data-tab]:not([data-tab="memory"])    { display: none; }
+body[data-active-tab="orchestration"] section[data-tab]:not([data-tab="orchestration"]) { display: none; }
+body[data-active-tab="dashboard"]     section[data-tab]:not([data-tab="dashboard"])     { display: none; }
+body[data-active-tab="sessions"]      section[data-tab]:not([data-tab="sessions"])      { display: none; }
+body[data-active-tab="models"]        section[data-tab]:not([data-tab="models"])        { display: none; }
+body[data-active-tab="projects"]      section[data-tab]:not([data-tab="projects"])      { display: none; }
+body[data-active-tab="memory"]        section[data-tab]:not([data-tab="memory"])        { display: none; }
+
+/* ── App shell: left sidebar + main content ───────────────────────────── */
+.app-shell {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  min-height: calc(100vh - 56px); /* topbar height */
+}
+.sidebar {
+  width: 200px;
+  flex: 0 0 200px;
+  background: #0a0a0a;
+  border-right: 1px solid #1a1a1a;
+  padding: 16px 0;
+  position: sticky;
+  top: 56px;
+  align-self: flex-start;
+  height: calc(100vh - 56px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  transition: width 0.18s ease, flex-basis 0.18s ease;
+}
+.sidebar.collapsed { width: 56px; flex-basis: 56px; }
+.sidebar.collapsed .nav-label { display: none; }
+.sidebar.collapsed .sidebar-collapse-btn { transform: rotate(180deg); }
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+.sidebar .nav-btn {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 16px;
+  background: transparent;
+  border: none;
+  border-left: 2px solid transparent;
+  color: #8a8a8a;
+  font-family: inherit;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  text-decoration: none;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.sidebar .nav-btn:hover { color: #c4c4c4; background: #111; }
+.sidebar .nav-btn.active {
+  color: #6cd697;
+  background: #0e1814;
+  border-left-color: #6cd697;
+}
+.sidebar .nav-icon {
+  display: inline-block;
+  width: 20px;
+  text-align: center;
+  font-size: 14px;
+  color: #555;
+}
+.sidebar .nav-btn.active .nav-icon { color: #6cd697; }
+.sidebar-divider {
+  height: 1px;
+  background: #1a1a1a;
+  margin: 12px 16px;
+}
+.sidebar-collapse-btn {
+  margin: 12px 16px 4px;
+  padding: 6px;
+  background: transparent;
+  border: 1px solid #1a1a1a;
+  border-radius: 3px;
+  color: #555;
+  cursor: pointer;
+  font-size: 14px;
+  align-self: flex-start;
+  transition: transform 0.18s, border-color 0.12s, color 0.12s;
+}
+.sidebar-collapse-btn:hover { color: #aaa; border-color: #333; }
+
+main {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 24px 28px;
+  overflow-x: hidden;
+}
+
+/* ── Orchestration screen: chat + sidecar ─────────────────────────────── */
+.orchestration-screen {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  gap: 18px;
+  align-items: stretch;
+  min-height: calc(100vh - 56px - 48px);
+}
+.orchestration-screen .master-chat {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+}
+.orchestration-screen .master-log {
+  flex: 1 1 auto;
+  max-height: none;
+}
+.orchestration-sidecar {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.orch-sidecar-block {
+  background: #0c0c0c;
+  border: 1px solid #1a1a1a;
+  border-radius: 4px;
+  padding: 14px 16px;
+}
+.orch-sidecar-block h3 {
+  margin: 0 0 10px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #888;
+}
+.orch-sidecar-block h3 .dim { color: #555; font-size: 11px; margin-left: 6px; }
+.orch-teams-list, .orch-activity-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+}
+.orch-team-row {
+  padding: 6px 8px;
+  background: #0a0a0a;
+  border-left: 2px solid #2a2a2a;
+  border-radius: 0 3px 3px 0;
+}
+.orch-team-row.stale-yellow { border-left-color: #d6c46c; }
+.orch-team-row.stale-red    { border-left-color: #d66c6c; }
+.orch-team-row .team-name   { color: #c4c4c4; font-weight: 500; }
+.orch-team-row .team-meta   { color: #777; font-size: 11px; margin-top: 2px; }
+.orch-activity-item {
+  padding: 4px 0;
+  color: #999;
+  border-bottom: 1px dashed #1a1a1a;
+}
+.orch-activity-item:last-child { border-bottom: none; }
+.orch-activity-item .when { color: #555; font-size: 10.5px; margin-right: 6px; }
+.small { font-size: 11px; }
+
+/* Hide the old top-area dispatch row position adjustments */
+@media (max-width: 900px) {
+  .orchestration-screen { grid-template-columns: 1fr; }
+  .orchestration-sidecar { order: 2; }
+}
 
 /* ── Models / Projects / Memory tab styling ─────────────────────────── */
 .models-status, .memory-status {

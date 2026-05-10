@@ -581,8 +581,32 @@
         try {
           const d = JSON.parse(e.data);
           appendMessage("watchdog", d.prompt, { label: "watchdog" });
+          if (window.__subctlPushActivity) window.__subctlPushActivity(`<strong>watchdog</strong> fired: ${escapeText(String(d.prompt || "").slice(0, 80))}`);
         } catch {}
       });
+      // Lightweight activity feed plumbing — surfaces tool calls + team
+      // events + inbound messages on the Orchestration sidecar so it's not
+      // just a chat box. Avoids re-rendering anything chat-side.
+      es.addEventListener("inbound", (e) => {
+        try {
+          const d = JSON.parse(e.data);
+          if (window.__subctlPushActivity) {
+            const src = d.source === "telegram" ? "telegram" : d.source === "watchdog" ? "watchdog" : "you";
+            window.__subctlPushActivity(`<strong>${src}</strong>: ${escapeText(String(d.text || "").slice(0, 80))}`);
+          }
+        } catch {}
+      });
+      es.addEventListener("team_event", (e) => {
+        try {
+          const d = JSON.parse(e.data);
+          if (window.__subctlPushActivity) {
+            window.__subctlPushActivity(`team <strong>${escapeText(d.team)}</strong>: ${escapeText(d.type)} · ${escapeText(String(d.text || "").slice(0, 60))}`);
+          }
+        } catch {}
+      });
+    }
+    function escapeText(s) {
+      return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
     }
     connect();
 
@@ -1028,9 +1052,66 @@
     renderRateLimits(state.rate_limits ?? { today_total: 0, by_account: [] });
     renderEvents(state.rate_limits?.events_today ?? []);
     renderOrchestrations(state.orchestrations ?? []);
+    renderOrchSidecar(state.orchestrations ?? []);
     renderConversations(state.active_conversations ?? []);
     populateSearchAccountFilter(state.accounts ?? []);
   }
+
+  // ----- Orchestration sidecar (right side of the Orchestration screen) -----
+  function renderOrchSidecar(orchs) {
+    const list = $("orch-teams-list");
+    const count = $("orch-teams-count");
+    if (!list || !count) return;
+    count.textContent = orchs.length;
+    if (!orchs.length) {
+      list.innerHTML = "<div class=\"dim small\">no teams running</div>";
+      return;
+    }
+    list.replaceChildren(...orchs.map((o) => {
+      const row = document.createElement("div");
+      row.className = "orch-team-row";
+      const ageS = o.last_activity_seconds_ago;
+      if (typeof ageS === "number") {
+        if (ageS > 1800) row.classList.add("stale-red");
+        else if (ageS > 900) row.classList.add("stale-yellow");
+      }
+      const name = document.createElement("div");
+      name.className = "team-name";
+      name.textContent = o.name;
+      row.appendChild(name);
+      const meta = document.createElement("div");
+      meta.className = "team-meta";
+      const lastEv = o.last_event_type ? `${o.last_event_type}` : "no reports";
+      const ageStr = typeof ageS === "number" ? fmtAge(ageS) + " ago" : "—";
+      meta.textContent = `${lastEv} · ${ageStr}`;
+      row.appendChild(meta);
+      return row;
+    }));
+  }
+
+  // Activity feed: tap into the same SSE stream the chat panel listens to,
+  // append a one-liner per meaningful event (tool calls, watchdog firings,
+  // team events, decisions). Keeps a bounded ring of the last 30.
+  const ACTIVITY_LIMIT = 30;
+  function pushActivity(html) {
+    const list = $("orch-activity-list");
+    if (!list) return;
+    const empty = list.querySelector(".dim");
+    if (empty) empty.remove();
+    const row = document.createElement("div");
+    row.className = "orch-activity-item";
+    const when = document.createElement("span");
+    when.className = "when";
+    when.textContent = new Date().toLocaleTimeString();
+    row.appendChild(when);
+    const body = document.createElement("span");
+    body.innerHTML = html;
+    row.appendChild(body);
+    list.insertBefore(row, list.firstChild);
+    while (list.children.length > ACTIVITY_LIMIT) list.removeChild(list.lastChild);
+  }
+  // Expose globally so wireMasterChat can push events into it.
+  window.__subctlPushActivity = pushActivity;
 
   // ----- Dev Teams (tmux sessions with CLAUDE_CONFIG_DIR set, enriched with master inbox activity) -----
 
@@ -1879,11 +1960,13 @@
   function wireTabs() {
     const TAB_STORAGE_KEY = "subctl.dashboard.tab";
     const initial = (() => {
-      try { return localStorage.getItem(TAB_STORAGE_KEY) || "dashboard"; }
-      catch { return "dashboard"; }
+      try { return localStorage.getItem(TAB_STORAGE_KEY) || "orchestration"; }
+      catch { return "orchestration"; }
     })();
     setActiveTab(initial);
-    const buttons = document.querySelectorAll(".tab-nav .tab-btn[data-tab]");
+    // Sidebar buttons (new layout) and any legacy top-nav buttons (none now,
+    // but kept for safety if someone hits an old cached page).
+    const buttons = document.querySelectorAll(".sidebar-nav .nav-btn[data-tab], .tab-nav .tab-btn[data-tab]");
     buttons.forEach(b => {
       b.addEventListener("click", () => {
         const tab = b.dataset.tab;
@@ -1892,10 +1975,24 @@
         try { localStorage.setItem(TAB_STORAGE_KEY, tab); } catch { /* no localStorage */ }
       });
     });
+
+    // Sidebar collapse toggle
+    const collapseBtn = document.getElementById("sidebar-collapse-btn");
+    const sidebar = document.getElementById("sidebar");
+    const COLLAPSE_KEY = "subctl.dashboard.sidebar.collapsed";
+    if (collapseBtn && sidebar) {
+      try {
+        if (localStorage.getItem(COLLAPSE_KEY) === "1") sidebar.classList.add("collapsed");
+      } catch {}
+      collapseBtn.addEventListener("click", () => {
+        sidebar.classList.toggle("collapsed");
+        try { localStorage.setItem(COLLAPSE_KEY, sidebar.classList.contains("collapsed") ? "1" : "0"); } catch {}
+      });
+    }
   }
   function setActiveTab(tab) {
     document.body.dataset.activeTab = tab;
-    document.querySelectorAll(".tab-nav .tab-btn[data-tab]").forEach(b => {
+    document.querySelectorAll(".sidebar-nav .nav-btn[data-tab], .tab-nav .tab-btn[data-tab]").forEach(b => {
       b.classList.toggle("active", b.dataset.tab === tab);
     });
   }
