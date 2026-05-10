@@ -2307,6 +2307,68 @@ const server = Bun.serve({
         headers: { "Content-Type": "application/json; charset=utf-8" },
       });
     }
+    // ── /api/master/supervisor — switch the master's supervisor model ────
+    // Edits ~/.config/subctl/master/providers.json (writes the picked id
+    // into models.supervisor.model and models.reviewer.model — they share
+    // a model in our setup) and bounces the master launchd job. The
+    // master's transcript persists across restart, so the switch is
+    // effectively in-place.
+    if (url.pathname === "/api/master/supervisor" && req.method === "POST") {
+      let body: { model?: string };
+      try {
+        body = await req.json();
+      } catch {
+        return Response.json({ ok: false, error: "invalid JSON body" }, { status: 400 });
+      }
+      const modelId = (body.model ?? "").trim();
+      if (!modelId) return Response.json({ ok: false, error: "model required" }, { status: 400 });
+      const providersPath = join(SUBCTL_CONFIG_DIR, "master", "providers.json");
+      if (!existsSync(providersPath)) {
+        return Response.json({ ok: false, error: "providers.json missing" }, { status: 404 });
+      }
+      try {
+        const raw = readFileSync(providersPath, "utf8");
+        // Strip comment lines so we can parse, but ALSO preserve them for
+        // the rewrite. Simplest: parse, rewrite, lose comments. Acceptable
+        // tradeoff — we add a leading _comment field instead.
+        const stripped = raw.split("\n").filter((l) => !/^\s*"_comment[^"]*"\s*:/.test(l)).join("\n").replace(/,(\s*[}\]])/g, "$1");
+        const cfg = JSON.parse(stripped) as {
+          models?: Record<string, { provider?: string; model?: string; host?: string }>;
+        };
+        if (!cfg.models?.supervisor) {
+          return Response.json({ ok: false, error: "no models.supervisor in providers.json" }, { status: 400 });
+        }
+        const prev = cfg.models.supervisor.model;
+        cfg.models.supervisor.model = modelId;
+        if (cfg.models.reviewer) cfg.models.reviewer.model = modelId;
+        // Annotation so future readers see this was set via the dashboard
+        (cfg as any)._comment = `models.supervisor switched via /api/master/supervisor at ${new Date().toISOString()} (was: ${prev})`;
+        writeFileSync(providersPath, JSON.stringify(cfg, null, 2));
+        // Bounce master via launchctl
+        const label = "com.subctl.master";
+        const plist = `${process.env.HOME}/Library/LaunchAgents/${label}.plist`;
+        spawnSync("launchctl", ["unload", plist], { encoding: "utf8", timeout: 5000 });
+        // Wait briefly for clean exit
+        for (let i = 0; i < 5; i++) {
+          const ps = spawnSync("pgrep", ["-f", "subctl.*master/server.ts"], { encoding: "utf8", timeout: 1000 });
+          if (!ps.stdout?.trim()) break;
+          await new Promise((r) => setTimeout(r, 1000));
+        }
+        spawnSync("launchctl", ["load", plist], { encoding: "utf8", timeout: 5000 });
+        return Response.json({
+          ok: true,
+          previous: prev,
+          new: modelId,
+          message: "providers.json updated and master daemon restarted",
+        });
+      } catch (err) {
+        return Response.json(
+          { ok: false, error: (err as Error).message },
+          { status: 500 },
+        );
+      }
+    }
+
     // ── master proxy: /api/master/* → http://127.0.0.1:8788/* ────────────
     // The master daemon listens locally; the dashboard fronts it for the
     // browser. POST /api/master/chat forwards the JSON body. GET

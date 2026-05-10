@@ -162,6 +162,285 @@
   wireModelsTab();
   wireProjectsTab();
   wireMemoryTab();
+  wireChatModelSelector();
+  wireOrchestrationCockpit();
+
+  // ----- Chat model selector (top of Chat screen) -----
+  function wireChatModelSelector() {
+    const sel = $("chat-model-select");
+    const apply = $("chat-model-apply");
+    const cur = $("chat-model-current");
+    if (!sel || !apply) return;
+    let currentSupervisor = null;
+
+    async function refresh() {
+      try {
+        const [modelsR, healthR] = await Promise.all([
+          fetch("/api/models"),
+          fetch("/api/master/health"),
+        ]);
+        const models = await modelsR.json();
+        const health = await healthR.json().catch(() => ({}));
+        // Best-effort: pull supervisor model from /diag (which already includes it)
+        let supervisor = null;
+        try {
+          const diagR = await fetch("/api/master/diag");
+          const diag = await diagR.json();
+          supervisor = diag.supervisor ?? null;
+        } catch {}
+        currentSupervisor = supervisor;
+        if (cur) cur.textContent = supervisor ? "supervisor: " + supervisor : "supervisor: (unknown)";
+        if (!models.ok) {
+          sel.innerHTML = "<option value=''>LM Studio unreachable</option>";
+          return;
+        }
+        const opts = (models.models || [])
+          .filter((m) => m.type === "vlm" || m.type === "llm")
+          .sort((a, b) => {
+            if (a.state === "loaded" && b.state !== "loaded") return -1;
+            if (a.state !== "loaded" && b.state === "loaded") return 1;
+            return (a.id || "").localeCompare(b.id || "");
+          })
+          .map((m) => {
+            const id = m.id;
+            const fullId = m.publisher ? `${m.publisher}/${id}` : id;
+            // currentSupervisor format: "lmstudio/qwen/qwen3.6-35b-a3b"
+            const isCurrent = currentSupervisor && currentSupervisor.endsWith("/" + id);
+            const label = `${id}  · ${m.state}  · ${m.quantization || "?"}  · ctx ${m.loaded_context_length || "?"}`;
+            return `<option value="${id}" ${isCurrent ? "selected" : ""}>${escapeText(label)}</option>`;
+          })
+          .join("");
+        sel.innerHTML = opts || "<option value=''>(no chat models)</option>";
+      } catch (err) {
+        sel.innerHTML = "<option value=''>error: " + escapeText(String(err)) + "</option>";
+      }
+    }
+    refresh();
+    setInterval(() => {
+      const panel = document.querySelector("section[data-tab=\"chat\"]");
+      if (panel && getComputedStyle(panel).display !== "none") refresh();
+    }, 10000);
+
+    apply.addEventListener("click", async () => {
+      const picked = sel.value;
+      if (!picked) return;
+      if (!confirm("Switch master supervisor to " + picked + "?\nThis edits providers.json and restarts the master daemon. Transcript is preserved.")) return;
+      apply.disabled = true;
+      apply.textContent = "applying…";
+      try {
+        const r = await fetch("/api/master/supervisor", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model: picked }),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!j.ok) {
+          apply.textContent = "failed";
+          alert("Switch failed: " + (j.error || r.status));
+          setTimeout(() => { apply.disabled = false; apply.textContent = "apply"; }, 2000);
+        } else {
+          apply.textContent = "switched ✓";
+          setTimeout(() => { apply.disabled = false; apply.textContent = "apply"; refresh(); }, 3500);
+        }
+      } catch (err) {
+        apply.textContent = "error";
+        alert("Switch error: " + err);
+      }
+    });
+  }
+
+  // ----- Orchestration cockpit -----
+  function wireOrchestrationCockpit() {
+    const activeBody = $("orch-active-body");
+    const activeCount = $("orch-active-count");
+    const activeMeta = $("orch-active-meta");
+    const watchdogBody = $("orch-watchdog-body");
+    const watchdogMeta = $("orch-watchdog-meta");
+    const liveFeed = $("orch-live-activity");
+    const clearBtn = $("orch-activity-clear");
+    const daemonMeta = $("orch-daemon-meta");
+    const diagRefresh = $("orch-diag-refresh");
+    const diagBody = $("orch-diag-body");
+    if (!activeBody) return;
+
+    if (clearBtn) {
+      clearBtn.addEventListener("click", () => {
+        liveFeed.innerHTML = "<div class=\"orch-empty\">cleared</div>";
+      });
+    }
+
+    async function refreshTeams() {
+      try {
+        const r = await fetch("/api/master/teams");
+        const j = await r.json();
+        const teams = j.teams || [];
+        activeCount.textContent = teams.length;
+        if (!teams.length) {
+          activeBody.innerHTML = "<div class=\"orch-empty\">no dev teams running — chat with master to spawn one</div>";
+          activeMeta.textContent = "—";
+          return;
+        }
+        activeMeta.textContent = teams.length + " tracked";
+        activeBody.replaceChildren(...teams.map((t) => {
+          const card = document.createElement("div");
+          card.className = "orch-team-card";
+          const ageS = t.last_activity_seconds_ago;
+          if (typeof ageS === "number") {
+            if (ageS > 1800) card.classList.add("stale-red");
+            else if (ageS > 900) card.classList.add("stale-yellow");
+            else card.classList.add("fresh");
+          }
+          const head = document.createElement("div");
+          head.className = "head";
+          const name = document.createElement("span");
+          name.className = "name";
+          name.textContent = t.name;
+          const age = document.createElement("span");
+          age.className = "age";
+          age.textContent = typeof ageS === "number" ? fmtAge(ageS) + " ago" : "—";
+          head.appendChild(name);
+          head.appendChild(age);
+          card.appendChild(head);
+          if (t.last_event) {
+            const ev = document.createElement("div");
+            ev.className = "last-event";
+            ev.textContent = t.last_event.type + ": " + (t.last_event.text || "(no text)");
+            card.appendChild(ev);
+          } else {
+            const meta = document.createElement("div");
+            meta.className = "meta";
+            meta.textContent = "no reports yet";
+            card.appendChild(meta);
+          }
+          return card;
+        }));
+      } catch {
+        activeBody.innerHTML = "<div class=\"orch-empty\">/api/master/teams unreachable</div>";
+      }
+    }
+
+    async function refreshHealth() {
+      try {
+        const r = await fetch("/api/master/health");
+        const j = await r.json();
+        const setT = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+        setT("orch-daemon-uptime", j.uptime_s != null ? fmtAge(j.uptime_s) : "—");
+        setT("orch-daemon-transcript", (j.transcript_msgs ?? "—") + " msgs");
+        setT("orch-daemon-queue", j.prompt_in_flight ? "in-flight" : "idle");
+        setT("orch-daemon-subs", j.subscribers ?? "—");
+        const tg = j.telegram_listener || {};
+        setT("orch-daemon-tg", tg.running ? `polling @${tg.bot_username || "?"} (q=${tg.queue_size ?? 0})` : "not running");
+        if (daemonMeta) daemonMeta.textContent = j.ok ? "ok" : "degraded";
+
+        // Read diag for watchdog interval + supervisor
+        try {
+          const diagR = await fetch("/api/master/diag");
+          const diag = await diagR.json();
+          setT("orch-daemon-sup", diag.supervisor || "—");
+        } catch {}
+      } catch {}
+    }
+
+    async function runDiag() {
+      diagBody.innerHTML = "<div class=\"dim small\">running diagnostics…</div>";
+      try {
+        const r = await fetch("/api/master/diag");
+        const j = await r.json();
+        if (!j.ok && !j.checks) {
+          diagBody.innerHTML = "<div class=\"orch-empty\">diag unreachable</div>";
+          return;
+        }
+        const rows = (j.checks || []).map((c) => {
+          const row = document.createElement("div");
+          row.className = "diag-row " + (c.ok ? "ok" : "err");
+          row.innerHTML =
+            "<span class=\"mark\">" + (c.ok ? "✓" : "✗") + "</span>" +
+            "<span class=\"name\">" + escapeText(c.name) + "</span>" +
+            "<span class=\"detail\">" + escapeText(c.detail || "") + "</span>";
+          return row;
+        });
+        diagBody.replaceChildren(...rows);
+      } catch (err) {
+        diagBody.innerHTML = "<div class=\"orch-empty\">error: " + escapeText(String(err)) + "</div>";
+      }
+    }
+
+    if (diagRefresh) diagRefresh.addEventListener("click", runDiag);
+
+    function appendLiveRow(kind, label, text) {
+      if (!liveFeed) return;
+      const empty = liveFeed.querySelector(".orch-empty");
+      if (empty) empty.remove();
+      const row = document.createElement("div");
+      row.className = "row kind-" + kind;
+      row.innerHTML =
+        "<span class=\"ts\">" + new Date().toLocaleTimeString() + "</span>" +
+        "<span class=\"label\">" + escapeText(label) + "</span>" +
+        escapeText(text);
+      liveFeed.insertBefore(row, liveFeed.firstChild);
+      while (liveFeed.children.length > 50) liveFeed.removeChild(liveFeed.lastChild);
+    }
+    // Independent SSE connection for the cockpit so it works without the
+    // chat panel mounted (browser EventSource handles dedup behind one HTTP
+    // connection automatically when same URL).
+    function connectSSE() {
+      const es = new EventSource("/api/master/events");
+      es.addEventListener("inbound", (e) => {
+        try {
+          const d = JSON.parse(e.data);
+          appendLiveRow("inbound", d.source || "in", String(d.text || "").slice(0, 160));
+        } catch {}
+      });
+      es.addEventListener("team_event", (e) => {
+        try {
+          const d = JSON.parse(e.data);
+          appendLiveRow("team", d.team + " " + (d.type || ""), String(d.text || "").slice(0, 160));
+        } catch {}
+      });
+      es.addEventListener("watchdog_fire", (e) => {
+        try {
+          const d = JSON.parse(e.data);
+          appendLiveRow("watchdog", "fired", String(d.prompt || "").slice(0, 160));
+        } catch {}
+      });
+      es.addEventListener("watchdog_ok", (e) => {
+        try {
+          const d = JSON.parse(e.data);
+          appendLiveRow("watchdog", "ok", `${d.teams_tracked ?? 0} teams, ${d.stale ?? 0} stale`);
+        } catch {}
+      });
+      es.addEventListener("message_update", (e) => {
+        try {
+          const d = JSON.parse(e.data);
+          const ev = d.assistantMessageEvent;
+          if (ev && ev.type === "toolcall_start") {
+            const tc = ev.partial?.content?.[ev.contentIndex];
+            if (tc && tc.name) appendLiveRow("tool", tc.name, "");
+          }
+        } catch {}
+      });
+      es.addEventListener("error", () => {
+        try { es.close(); } catch {}
+        setTimeout(connectSSE, 3000);
+      });
+    }
+    connectSSE();
+
+    // Polling refresh while the Orchestration tab is visible.
+    refreshTeams();
+    refreshHealth();
+    setInterval(() => {
+      const panel = document.querySelector("section[data-tab=\"orchestration\"]");
+      if (panel && getComputedStyle(panel).display !== "none") {
+        refreshTeams();
+        refreshHealth();
+      }
+    }, 5000);
+  }
+
+  function escapeText(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
 
   // ----- Models tab — LM Studio model catalog -----
   function wireModelsTab() {
@@ -1960,8 +2239,15 @@
   function wireTabs() {
     const TAB_STORAGE_KEY = "subctl.dashboard.tab";
     const initial = (() => {
-      try { return localStorage.getItem(TAB_STORAGE_KEY) || "orchestration"; }
-      catch { return "orchestration"; }
+      try {
+        const stored = localStorage.getItem(TAB_STORAGE_KEY) || "chat";
+        // Migration: the previous default was "orchestration", which used
+        // to be the chat. If users had that stored, route them to "chat".
+        if (stored === "orchestration" && !document.querySelector("section[data-tab=\"orchestration\"] .orch-grid")) {
+          return "chat";
+        }
+        return stored;
+      } catch { return "chat"; }
     })();
     setActiveTab(initial);
     // Sidebar buttons (new layout) and any legacy top-nav buttons (none now,

@@ -27,8 +27,11 @@
   <div class="app-shell">
     <aside class="sidebar" id="sidebar">
       <nav class="sidebar-nav" id="sidebar-nav">
-        <button type="button" class="nav-btn active" data-tab="orchestration">
-          <span class="nav-icon">◉</span><span class="nav-label">Orchestration</span>
+        <button type="button" class="nav-btn active" data-tab="chat">
+          <span class="nav-icon">◉</span><span class="nav-label">Chat</span>
+        </button>
+        <button type="button" class="nav-btn" data-tab="orchestration">
+          <span class="nav-icon">⚙</span><span class="nav-label">Orchestration</span>
         </button>
         <button type="button" class="nav-btn" data-tab="dashboard">
           <span class="nav-icon">▣</span><span class="nav-label">Dashboard</span>
@@ -58,9 +61,18 @@
 
   <main>
 
-    <!-- ── Orchestration: dedicated full-height chat with right sidecar ─── -->
-    <section class="orchestration-screen" data-tab="orchestration">
+    <!-- ── Chat: master conversation, model picker, full-height with sidecar ─── -->
+    <section class="orchestration-screen chat-screen" data-tab="chat">
       <section class="panel master-chat" id="master-chat-panel">
+        <div class="chat-toolbar">
+          <label class="chat-model-label">model
+            <select id="chat-model-select" class="chat-model-select">
+              <option value="">loading…</option>
+            </select>
+          </label>
+          <button type="button" class="chat-toolbar-btn" id="chat-model-apply" title="Switch the master's supervisor model. Edits providers.json and restarts the master daemon (transcript preserved).">apply</button>
+          <span class="chat-toolbar-hint" id="chat-model-current">supervisor: --</span>
+        </div>
       <h2>Master <span class="panel-hint">conversational dev-team orchestrator on the M3 Ultra · streams from <code>/api/master/events</code></span>
         <span class="master-conn-state" id="master-conn-state">disconnected</span>
       </h2>
@@ -88,6 +100,75 @@
           </div>
         </section>
       </aside>
+    </section>
+    <!-- ── /Chat ──────────────────────────────────────────────────────── -->
+
+    <!-- ── Orchestration: live ops cockpit ────────────────────────────── -->
+    <section class="orch-screen" data-tab="orchestration">
+      <header class="screen-header">
+        <h2>Orchestration <span class="screen-sub">live ops view of every dev team in flight, watchdog state, and pending decisions</span></h2>
+      </header>
+
+      <div class="orch-grid">
+        <section class="orch-card">
+          <div class="orch-card-head">
+            <h3>Active Dev Teams <span class="dim" id="orch-active-count">0</span></h3>
+            <span class="orch-card-meta" id="orch-active-meta">—</span>
+          </div>
+          <div class="orch-card-body" id="orch-active-body">
+            <div class="orch-empty">no dev teams running — chat with master to spawn one</div>
+          </div>
+        </section>
+
+        <section class="orch-card">
+          <div class="orch-card-head">
+            <h3>Watchdog</h3>
+            <span class="orch-card-meta" id="orch-watchdog-meta">interval --</span>
+          </div>
+          <div class="orch-card-body" id="orch-watchdog-body">
+            <div class="orch-empty">no recent watchdog firings</div>
+          </div>
+        </section>
+
+        <section class="orch-card orch-card-wide">
+          <div class="orch-card-head">
+            <h3>Live Activity <span class="dim small">last 50 events from /api/master/events</span></h3>
+            <button type="button" class="orch-clear-btn" id="orch-activity-clear">clear</button>
+          </div>
+          <div class="orch-card-body orch-activity-feed" id="orch-live-activity">
+            <div class="orch-empty">waiting for activity…</div>
+          </div>
+        </section>
+
+        <section class="orch-card">
+          <div class="orch-card-head">
+            <h3>Master daemon</h3>
+            <span class="orch-card-meta" id="orch-daemon-meta">--</span>
+          </div>
+          <div class="orch-card-body" id="orch-daemon-body">
+            <table class="orch-kv">
+              <tbody>
+                <tr><td>uptime</td><td id="orch-daemon-uptime">—</td></tr>
+                <tr><td>transcript</td><td id="orch-daemon-transcript">—</td></tr>
+                <tr><td>queue depth</td><td id="orch-daemon-queue">—</td></tr>
+                <tr><td>SSE subs</td><td id="orch-daemon-subs">—</td></tr>
+                <tr><td>telegram</td><td id="orch-daemon-tg">—</td></tr>
+                <tr><td>supervisor</td><td id="orch-daemon-sup">—</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="orch-card">
+          <div class="orch-card-head">
+            <h3>Diagnostics</h3>
+            <button type="button" class="orch-clear-btn" id="orch-diag-refresh">refresh</button>
+          </div>
+          <div class="orch-card-body" id="orch-diag-body">
+            <div class="dim small">click refresh to run full /diag</div>
+          </div>
+        </section>
+      </div>
     </section>
     <!-- ── /Orchestration ─────────────────────────────────────────────── -->
 
