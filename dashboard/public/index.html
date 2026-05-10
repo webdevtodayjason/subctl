@@ -39,6 +39,9 @@
         <button type="button" class="nav-btn" data-tab="projects">
           <span class="nav-icon">⌘</span><span class="nav-label">Projects</span>
         </button>
+        <button type="button" class="nav-btn" data-tab="teams">
+          <span class="nav-icon">▤</span><span class="nav-label">Teams</span>
+        </button>
         <button type="button" class="nav-btn" data-tab="sessions">
           <span class="nav-icon">≡</span><span class="nav-label">Claude Sessions</span>
         </button>
@@ -547,6 +550,87 @@
 
       <div class="providers-list" id="providers-list">
         <div class="dim small" style="padding:24px">loading…</div>
+      </div>
+    </section>
+
+    <!-- ── Teams (dev-team templates) ─────────────────────────────── -->
+    <section class="teams-screen" data-tab="teams">
+      <header class="screen-header">
+        <h2>Teams <span class="screen-sub">dev-team templates · persona + skills + tool whitelist + boot prompt · used when master spawns a worker</span></h2>
+        <button type="button" class="primary-btn" id="team-new-btn">+ New Template</button>
+      </header>
+
+      <!-- New / edit modal -->
+      <div class="modal-backdrop" id="team-modal" hidden>
+        <div class="modal modal-wide">
+          <header class="modal-header">
+            <h3 id="team-modal-title">New Team Template</h3>
+            <button type="button" class="modal-close" id="team-modal-close">✕</button>
+          </header>
+          <form class="modal-body" id="team-form">
+            <div class="form-row">
+              <label>Name <span class="required">*</span></label>
+              <input type="text" id="team-name" placeholder="e.g. code-review, feature-dev, incident-response" autocomplete="off" required />
+              <div class="form-hint">Used as the template ID and filename. Alphanumerics + . - _ only.</div>
+            </div>
+            <div class="form-row">
+              <label>Description</label>
+              <input type="text" id="team-description" placeholder="One-line description of what this team does" autocomplete="off" />
+            </div>
+            <div class="form-row">
+              <label>Persona <span class="dim">(system prompt for the team lead)</span></label>
+              <textarea id="team-persona" rows="6" placeholder="You are an AI code reviewer. Your job is to read PR diffs, run coderabbit_review_local, synthesize findings into a single readable summary, and report back to the master via subctl_team_report. You never push, merge, or modify code yourself."></textarea>
+              <div class="form-hint">Sets the lead's role + tone + scope. Master prepends a worker-preface before this when spawning, so don't redefine "you are subctl master".</div>
+            </div>
+            <div class="form-row">
+              <label>Default autonomy</label>
+              <select id="team-autonomy">
+                <option value="ask">ask — propose every action</option>
+                <option value="drive">drive — act on most, escalate push/merge/deploy</option>
+                <option value="shadow">shadow — observe only</option>
+              </select>
+            </div>
+            <div class="form-row">
+              <label>Boot prompt <span class="dim">(first message after spawn)</span></label>
+              <textarea id="team-boot-prompt" rows="3" placeholder="Read CLAUDE.md and any RESUME.md in the project. Then ask Jason what scope to start with."></textarea>
+            </div>
+            <div class="form-row">
+              <label>Tool families <span class="dim">(what the lead may call)</span></label>
+              <div class="team-tools-grid" id="team-tools-grid">
+                <div class="dim small">loading…</div>
+              </div>
+            </div>
+            <div class="form-row">
+              <label>Skills <span class="dim">(from your local catalog · select multiple)</span></label>
+              <div class="team-skills-picker">
+                <input type="text" id="team-skills-filter" placeholder="filter skills…" autocomplete="off" />
+                <div class="team-skills-list" id="team-skills-list">
+                  <div class="dim small">loading…</div>
+                </div>
+                <div class="team-skills-selected" id="team-skills-selected">
+                  <div class="dim small">no skills selected</div>
+                </div>
+              </div>
+            </div>
+            <div class="form-status" id="team-result" hidden></div>
+            <footer class="modal-footer">
+              <button type="button" class="secondary-btn" id="team-cancel">cancel</button>
+              <button type="submit" class="primary-btn" id="team-submit">save</button>
+            </footer>
+          </form>
+        </div>
+      </div>
+
+      <div class="teams-layout">
+        <aside class="teams-list-pane">
+          <div class="teams-list" id="teams-list">
+            <div class="dim small" style="padding:18px">loading…</div>
+          </div>
+        </aside>
+
+        <section class="team-detail-pane" id="team-detail-pane">
+          <div class="dim small" style="padding:24px">select a template on the left, or click <strong>+ New Template</strong> above</div>
+        </section>
       </div>
     </section>
 

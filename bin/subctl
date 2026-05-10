@@ -124,6 +124,12 @@ Usage:
   subctl skills info <id>             Show one skill's frontmatter + content
   subctl skills sources               List skill sources (each imported repo)
 
+  subctl templates list               List dev-team templates (persona+skills+tools)
+  subctl templates show <name>        Show one template's JSON
+  subctl templates create <name>      Create a new template (stub or --from FILE)
+  subctl templates duplicate <a> <b>  Copy a template
+  subctl templates delete <name>      Remove a template
+
   subctl update                       Pull origin/main, rebuild, restart daemons,
                                       doctor on the way out (no manual ssh+rsync)
   subctl uninstall                    Remove subctl
@@ -532,6 +538,11 @@ case "$cmd" in
   skills)
     . "$SUBCTL_REPO_ROOT/components/skills/skills.sh"
     subctl_skills "$@"
+    ;;
+
+  templates)
+    . "$SUBCTL_REPO_ROOT/components/teams/teams.sh"
+    subctl_templates "$@"
     ;;
 
   master)

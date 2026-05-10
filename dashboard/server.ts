@@ -2255,6 +2255,132 @@ const server = Bun.serve({
       return Response.json({ ok: true, code_root: codeRoot, projects });
     }
 
+    // ── Teams (dev-team templates) ──────────────────────────────────────
+    // GET    /api/teams         list every template
+    // GET    /api/teams/:name   one template's full JSON
+    // POST   /api/teams         create a new template
+    // PUT    /api/teams/:name   update a template in place
+    // DELETE /api/teams/:name   remove a template
+    const TEAMS_DIR = process.env.SUBCTL_TEAM_TEMPLATES_DIR ?? `${process.env.HOME}/.config/subctl/master/team-templates`;
+
+    // /api/teams/tools — list available tool families. MUST come BEFORE
+    // the /api/teams/:name regex below or the regex eats "tools" as a
+    // template name and 404's.
+    if (url.pathname === "/api/teams/tools" && req.method === "GET") {
+      return Response.json({
+        ok: true,
+        tool_families: [
+          { id: "subctl_orch_*", description: "spawn / list / status / msg / kill dev-team tmux sessions" },
+          { id: "gh_*",          description: "GitHub PRs, issues, checks" },
+          { id: "coderabbit_*",  description: "AI code review on a branch or PR" },
+          { id: "telegram_*",    description: "send messages to Jason via the master bot" },
+          { id: "system_*",      description: "introspect host: hardware, load, models, processes, projects" },
+          { id: "project_create", description: "create a new project (clone/init + vault + policy)" },
+          { id: "vault_append",  description: "append-only writes inside ~/Documents/Obsidian Vault" },
+        ],
+      });
+    }
+
+    if (url.pathname === "/api/teams" && req.method === "GET") {
+      const teams: Array<Record<string, unknown>> = [];
+      try {
+        if (existsSync(TEAMS_DIR)) {
+          for (const entry of readdirSync(TEAMS_DIR, { withFileTypes: true })) {
+            if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+            const p = join(TEAMS_DIR, entry.name);
+            try {
+              const t = JSON.parse(readFileSync(p, "utf8"));
+              teams.push({
+                name: t.name ?? entry.name.replace(/\.json$/, ""),
+                description: t.description ?? "",
+                persona_preview: ((t.persona as string) ?? "").slice(0, 140),
+                skills_count: Array.isArray(t.skills) ? t.skills.length : 0,
+                tools_count: Array.isArray(t.tools) ? t.tools.length : 0,
+                default_autonomy: t.default_autonomy ?? "ask",
+                file: p,
+              });
+            } catch { /* skip bad JSON */ }
+          }
+        }
+      } catch (err) {
+        return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+      }
+      teams.sort((a: any, b: any) => (a.name || "").localeCompare(b.name || ""));
+      return Response.json({ ok: true, teams_dir: TEAMS_DIR, teams });
+    }
+
+    {
+      const m = url.pathname.match(/^\/api\/teams\/([^/]+)\/?$/);
+      if (m) {
+        const name = decodeURIComponent(m[1]!);
+        const file = join(TEAMS_DIR, `${name}.json`);
+
+        if (req.method === "GET") {
+          if (!existsSync(file)) return Response.json({ ok: false, error: "template not found" }, { status: 404 });
+          try {
+            return Response.json({ ok: true, name, file, template: JSON.parse(readFileSync(file, "utf8")) });
+          } catch (err) {
+            return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+          }
+        }
+
+        if (req.method === "PUT") {
+          if (!existsSync(file)) return Response.json({ ok: false, error: "template not found" }, { status: 404 });
+          let body: Record<string, unknown>;
+          try { body = await req.json(); } catch { return Response.json({ ok: false, error: "invalid JSON" }, { status: 400 }); }
+          // Force the name on disk to match the file name
+          body.name = name;
+          try {
+            const { writeFileSync } = require("node:fs") as typeof import("node:fs");
+            writeFileSync(file, JSON.stringify(body, null, 2));
+            return Response.json({ ok: true, name, file });
+          } catch (err) {
+            return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+          }
+        }
+
+        if (req.method === "DELETE") {
+          if (!existsSync(file)) return Response.json({ ok: false, error: "template not found" }, { status: 404 });
+          try {
+            const { unlinkSync } = require("node:fs") as typeof import("node:fs");
+            unlinkSync(file);
+            return Response.json({ ok: true, deleted: name });
+          } catch (err) {
+            return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+          }
+        }
+      }
+    }
+
+    if (url.pathname === "/api/teams" && req.method === "POST") {
+      let body: { name?: string; description?: string; persona?: string; skills?: string[]; tools?: string[]; default_autonomy?: string; boot_prompt?: string; from_template?: string };
+      try { body = await req.json(); } catch { return Response.json({ ok: false, error: "invalid JSON" }, { status: 400 }); }
+      const name = (body.name ?? "").trim();
+      if (!name) return Response.json({ ok: false, error: "name required" }, { status: 400 });
+      if (!/^[a-zA-Z0-9._-]+$/.test(name)) {
+        return Response.json({ ok: false, error: "name must be alphanumerics + . - _ only" }, { status: 400 });
+      }
+      const file = join(TEAMS_DIR, `${name}.json`);
+      if (existsSync(file)) return Response.json({ ok: false, error: `template '${name}' already exists` }, { status: 409 });
+      const tpl: Record<string, unknown> = {
+        name,
+        description: body.description ?? "(describe what this dev team does)",
+        persona: body.persona ?? "You are the lead of a dev team. Replace this with the persona prompt your team should boot with.",
+        skills: Array.isArray(body.skills) ? body.skills : [],
+        tools: Array.isArray(body.tools) && body.tools.length ? body.tools : ["subctl_orch_*", "gh_*", "telegram_*"],
+        default_autonomy: body.default_autonomy ?? "ask",
+        boot_prompt: body.boot_prompt ?? "Read CLAUDE.md and any RESUME.md in the project, then ask Jason what scope to start with.",
+      };
+      try {
+        const { mkdirSync, writeFileSync } = require("node:fs") as typeof import("node:fs");
+        mkdirSync(TEAMS_DIR, { recursive: true });
+        writeFileSync(file, JSON.stringify(tpl, null, 2));
+        return Response.json({ ok: true, name, file, template: tpl });
+      } catch (err) {
+        return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+      }
+    }
+
     // ── Skills catalog endpoints ────────────────────────────────────────
     // GET /api/skills        — list all skills with frontmatter
     // GET /api/skills/sources — list imported sources
