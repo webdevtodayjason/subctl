@@ -606,6 +606,117 @@ file's contents, transcript stays readable, and re-asking after a
 compaction still works because the master re-reads via
 `read_attachment`.
 
+### Phase 3m — Multi-team camera view (NVR-style team grid)
+
+Operator request 2026-05-10: a single dashboard view that shows
+every active dev team's tmux pane simultaneously, NVR-style. Like
+"Camera 1, Camera 2, Camera 3" on a security DVR but each feed is
+a live tmux session — `Team X1`, `Team X2`. Click a tile to expand
+to full-pane; click expanded tile to collapse back to the grid.
+
+This is the replacement for today's Orchestration cockpit. The
+current per-team card layout is fine for one team; with three or
+more in flight, you can't see them all without clicking back and
+forth. Camera view is the right primitive for "what's everyone
+doing right now."
+
+**Layout:**
+
+- Auto-grid sizing based on team count:
+  - 1 team:  full pane (no grid)
+  - 2 teams: 2×1 (side-by-side)
+  - 3–4:     2×2
+  - 5–9:     3×3
+  - 10–16:   4×4
+  - 17+:     4×4 with horizontal scroll, sorted by recency
+- Each tile is fixed aspect-ratio (terminal-shaped, ~80×24).
+- Header strip: team name on the left, status pill on the right,
+  uptime + last-activity timestamp underneath.
+- Click anywhere on a tile → expand to full main area; the grid
+  collapses to a mini strip on the side. Click expanded tile or
+  hit Esc → return to grid.
+
+**Status pill colors (per-team):**
+
+- 🟢 active   — pane content changed in the last 60 s
+- 🟡 idle     — pane unchanged for 60 s – 15 min
+- 🟠 stale    — pane unchanged for >15 min (master watchdog
+                threshold) — should already be triggering an
+                escalation
+- 🔴 error    — last captured frame contains a known error
+                pattern (`error:`, `failed`, `Error:`, etc.)
+- ⚫ ended    — session no longer in `subctl orch list`; tile
+                shows last frame + "ended" overlay until removed
+
+**Tile content rendering options:**
+
+- **MVP**: ANSI-stripped tmux capture in a `<pre>` tile. Polled
+  every 2 s. Loses color, terminal box drawing rendered as best-
+  effort monospace. Simple, cheap.
+- **Phase 2**: each tile hosts an `xterm.js` instance with a
+  read-only attach to the tmux session via WebSocket. True
+  terminal rendering, color, ligatures. Expensive in DOM but
+  accurate. Switch to this once camera view ships and grid sizing
+  is settled.
+
+**API:**
+
+```
+GET /api/orchestration/captures
+    ?lines=24                     # default 24 (one terminal screen)
+    → { teams: [{
+        name, status, last_activity_ts,
+        capture: "string with ansi or stripped",
+        cwd, account, uptime_s
+      }, ...] }
+
+GET /api/orchestration/captures/stream     (SSE)
+    Pushes per-team frame updates as deltas. Each event:
+    { team, ts, frame: "...", status }
+
+GET /api/orchestration/<name>/attach       (read-only WS)
+    For Phase 2 xterm.js tiles. Bi-directional disabled by default;
+    write access gated by a separate "attach for input" toggle.
+```
+
+**Hot-keys (when expanded view is open):**
+
+- `Esc` — collapse to grid
+- `←/→` — cycle through teams (next/prev expanded)
+- `↑` — scroll terminal scrollback
+- `s` — toggle "send a message to this team" inline composer
+        (calls `subctl orch send <name> "..."`)
+
+**Sub-feature: a tile can be "pinned":**
+
+Pinned tiles always render at the top-left of the grid even when
+the team is idle. Useful when the operator wants to keep a specific
+team in view while sorting others by recency.
+
+**Polling cost:**
+
+`tmux capture-pane` is essentially free server-side. The wire cost
+is `lines × ~80 chars × team_count` per poll. 16 teams × 24 lines
+× 80 chars × 0.5 Hz = ~15 KB/s — fine. SSE delta-only push would
+cut that to <1 KB/s steady-state.
+
+**Out of scope for first cut:**
+
+- Audio "alerts" when a tile flashes 🔴. (Cute. Defer.)
+- Per-tile resize / drag-rearrange of grid. Default order is
+  recency-first; pinning handles most cases.
+- Recording / replay of a tile (capturing frames over time and
+  scrubbing back). High-value but separate feature; depends on
+  Phase 2 xterm.js rendering being stable.
+- Cross-team highlighting / "show me which tiles touched the same
+  file in the last 5 min." Belongs in a different surface
+  (dashboard ledger?), not the camera view.
+
+**Acceptance:** with three teams running, navigate to the
+Orchestration tab and see all three tiles updating roughly in
+sync. Click one — it expands. Hit Esc — back to grid. Stop one of
+the teams — its tile transitions to ⚫ ended within ~2 s.
+
 ### Backlog (non-blocking)
 
 - Sweep remaining `alert()` / `confirm()` calls in Projects + Teams + Skills tabs to use `window.notice` (the Chat tab is done)
