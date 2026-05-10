@@ -48,6 +48,19 @@
       </div>
     </section>
 
+    <section class="panel master-chat" data-tab="dashboard" id="master-chat-panel">
+      <h2>Master <span class="panel-hint">conversational dev-team orchestrator on the M3 Ultra · streams from <code>/api/master/events</code></span>
+        <span class="master-conn-state" id="master-conn-state">disconnected</span>
+      </h2>
+      <div class="master-log" id="master-log">
+        <div class="master-log-empty">no messages yet — type below to start a conversation</div>
+      </div>
+      <form class="master-input" id="master-input-form" autocomplete="off">
+        <input type="text" id="master-input" placeholder="message subctl master… (enter to send)" autocomplete="off">
+        <button type="submit" id="master-send">send</button>
+      </form>
+    </section>
+
     <section class="panel" data-tab="dashboard">
       <h2>Accounts</h2>
       <table class="data-table">

@@ -158,6 +158,185 @@
   setInterval(renderClock, 1000);
   renderClock();
   wireRefreshButton();
+  wireMasterChat();
+
+  // ----- Master chat (SSE-backed conversation with the master daemon) -----
+  function wireMasterChat() {
+    const log = $("master-log");
+    const form = $("master-input-form");
+    const input = $("master-input");
+    const sendBtn = $("master-send");
+    const connState = $("master-conn-state");
+    if (!log || !form || !input) return;
+
+    // Track the in-flight assistant message so streaming text-deltas append
+    // into one bubble instead of creating a new bubble per token.
+    let activeAssistantEl = null;
+    let activeAssistantText = "";
+    let toolCallEls = new Map(); // toolCallId -> element
+
+    function setConnState(state) {
+      if (!connState) return;
+      connState.textContent = state;
+      connState.dataset.state = state;
+    }
+
+    function clearEmpty() {
+      const empty = log.querySelector(".master-log-empty");
+      if (empty) empty.remove();
+    }
+
+    function appendMessage(role, text, opts) {
+      clearEmpty();
+      const el = document.createElement("div");
+      el.className = `master-msg master-msg-${role}`;
+      const label = document.createElement("div");
+      label.className = "master-msg-label";
+      label.textContent = (opts && opts.label) || role;
+      const body = document.createElement("div");
+      body.className = "master-msg-body";
+      body.textContent = text || "";
+      el.appendChild(label);
+      el.appendChild(body);
+      log.appendChild(el);
+      log.scrollTop = log.scrollHeight;
+      return body;
+    }
+
+    function appendToolCall(toolCallId, name, args) {
+      clearEmpty();
+      const el = document.createElement("div");
+      el.className = "master-msg master-msg-tool";
+      el.dataset.tcid = toolCallId;
+      const label = document.createElement("div");
+      label.className = "master-msg-label";
+      label.textContent = "tool · " + name;
+      const body = document.createElement("div");
+      body.className = "master-msg-body master-tool-body";
+      body.textContent = args ? JSON.stringify(args) : "";
+      el.appendChild(label);
+      el.appendChild(body);
+      log.appendChild(el);
+      log.scrollTop = log.scrollHeight;
+      toolCallEls.set(toolCallId, el);
+    }
+
+    function markToolDone(toolCallId, ok, summary) {
+      const el = toolCallEls.get(toolCallId);
+      if (!el) return;
+      el.classList.add(ok ? "master-tool-ok" : "master-tool-err");
+      if (summary) {
+        const result = document.createElement("div");
+        result.className = "master-tool-result";
+        result.textContent = String(summary).slice(0, 400);
+        el.appendChild(result);
+      }
+      log.scrollTop = log.scrollHeight;
+    }
+
+    function startAssistantBubble() {
+      activeAssistantText = "";
+      activeAssistantEl = appendMessage("assistant", "", { label: "master" });
+    }
+
+    function appendDelta(delta) {
+      if (!activeAssistantEl) startAssistantBubble();
+      activeAssistantText += delta;
+      activeAssistantEl.textContent = activeAssistantText;
+      log.scrollTop = log.scrollHeight;
+    }
+
+    function endAssistantBubble() {
+      activeAssistantEl = null;
+      activeAssistantText = "";
+    }
+
+    let es = null;
+    let backoffMs = 1000;
+
+    function connect() {
+      setConnState("connecting");
+      es = new EventSource("/api/master/events");
+      es.addEventListener("open", () => {
+        setConnState("connected");
+        backoffMs = 1000;
+      });
+      es.addEventListener("error", () => {
+        setConnState("reconnecting");
+        try { es.close(); } catch {}
+        setTimeout(connect, backoffMs);
+        backoffMs = Math.min(backoffMs * 2, 15000);
+      });
+      es.addEventListener("connected", () => setConnState("connected"));
+      es.addEventListener("inbound", (e) => {
+        try {
+          const d = JSON.parse(e.data);
+          if (d.source === "watchdog") {
+            appendMessage("watchdog", d.text, { label: "watchdog" });
+          } else if (d.source === "telegram") {
+            appendMessage("user", d.text, { label: "you · telegram" });
+          }
+          // chat-source inbounds are echoed by our own POST below; skip duplicate
+        } catch {}
+      });
+      es.addEventListener("message_start", () => {
+        startAssistantBubble();
+      });
+      es.addEventListener("message_update", (e) => {
+        try {
+          const d = JSON.parse(e.data);
+          const ev = d.assistantMessageEvent;
+          if (!ev) return;
+          if (ev.type === "text_delta" && typeof ev.delta === "string") {
+            appendDelta(ev.delta);
+          } else if (ev.type === "toolcall_start") {
+            appendToolCall(ev.partial?.content?.[ev.contentIndex]?.id ?? "?", ev.partial?.content?.[ev.contentIndex]?.name ?? "tool", ev.partial?.content?.[ev.contentIndex]?.arguments);
+          }
+        } catch {}
+      });
+      es.addEventListener("message_end", () => {
+        endAssistantBubble();
+      });
+      es.addEventListener("tool_result", (e) => {
+        try {
+          const d = JSON.parse(e.data);
+          markToolDone(d.toolCallId ?? "?", !d.error, d.error || (d.content && d.content[0] && d.content[0].text));
+        } catch {}
+      });
+      es.addEventListener("watchdog_fire", (e) => {
+        try {
+          const d = JSON.parse(e.data);
+          appendMessage("watchdog", d.prompt, { label: "watchdog" });
+        } catch {}
+      });
+    }
+    connect();
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const text = input.value.trim();
+      if (!text) return;
+      input.value = "";
+      sendBtn.disabled = true;
+      appendMessage("user", text, { label: "you" });
+      try {
+        const r = await fetch("/api/master/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text, source: "chat" }),
+        });
+        if (!r.ok) {
+          const j = await r.json().catch(() => ({}));
+          appendMessage("error", "send failed: " + (j.error || r.status), { label: "error" });
+        }
+      } catch (err) {
+        appendMessage("error", "send error: " + err, { label: "error" });
+      } finally {
+        sendBtn.disabled = false;
+        input.focus();
+      }
+    });
+  }
 
   // ----- Verdict-transition notifications -----
   // Track the previous global + per-account verdicts. When any flip from green

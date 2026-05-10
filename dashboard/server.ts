@@ -2116,6 +2116,51 @@ const server = Bun.serve({
         headers: { "Content-Type": "application/json; charset=utf-8" },
       });
     }
+    // ── master proxy: /api/master/* → http://127.0.0.1:8788/* ────────────
+    // The master daemon listens locally; the dashboard fronts it for the
+    // browser. POST /api/master/chat forwards the JSON body. GET
+    // /api/master/events streams the SSE through. /health is just convenient.
+    if (url.pathname.startsWith("/api/master/")) {
+      const masterPort = process.env.SUBCTL_MASTER_PORT ?? "8788";
+      const masterUrl = `http://127.0.0.1:${masterPort}${url.pathname.replace(/^\/api\/master/, "")}${url.search}`;
+      try {
+        if (url.pathname === "/api/master/events" && req.method === "GET") {
+          // SSE pass-through. Bun's fetch returns a streaming Response;
+          // we forward its body directly so the browser sees text/event-stream.
+          const upstream = await fetch(masterUrl, {
+            headers: { Accept: "text/event-stream" },
+            signal: req.signal,
+          });
+          return new Response(upstream.body, {
+            status: upstream.status,
+            headers: {
+              "Content-Type": "text/event-stream",
+              "Cache-Control": "no-cache, no-transform",
+              "Connection": "keep-alive",
+            },
+          });
+        }
+        const init: RequestInit = {
+          method: req.method,
+          headers: { "Content-Type": "application/json" },
+        };
+        if (req.method !== "GET" && req.method !== "HEAD") {
+          init.body = await req.text();
+        }
+        const upstream = await fetch(masterUrl, init);
+        const body = await upstream.text();
+        return new Response(body, {
+          status: upstream.status,
+          headers: { "Content-Type": upstream.headers.get("Content-Type") ?? "application/json" },
+        });
+      } catch (err) {
+        return Response.json(
+          { ok: false, error: `master daemon unreachable: ${(err as Error).message}` },
+          { status: 502 },
+        );
+      }
+    }
+
     // POST or GET /api/refresh — bypass usage caches (in-process AND on-disk)
     // and return a fresh state snapshot. Clicked from the dashboard "↻" button
     // or invoked by scripts. Costs one API call per claude account; rest of
