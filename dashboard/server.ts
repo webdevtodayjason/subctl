@@ -2448,6 +2448,8 @@ const server = Bun.serve({
         { name: "jq",         check: ["jq", "--version"],             install: "brew install jq", required: true },
         { name: "gh",         check: ["gh", "--version"],             install: "brew install gh && gh auth login", required: true },
         { name: "claude",     check: ["claude", "--version"],         install: "curl -fsSL https://claude.ai/install.sh | bash", required: true },
+        { name: "codex",      check: ["codex", "--version"],          install: "npm i -g @openai/codex   (upgrade: npm i -g @openai/codex@latest)", required: true,
+          fallback_paths: [`${home}/.npm-global/bin/codex`, `/opt/homebrew/bin/codex`, `/usr/local/bin/codex`] },
         { name: "coderabbit", check: ["coderabbit", "--version"],     install: "curl -fsSL https://cli.coderabbit.ai/install.sh | sh", required: true,
           fallback_paths: [`${home}/.local/bin/coderabbit`] },
         { name: "obsidian",   check: ["test", "-d", "/Applications/Obsidian.app"], install: "brew install --cask obsidian", required: false },
