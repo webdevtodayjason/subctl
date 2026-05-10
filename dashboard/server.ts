@@ -2759,19 +2759,38 @@ const server = Bun.serve({
       } catch {
         return Response.json({ ok: false, error: "invalid JSON body" }, { status: 400 });
       }
-      const name = (body.name ?? "").trim();
-      const gitUrl = (body.git_url ?? "").trim();
+      // Normalize name: trim, collapse whitespace runs to a single dash,
+      // strip any other non-alphanumeric+.-_ chars, then trim leading/
+      // trailing dashes. Avoids forcing the user to type a slug manually.
+      const rawName = (body.name ?? "").trim();
+      const name = rawName
+        .replace(/\s+/g, "-")
+        .replace(/[^a-zA-Z0-9._-]/g, "")
+        .replace(/^-+|-+$/g, "");
+
+      // Normalize git URL: accept several forms users actually paste:
+      //   - "gh repo clone owner/repo"          → https://github.com/owner/repo.git
+      //   - "owner/repo"                        → https://github.com/owner/repo.git
+      //   - "https://github.com/owner/repo"     → leave as-is (git accepts)
+      //   - "git@github.com:owner/repo.git"     → leave as-is
+      let gitUrl = (body.git_url ?? "").trim();
+      if (gitUrl.startsWith("gh repo clone ")) {
+        gitUrl = gitUrl.replace(/^gh repo clone\s+/, "").trim();
+      }
+      if (/^[\w.-]+\/[\w.-]+$/.test(gitUrl)) {
+        gitUrl = `https://github.com/${gitUrl}.git`;
+      }
       const autonomy = body.autonomy_level ?? "ask";
       const createVault = body.create_vault !== false; // default true
       const addToPolicy = body.add_to_policy !== false; // default true
       const createGithub = body.create_github_repo === true;
       const ghVisibility = body.github_visibility ?? "private";
 
-      // Validate
-      if (!name) return Response.json({ ok: false, error: "name required" }, { status: 400 });
+      // Validate (after normalization)
+      if (!name) return Response.json({ ok: false, error: "name required (after normalizing spaces/special chars, nothing was left)" }, { status: 400 });
       if (!/^[a-zA-Z0-9._-]+$/.test(name)) {
         return Response.json(
-          { ok: false, error: "name must be alphanumerics + dots/dashes/underscores only" },
+          { ok: false, error: `normalized name "${name}" still contains invalid chars — alphanumerics + dots/dashes/underscores only` },
           { status: 400 },
         );
       }

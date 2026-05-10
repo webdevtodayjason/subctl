@@ -418,13 +418,13 @@
           <form class="modal-body" id="new-project-form">
             <div class="form-row">
               <label for="np-name">Name <span class="required">*</span></label>
-              <input type="text" id="np-name" name="name" placeholder="my-new-project" autocomplete="off" required pattern="[a-zA-Z0-9._-]+" />
-              <div class="form-hint">Becomes <code>~/code/<span id="np-name-preview">my-new-project</span></code> on the M3 Ultra. Alphanumerics + dots, dashes, underscores only.</div>
+              <input type="text" id="np-name" name="name" placeholder="my-new-project" autocomplete="off" required />
+              <div class="form-hint">Becomes <code>~/code/<span id="np-name-preview">my-new-project</span></code> on the M3 Ultra. Spaces auto-convert to dashes; non-alphanumeric chars are stripped.</div>
             </div>
             <div class="form-row">
               <label for="np-git-url">Git URL <span class="dim">(optional)</span></label>
-              <input type="text" id="np-git-url" name="git_url" placeholder="git@github.com:owner/repo.git or https://…" autocomplete="off" />
-              <div class="form-hint">If set, the project is cloned. If blank, an empty directory is created with a README and a fresh <code>git init</code>.</div>
+              <input type="text" id="np-git-url" name="git_url" placeholder="owner/repo, gh repo clone owner/repo, https://…, or git@…" autocomplete="off" />
+              <div class="form-hint">Accepts <code>owner/repo</code>, <code>gh repo clone owner/repo</code>, or any normal Git URL. If blank, an empty directory is created with a README and a fresh <code>git init</code>.</div>
             </div>
             <div class="form-row">
               <label for="np-autonomy">Autonomy</label>

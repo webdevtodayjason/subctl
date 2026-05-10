@@ -1625,9 +1625,19 @@
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && modal && !modal.hidden) closeModal();
     });
+    // Live-preview the NORMALIZED name (what the server will actually use)
+    // — collapses whitespace to dashes + drops other invalid chars. Keeps
+    // the input itself raw so the user isn't fighting the field.
+    function normalizeNameForPreview(raw) {
+      return (raw || "")
+        .trim()
+        .replace(/\s+/g, "-")
+        .replace(/[^a-zA-Z0-9._-]/g, "")
+        .replace(/^-+|-+$/g, "") || "my-new-project";
+    }
     if (nameInput && namePreview) {
       nameInput.addEventListener("input", () => {
-        const v = nameInput.value || "my-new-project";
+        const v = normalizeNameForPreview(nameInput.value);
         namePreview.textContent = v;
         document.querySelectorAll(".np-name-mirror").forEach((el) => el.textContent = v);
       });
