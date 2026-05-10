@@ -71,9 +71,17 @@ const CLI_PROMPTS_PATH = join(MASTER_STATE_DIR, "cli-prompts.jsonl");
 const CLI_PROMPTS_OFFSET = join(MASTER_STATE_DIR, "cli-prompts.offset");
 const DECISIONS_LOG = join(MASTER_STATE_DIR, "decisions.jsonl");
 
+// master-notify.json field names settled on `bot_token` / `chat_id` after
+// the dashboard's notify-listener used those, while early drafts of this
+// listener used the `telegram_*` prefix. Accept either to avoid forcing a
+// migration. See loadConfig() below for the merge.
 interface MasterNotifyConfig {
-  telegram_bot_token: string;
-  telegram_chat_id: string;
+  // canonical
+  bot_token?: string;
+  chat_id?: string;
+  // legacy / alternate
+  telegram_bot_token?: string;
+  telegram_chat_id?: string;
 }
 
 export interface OperatorMessage {
@@ -120,20 +128,26 @@ export function startMasterNotifyListener(
   } catch {
     return { running: false, reason: "master-notify.json unreadable / not JSON" };
   }
-  if (!cfg.telegram_bot_token) {
-    return { running: false, reason: "no telegram_bot_token in master-notify.json" };
+  // Accept either `bot_token`/`chat_id` (canonical) or `telegram_*` (legacy).
+  const botToken = cfg.bot_token ?? cfg.telegram_bot_token;
+  const chatId = cfg.chat_id ?? cfg.telegram_chat_id ?? null;
+  if (!botToken) {
+    return {
+      running: false,
+      reason: "no bot_token (or telegram_bot_token) in master-notify.json",
+    };
   }
 
   mkdirSync(MASTER_STATE_DIR, { recursive: true });
 
   _stateProvider = opts.stateProvider ?? null;
-  _allowedChatId = cfg.telegram_chat_id ?? null;
+  _allowedChatId = chatId ? String(chatId) : null;
   if (opts.onOperatorMessage) subscribers.push(opts.onOperatorMessage);
 
   _running = true;
   _abortController = new AbortController();
 
-  pollLoop(cfg.telegram_bot_token, _abortController.signal).catch((err) => {
+  pollLoop(botToken, _abortController.signal).catch((err) => {
     console.error("[master-notify] poll loop crashed:", err?.message || err);
     _running = false;
   });

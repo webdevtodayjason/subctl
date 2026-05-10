@@ -117,6 +117,8 @@ Usage:
   subctl team inbox <team> [--tail N] Show recent events for a team
   subctl team list                    List teams with an inbox
 
+  subctl update                       Pull origin/main, rebuild, restart daemons,
+                                      doctor on the way out (no manual ssh+rsync)
   subctl uninstall                    Remove subctl
   subctl version                      Print version
   subctl help                         Show this help
@@ -523,6 +525,11 @@ case "$cmd" in
   master)
     . "$SUBCTL_REPO_ROOT/lib/master.sh"
     subctl_master "$@"
+    ;;
+
+  update)
+    . "$SUBCTL_REPO_ROOT/lib/update.sh"
+    subctl_update "$@"
     ;;
 
   uninstall)

@@ -53,6 +53,11 @@ import { ghTools } from "./tools/gh";
 import { coderabbitTools } from "./tools/coderabbit";
 import { telegramTools } from "./tools/telegram";
 import { systemTools } from "./tools/system";
+import {
+  startMasterNotifyListener,
+  stopMasterNotifyListener,
+  masterNotifyListenerStatus,
+} from "./master-notify-listener";
 
 const HOME = homedir();
 const COMPONENT_DIR = import.meta.dir;
@@ -602,29 +607,28 @@ async function main() {
   }
 
   // Single funnel for any inbound message: user chat from dashboard, Telegram,
-  // or synthetic watchdog prompts. Serializes calls (one prompt at a time)
-  // because pi-agent-core doesn't support concurrent runs on the same agent.
-  async function dispatchToAgent(
-    text: string,
-    source: "chat" | "telegram" | "watchdog",
-  ): Promise<{ ok: boolean; error?: string }> {
-    if (stopped) return { ok: false, error: "daemon shutting down" };
-    if (promptInFlight) return { ok: false, error: "agent busy with prior prompt" };
-    promptInFlight = true;
+  // or synthetic watchdog prompts. Serializes calls (pi-agent-core doesn't
+  // support concurrent runs on the same agent), but QUEUES instead of
+  // dropping when busy. Earlier behavior dropped messages 2..N when the
+  // first was still processing — Telegram bursts vanished silently.
+  type PendingPrompt = { text: string; source: "chat" | "telegram" | "watchdog" };
+  const promptQueue: PendingPrompt[] = [];
+
+  async function processOnePrompt(p: PendingPrompt): Promise<{ ok: boolean; error?: string }> {
     try {
-      broadcast("inbound", { source, text, ts: new Date().toISOString() });
-      await agent.prompt(text);
+      broadcast("inbound", { source: p.source, text: p.text, ts: new Date().toISOString() });
+      await agent.prompt(p.text);
       let { stop, err } = lastStopReason();
       if (stop === "error" && isTransient(err) && !stopped) {
-        console.error(`[master] transient error "${err}" (source=${source}), retrying in 5s`);
+        console.error(`[master] transient error "${err}" (source=${p.source}), retrying in 5s`);
         await new Promise((r) => setTimeout(r, 5000));
-        await agent.prompt(text);
+        await agent.prompt(p.text);
         ({ stop, err } = lastStopReason());
       }
       if (stop === "error") {
         logDecision({
           project: "_master",
-          action: `prompt_error_${source}`,
+          action: `prompt_error_${p.source}`,
           rationale: err ?? "unknown",
         });
         return { ok: false, error: err ?? "unknown error" };
@@ -634,13 +638,35 @@ async function main() {
       const msg = (err as Error).message ?? String(err);
       logDecision({
         project: "_master",
-        action: `prompt_failed_${source}`,
+        action: `prompt_failed_${p.source}`,
         rationale: msg,
       });
       return { ok: false, error: msg };
+    }
+  }
+
+  async function dispatchToAgent(
+    text: string,
+    source: "chat" | "telegram" | "watchdog",
+  ): Promise<{ ok: boolean; error?: string }> {
+    if (stopped) return { ok: false, error: "daemon shutting down" };
+    promptQueue.push({ text, source });
+    broadcast("queued", { source, queue_depth: promptQueue.length, ts: new Date().toISOString() });
+    if (promptInFlight) {
+      // Will be drained by the in-flight processor's loop.
+      return { ok: true, error: undefined };
+    }
+    promptInFlight = true;
+    let lastResult: { ok: boolean; error?: string } = { ok: true };
+    try {
+      while (promptQueue.length > 0 && !stopped) {
+        const next = promptQueue.shift()!;
+        lastResult = await processOnePrompt(next);
+      }
     } finally {
       promptInFlight = false;
     }
+    return lastResult;
   }
 
   // ── HTTP server: chat in, events out ───────────────────────────────────
@@ -668,6 +694,7 @@ async function main() {
           subscribers: sseClients.size,
           prompt_in_flight: promptInFlight,
           teams_tracked: teamLastActivity.size,
+          telegram_listener: masterNotifyListenerStatus(),
         });
       }
 
@@ -705,26 +732,41 @@ async function main() {
               return { name: "lmstudio", ok: false, detail: (err as Error).message };
             }
           })(),
-          // 2. Telegram bot reachable
+          // 2. Telegram bot reachable + listener actively polling
           (async () => {
             try {
               const notifyPath = join(SUBCTL_CONFIG_DIR, "master-notify.json");
               if (!existsSync(notifyPath)) {
                 return { name: "telegram", ok: false, detail: "master-notify.json missing" };
               }
-              const cfg = JSON.parse(readFileSync(notifyPath, "utf8")) as { bot_token?: string };
-              if (!cfg.bot_token) {
-                return { name: "telegram", ok: false, detail: "bot_token missing in master-notify.json" };
+              const cfg = JSON.parse(readFileSync(notifyPath, "utf8")) as {
+                bot_token?: string;
+                telegram_bot_token?: string;
+              };
+              const token = cfg.bot_token ?? cfg.telegram_bot_token;
+              if (!token) {
+                return {
+                  name: "telegram",
+                  ok: false,
+                  detail: "no bot_token (or telegram_bot_token) in master-notify.json",
+                };
               }
-              const r = await fetch(`https://api.telegram.org/bot${cfg.bot_token}/getMe`, {
+              const r = await fetch(`https://api.telegram.org/bot${token}/getMe`, {
                 signal: AbortSignal.timeout(3000),
               });
-              if (!r.ok) return { name: "telegram", ok: false, detail: `HTTP ${r.status}` };
+              if (!r.ok) return { name: "telegram", ok: false, detail: `getMe HTTP ${r.status}` };
               const j = (await r.json()) as { ok: boolean; result?: { username?: string } };
+              if (!j.ok) {
+                return { name: "telegram", ok: false, detail: "getMe returned not-ok" };
+              }
+              const ls = masterNotifyListenerStatus();
+              const listenerNote = ls.running
+                ? `listener polling (offset=${ls.offset}, queue=${ls.queue_size})`
+                : `LISTENER NOT RUNNING — incoming Telegram messages won't reach the agent`;
               return {
                 name: "telegram",
-                ok: !!j.ok,
-                detail: j.ok ? `bot @${j.result?.username ?? "?"} reachable` : "getMe returned not-ok",
+                ok: !!j.ok && ls.running,
+                detail: `bot @${j.result?.username ?? "?"} reachable, ${listenerNote}`,
               };
             } catch (err) {
               return { name: "telegram", ok: false, detail: (err as Error).message };
@@ -877,6 +919,23 @@ async function main() {
 
   console.error(`[master] http listening on http://${masterHost}:${httpServer.port} — POST /chat, GET /events, GET /health`);
 
+  // ── Telegram poll loop (master-notify-listener) ────────────────────────
+  // Each operator message arrives via the listener's onOperatorMessage
+  // callback; we feed it into the same dispatchToAgent funnel that handles
+  // dashboard-chat and watchdog-synthesized prompts. Source="telegram" so
+  // the SSE stream + decision log can distinguish channels.
+  const listenerResult = startMasterNotifyListener({
+    onOperatorMessage: (msg) => {
+      console.error(`[master] telegram inbound from ${msg.from_name ?? "?"}: ${msg.text.slice(0, 80)}`);
+      void dispatchToAgent(msg.text, "telegram");
+    },
+  });
+  if (listenerResult.running) {
+    console.error(`[master] telegram listener armed`);
+  } else {
+    console.error(`[master] telegram listener NOT armed: ${listenerResult.reason}`);
+  }
+
   // ── watchdog ticker ────────────────────────────────────────────────────
   // Master's KPI is "keep projects moving forward". Periodically scan open
   // dev teams + tracked projects; if anything looks stuck (no lead report
@@ -937,6 +996,7 @@ async function main() {
     clearInterval(watchdog);
     clearInterval(inboxPoll);
     if (inboxWatcher) try { inboxWatcher.close(); } catch { /* ignore */ }
+    try { stopMasterNotifyListener(); } catch { /* ignore */ }
     httpServer.stop(true);
     agent.abort();
     try {
