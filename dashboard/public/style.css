@@ -1572,14 +1572,14 @@ body[data-active-tab="logs"]          section[data-tab]:not([data-tab="logs"])  
 }
 .team-skill-chip .x:hover { color: #fff; }
 
-.modal-wide { max-width: 800px; }
-.modal-narrow { max-width: 460px; }
-/* tmux-preview is the live worker-pane viewer. Operator wants it big +
-   letterboxed (2026-05-10): use 95vw so it nearly fills the viewport
-   horizontally, with a 1900px ceiling for ultrawide screens. The
-   .tmux-preview-pane below has matching height tuning so the aspect
-   ratio is comfortable for reading captured terminal output. */
-.tmux-preview {
+/* Compound .modal.X selectors defeat the source-later .modal rule
+   (which sets width: 90% / max-width: 580px). Without the .modal
+   prefix, .modal-wide / .modal-narrow / .tmux-preview are equal-
+   specificity to .modal but appear earlier in source, so .modal wins
+   and these size variants silently no-op. Diagnosed 2026-05-10. */
+.modal.modal-wide   { max-width: 800px; }
+.modal.modal-narrow { max-width: 460px; }
+.modal.tmux-preview {
   width: 95vw;
   max-width: min(95vw, 1900px);
 }

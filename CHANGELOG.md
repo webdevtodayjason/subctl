@@ -4,6 +4,18 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.1.8] — 2026-05-10
+
+Patch — modal width-variant CSS specificity fix.
+
+### Fixed
+
+- **`.modal-wide`, `.modal-narrow`, `.tmux-preview` were silently no-op'd by `.modal`.** All three modal size variants set `max-width` (and `tmux-preview` set `width`) but appeared *earlier* in the stylesheet than the base `.modal { width: 90%; max-width: 580px }` rule. Same selector specificity (single class) → source-order tiebreaker → `.modal` won → every modal stayed at 580px regardless of which variant class was applied. v2.1.7 attempted to widen the tmux-preview modal but the override silently lost, so the modal frame stayed narrow while the inner pane font/padding bumps from v2.1.7 made the pane wider than its container — caused horizontal-scroll overflow. Fixed with compound selectors `.modal.modal-wide`, `.modal.modal-narrow`, `.modal.tmux-preview` — one extra class bump in specificity, source order no longer matters.
+
+### Notes
+
+- Side benefit: the notice/confirm modal (uses `.modal-narrow`) was also rendering at 580px instead of 460px. Now it'll be the intended narrower size on the next reload.
+
 ## [2.1.7] — 2026-05-10
 
 Patch — quality-of-life: tmux-preview modal is now bigger + letterboxed.
