@@ -443,6 +443,18 @@
                 <input type="checkbox" id="np-add-policy" checked />
                 Add to <code>policy.json</code> so master watches it (also restarts master to pick it up)
               </label>
+              <label class="form-check">
+                <input type="checkbox" id="np-create-github" />
+                Create GitHub repo via <code>gh</code> + push the initial commit (only when Git URL above is empty)
+              </label>
+              <div class="form-row" id="np-github-vis-row" style="margin-left:24px; display:none">
+                <label>Visibility</label>
+                <select id="np-github-vis">
+                  <option value="private" selected>private</option>
+                  <option value="public">public</option>
+                  <option value="internal">internal (orgs only)</option>
+                </select>
+              </div>
             </div>
             <div class="form-status" id="np-status" hidden></div>
             <footer class="modal-footer">

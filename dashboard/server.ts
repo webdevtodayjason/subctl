@@ -2448,8 +2448,15 @@ const server = Bun.serve({
         { name: "jq",         check: ["jq", "--version"],             install: "brew install jq", required: true },
         { name: "gh",         check: ["gh", "--version"],             install: "brew install gh && gh auth login", required: true },
         { name: "claude",     check: ["claude", "--version"],         install: "curl -fsSL https://claude.ai/install.sh | bash", required: true },
-        { name: "claude-mem",  check: ["claude-mem", "--version"],     install: "npx claude-mem install   (Claude Code memory plugin — used by team leads for persistent memory across sessions)", required: true,
-          fallback_paths: [`${home}/.claude/local/bin/claude-mem`, `${home}/.npm-global/bin/claude-mem`] },
+        // claude-mem is a Claude Code plugin, not a standalone CLI. After
+        // `npx claude-mem install` lands, the canonical disk signals are:
+        //   ~/.claude/plugins/marketplaces/thedotmack/  (plugin dir)
+        //   ~/.claude-mem/                              (memory state dir)
+        // and a worker on http://localhost:37701. We check the plugin dir
+        // as the install signal (binary may not be on PATH).
+        { name: "claude-mem", check: ["test", "-d", `${home}/.claude/plugins/marketplaces/thedotmack`],
+          install: "npx claude-mem install   (Claude Code memory plugin — used by team leads for persistent memory across sessions)", required: true,
+          fallback_paths: [] },
         { name: "codex",      check: ["codex", "--version"],          install: "npm i -g @openai/codex   (upgrade: npm i -g @openai/codex@latest)", required: true,
           fallback_paths: [`${home}/.npm-global/bin/codex`, `/opt/homebrew/bin/codex`, `/usr/local/bin/codex`] },
         { name: "coderabbit", check: ["coderabbit", "--version"],     install: "curl -fsSL https://cli.coderabbit.ai/install.sh | sh", required: true,
@@ -2480,7 +2487,10 @@ const server = Bun.serve({
             env: { ...process.env, PATH: checkPath },
           });
           if (r.status === 0) {
-            const version = cleanVersion(r.stdout || "");
+            // For app/dir checks (test -d X), version output is empty;
+            // emit a friendly "installed" string so the row reads cleanly.
+            const isDirCheck = t.check[0] === "test";
+            const version = isDirCheck ? "installed" : cleanVersion(r.stdout || "");
             return { name: t.name, ok: true, version: version || "ok", install: t.install, required: !!t.required };
           }
           for (const fp of t.fallback_paths ?? []) {
@@ -2741,6 +2751,8 @@ const server = Bun.serve({
         autonomy_level?: "drive" | "ask" | "shadow";
         create_vault?: boolean;
         add_to_policy?: boolean;
+        create_github_repo?: boolean;
+        github_visibility?: "public" | "private" | "internal";
       };
       try {
         body = await req.json();
@@ -2752,6 +2764,8 @@ const server = Bun.serve({
       const autonomy = body.autonomy_level ?? "ask";
       const createVault = body.create_vault !== false; // default true
       const addToPolicy = body.add_to_policy !== false; // default true
+      const createGithub = body.create_github_repo === true;
+      const ghVisibility = body.github_visibility ?? "private";
 
       // Validate
       if (!name) return Response.json({ ok: false, error: "name required" }, { status: 400 });
@@ -2798,6 +2812,38 @@ const server = Bun.serve({
           spawnSync("git", ["-C", projectPath, "add", "."], { encoding: "utf8", timeout: 5_000 });
           spawnSync("git", ["-C", projectPath, "commit", "-m", "Initial commit"], { encoding: "utf8", timeout: 10_000 });
           steps.push({ step: "mkdir+init", ok: true, detail: projectPath });
+
+          // 1b. Optionally create + push to GitHub
+          if (createGithub) {
+            // gh repo create accepts <owner>/<name> or just <name> (uses
+            // currently-authed user as owner). --source=<path> --push pushes
+            // the initial commit; --remote=origin wires the remote.
+            const visFlag = ghVisibility === "public" ? "--public" : ghVisibility === "internal" ? "--internal" : "--private";
+            const ghArgs = [
+              "repo", "create", name,
+              visFlag,
+              "--source", projectPath,
+              "--remote", "origin",
+              "--push",
+              "--description", `Created via subctl on ${new Date().toISOString().slice(0, 10)}`,
+            ];
+            const ghProc = spawnSync("gh", ghArgs, {
+              encoding: "utf8",
+              timeout: 60_000,
+              env: { ...process.env, PATH: "/usr/sbin:/usr/bin:/bin:/sbin:/opt/homebrew/bin:/usr/local/bin" },
+            });
+            if (ghProc.status === 0) {
+              const out = ((ghProc.stdout || "") + (ghProc.stderr || "")).trim();
+              steps.push({ step: "github", ok: true, detail: out.slice(-200) || `created ${ghVisibility} repo` });
+            } else {
+              steps.push({
+                step: "github",
+                ok: false,
+                detail: ((ghProc.stderr || ghProc.stdout) ?? "").slice(0, 500) + "  (project created locally; you can push later with: gh repo create " + name + " " + visFlag + " --source=" + projectPath + " --remote=origin --push)",
+              });
+              // Non-fatal — local project still exists, vault + policy steps continue
+            }
+          }
         } catch (err) {
           steps.push({ step: "mkdir+init", ok: false, detail: (err as Error).message });
           return Response.json({ ok: false, error: "init failed", steps }, { status: 500 });

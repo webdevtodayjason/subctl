@@ -1632,6 +1632,28 @@
         document.querySelectorAll(".np-name-mirror").forEach((el) => el.textContent = v);
       });
     }
+    // Toggle the GitHub visibility row when the create-github checkbox flips.
+    // Also disables it visually when a Git URL is set (since gh repo create
+    // wouldn't run anyway — we'd be cloning an existing one instead).
+    const ghCheck = $("np-create-github");
+    const ghVisRow = $("np-github-vis-row");
+    const gitUrlIn = $("np-git-url");
+    function syncGithubControls() {
+      if (!ghCheck || !ghVisRow) return;
+      const hasUrl = !!(gitUrlIn?.value?.trim());
+      ghCheck.disabled = hasUrl;
+      if (hasUrl) {
+        ghCheck.checked = false;
+        ghVisRow.style.display = "none";
+      } else if (ghCheck.checked) {
+        ghVisRow.style.display = "";
+      } else {
+        ghVisRow.style.display = "none";
+      }
+    }
+    if (ghCheck) ghCheck.addEventListener("change", syncGithubControls);
+    if (gitUrlIn) gitUrlIn.addEventListener("input", syncGithubControls);
+
     if (form) {
       form.addEventListener("submit", async (e) => {
         e.preventDefault();
@@ -1641,6 +1663,8 @@
           autonomy_level: $("np-autonomy")?.value || "ask",
           create_vault: $("np-create-vault")?.checked !== false,
           add_to_policy: $("np-add-policy")?.checked !== false,
+          create_github_repo: $("np-create-github")?.checked === true,
+          github_visibility: $("np-github-vis")?.value || "private",
         };
         if (!payload.name) return;
         submitBtn.disabled = true;
