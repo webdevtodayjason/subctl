@@ -52,6 +52,7 @@ import { subctlOrchTools } from "./tools/subctl-orch";
 import { ghTools } from "./tools/gh";
 import { coderabbitTools } from "./tools/coderabbit";
 import { telegramTools } from "./tools/telegram";
+import { systemTools } from "./tools/system";
 
 const HOME = homedir();
 const COMPONENT_DIR = import.meta.dir;
@@ -227,6 +228,12 @@ export const toolRegistry: Record<string, InternalTool> = {
       v as unknown as InternalTool,
     ]),
   ),
+  ...Object.fromEntries(
+    Object.entries(systemTools).map(([k, v]) => [
+      `system_${k}`,
+      v as unknown as InternalTool,
+    ]),
+  ),
 };
 
 // ─── SDK adapters ──────────────────────────────────────────────────────────
@@ -282,8 +289,15 @@ function buildModel(cfg: {
   provider: string;
   model: string;
   host?: string;
+  max_tokens?: number;
 }): Model<string> {
   const api = PROVIDER_API[cfg.provider] ?? "openai-completions";
+  // Reasoning models (qwen3.x, deepseek-r1, glm-flash, etc.) consume tokens
+  // inside <think> blocks BEFORE producing the user-visible answer or a
+  // tool call. 4K maxTokens is the trap: the model burns it all reasoning
+  // and stopReason="length" with empty content. 16K is a safer ceiling for
+  // local reasoning models; cloud providers can override per-role via
+  // providers.json's optional `max_tokens` field.
   return {
     id: cfg.model,
     name: cfg.model,
@@ -294,7 +308,7 @@ function buildModel(cfg: {
     input: ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: 128_000,
-    maxTokens: 4_096,
+    maxTokens: cfg.max_tokens ?? 16_384,
   };
 }
 
