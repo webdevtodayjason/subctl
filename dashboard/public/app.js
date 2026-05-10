@@ -1331,11 +1331,14 @@
           html += "<optgroup label=\"Cloud (always-on)\">";
           for (const p of cloud) {
             const dot = p.available ? "●" : "○";
-            const state = p.available ? "ready" : "not authed";
+            const wired = p.wired !== false; // default-true for legacy entries
+            const state = !wired ? "not yet wired" : (p.available ? "ready" : "not authed");
             const model = p.default_model || "?";
             const value = `${p.id}|${model}`;
             const isCurrent = supervisor === `${p.id}/${model}`;
-            html += `<option value="${escapeText(value)}" ${isCurrent ? "selected" : ""}>${dot}  ${escapeText(p.display)} · ${escapeText(model)} · ${state}</option>`;
+            const disabledAttr = !wired ? " disabled" : "";
+            const noteAttr = !wired && p.wired_note ? ` title="${escapeText(p.wired_note)}"` : "";
+            html += `<option value="${escapeText(value)}"${disabledAttr}${noteAttr} ${isCurrent ? "selected" : ""}>${dot}  ${escapeText(p.display)} · ${escapeText(model)} · ${state}</option>`;
           }
           html += "</optgroup>";
         }

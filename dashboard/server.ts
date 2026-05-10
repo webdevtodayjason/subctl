@@ -3546,9 +3546,13 @@ const server = Bun.serve({
 
       // Curated cloud-provider catalog. Each entry maps to a default model
       // suggestion, mostly so the chat dropdown has something to populate.
+      // `wired` indicates whether pi-ai actually has an api factory for the
+      // provider. Unwired providers stay listed (for visibility) but the
+      // chat-model-selector renders them disabled — selecting one would
+      // produce empty assistant content because pi-ai falls through.
       const CLOUD = [
-        { id: "anthropic",   display: "Anthropic Claude",      kind: "cloud", default_model: "claude-sonnet-4-6" },
-        { id: "openai-codex", display: "OpenAI Codex (ChatGPT)", kind: "cloud", default_model: "gpt-5.2" },
+        { id: "anthropic",    display: "Anthropic Claude",       kind: "cloud", default_model: "claude-sonnet-4-6", wired: true },
+        { id: "openai-codex", display: "OpenAI Codex (ChatGPT)", kind: "cloud", default_model: "gpt-5.2",            wired: false, wired_note: "ChatGPT OAuth provider planned for v1.1 (see providers/openai/README.md)" },
         // Future: gemini, zai, minimax — add when accounts.conf has profiles for them
       ];
       // claude profiles in accounts.conf land under provider="claude"; the
@@ -3565,6 +3569,8 @@ const server = Bun.serve({
           kind: cp.kind,
           default_model: cp.default_model,
           available: anyAuthed,
+          wired: cp.wired,
+          wired_note: cp.wired_note,
           profiles,
           note: anyAuthed ? `${profiles.filter((p) => p.authed).length} authed profile(s)` : "no authed profile yet — run subctl auth on a profile first",
         });
@@ -3670,6 +3676,37 @@ const server = Bun.serve({
       const modelId = (body.model ?? "").trim();
       const newHost = (body.host ?? "").trim();
       if (!modelId) return Response.json({ ok: false, error: "model required" }, { status: 400 });
+
+      // Guard: refuse to set a provider that pi-ai can't actually call.
+      // Mirror of components/master/server.ts PROVIDER_API table — must stay
+      // in sync. If a provider isn't here, master will silently return empty
+      // assistant content because pi-ai's stream factory has no api factory
+      // for it. Diagnosed 2026-05-10 after openai-codex was selected and
+      // every chat turn produced "[]" with `prompt_error_chat: No API key
+      // for provider: openai-codex` in decisions.jsonl.
+      const WIRED_PROVIDERS = new Set([
+        "anthropic",
+        "openai",          // API-key-based; works
+        "google",
+        "google-vertex",
+        "amazon-bedrock",
+        "mistral",
+        "lmstudio",
+        "mlx",
+        "ollama",
+        "vllm",
+      ]);
+      if (newProvider && !WIRED_PROVIDERS.has(newProvider)) {
+        return Response.json(
+          {
+            ok: false,
+            error: `provider "${newProvider}" is not wired into pi-ai yet`,
+            hint: `wired providers: ${[...WIRED_PROVIDERS].sort().join(", ")}. openai-codex (ChatGPT OAuth) is planned for v1.1 — see providers/openai/README.md.`,
+          },
+          { status: 400 },
+        );
+      }
+
       const providersPath = join(SUBCTL_CONFIG_DIR, "master", "providers.json");
       if (!existsSync(providersPath)) {
         return Response.json({ ok: false, error: "providers.json missing" }, { status: 404 });
