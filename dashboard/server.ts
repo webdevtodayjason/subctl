@@ -3995,6 +3995,9 @@ const server = Bun.serve({
       if (typeof body.prompt === "string" && body.prompt) {
         args.push("-p", body.prompt);
       }
+      if (typeof body.template === "string" && body.template) {
+        args.push("--template", body.template);
+      }
       const subctlBin = join(REPO_ROOT, "bin", "subctl");
       const r = spawnSync(subctlBin, args, {
         cwd: project,

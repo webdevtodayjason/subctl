@@ -8,6 +8,56 @@ _SUBCTL_CLAUDE_TEAMS_LOADED=1
 . "$(dirname "${BASH_SOURCE[0]}")/../../lib/core.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/../../lib/settings.sh"
 
+# Apply a team template: load JSON, copy referenced skills into the
+# worker's CLAUDE_CONFIG_DIR/.claude/skills/, and stash persona +
+# boot_prompt + autonomy in caller-scoped vars (TEMPLATE_PERSONA,
+# TEMPLATE_BOOT_PROMPT, TEMPLATE_AUTONOMY) for the spawn flow to use.
+# Skills are namespaced as <source>__<skill-basename> when they land
+# in the worker's skills dir so multiple sources can coexist without
+# colliding. Idempotent — re-spawning with the same template just
+# refreshes the copies.
+_provider_claude_apply_template() {
+  local template_name="$1" cfg_dir="$2"
+  local templates_dir="${SUBCTL_TEAM_TEMPLATES_DIR:-$HOME/.config/subctl/master/team-templates}"
+  local skills_root="${SUBCTL_SKILLS_DIR:-$HOME/.config/subctl/skills}"
+  local template_file="$templates_dir/$template_name.json"
+  if [[ ! -f "$template_file" ]]; then
+    subctl_die "team template not found: $template_file"
+  fi
+  subctl_require jq "install: brew install jq" || return 1
+
+  TEMPLATE_PERSONA=$(jq -r '.persona // ""' "$template_file")
+  TEMPLATE_BOOT_PROMPT=$(jq -r '.boot_prompt // ""' "$template_file")
+  TEMPLATE_AUTONOMY=$(jq -r '.default_autonomy // "ask"' "$template_file")
+
+  local target_skills_dir="$cfg_dir/.claude/skills"
+  mkdir -p "$target_skills_dir"
+
+  # Copy each skill. Skill IDs are <source>/<rest>; on disk they live
+  # at $skills_root/<source>/skills/<rest>/SKILL.md.
+  local skill_id_count=0 skill_copied=0
+  while IFS= read -r skill_id; do
+    [[ -z "$skill_id" ]] && continue
+    skill_id_count=$((skill_id_count + 1))
+    local source rest src_dir dst_name
+    source="${skill_id%%/*}"
+    rest="${skill_id#*/}"
+    src_dir="$skills_root/$source/skills/$rest"
+    if [[ ! -d "$src_dir" ]]; then
+      subctl_warn "  skill not found locally: $skill_id (run: subctl skills import $source/...)"
+      continue
+    fi
+    # Namespace so multiple sources' skills can coexist
+    dst_name=$(echo "$source/$rest" | tr '/' '_')
+    rm -rf "$target_skills_dir/$dst_name"
+    cp -R "$src_dir" "$target_skills_dir/$dst_name"
+    skill_copied=$((skill_copied + 1))
+  done < <(jq -r '.skills // [] | .[]' "$template_file")
+
+  echo "   Template:  $template_name (persona ${#TEMPLATE_PERSONA} chars, boot_prompt ${#TEMPLATE_BOOT_PROMPT} chars, $skill_copied/$skill_id_count skills installed)"
+  echo "   Autonomy:  $TEMPLATE_AUTONOMY"
+}
+
 # Write a .mcp.json into the worker's CLAUDE_CONFIG_DIR so MCP servers
 # (Context7 today, more later) register at Claude Code session boot.
 # Idempotent — overwrites every spawn so updated keys land without
@@ -53,6 +103,7 @@ _provider_claude_drop_mcp_config() {
 provider_claude_teams() {
   local ACCOUNT="" SKIP_PERMS=false CONTINUE=false ORCHESTRATOR=false DRY_RUN=false
   local INITIAL_PROMPT="" PROMPT_FILE="" RESUME_SID=""
+  local TEMPLATE_NAME=""
   # --no-attach is for HTTP-spawned sessions (dashboard's POST /api/orchestration/spawn).
   # Skips the final tmux attach/switch-client so the caller process exits cleanly.
   local NO_ATTACH="${SUBCTL_NO_ATTACH:-}"
@@ -65,6 +116,7 @@ provider_claude_teams() {
       -p|--prompt)       INITIAL_PROMPT="$2"; shift 2 ;;
       -f|--prompt-file)  PROMPT_FILE="$2"; shift 2 ;;
       -o|--orchestrator) ORCHESTRATOR=true; shift ;;
+      -t|--template)     TEMPLATE_NAME="$2"; shift 2 ;;
       --resume)          RESUME_SID="$2"; shift 2 ;;
       --no-attach)       NO_ATTACH=1; shift ;;
       --dry-run)         DRY_RUN=true; shift ;;
@@ -118,6 +170,42 @@ provider_claude_teams() {
   # env (configured via the launchd plist or a shell rc that launchd
   # inherits — set it in Settings → API keys then restart launchd).
   _provider_claude_drop_mcp_config "$cfg_dir"
+
+  # If a template was requested, load its persona + boot_prompt and copy
+  # its referenced skills into the worker's CLAUDE_CONFIG_DIR/.claude/skills/
+  # before launching tmux. This is what makes a dev team specialized —
+  # without a template, you get a generic Claude Code session with no
+  # opinion about its role.
+  local TEMPLATE_PERSONA="" TEMPLATE_BOOT_PROMPT="" TEMPLATE_AUTONOMY=""
+  if [[ -n "$TEMPLATE_NAME" ]]; then
+    _provider_claude_apply_template "$TEMPLATE_NAME" "$cfg_dir"
+    # Compose the initial prompt: persona becomes the role-setting first
+    # message; boot_prompt becomes the action directive immediately after.
+    # If --prompt was ALSO passed, append it as additional context (the
+    # operator gets the last word).
+    local composed=""
+    [[ -n "$TEMPLATE_PERSONA" ]] && composed+="$TEMPLATE_PERSONA"
+    [[ -n "$TEMPLATE_BOOT_PROMPT" ]] && composed+="
+
+---
+
+$TEMPLATE_BOOT_PROMPT"
+    if [[ -n "$INITIAL_PROMPT" ]]; then
+      composed+="
+
+---
+
+Operator override / additional scope:
+$INITIAL_PROMPT"
+    fi
+    INITIAL_PROMPT="$composed"
+    # If the template's autonomy is "shadow" or "ask", DON'T pass
+    # --dangerously-skip-permissions even if the operator did. Templates
+    # codify the autonomy boundary; respecting them is the point.
+    case "$TEMPLATE_AUTONOMY" in
+      shadow|ask) SKIP_PERMS=false ;;
+    esac
+  fi
 
   # Build claude command (use `command claude` to bypass shell function shadow)
   local CLAUDE_CMD="command claude"
