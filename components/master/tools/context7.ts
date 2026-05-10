@@ -76,9 +76,13 @@ export const context7Tools = {
       required: ["library"],
     },
     invoke: async ({ library }: { library: string }) => {
+      // Context7's MCP gateway has been inconsistent about whether it
+      // expects `libraryName` or `query` — observed both error messages
+      // hours apart. Send both to be safe; whichever it doesn't expect
+      // will be ignored.
       const r = await rpc<{ content?: Array<{ type: string; text: string }> }>(
         "resolve-library-id",
-        { libraryName: library },
+        { libraryName: library, query: library },
       );
       if ("error" in r) return { ok: false, error: r.error };
       const text = (r.content ?? []).filter((c) => c.type === "text").map((c) => c.text).join("\n");
@@ -149,7 +153,7 @@ export const context7Tools = {
       // Smallest-possible call to validate auth + connectivity
       const r = await rpc<{ content?: Array<{ type: string; text: string }> }>(
         "resolve-library-id",
-        { libraryName: "react" },
+        { libraryName: "react", query: "react" },
       );
       if ("error" in r) return { ok: false, error: r.error, host: CONTEXT7_URL };
       return { ok: true, host: CONTEXT7_URL, key_present: true, sample_resolved: !!(r.content?.length) };
