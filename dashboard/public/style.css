@@ -2718,24 +2718,31 @@ main {
      pill + action buttons without truncating, and to give team rows room
      to render full session names like "claude-Down-Time-Arena" without
      ellipsizing. The minmax(0, 1fr) on the main track lets the chat
-     toolbar shrink instead of forcing the sidecar off-screen — diagnosed
-     2026-05-10 when the right column showed "ACTIVE DEV...", "claude-Dow…"
-     etc. clipped at the viewport edge. */
+     toolbar shrink instead of forcing the sidecar off-screen. */
   grid-template-columns: minmax(0, 1fr) 360px;
   gap: 18px;
   align-items: stretch;
-  min-height: calc(100vh - 56px - 48px);
+  /* Fixed height (not min-height) so the master-chat's internal scroll
+     stays within the viewport instead of growing the page and pushing the
+     toolbar off-screen — diagnosed 2026-05-10 when long chat history made
+     the toolbar (MODEL/APPLY/COMPACT/+NEW CHAT) scroll above the viewport
+     top edge as the chat log grew. With overflow:hidden the children
+     bound their own scroll, and the toolbar stays anchored. */
+  height: calc(100vh - 56px - 48px);
+  overflow: hidden;
 }
 .orchestration-screen .master-chat {
   margin: 0;
   display: flex;
   flex-direction: column;
-  min-width: 0; /* allow toolbar contents to shrink rather than overflow */
-  /* Fit within the viewport so the log scrolls inside instead of pushing
-     the whole page taller. 56px topbar + 24px*2 main padding + ~80px for
-     header/toolbar/input = ~184px of chrome to subtract. */
-  max-height: calc(100vh - 184px);
-  min-height: 0; /* allow children to shrink in flex layout */
+  min-width: 0;     /* allow toolbar contents to shrink rather than overflow */
+  height: 100%;     /* fill the row defined by .orchestration-screen height */
+  min-height: 0;    /* allow children to shrink in flex layout */
+  /* No max-height needed — parent .orchestration-screen now fixes the height
+     exactly, and master-log's flex: 1 1 auto + overflow-y: auto bounds the
+     scroll internally. The old calc(100vh - 184px) magic number was wrong
+     once the toolbar wrapped to a 2nd row, leaving dead space and pushing
+     the toolbar off-screen. */
 }
 .orchestration-screen .master-log {
   flex: 1 1 auto;

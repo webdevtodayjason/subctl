@@ -1479,35 +1479,63 @@ async function main() {
   const stalenessThresholdMin =
     policy.global_defaults.stall_detection_minutes ?? 15;
 
-  // Pull the latest tmux window-activity unix timestamp for every claude-*
-  // tmux session and bump teamLastActivity if the pane has been touched
-  // more recently than the inbox event we know about. Without this, a
-  // worker that's productively writing files but never reporting via inbox
-  // looks stale to the master — diagnosed 2026-05-10 during FOOTHOLD when
-  // the worker built server-foothold/ over 25min while the inbox stayed
-  // pinned at the 14:13 spawn-seed timestamp.
-  function refreshTeamActivityFromTmux() {
+  // Refresh teamLastActivity from real tmux pane content. Initially I
+  // tried `tmux list-windows -F '#{window_activity}'` but that variable
+  // tracks user-focus events (window selection, attach), NOT pane output
+  // — so a detached worker continuously printing into its pane shows the
+  // same window_activity for an hour. Diagnosed 2026-05-10 when /teams
+  // reported 1h05m ago while the worker had clearly produced files
+  // 5 minutes earlier.
+  //
+  // The reliable signal is capture-pane content. Hash the visible pane
+  // for each session; if the hash changed since the last tick, that's
+  // activity, bump the timestamp to now.
+  const teamPaneHash = new Map<string, string>();
+  async function refreshTeamActivityFromTmux() {
     try {
-      const proc = Bun.spawnSync(
-        ["tmux", "list-windows", "-a", "-F", "#{session_name}|#{window_activity}"],
-        { stdout: "pipe", stderr: "pipe" },
+      // 1. Enumerate sessions whose names start with "claude-" (the
+      //    subctl spawn naming convention).
+      const ls = Bun.spawnSync(["tmux", "list-sessions", "-F", "#{session_name}"], {
+        stdout: "pipe", stderr: "pipe",
+      });
+      if (ls.exitCode !== 0) return;
+      const sessions = ls.stdout.toString().trim().split("\n").filter(
+        (s) => s.startsWith("claude-"),
       );
-      if (proc.exitCode !== 0) return;
-      for (const line of proc.stdout.toString().trim().split("\n")) {
-        const [session, activityStr] = line.split("|");
-        if (!session || !activityStr) continue;
-        const activityUnix = parseInt(activityStr, 10);
-        if (!activityUnix) continue;
-        const activityMs = activityUnix * 1000;
-        const existing = teamLastActivity.get(session);
-        // Only consider sessions either already tracked OR matching the
-        // subctl-spawned naming convention (claude-*).
-        if (!existing && !session.startsWith("claude-")) continue;
-        if (!existing) {
-          teamLastActivity.set(session, { ts: activityMs });
-        } else if (activityMs > existing.ts) {
-          teamLastActivity.set(session, { ts: activityMs, lastEvent: existing.lastEvent });
+      const now = Date.now();
+      for (const session of sessions) {
+        const cap = Bun.spawnSync(
+          ["tmux", "capture-pane", "-p", "-t", `${session}:0`, "-S", "-50"],
+          { stdout: "pipe", stderr: "pipe" },
+        );
+        if (cap.exitCode !== 0) continue;
+        const content = cap.stdout.toString();
+        // Cheap stable hash — Bun has Bun.hash but plain SDBM is fine
+        // and lets this module stay portable.
+        let h = 5381;
+        for (let i = 0; i < content.length; i++) {
+          h = ((h << 5) + h + content.charCodeAt(i)) | 0;
         }
+        const hash = String(h);
+        const prev = teamPaneHash.get(session);
+        if (prev !== hash) {
+          teamPaneHash.set(session, hash);
+          const existing = teamLastActivity.get(session);
+          // First time we see this session AND no inbox entry → seed
+          // activity at now.
+          if (!existing) {
+            teamLastActivity.set(session, { ts: now });
+          } else {
+            // Bump only if our new "now" is later than existing — it
+            // always is in practice, but defensively ordered.
+            if (now > existing.ts) {
+              teamLastActivity.set(session, { ts: now, lastEvent: existing.lastEvent });
+            }
+          }
+        }
+        // If hash unchanged, leave teamLastActivity alone — the worker
+        // really is idle in the pane (might still be alive; the watchdog's
+        // staleness threshold is what flags real concern).
       }
     } catch {
       // tmux not on PATH or no server running — skip silently. The
@@ -1520,7 +1548,7 @@ async function main() {
     // Refresh from tmux first — workers may be productive without
     // writing to the inbox; window_activity captures keystrokes and
     // pane output regardless of whether the lead self-reported.
-    refreshTeamActivityFromTmux();
+    await refreshTeamActivityFromTmux();
     // Use the in-memory teamLastActivity map (populated by the inbox tailer
     // + tmux refresh above) rather than re-stat'ing files every tick.
     const now = Date.now();

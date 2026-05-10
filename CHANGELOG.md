@@ -4,6 +4,19 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.1.5] — 2026-05-10
+
+Patch — three dogfood-driven fixes.
+
+### Fixed
+
+- **Chat panel no longer overlaps the toolbar when conversation grows.** `.orchestration-screen` was using `min-height` instead of `height`, so as the chat history grew the screen container got taller than the viewport and the body scrolled — pushing the MODEL/APPLY/COMPACT/+NEW CHAT toolbar above the visible area. Switched to a fixed `height: calc(100vh - 56px - 48px)` + `overflow: hidden` on the parent, removed the now-redundant `max-height` magic-number on `.master-chat`, and let the `.master-log` flex bound itself with `overflow-y: auto`. Toolbar stays anchored at the top regardless of chat length.
+- **Team activity now refreshes from real pane content, not tmux's window-focus signal.** v2.1.2 used `tmux #{window_activity}` which only updates on user-attach interactions — useless for a detached worker pane spewing output. The dashboard kept showing `1h05m ago` while the worker had clearly written 13 files in the last 30 minutes. Replaced with `tmux capture-pane -p` + content hashing per session: if the hash changed since the last watchdog tick, we bump `teamLastActivity` to now. Reliable signal regardless of attach state.
+
+### Changed
+
+- **Master SKILL gains rule #6: publish to `notify_dashboard` on meaningful events.** The dashboard's NOTIFICATIONS feed has been empty during the entire FOOTHOLD dogfood because the master only narrated progress in chat — never published. Rule #6 specifies the kinds (`spawn`, `milestone`, `blocked`, `escalation`, `decision`, `error`, `watchdog`) and the contract: ≤120-char summary, paired with chat messaging not in place of it. The verifier's `message-sent-claim` rule already partially enforces it; rule #6 names it explicitly.
+
 ## [2.1.4] — 2026-05-10
 
 Patch — runtime claim-verification gate, Argent-style.
