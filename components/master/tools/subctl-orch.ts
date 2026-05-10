@@ -2,6 +2,10 @@
 // All calls go via the dashboard HTTP API at SUBCTL_API (default
 // http://127.0.0.1:8787). The dashboard service must be running.
 
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { existsSync, mkdirSync, appendFileSync } from "node:fs";
+
 const API = process.env.SUBCTL_API ?? "http://127.0.0.1:8787";
 
 async function apiGet<T = unknown>(path: string): Promise<T> {
@@ -21,6 +25,40 @@ async function apiPost<T = unknown>(
   });
   if (!r.ok) throw new Error(`subctl ${path} → HTTP ${r.status}`);
   return r.json() as Promise<T>;
+}
+
+// After a successful spawn, write a synthetic "spawned" event into the
+// team's inbox file so the master daemon's inbox tailer registers the
+// team into teamLastActivity immediately. Without this, /health reports
+// teams_tracked: 0 and the Orchestration tab shows no teams until the
+// worker self-reports — which may never happen for an idle worker.
+//
+// Diagnosed 2026-05-10 during the FOOTHOLD dogfood: a tmux session was
+// alive and visible to `subctl orch list`, but the master saw nothing.
+function seedInboxOnSpawn(result: unknown): void {
+  if (!result || typeof result !== "object") return;
+  const r = result as { ok?: boolean; session_name?: string };
+  if (!r.ok || !r.session_name) return;
+  try {
+    const inboxDir = join(
+      process.env.SUBCTL_CONFIG_DIR ?? join(homedir(), ".config", "subctl"),
+      "master",
+      "inbox",
+    );
+    if (!existsSync(inboxDir)) mkdirSync(inboxDir, { recursive: true });
+    const inboxFile = join(inboxDir, `${r.session_name}.jsonl`);
+    const event = {
+      ts: new Date().toISOString(),
+      kind: "spawned",
+      detail: "team spawned via subctl_orch_spawn(_template)",
+      by: "master",
+    };
+    appendFileSync(inboxFile, JSON.stringify(event) + "\n");
+  } catch {
+    // Best-effort; the spawn itself succeeded. If inbox seeding fails,
+    // the team still exists in tmux + subctl orch list, just not in the
+    // master's tracking map until it self-reports.
+  }
 }
 
 export const subctlOrchTools = {
@@ -99,13 +137,15 @@ export const subctlOrchTools = {
       orchestrator?: boolean;
       skip_perms?: boolean;
     }) => {
-      return apiPost("/api/orchestration/spawn", {
+      const result = await apiPost("/api/orchestration/spawn", {
         account: args.account,
         project: args.project,
         prompt: args.prompt,
         orchestrator: args.orchestrator ?? false,
         skip_perms: args.skip_perms ?? true,
       });
+      seedInboxOnSpawn(result);
+      return result;
     },
   },
 
@@ -148,7 +188,7 @@ export const subctlOrchTools = {
       project: string;
       prompt?: string;
     }) => {
-      return apiPost("/api/orchestration/spawn", {
+      const result = await apiPost("/api/orchestration/spawn", {
         template: args.template,
         account: args.account,
         project: args.project,
@@ -156,6 +196,8 @@ export const subctlOrchTools = {
         orchestrator: false, // template's persona owns the role definition
         skip_perms: true,    // template's default_autonomy gets enforced server-side
       });
+      seedInboxOnSpawn(result);
+      return result;
     },
   },
 

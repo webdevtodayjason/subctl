@@ -2811,20 +2811,62 @@ const server = Bun.serve({
       });
     }
     if (url.pathname === "/api/settings/obsidian" && req.method === "POST") {
-      let body: { vault_root?: string };
+      let body: { vault_root?: string; bootstrap?: boolean };
       try { body = await req.json(); } catch { return Response.json({ ok: false, error: "invalid JSON" }, { status: 400 }); }
       const path = (body.vault_root ?? "").trim();
       if (!path) return Response.json({ ok: false, error: "vault_root required" }, { status: 400 });
+      // Default true — saving a vault root configuration without bootstrapping
+      // is what created the "Obsidian installed, no vault detected" hole that
+      // forced the operator to mkdir manually. Only a deliberate
+      // {bootstrap:false} skips the structure creation.
+      const bootstrap = body.bootstrap !== false;
       const expanded = path.replace(/^~/, process.env.HOME ?? "");
       const cfgPath = join(SUBCTL_CONFIG_DIR, "master", "obsidian.json");
       try {
         const { mkdirSync, writeFileSync } = require("node:fs") as typeof import("node:fs");
         mkdirSync(join(SUBCTL_CONFIG_DIR, "master"), { recursive: true });
         writeFileSync(cfgPath, JSON.stringify({ vault_root: path, _comment: `set via dashboard ${new Date().toISOString()}` }, null, 2));
+
+        // Auto-bootstrap the vault structure. The master's vault_append tool
+        // writes to <root>/<project>/decisions.md and creates dirs on the fly,
+        // but Obsidian itself only recognizes a folder as a vault if it has a
+        // .obsidian/ directory. Without bootstrapping, the dashboard reports
+        // "no vault detected" even though the master is functionally writing
+        // there. Create the default "master" sub-vault with a .obsidian/ stub
+        // so Obsidian-the-app and the dashboard both see a real vault.
+        const created: string[] = [];
+        let bootstrapErr: string | null = null;
+        if (bootstrap) {
+          try {
+            mkdirSync(expanded, { recursive: true });
+            if (!existsSync(expanded + "/master")) {
+              mkdirSync(expanded + "/master/.obsidian", { recursive: true });
+              writeFileSync(
+                expanded + "/master/welcome.md",
+                "# subctl master vault\n\n" +
+                "This vault is the master daemon's long-term memory store (tier 3).\n\n" +
+                "Per-project notes land here as the master records decisions, drafts " +
+                "specs, and tracks dev-team progress. Each spawned dev team gets a " +
+                "subdirectory with its own `decisions.md`.\n\n" +
+                "Created automatically by the subctl dashboard. Open this folder in " +
+                "Obsidian to browse. Safe to rename, restructure, or add your own " +
+                "notes — the master writes append-only and never deletes.\n",
+              );
+              created.push(expanded + "/master/.obsidian");
+              created.push(expanded + "/master/welcome.md");
+            }
+          } catch (err) {
+            bootstrapErr = (err as Error).message;
+          }
+        }
+
         return Response.json({
           ok: true,
           vault_root: expanded,
           exists: existsSync(expanded),
+          bootstrapped: bootstrap,
+          created,
+          bootstrap_error: bootstrapErr,
           config_path: cfgPath,
         });
       } catch (err) {
