@@ -387,6 +387,90 @@ Reference files (local, on this Mac):
   agent to call specforge before any project-build work
 - `~/argentos/docs/tools/specforge.md` — design doc
 
+### Phase 3k — Personality presets
+
+Operator request 2026-05-10: pick the master's *personality* (tone,
+vocab, mannerisms) without changing its *persona* (who it is — a
+dev-team orchestrator that spawns workers, escalates, watches
+projects). Personality is voice; persona is job.
+
+**Design:**
+
+- New file: `~/.config/subctl/master/personality.json`
+  ```json
+  { "preset": "straight-shooter", "intensity": 0.6 }
+  ```
+- Preset library at `components/master/personalities/<slug>.md`.
+  Each is a short fragment (~150–400 chars) that gets injected into
+  the system prompt **after** SKILL.md and **before** the tier-1
+  memory block. Personality only affects voice — it must not
+  override SKILL.md's behavioral contract.
+- `composeSystemPrompt()` already concatenates layers; add the
+  personality fragment as a new layer between SKILL.md and tier-1
+  memory.
+
+**Built-in presets (initial set):**
+
+- `straight-shooter` — current default. Terse, factual, no fluff.
+  No change to today's behavior.
+- `witty` — dry humor, the occasional callback, never cute.
+- `sarcastic` — pointed, slightly impatient. Useful when operator
+  wants pushback without it feeling like a tool error.
+- `robotic` — clinical, monotone, no contractions, low affect.
+- `arnold` — short declarative sentences, action-verb forward.
+  Inspired by, not a likeness of.
+- `elon` — punchy, contrarian one-liners, willing to be wrong out
+  loud. Inspired by, not a likeness of.
+- `hilarious` — leans into absurdity. Use sparingly.
+
+**Constraints (must not be relaxable per preset):**
+
+- Tool-call accuracy unchanged. Personality cannot make the master
+  fabricate tool names or skip required arguments.
+- Decision-log entries stay in straight-shooter voice (these are
+  audit records, not vibes).
+- Refusal behavior unchanged. Don't let "sarcastic" mode soften a
+  refusal or "hilarious" mode make a joke of one.
+- Telegram outbound and notification-sidecar messages may use the
+  preset's voice; status banners and error toasts may not.
+
+**Hot-swap:**
+
+- New endpoint `POST /api/master/personality` writes
+  `personality.json` and triggers `composeSystemPrompt()` on the
+  next prompt. No daemon restart. No transcript bounce.
+- New dashboard tile under Settings → Master → Personality.
+  Single-select dropdown with each preset's one-line description.
+  Optional intensity slider (0.0–1.0) for "how much."
+- New CLI verb: `subctl master personality {list,show,set}`.
+
+**File layout this adds:**
+
+```
+components/master/personalities/
+├── README.md                  ← what this is, how to add one
+├── straight-shooter.md
+├── witty.md
+├── sarcastic.md
+├── robotic.md
+├── arnold.md
+├── elon.md
+└── hilarious.md
+```
+
+**Out of scope for first cut:**
+
+- Per-channel personality (different voice on Telegram vs chat
+  panel). Solve later if requested.
+- User-authored personality presets at runtime via the dashboard.
+  Phase 1 ships built-ins only; community-contributed presets land
+  via the plugin system (§3j).
+- Voice/audio personality (TTS). Different problem.
+
+**Acceptance:** flip the preset in the dashboard, send a chat
+message, watch the response style change without bouncing the
+daemon and without any tool-call regression.
+
 ### Backlog (non-blocking)
 
 - Sweep remaining `alert()` / `confirm()` calls in Projects + Teams + Skills tabs to use `window.notice` (the Chat tab is done)
