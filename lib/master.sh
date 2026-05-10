@@ -27,16 +27,17 @@ SUBCTL_MASTER_CLI_PROMPTS="$SUBCTL_MASTER_STATE_DIR/cli-prompts.jsonl"
 subctl_master() {
   local sub="${1:-help}"; [[ $# -gt 0 ]] && shift
   case "$sub" in
-    enable)    subctl_master_enable "$@" ;;
-    disable)   subctl_master_disable "$@" ;;
-    status)    subctl_master_status "$@" ;;
-    logs)      subctl_master_logs "$@" ;;
-    prompt)    subctl_master_prompt "$@" ;;
-    providers) subctl_master_providers "$@" ;;
-    policy)    subctl_master_policy "$@" ;;
-    pause)     subctl_master_pause "$@" ;;
-    resume)    subctl_master_resume "$@" ;;
-    restart)   subctl_master_restart "$@" ;;
+    enable)      subctl_master_enable "$@" ;;
+    disable)     subctl_master_disable "$@" ;;
+    status)      subctl_master_status "$@" ;;
+    logs)        subctl_master_logs "$@" ;;
+    prompt)      subctl_master_prompt "$@" ;;
+    providers)   subctl_master_providers "$@" ;;
+    policy)      subctl_master_policy "$@" ;;
+    pause)       subctl_master_pause "$@" ;;
+    resume)      subctl_master_resume "$@" ;;
+    restart)     subctl_master_restart "$@" ;;
+    personality) subctl_master_personality "$@" ;;
     help|-h|--help|"")
       cat <<'EOF'
 subctl master <verb> [args]
@@ -54,14 +55,94 @@ Verbs:
   pause           Halt the autonomous review loop (manual mode only)
   resume          Resume after pause
   restart         disable + enable (full reload)
+  personality     Set/inspect the master's voice preset (use 'personality help')
 
 Examples:
   subctl master enable
   subctl master prompt "review the AMP Cortex PR queue and pick what's safe to merge"
   subctl master logs --follow
+  subctl master personality list
+  subctl master personality set sarcastic
 EOF
       ;;
     *) subctl_die "unknown master verb: $sub (try: subctl master help)" ;;
+  esac
+}
+
+# ── personality presets ──────────────────────────────────────────────────────
+# Hits the running daemon's /personality endpoint at localhost:8788. Daemon
+# must be running (use `subctl master status` to check). State lives in
+# ~/.config/subctl/master/personality.json — but going through the HTTP
+# endpoint logs the change to decisions.jsonl and broadcasts to SSE.
+
+subctl_master_personality() {
+  local sub="${1:-show}"; [[ $# -gt 0 ]] && shift
+  local port="${SUBCTL_MASTER_PORT:-8788}"
+  local base="http://127.0.0.1:$port"
+  case "$sub" in
+    list|ls)
+      subctl_require jq "install: brew install jq" || return 1
+      local resp
+      resp=$(curl -s "$base/personality" 2>&1) || subctl_die "master not reachable at $base — is it running?"
+      local active
+      active=$(printf "%s" "$resp" | jq -r ".active // empty" 2>/dev/null)
+      [[ -z "$active" ]] && subctl_die "no /personality response — daemon may be on an older version"
+      echo "active: $active"
+      echo
+      echo "presets:"
+      printf "%s" "$resp" | jq -r '.presets[]? | "  \(if .id == "'"$active"'" then "●" else " " end) \(.id)\n    \(.preview)"'
+      ;;
+    show|status)
+      subctl_require jq "install: brew install jq" || return 1
+      local resp
+      resp=$(curl -s "$base/personality") || subctl_die "master not reachable at $base"
+      printf "%s" "$resp" | jq -r '.active // "(no response)"'
+      ;;
+    set)
+      local preset="${1:-}"
+      [[ -z "$preset" ]] && subctl_die "usage: subctl master personality set <preset>  (run 'list' to see valid presets)"
+      subctl_require jq "install: brew install jq" || return 1
+      local resp http
+      resp=$(curl -s -w '\n%{http_code}' -X POST "$base/personality" \
+        -H "Content-Type: application/json" \
+        -d "{\"preset\":\"$preset\"}") || subctl_die "master not reachable at $base"
+      http=$(printf "%s" "$resp" | tail -n1)
+      local body
+      body=$(printf "%s" "$resp" | sed '$d')
+      if [[ "$http" != "200" ]]; then
+        local err
+        err=$(printf "%s" "$body" | jq -r ".error // empty" 2>/dev/null)
+        subctl_die "${err:-set failed (HTTP $http)}"
+      fi
+      local active
+      active=$(printf "%s" "$body" | jq -r ".active // empty")
+      subctl_ok "personality → $active (takes effect on next prompt — no restart needed)"
+      ;;
+    help|-h|--help|"")
+      cat <<EOF
+subctl master personality <verb>
+
+  Control the master daemon's voice preset (tone/cadence/mannerisms).
+  Persona — what the master IS — is unchanged. Personality is HOW it
+  speaks. Anti-hallucination rules apply across every preset.
+
+Verbs:
+  list, ls         List all presets with preview text and active marker
+  show, status     Print the currently-active preset
+  set <preset>     Switch the active preset (hot-swap; no restart needed)
+  help             This help
+
+Built-in presets:
+  straight-shooter (default), witty, sarcastic, robotic,
+  arnold, elon, hilarious
+
+Examples:
+  subctl master personality list
+  subctl master personality set sarcastic
+  subctl master personality show
+EOF
+      ;;
+    *) subctl_die "unknown personality verb: $sub (try: subctl master personality help)" ;;
   esac
 }
 

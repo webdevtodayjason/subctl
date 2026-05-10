@@ -63,6 +63,13 @@ import { specforgeTools } from "./tools/specforge";
 import { schedulerTools, popDueFollowups } from "./tools/scheduler";
 import { extractLastTurn, findGaps, formatCorrectionPrompt } from "./verifier";
 import {
+  buildPersonalityFragment,
+  readActivePreset,
+  setPreset as setPersonalityPreset,
+  describePresets as describePersonalities,
+  ALL_PRESETS as ALL_PERSONALITY_PRESETS,
+} from "./personality";
+import {
   startMasterNotifyListener,
   stopMasterNotifyListener,
   masterNotifyListenerStatus,
@@ -565,7 +572,14 @@ async function main() {
   // tools land in the next turn without restart.
   function composeSystemPrompt(): string {
     const memBlock = buildMemoryBlock();
-    return memBlock + skill;
+    const personality = buildPersonalityFragment();
+    // Personality goes LAST so voice rules are the most-recent thing the
+    // model reads before responding. SKILL.md (the behavioral contract)
+    // and anti-hallucination rules stay authoritative — the personality
+    // fragment cannot relax them, and every preset's content explicitly
+    // says so. Hot-swappable: composeSystemPrompt() runs before every
+    // turn, so writes to personality.json take effect on the next prompt.
+    return memBlock + skill + personality;
   }
 
   const agent = new Agent({
@@ -1354,6 +1368,46 @@ async function main() {
           teams_tracked: teamLastActivity.size,
           supervisor: `${supervisorCfg.provider}/${supervisorCfg.model}`,
           checks,
+        });
+      }
+
+      // ── Personality presets ─────────────────────────────────────────────
+      // GET returns the active preset + the full preset catalog with previews
+      // so the dashboard can render a picker. POST swaps the active preset
+      // by writing personality.json — composeSystemPrompt() reads it fresh
+      // on every prompt, so the change takes effect on the next turn with
+      // no daemon restart.
+      if (url.pathname === "/personality" && req.method === "GET") {
+        return Response.json({
+          ok: true,
+          active: readActivePreset(),
+          presets: describePersonalities(),
+        });
+      }
+      if (url.pathname === "/personality" && req.method === "POST") {
+        let body: { preset?: string };
+        try {
+          body = await req.json();
+        } catch {
+          return Response.json({ ok: false, error: "invalid JSON" }, { status: 400 });
+        }
+        const result = setPersonalityPreset((body.preset ?? "").trim());
+        if (!result.ok) {
+          return Response.json(result, { status: 400 });
+        }
+        logDecision({
+          project: "_master",
+          action: "personality_set",
+          rationale: `voice preset → ${result.preset}`,
+        });
+        broadcast("personality_set", {
+          ts: new Date().toISOString(),
+          preset: result.preset,
+        });
+        return Response.json({
+          ok: true,
+          active: result.preset,
+          note: "takes effect on the next prompt — no restart needed",
         });
       }
 

@@ -4,6 +4,36 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.2.0] — 2026-05-10
+
+Minor — Phase 3k ships: **personality presets for the master daemon.**
+
+### Added
+
+- **Seven built-in voice presets**, each a short fragment (`components/master/personalities/<slug>.md`) describing the master's voice (tone, cadence, mannerisms). Persona — *what* the master is — stays fixed; personality is *how* it speaks. Built-ins: `straight-shooter` (default, current behavior), `witty`, `sarcastic`, `robotic`, `arnold` (inspired by, not a likeness), `elon` (inspired by, not a likeness), `hilarious`.
+- **`components/master/personality.ts`** loader module. `readActivePreset()`, `buildPersonalityFragment()`, `setPreset()`, `describePresets()`. State at `~/.config/subctl/master/personality.json` — single key `preset`. `composeSystemPrompt()` reads on every turn so the change hot-swaps with no daemon restart.
+- **Master HTTP endpoints:** `GET /personality` returns the active preset + catalog with previews. `POST /personality { preset }` swaps the active preset, logs to `decisions.jsonl`, broadcasts `personality_set` over SSE. Dashboard's existing `/api/master/*` auto-proxy makes both reachable at `/api/master/personality` for the browser.
+- **CLI verb:** `subctl master personality {list,show,set}`. Goes through the daemon's HTTP endpoint so the change is audited and SSE-broadcast.
+
+### Constraints (non-relaxable per preset)
+
+Every preset fragment explicitly preserves the anti-hallucination rules from v2.1.3/v2.1.4. The runtime claim verifier still gates claims regardless of voice; the master SKILL's behavioral contract still applies. Personality changes *delivery*, not *behavior* — a sarcastic refusal is still a refusal, a witty one-liner about a tool call still needs the actual tool call.
+
+### Out of scope for v2.2.0
+
+- Dashboard Settings tile UI for personality picking — backend wired, UI lands in a follow-up patch.
+- Per-channel personality (different voice on Telegram vs chat panel).
+- User-authored / runtime-editable presets via the dashboard — Phase 1 ships built-ins only; community-contributed presets land via the plugin system (§3j).
+
+### Try it
+
+```
+subctl master personality list
+subctl master personality set sarcastic
+# next chat message will come back in the new voice
+subctl master personality set straight-shooter   # back to default
+```
+
 ## [2.1.9] — 2026-05-10
 
 Patch — dev-team tmux sessions spawn at 220×50 instead of default 80×24.
