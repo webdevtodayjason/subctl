@@ -1515,7 +1515,50 @@ body[data-active-tab="settings"]      section[data-tab]:not([data-tab="settings"
 }
 .chat-toolbar-btn:hover { background: #1f4256; }
 .chat-toolbar-btn[disabled] { opacity: 0.5; cursor: not-allowed; }
-.chat-toolbar-hint { color: #666; font-size: 11px; margin-left: auto; }
+.chat-toolbar-btn-warn {
+  background: #2a230e;
+  border-color: #4a3a1a;
+  color: #d6c46c;
+}
+.chat-toolbar-btn-warn:hover { background: #3a2f1a; }
+.chat-toolbar-hint { color: #666; font-size: 11px; }
+
+/* Context window meter */
+.chat-context-meter {
+  position: relative;
+  display: inline-block;
+  min-width: 220px;
+  height: 22px;
+  margin-left: 4px;
+  background: #0a0a0a;
+  border: 1px solid #1f1f1f;
+  border-radius: 11px;
+  overflow: hidden;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 10.5px;
+}
+.chat-context-meter .ctx-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0%;
+  background: linear-gradient(90deg, #0e2a16, #1a4a2a);
+  transition: width 0.3s ease;
+}
+.chat-context-meter .ctx-fill.warn {
+  background: linear-gradient(90deg, #2a230e, #4a3a1a);
+}
+.chat-context-meter .ctx-fill.crit {
+  background: linear-gradient(90deg, #2a1010, #4a1f1f);
+}
+.chat-context-meter .ctx-label {
+  position: relative;
+  display: block;
+  text-align: center;
+  line-height: 22px;
+  color: #c4c4c4;
+  letter-spacing: 0.04em;
+  z-index: 1;
+}
 
 /* ── Orchestration cockpit ────────────────────────────────────────────── */
 .orch-screen { display: flex; flex-direction: column; gap: 18px; }

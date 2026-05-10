@@ -1260,7 +1260,124 @@
     const input = $("master-input");
     const sendBtn = $("master-send");
     const connState = $("master-conn-state");
+    const newBtn = $("chat-new-btn");
+    const ctxFill = $("ctx-fill");
+    const ctxLabel = $("ctx-label");
     if (!log || !form || !input) return;
+
+    // Rehydrate the chat log from the master daemon's persisted transcript
+    // so a browser refresh doesn't wipe what we see. Fetch on mount, render
+    // each historic message into the same bubble shape the SSE stream uses.
+    async function rehydrateFromTranscript() {
+      try {
+        const r = await fetch("/api/master/transcript?limit=80");
+        const j = await r.json();
+        if (!j.ok || !Array.isArray(j.messages) || j.messages.length === 0) return;
+        const empty = log.querySelector(".master-log-empty");
+        if (empty) empty.remove();
+        for (const m of j.messages) {
+          if (m.role === "user") {
+            // Don't replay synthetic watchdog/team-report prompts — those
+            // were the daemon talking to itself, not Jason.
+            const text = (m.content || []).map((b) => b.text).filter(Boolean).join("");
+            if (text.startsWith("[watchdog]") || text.startsWith("[team-report]")) {
+              const block = document.createElement("div");
+              block.className = "master-msg master-msg-watchdog";
+              block.innerHTML = `<div class="master-msg-label">watchdog</div><div class="master-msg-body"></div>`;
+              block.querySelector(".master-msg-body").textContent = text;
+              log.appendChild(block);
+            } else {
+              const block = document.createElement("div");
+              block.className = "master-msg master-msg-user";
+              block.innerHTML = `<div class="master-msg-label">you</div><div class="master-msg-body"></div>`;
+              block.querySelector(".master-msg-body").textContent = text;
+              log.appendChild(block);
+            }
+          } else if (m.role === "assistant") {
+            // Render text blocks; tool calls go into their own bubbles.
+            const text = (m.content || []).filter((b) => b.type === "text").map((b) => b.text).join("");
+            if (text) {
+              const block = document.createElement("div");
+              block.className = "master-msg master-msg-assistant";
+              block.innerHTML = `<div class="master-msg-label">master</div><div class="master-msg-body"></div>`;
+              block.querySelector(".master-msg-body").textContent = text;
+              log.appendChild(block);
+            }
+            const toolCalls = (m.content || []).filter((b) => b.type === "toolCall");
+            for (const tc of toolCalls) {
+              const block = document.createElement("div");
+              block.className = "master-msg master-msg-tool";
+              block.innerHTML = `<div class="master-msg-label">tool · ${escapeText(tc.name || "?")}</div><div class="master-msg-body master-tool-body"></div>`;
+              block.querySelector(".master-tool-body").textContent = tc.arguments ? JSON.stringify(tc.arguments) : "";
+              log.appendChild(block);
+            }
+          } else if (m.role === "toolResult") {
+            // Show as a small ✓ next to the most recent tool bubble — keeps
+            // log compact. For now skip; SSE will render fresh tool results
+            // anyway. Could be enhanced to attach result summary to the
+            // matching tool bubble.
+          }
+        }
+        log.scrollTop = log.scrollHeight;
+      } catch {
+        // If the master is unreachable just leave the empty-state alone.
+      }
+    }
+    rehydrateFromTranscript();
+
+    // Context window meter — poll every 5s while the chat tab is visible.
+    async function refreshContext() {
+      try {
+        const r = await fetch("/api/master/context");
+        const j = await r.json();
+        if (!j.ok || !ctxFill || !ctxLabel) return;
+        const pct = j.utilization_pct;
+        if (typeof pct === "number") {
+          ctxFill.style.width = Math.min(100, pct) + "%";
+          ctxFill.classList.toggle("warn", pct >= 60 && pct < 85);
+          ctxFill.classList.toggle("crit", pct >= 85);
+        }
+        const total = j.estimated_total_tokens;
+        const cap = j.loaded_context_length;
+        ctxLabel.textContent = cap
+          ? `ctx ${total.toLocaleString()} / ${cap.toLocaleString()} tok (${pct ?? "?"}%)`
+          : `ctx ~${total.toLocaleString()} tok`;
+      } catch { /* silent */ }
+    }
+    refreshContext();
+    setInterval(() => {
+      const panel = document.querySelector("section[data-tab=\"chat\"]");
+      if (panel && getComputedStyle(panel).display !== "none") refreshContext();
+    }, 5000);
+
+    // New Chat button: archive the transcript and start fresh.
+    if (newBtn) {
+      newBtn.addEventListener("click", async () => {
+        if (!confirm("Archive the current conversation and start fresh?\n\nYour transcript is saved to ~/.config/subctl/master/agent-state.archive-*.json — nothing is lost. The chat log here will clear and the master daemon's working memory resets.")) return;
+        newBtn.disabled = true;
+        newBtn.textContent = "clearing…";
+        try {
+          const r = await fetch("/api/master/transcript/clear", { method: "POST" });
+          const j = await r.json();
+          if (!j.ok) {
+            alert("Clear failed: " + (j.error || "?"));
+          } else {
+            // Wipe local UI
+            while (log.firstChild) log.removeChild(log.firstChild);
+            const empty = document.createElement("div");
+            empty.className = "master-log-empty";
+            empty.innerHTML = "fresh chat — prior transcript archived to <code>" + j.archive.split("/").slice(-1)[0] + "</code>";
+            log.appendChild(empty);
+            refreshContext();
+          }
+        } catch (err) {
+          alert("Clear error: " + err);
+        } finally {
+          newBtn.disabled = false;
+          newBtn.textContent = "+ new chat";
+        }
+      });
+    }
 
     // Track the in-flight assistant message so streaming text-deltas append
     // into one bubble instead of creating a new bubble per token.

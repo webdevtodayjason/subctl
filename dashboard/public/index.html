@@ -74,6 +74,11 @@
             </select>
           </label>
           <button type="button" class="chat-toolbar-btn" id="chat-model-apply" title="Switch the master's supervisor model. Edits providers.json and restarts the master daemon (transcript preserved).">apply</button>
+          <button type="button" class="chat-toolbar-btn chat-toolbar-btn-warn" id="chat-new-btn" title="Archive the current transcript and start a fresh conversation. Your prior chat is saved to ~/.config/subctl/master/agent-state.archive-*.json.">+ new chat</button>
+          <span class="chat-context-meter" id="chat-context-meter" title="Approximate transcript tokens vs LM Studio's loaded context length. Includes system prompt + tool schemas overhead.">
+            <span class="ctx-fill" id="ctx-fill" style="width: 0%"></span>
+            <span class="ctx-label" id="ctx-label">ctx --</span>
+          </span>
           <span class="chat-toolbar-hint" id="chat-model-current">supervisor: --</span>
         </div>
       <h2>Master <span class="panel-hint">conversational dev-team orchestrator on the M3 Ultra · streams from <code>/api/master/events</code></span>

@@ -705,6 +705,90 @@ async function main() {
         });
       }
 
+      // /transcript — return the persisted transcript so the dashboard can
+      // rehydrate the chat log on page load. Optional ?limit=N (default 100).
+      if (url.pathname === "/transcript" && req.method === "GET") {
+        const limit = Math.max(1, Math.min(500, Number(url.searchParams.get("limit") ?? "100")));
+        const all = agent.state.messages as Array<Record<string, unknown>>;
+        return Response.json({
+          ok: true,
+          total: all.length,
+          returned: Math.min(limit, all.length),
+          messages: all.slice(-limit),
+        });
+      }
+
+      // /context — token + context-window stats. Approximates token count
+      // via char-count / 4 (good enough for a UX indicator). Reads the
+      // current LM Studio loaded_context_length per supervisor model.
+      if (url.pathname === "/context" && req.method === "GET") {
+        const messages = agent.state.messages as Array<Record<string, unknown>>;
+        let chars = 0;
+        for (const m of messages) {
+          const content = m.content as Array<Record<string, unknown>> | undefined;
+          if (Array.isArray(content)) {
+            for (const block of content) {
+              if (typeof block.text === "string") chars += block.text.length;
+              if (typeof block.thinking === "string") chars += (block.thinking as string).length;
+              if (typeof block.arguments === "object") chars += JSON.stringify(block.arguments).length;
+            }
+          }
+        }
+        const estimatedTokens = Math.round(chars / 4);
+        // Also factor in the system prompt + tool schemas overhead — these
+        // sit in every prompt window. Approximate as 2500 tokens for
+        // SKILL.md + 24-tool schema bundle. Empirical from prior /v1/chat/completions logs.
+        const fixedOverheadTokens = 2500;
+        // Get loaded context window from LM Studio (cached briefly)
+        let loadedContext: number | null = null;
+        try {
+          const r = await fetch(
+            `${supervisorCfg.host ?? "http://localhost:1234/v1"}/../api/v0/models`.replace(/\/v1\/\.\.\//, "/"),
+            { signal: AbortSignal.timeout(1500) },
+          );
+          if (r.ok) {
+            const j = (await r.json()) as { data?: Array<{ id: string; loaded_context_length?: number }> };
+            const found = (j.data ?? []).find((m) => m.id === supervisorCfg.model);
+            if (found?.loaded_context_length) loadedContext = found.loaded_context_length;
+          }
+        } catch { /* ignore */ }
+        const total = estimatedTokens + fixedOverheadTokens;
+        return Response.json({
+          ok: true,
+          transcript_msgs: messages.length,
+          transcript_chars: chars,
+          estimated_transcript_tokens: estimatedTokens,
+          fixed_overhead_tokens: fixedOverheadTokens,
+          estimated_total_tokens: total,
+          loaded_context_length: loadedContext,
+          utilization_pct: loadedContext ? Math.round((total / loadedContext) * 100) : null,
+          supervisor: `${supervisorCfg.provider}/${supervisorCfg.model}`,
+        });
+      }
+
+      // /transcript/clear — archive the transcript and start fresh.
+      if (url.pathname === "/transcript/clear" && req.method === "POST") {
+        try {
+          const ts = new Date().toISOString().replace(/[:.]/g, "-");
+          const archivePath = AGENT_STATE_PATH.replace(/\.json$/, `.archive-${ts}.json`);
+          if (existsSync(AGENT_STATE_PATH)) {
+            const { renameSync } = require("node:fs") as typeof import("node:fs");
+            renameSync(AGENT_STATE_PATH, archivePath);
+          }
+          // Reset in-memory transcript
+          agent.state.messages.length = 0;
+          broadcast("transcript_cleared", { ts: new Date().toISOString(), archive: archivePath });
+          logDecision({
+            project: "_master",
+            action: "transcript_cleared",
+            rationale: "operator clicked New Chat",
+          });
+          return Response.json({ ok: true, archive: archivePath });
+        } catch (err) {
+          return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+        }
+      }
+
       if (url.pathname === "/teams" && req.method === "GET") {
         const now = Date.now();
         const teams = Array.from(teamLastActivity.entries()).map(([name, v]) => ({
