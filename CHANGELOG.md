@@ -4,6 +4,21 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.1.3] — 2026-05-10
+
+Patch — anti-hallucination scaffolding for the master daemon.
+
+### Added
+
+- **`schedule_followup` tool family** (`components/master/tools/scheduler.ts`). Three new master tools: `schedule_followup({in_minutes, summary, prompt})` writes a future self-prompt to `~/.config/subctl/master/followups.jsonl`; `list_followups` shows pending; `cancel_followup({id})` removes one. A new ticker in the master daemon polls every 60s, fires due followups as synthetic `[scheduled]` agent prompts. Survives daemon restarts (state is on disk).
+- **Anti-hallucination rules section in master SKILL.md.** Five non-negotiable rules: (1) never promise a check-in time without first calling `schedule_followup`; (2) don't claim capabilities you don't have (no "background monitoring"); (3) verify host facts via `system_*` tools, don't recall; (4) keep workers moving through checkpoint questions instead of bouncing them back to the operator; (5) say "I don't know" rather than fabricating status. These override the rest of the SKILL when in conflict.
+
+### Why this exists
+
+Surfaced 2026-05-10 during the FOOTHOLD dogfood. After 39 minutes of silence, the master told the operator "I'll check in on it in 15 minutes" — but had no underlying timer behind that promise. The watchdog would have fired regardless, but the specific 15-minute commitment was hallucinated. Operator caught it: "It needs to be gated. The master shouldn't be able to lie even if it's just trying to keep me happy."
+
+The fix gates the lie at the mechanism level. The master now has a real tool that backs timed promises with file-on-disk state. The SKILL update tells it to use the tool and not fabricate cadence. Future "I'll check at T" sentences are tied to a specific followup record the operator can inspect via `list_followups` — no record, no promise.
+
 ## [2.1.2] — 2026-05-10
 
 Patch — watchdog cadence + activity signal.

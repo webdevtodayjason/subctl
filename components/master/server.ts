@@ -60,6 +60,7 @@ import { tier1MemoryTools, buildMemoryBlock } from "./tools/tier1-memory";
 import { skillAuthorTools } from "./tools/skill-author";
 import { notifyTools, bindNotifyBroadcast } from "./tools/notify";
 import { specforgeTools } from "./tools/specforge";
+import { schedulerTools, popDueFollowups } from "./tools/scheduler";
 import {
   startMasterNotifyListener,
   stopMasterNotifyListener,
@@ -307,6 +308,12 @@ export const toolRegistry: Record<string, InternalTool> = {
   ...Object.fromEntries(
     Object.entries(specforgeTools).map(([k, v]) => [
       k, // specforge
+      v as unknown as InternalTool,
+    ]),
+  ),
+  ...Object.fromEntries(
+    Object.entries(schedulerTools).map(([k, v]) => [
+      k, // schedule_followup, list_followups, cancel_followup
       v as unknown as InternalTool,
     ]),
   ),
@@ -1479,6 +1486,36 @@ async function main() {
     `[master] watchdog armed — interval=${watchdogIntervalMin}m, staleness_threshold=${stalenessThresholdMin}m`,
   );
 
+  // ── scheduled-followup ticker ────────────────────────────────────────
+  // The master can call schedule_followup() to back its "I'll check on
+  // this in 15 minutes" promises with real timer state. This ticker
+  // polls every 60s, fires any followups whose fire_at has passed, and
+  // dispatches them as synthetic agent prompts (source="watchdog" so
+  // they serialize through the same prompt queue as everything else,
+  // with a [scheduled] prefix so the master can distinguish).
+  async function runFollowupTick() {
+    if (stopped) return;
+    let due;
+    try {
+      due = popDueFollowups();
+    } catch (err) {
+      console.error(`[master] followup tick error: ${(err as Error).message}`);
+      return;
+    }
+    if (due.length === 0) return;
+    for (const fu of due) {
+      const synthPrompt = `[scheduled] ${fu.summary}\n\n${fu.prompt}`;
+      broadcast("scheduled_fire", {
+        ts: new Date().toISOString(),
+        id: fu.id,
+        summary: fu.summary,
+      });
+      await dispatchToAgent(synthPrompt, "watchdog");
+    }
+  }
+  const followupTicker = setInterval(() => void runFollowupTick(), 60_000);
+  console.error(`[master] scheduled-followup ticker armed — every 60s`);
+
   // ── auto-compact watchdog ──────────────────────────────────────────────
   // The supervisor model has a finite loaded context window in LM Studio.
   // Once the transcript+system+tools exceeds ~90% of that window the model
@@ -1558,6 +1595,7 @@ async function main() {
     stopped = true;
     console.error(`[master] caught ${signal}, shutting down`);
     clearInterval(watchdog);
+    clearInterval(followupTicker);
     clearInterval(autoCompactInterval);
     clearInterval(inboxPoll);
     if (inboxWatcher) try { inboxWatcher.close(); } catch { /* ignore */ }
