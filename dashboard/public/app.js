@@ -1350,6 +1350,29 @@
       if (panel && getComputedStyle(panel).display !== "none") refreshContext();
     }, 5000);
 
+    // Full-screen toggle: persists via localStorage so the choice survives refresh.
+    const fsBtn = $("chat-fullscreen-btn");
+    const FS_KEY = "subctl.dashboard.chatFullscreen";
+    function setFullscreen(on) {
+      document.body.classList.toggle("chat-fullscreen", on);
+      try { localStorage.setItem(FS_KEY, on ? "1" : "0"); } catch {}
+    }
+    if (fsBtn) {
+      fsBtn.addEventListener("click", () => {
+        setFullscreen(!document.body.classList.contains("chat-fullscreen"));
+      });
+      // Restore prior state
+      try {
+        if (localStorage.getItem(FS_KEY) === "1") setFullscreen(true);
+      } catch {}
+      // Esc exits full-screen
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && document.body.classList.contains("chat-fullscreen")) {
+          setFullscreen(false);
+        }
+      });
+    }
+
     // New Chat button: archive the transcript and start fresh.
     if (newBtn) {
       newBtn.addEventListener("click", async () => {

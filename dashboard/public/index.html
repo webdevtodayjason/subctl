@@ -75,6 +75,7 @@
           </label>
           <button type="button" class="chat-toolbar-btn" id="chat-model-apply" title="Switch the master's supervisor model. Edits providers.json and restarts the master daemon (transcript preserved).">apply</button>
           <button type="button" class="chat-toolbar-btn chat-toolbar-btn-warn" id="chat-new-btn" title="Archive the current transcript and start a fresh conversation. Your prior chat is saved to ~/.config/subctl/master/agent-state.archive-*.json.">+ new chat</button>
+          <button type="button" class="chat-toolbar-btn chat-toolbar-btn-icon" id="chat-fullscreen-btn" title="Toggle full-screen chat (Esc exits)" aria-label="toggle full-screen">⛶</button>
           <span class="chat-context-meter" id="chat-context-meter" title="Approximate transcript tokens vs LM Studio's loaded context length. Includes system prompt + tool schemas overhead.">
             <span class="ctx-fill" id="ctx-fill" style="width: 0%"></span>
             <span class="ctx-label" id="ctx-label">ctx --</span>

@@ -1521,7 +1521,27 @@ body[data-active-tab="settings"]      section[data-tab]:not([data-tab="settings"
   color: #d6c46c;
 }
 .chat-toolbar-btn-warn:hover { background: #3a2f1a; }
+.chat-toolbar-btn-icon {
+  padding: 4px 9px;
+  font-size: 14px;
+  line-height: 1;
+}
 .chat-toolbar-hint { color: #666; font-size: 11px; }
+
+/* Full-screen chat: hide topbar + sidebar + sidecar, expand chat to viewport */
+body.chat-fullscreen .topbar,
+body.chat-fullscreen .sidebar,
+body.chat-fullscreen .orchestration-sidecar { display: none !important; }
+body.chat-fullscreen .app-shell { min-height: 100vh; }
+body.chat-fullscreen main { padding: 12px 18px; }
+body.chat-fullscreen .orchestration-screen.chat-screen {
+  grid-template-columns: 1fr;
+  min-height: 100vh;
+}
+body.chat-fullscreen .orchestration-screen .master-chat {
+  max-height: calc(100vh - 24px);
+}
+body.chat-fullscreen .chat-toolbar-btn-icon { background: #1f4256; color: #5fd7ff; }
 
 /* Context window meter */
 .chat-context-meter {
