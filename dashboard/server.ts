@@ -2160,6 +2160,148 @@ const server = Bun.serve({
         },
       });
     }
+
+    // ── /api/models — LM Studio model catalog (native API, richer than /v1) ──
+    if (url.pathname === "/api/models") {
+      const host = process.env.SUBCTL_LMSTUDIO_HOST ?? "http://localhost:1234";
+      try {
+        const r = await fetch(`${host}/api/v0/models`, {
+          signal: AbortSignal.timeout(2500),
+        });
+        if (!r.ok) {
+          return Response.json(
+            { ok: false, error: `LM Studio HTTP ${r.status}`, host },
+            { status: 502 },
+          );
+        }
+        const j = (await r.json()) as { data?: Array<Record<string, unknown>> };
+        const models = j.data ?? [];
+        return Response.json({
+          ok: true,
+          host,
+          ts: new Date().toISOString(),
+          total: models.length,
+          loaded_count: models.filter((m) => m.state === "loaded").length,
+          models,
+        });
+      } catch (err) {
+        return Response.json(
+          { ok: false, error: (err as Error).message, host },
+          { status: 502 },
+        );
+      }
+    }
+
+    // ── /api/projects — scan ~/code, mark which are in policy.json ──
+    if (url.pathname === "/api/projects") {
+      const codeRoot = process.env.SUBCTL_CODE_ROOT ?? `${process.env.HOME}/code`;
+      let policyProjects: Array<{ path: string; autonomy_level?: string }> = [];
+      try {
+        const policyPath = join(SUBCTL_CONFIG_DIR, "master", "policy.json");
+        if (existsSync(policyPath)) {
+          const raw = readFileSync(policyPath, "utf8");
+          const stripped = raw.split("\n").filter((l) => !/^\s*"_comment[^"]*"\s*:/.test(l)).join("\n").replace(/,(\s*[}\]])/g, "$1");
+          const policy = JSON.parse(stripped) as { projects?: Array<{ path: string; autonomy_level?: string }> };
+          policyProjects = policy.projects ?? [];
+        }
+      } catch { /* ignore parse errors */ }
+      const policyByPath = new Map<string, string>();
+      for (const p of policyProjects) {
+        const expanded = p.path.replace(/^~/, process.env.HOME ?? "");
+        policyByPath.set(expanded, p.autonomy_level ?? "unknown");
+      }
+
+      let dirs: string[] = [];
+      try {
+        if (existsSync(codeRoot)) {
+          dirs = readdirSync(codeRoot, { withFileTypes: true })
+            .filter((d) => d.isDirectory() && !d.name.startsWith("."))
+            .map((d) => join(codeRoot, d.name));
+        }
+      } catch { /* ignore */ }
+
+      const projects = dirs.map((path) => {
+        const name = path.split("/").pop() ?? path;
+        const lastCommit = (() => {
+          try {
+            const r = spawnSync("git", ["-C", path, "log", "-1", "--format=%h %s (%cr)"], { encoding: "utf8", timeout: 1500 });
+            return r.status === 0 ? r.stdout.trim() : null;
+          } catch { return null; }
+        })();
+        const branch = (() => {
+          try {
+            const r = spawnSync("git", ["-C", path, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8", timeout: 1000 });
+            return r.status === 0 ? r.stdout.trim() : null;
+          } catch { return null; }
+        })();
+        const has = (rel: string) => existsSync(join(path, rel));
+        return {
+          name,
+          path,
+          branch,
+          last_commit: lastCommit,
+          has_claude_md: has("CLAUDE.md"),
+          has_package_json: has("package.json"),
+          has_pyproject: has("pyproject.toml") || has("requirements.txt"),
+          has_readme: has("README.md") || has("README"),
+          in_policy: policyByPath.has(path),
+          autonomy_level: policyByPath.get(path) ?? null,
+        };
+      });
+      return Response.json({ ok: true, code_root: codeRoot, projects });
+    }
+
+    // ── /api/memory — Obsidian + vault state ─────────────────────────────
+    if (url.pathname === "/api/memory") {
+      const obsidianApp = "/Applications/Obsidian.app";
+      const obsidianInstalled = existsSync(obsidianApp);
+      // Common vault locations to check
+      const candidates = [
+        `${process.env.HOME}/Documents/Obsidian Vault`,
+        `${process.env.HOME}/Documents/ObsidianVault`,
+        `${process.env.HOME}/Obsidian`,
+        `${process.env.HOME}/vaults`,
+      ];
+      const vaults: Array<{ path: string; note_count: number; last_modified: string | null }> = [];
+      for (const candidate of candidates) {
+        if (!existsSync(candidate)) continue;
+        try {
+          const entries = readdirSync(candidate, { withFileTypes: true });
+          // Each subdir with a .obsidian/ dir is a vault root
+          for (const entry of entries) {
+            if (!entry.isDirectory()) continue;
+            const vaultDir = join(candidate, entry.name);
+            if (!existsSync(join(vaultDir, ".obsidian"))) continue;
+            // Count .md files (one level deep is plenty for the index)
+            let count = 0;
+            const stack = [vaultDir];
+            while (stack.length && count < 5000) {
+              const cur = stack.pop()!;
+              for (const e of readdirSync(cur, { withFileTypes: true })) {
+                if (e.name.startsWith(".")) continue;
+                const p = join(cur, e.name);
+                if (e.isDirectory()) stack.push(p);
+                else if (e.name.endsWith(".md")) count++;
+              }
+            }
+            const stat = require("node:fs").statSync(vaultDir);
+            vaults.push({
+              path: vaultDir,
+              note_count: count,
+              last_modified: new Date(stat.mtimeMs).toISOString(),
+            });
+          }
+        } catch { /* ignore */ }
+      }
+      return Response.json({
+        ok: true,
+        obsidian_installed: obsidianInstalled,
+        obsidian_app_path: obsidianInstalled ? obsidianApp : null,
+        vaults,
+        suggested_install: "brew install --cask obsidian",
+        suggested_vault_path: `${process.env.HOME}/Documents/Obsidian Vault`,
+      });
+    }
     if (url.pathname === "/api/version") {
       return new Response(JSON.stringify({ version: VERSION }), {
         headers: { "Content-Type": "application/json; charset=utf-8" },

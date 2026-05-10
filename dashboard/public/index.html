@@ -42,6 +42,9 @@
         <nav class="tab-nav" id="tab-nav">
           <button type="button" class="tab-btn active" data-tab="dashboard">Dashboard</button>
           <button type="button" class="tab-btn" data-tab="sessions">Sessions</button>
+          <button type="button" class="tab-btn" data-tab="models">Models</button>
+          <button type="button" class="tab-btn" data-tab="projects">Projects</button>
+          <button type="button" class="tab-btn" data-tab="memory">Memory</button>
           <a class="tab-btn" href="/cheat" title="Scannable one-pager: every command, shim, shortcut">Cheat sheet</a>
           <a class="tab-btn" href="/help" title="Full documentation, signal reference, CLI commands">Docs</a>
         </nav>
@@ -225,6 +228,70 @@
           <tr><td colspan="5" class="empty">no rate-limit events today</td></tr>
         </tbody>
       </table>
+    </section>
+
+    <!-- ── Models tab ──────────────────────────────────────────────── -->
+    <section class="panel" data-tab="models" id="models-panel">
+      <h2>LM Studio models
+        <span class="panel-hint">read-only catalog from <code>/api/v0/models</code> on the M3 Ultra</span>
+        <span class="models-status" id="models-status">loading…</span>
+      </h2>
+      <div class="models-summary" id="models-summary"></div>
+      <table class="data-table" id="models-table">
+        <thead>
+          <tr>
+            <th>id</th>
+            <th>type</th>
+            <th>state</th>
+            <th>publisher</th>
+            <th>arch</th>
+            <th>quant</th>
+            <th class="num">max ctx</th>
+            <th class="num">loaded ctx</th>
+            <th>capabilities</th>
+          </tr>
+        </thead>
+        <tbody id="models-body">
+          <tr><td colspan="9" class="empty">loading model catalog…</td></tr>
+        </tbody>
+      </table>
+      <div class="models-note">
+        <strong>Load/unload control</strong> requires the <code>lms</code> CLI on the M3 Ultra (LM Studio app → Developer → Use lms in terminal). Once installed, this panel can wire load/unload buttons.
+      </div>
+    </section>
+
+    <!-- ── Projects tab ────────────────────────────────────────────── -->
+    <section class="panel" data-tab="projects" id="projects-panel">
+      <h2>Projects
+        <span class="panel-hint">code projects on the M3 Ultra at <code id="projects-root">~/code</code> · rows with <code>in policy ✓</code> are tracked by master</span>
+      </h2>
+      <table class="data-table" id="projects-table">
+        <thead>
+          <tr>
+            <th>name</th>
+            <th>branch</th>
+            <th>last commit</th>
+            <th>in policy</th>
+            <th>flags</th>
+            <th>actions</th>
+          </tr>
+        </thead>
+        <tbody id="projects-body">
+          <tr><td colspan="6" class="empty">loading projects…</td></tr>
+        </tbody>
+      </table>
+      <div class="projects-note">
+        Projects with <code>in policy ✓</code> are visible to the master daemon (read from <code>~/.config/subctl/master/policy.json</code>). To add a project, edit policy.json directly for now — an in-place editor is on the roadmap.
+      </div>
+    </section>
+
+    <!-- ── Memory tab ──────────────────────────────────────────────── -->
+    <section class="panel" data-tab="memory" id="memory-panel">
+      <h2>Memory
+        <span class="panel-hint">Obsidian vaults — long-term notes, decisions, project portfolios</span>
+        <span class="memory-status" id="memory-status">checking…</span>
+      </h2>
+      <div class="memory-content" id="memory-content">loading…</div>
     </section>
   </main>
 

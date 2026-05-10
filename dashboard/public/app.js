@@ -159,6 +159,276 @@
   renderClock();
   wireRefreshButton();
   wireMasterChat();
+  wireModelsTab();
+  wireProjectsTab();
+  wireMemoryTab();
+
+  // ----- Models tab — LM Studio model catalog -----
+  function wireModelsTab() {
+    const body = $("models-body");
+    const status = $("models-status");
+    const summary = $("models-summary");
+    if (!body) return;
+    let pollTimer = null;
+
+    async function refresh() {
+      try {
+        const r = await fetch("/api/models");
+        const j = await r.json();
+        if (!j.ok) {
+          if (status) { status.textContent = "unreachable"; status.dataset.state = "err"; }
+          body.replaceChildren(emptyRow(9, j.error || "LM Studio API unreachable"));
+          if (summary) summary.textContent = "";
+          return;
+        }
+        if (status) { status.textContent = "live"; status.dataset.state = "ok"; }
+        if (summary) {
+          summary.innerHTML =
+            `<span><strong>${j.total}</strong> total</span> · ` +
+            `<span><strong>${j.loaded_count}</strong> loaded</span> · ` +
+            `<span class="dim">host ${j.host}</span> · ` +
+            `<span class="dim">refreshed ${new Date(j.ts).toLocaleTimeString()}</span>`;
+        }
+        const sorted = (j.models || []).slice().sort((a, b) => {
+          if (a.state === "loaded" && b.state !== "loaded") return -1;
+          if (a.state !== "loaded" && b.state === "loaded") return 1;
+          return (a.id || "").localeCompare(b.id || "");
+        });
+        if (sorted.length === 0) {
+          body.replaceChildren(emptyRow(9, "no models"));
+          return;
+        }
+        body.replaceChildren(...sorted.map((m) => {
+          const tr = document.createElement("tr");
+          if (m.state === "loaded") tr.classList.add("model-loaded");
+          tr.appendChild(td(m.id));
+          tr.appendChild(td(m.type || "—"));
+          const stateCell = document.createElement("td");
+          const pill = document.createElement("span");
+          pill.className = "model-state-pill model-state-" + (m.state || "unknown");
+          pill.textContent = m.state || "?";
+          stateCell.appendChild(pill);
+          tr.appendChild(stateCell);
+          tr.appendChild(td(m.publisher || "—"));
+          tr.appendChild(td(m.arch || "—"));
+          tr.appendChild(td(m.quantization || "—"));
+          tr.appendChild(td(m.max_context_length ? m.max_context_length.toLocaleString() : "—", "num"));
+          tr.appendChild(td(m.loaded_context_length ? m.loaded_context_length.toLocaleString() : "—", "num"));
+          const capsCell = document.createElement("td");
+          (m.capabilities || []).forEach((c) => {
+            const cp = document.createElement("span");
+            cp.className = "model-cap-pill";
+            cp.textContent = c;
+            capsCell.appendChild(cp);
+          });
+          if (!(m.capabilities || []).length) capsCell.textContent = "—";
+          tr.appendChild(capsCell);
+          return tr;
+        }));
+      } catch (err) {
+        if (status) { status.textContent = "error"; status.dataset.state = "err"; }
+        body.replaceChildren(emptyRow(9, "fetch error: " + err));
+      }
+    }
+
+    // Refresh once on load + every 5s while the Models tab is visible.
+    refresh();
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) return;
+      refresh();
+    });
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(() => {
+      const panel = $("models-panel");
+      if (panel && getComputedStyle(panel).display !== "none") refresh();
+    }, 5000);
+  }
+
+  // ----- Projects tab — ~/code scan -----
+  function wireProjectsTab() {
+    const body = $("projects-body");
+    const rootEl = $("projects-root");
+    if (!body) return;
+
+    async function refresh() {
+      try {
+        const r = await fetch("/api/projects");
+        const j = await r.json();
+        if (!j.ok) {
+          body.replaceChildren(emptyRow(6, j.error || "scan failed"));
+          return;
+        }
+        if (rootEl) rootEl.textContent = j.code_root;
+        const projects = j.projects || [];
+        if (!projects.length) {
+          body.replaceChildren(emptyRow(6, "no projects under " + j.code_root));
+          return;
+        }
+        body.replaceChildren(...projects.map((p) => {
+          const tr = document.createElement("tr");
+          if (p.in_policy) tr.classList.add("project-in-policy");
+          tr.appendChild(td(p.name));
+          tr.appendChild(td(p.branch || "—"));
+          const lcCell = td(p.last_commit || "(no commits)");
+          lcCell.classList.add("project-commit");
+          lcCell.title = p.last_commit || "";
+          tr.appendChild(lcCell);
+          const policyCell = document.createElement("td");
+          if (p.in_policy) {
+            const pill = document.createElement("span");
+            pill.className = "project-policy-pill";
+            pill.textContent = "✓ " + (p.autonomy_level || "tracked");
+            policyCell.appendChild(pill);
+          } else {
+            policyCell.textContent = "—";
+            policyCell.classList.add("dim");
+          }
+          tr.appendChild(policyCell);
+          const flagsCell = document.createElement("td");
+          flagsCell.classList.add("project-flags");
+          const flag = (cond, label, title) => {
+            if (!cond) return;
+            const f = document.createElement("span");
+            f.className = "project-flag";
+            f.textContent = label;
+            f.title = title;
+            flagsCell.appendChild(f);
+          };
+          flag(p.has_claude_md, "CLAUDE", "has CLAUDE.md");
+          flag(p.has_package_json, "node", "has package.json");
+          flag(p.has_pyproject, "py", "has pyproject.toml or requirements.txt");
+          flag(p.has_readme, "readme", "has README");
+          if (!flagsCell.children.length) { flagsCell.textContent = "—"; flagsCell.classList.add("dim"); }
+          tr.appendChild(flagsCell);
+          // Actions: Spawn dev team for this project (sends a directive to master)
+          const actionsCell = document.createElement("td");
+          const wrap = document.createElement("div");
+          wrap.className = "resume-actions";
+          const btnSpawn = document.createElement("button");
+          btnSpawn.className = "btn-resume";
+          btnSpawn.textContent = "spawn team";
+          btnSpawn.title = "Ask master to spawn a dev team for this project";
+          btnSpawn.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            if (!confirm(`Ask master to spawn a dev team for "${p.name}" (${p.path})?`)) return;
+            btnSpawn.disabled = true;
+            btnSpawn.textContent = "asking…";
+            try {
+              const r2 = await fetch("/api/master/chat", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  text: `Spawn a dev team for project "${p.name}" at path "${p.path}". Pick the right account, use subctl_orch_spawn, and tell me the team name + how to attach.`,
+                  source: "chat",
+                }),
+              });
+              if (!r2.ok) {
+                btnSpawn.textContent = "failed";
+              } else {
+                btnSpawn.textContent = "asked ✓";
+                setTimeout(() => { btnSpawn.disabled = false; btnSpawn.textContent = "spawn team"; }, 3000);
+              }
+            } catch (err2) {
+              btnSpawn.textContent = "error";
+              btnSpawn.title = String(err2);
+            }
+          });
+          wrap.appendChild(btnSpawn);
+          actionsCell.appendChild(wrap);
+          tr.appendChild(actionsCell);
+          return tr;
+        }));
+      } catch (err) {
+        body.replaceChildren(emptyRow(6, "fetch error: " + err));
+      }
+    }
+
+    refresh();
+    setInterval(() => {
+      const panel = $("projects-panel");
+      if (panel && getComputedStyle(panel).display !== "none") refresh();
+    }, 15000);
+  }
+
+  // ----- Memory tab — Obsidian vault status -----
+  function wireMemoryTab() {
+    const status = $("memory-status");
+    const content = $("memory-content");
+    if (!content) return;
+
+    async function refresh() {
+      try {
+        const r = await fetch("/api/memory");
+        const j = await r.json();
+        if (!j.ok) {
+          content.innerHTML = "<p class=\"dim\">memory API unreachable</p>";
+          if (status) { status.textContent = "error"; status.dataset.state = "err"; }
+          return;
+        }
+        if (!j.obsidian_installed) {
+          if (status) { status.textContent = "obsidian not installed"; status.dataset.state = "warn"; }
+          content.innerHTML =
+            "<div class=\"memory-block\">" +
+              "<h3>Obsidian is not installed on the M3 Ultra</h3>" +
+              "<p>The master's long-term memory lives in Obsidian vaults — project portfolios, decisions, RESUME.md per project, references that survive across sessions. Install on the M3 Ultra:</p>" +
+              "<pre class=\"memory-cmd\">brew install --cask obsidian</pre>" +
+              "<p>Then create a vault at:</p>" +
+              "<pre class=\"memory-cmd\">" + escapeForHtml(j.suggested_vault_path) + "</pre>" +
+              "<p>Suggested initial structure (one folder per active project, one master/ folder):</p>" +
+              "<pre class=\"memory-tree\">" +
+                "Obsidian Vault/\n" +
+                "├── master/\n" +
+                "│   ├── decisions.md       — running log of master-level calls\n" +
+                "│   ├── portfolio.md       — every project + status + tier\n" +
+                "│   └── people.md          — operators, partners, stakeholders\n" +
+                "├── &lt;project-1&gt;/\n" +
+                "│   ├── RESUME.md          — current state, what's next\n" +
+                "│   ├── design/            — ADRs, sketches, specs\n" +
+                "│   ├── reviews/           — coderabbit findings\n" +
+                "│   └── postmortems/\n" +
+                "└── ..." +
+              "</pre>" +
+              "<p>Once a vault exists, this tab will list its notes and recent edits, and the master will be able to read/write entries.</p>" +
+            "</div>";
+          return;
+        }
+        if (status) { status.textContent = (j.vaults || []).length + " vault(s)"; status.dataset.state = "ok"; }
+        if (!(j.vaults || []).length) {
+          content.innerHTML =
+            "<div class=\"memory-block\">" +
+              "<h3>Obsidian installed, no vault detected</h3>" +
+              "<p>Create one at <code>" + escapeForHtml(j.suggested_vault_path) + "</code> and add a <code>.obsidian</code> directory (Obsidian creates this automatically when you point it at a folder).</p>" +
+            "</div>";
+          return;
+        }
+        const rows = j.vaults.map((v) =>
+          "<tr>" +
+            "<td><code>" + escapeForHtml(v.path) + "</code></td>" +
+            "<td class=\"num\">" + v.note_count + "</td>" +
+            "<td>" + (v.last_modified ? new Date(v.last_modified).toLocaleString() : "—") + "</td>" +
+          "</tr>",
+        ).join("");
+        content.innerHTML =
+          "<table class=\"data-table\"><thead><tr>" +
+            "<th>vault</th><th class=\"num\">notes</th><th>last modified</th>" +
+          "</tr></thead><tbody>" + rows + "</tbody></table>" +
+          "<p class=\"dim\" style=\"margin-top:12px\">Per-vault note browser + master read/write tools coming next.</p>";
+      } catch (err) {
+        content.innerHTML = "<p class=\"dim\">fetch error: " + escapeForHtml(String(err)) + "</p>";
+        if (status) { status.textContent = "error"; status.dataset.state = "err"; }
+      }
+    }
+
+    function escapeForHtml(s) {
+      return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    }
+
+    refresh();
+    setInterval(() => {
+      const panel = $("memory-panel");
+      if (panel && getComputedStyle(panel).display !== "none") refresh();
+    }, 30000);
+  }
 
   // ----- Master chat (SSE-backed conversation with the master daemon) -----
   function wireMasterChat() {

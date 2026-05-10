@@ -1335,8 +1335,106 @@ tr:hover .kill-btn { opacity: 1; }
 }
 
 /* Hide panels not matching the active tab. */
-body[data-active-tab="dashboard"] section[data-tab="sessions"] { display: none; }
-body[data-active-tab="sessions"] section[data-tab="dashboard"] { display: none; }
+/* Tab visibility: each tab hides every panel that doesn't match */
+body[data-active-tab="dashboard"] section[data-tab]:not([data-tab="dashboard"]) { display: none; }
+body[data-active-tab="sessions"]  section[data-tab]:not([data-tab="sessions"])  { display: none; }
+body[data-active-tab="models"]    section[data-tab]:not([data-tab="models"])    { display: none; }
+body[data-active-tab="projects"]  section[data-tab]:not([data-tab="projects"])  { display: none; }
+body[data-active-tab="memory"]    section[data-tab]:not([data-tab="memory"])    { display: none; }
+
+/* ── Models / Projects / Memory tab styling ─────────────────────────── */
+.models-status, .memory-status {
+  display: inline-block;
+  margin-left: 12px;
+  padding: 1px 8px;
+  font-size: 10px;
+  border-radius: 10px;
+  background: #1a1a1a;
+  color: #888;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+.models-status[data-state="ok"], .memory-status[data-state="ok"] { background: #0e2a16; color: #6cd697; }
+.models-status[data-state="warn"], .memory-status[data-state="warn"] { background: #2a230e; color: #d6c46c; }
+.models-status[data-state="err"], .memory-status[data-state="err"] { background: #2a1010; color: #d66c6c; }
+
+.models-summary {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: #aaa;
+}
+.models-summary span { margin-right: 8px; }
+.models-summary .dim { color: #666; }
+.models-note, .projects-note {
+  margin-top: 12px;
+  padding: 10px 14px;
+  background: #0c0c0c;
+  border-left: 3px solid #2a3a4a;
+  border-radius: 3px;
+  font-size: 12px;
+  color: #999;
+}
+tr.model-loaded td { background: rgba(108, 214, 151, 0.04); }
+.model-state-pill, .project-policy-pill {
+  display: inline-block;
+  padding: 1px 8px;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border-radius: 3px;
+  background: #1a1a1a;
+  color: #888;
+}
+.model-state-loaded { background: #0e2a16; color: #6cd697; }
+.model-state-not-loaded { background: #1a1a1a; color: #777; }
+.model-cap-pill {
+  display: inline-block;
+  margin-right: 4px;
+  padding: 1px 6px;
+  font-size: 10px;
+  background: #14101a;
+  color: #b074d6;
+  border-radius: 3px;
+}
+.project-policy-pill { background: #102a18; color: #6cd697; }
+tr.project-in-policy td { background: rgba(108, 214, 151, 0.03); }
+.project-flag {
+  display: inline-block;
+  margin-right: 4px;
+  padding: 1px 6px;
+  font-size: 10px;
+  background: #14101a;
+  color: #888;
+  border-radius: 3px;
+}
+.project-commit { color: #999; max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.memory-block { padding: 12px; }
+.memory-block h3 { color: #c4c4c4; margin: 0 0 12px; font-size: 14px; }
+.memory-block p { color: #aaa; line-height: 1.5; margin: 8px 0; }
+.memory-cmd {
+  display: inline-block;
+  padding: 8px 14px;
+  background: #0c0c0c;
+  border: 1px solid #2a2a2a;
+  border-radius: 3px;
+  color: #5fd7ff;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+}
+.memory-tree {
+  display: block;
+  padding: 12px;
+  background: #0c0c0c;
+  border: 1px solid #1f1f1f;
+  border-radius: 3px;
+  color: #aaa;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  white-space: pre;
+  overflow-x: auto;
+}
 
 /* iTerm spawn button (secondary action; sits next to copy) */
 .btn-resume.btn-iterm {
