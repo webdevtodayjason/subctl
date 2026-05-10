@@ -455,18 +455,24 @@ case "$cmd" in
     . "$SUBCTL_REPO_ROOT/lib/accounts.sh"
     subctl_accounts_status_table
 
-    # Per-account Keychain bearer probe — verify each cfg_dir resolves to an
-    # entry the OAuth usage endpoint can actually use. Doesn't print the token.
+    # Per-account credential probe — verify each cfg_dir has a usable
+    # OAuth bearer for the dashboard's /api/oauth/usage call. Claude Code 2.x
+    # writes <cfg_dir>/.credentials.json (file-based); 1.x used Keychain
+    # entries hashed by cfg_dir. Check both paths so doctor stays honest
+    # across upgrade scenarios.
     echo
-    echo "Keychain bearers:"
+    echo "Credentials:"
     while IFS=$'\t' read -r alias provider email cfg_dir desc; do
       [[ "$provider" != "claude" ]] && continue
+      cred_file="$cfg_dir/.credentials.json"
       hash=$(printf '%s' "$cfg_dir" | shasum -a 256 | cut -c1-8)
       svc="Claude Code-credentials-$hash"
-      if security find-generic-password -s "$svc" >/dev/null 2>&1; then
-        printf "  ${C_GRN}✓${C_RST} %-20s service=%s\n" "$alias" "$svc"
+      if [[ -r "$cred_file" ]] && jq -e '.claudeAiOauth.accessToken' "$cred_file" >/dev/null 2>&1; then
+        printf "  ${C_GRN}✓${C_RST} %-20s file=%s\n" "$alias" "$cred_file"
+      elif security find-generic-password -s "$svc" >/dev/null 2>&1; then
+        printf "  ${C_GRN}✓${C_RST} %-20s keychain=%s ${C_DIM}(legacy 1.x)${C_RST}\n" "$alias" "$svc"
       else
-        printf "  ${C_YLW}!${C_RST} %-20s service=%s ${C_DIM}(no entry — re-run: subctl auth claude %s)${C_RST}\n" "$alias" "$svc" "$alias"
+        printf "  ${C_YLW}!${C_RST} %-20s ${C_DIM}(no .credentials.json at %s, no keychain fallback — re-run: subctl auth claude %s)${C_RST}\n" "$alias" "$cred_file" "$alias"
       fi
     done < <(subctl_list_accounts)
 

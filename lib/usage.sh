@@ -39,44 +39,62 @@ subctl_usage_keychain_service() {
   printf 'Claude Code-credentials-%s' "$hash"
 }
 
-# Read the OAuth bearer for a given cfg_dir from macOS Keychain.
+# Read the OAuth bearer for a given cfg_dir.
+#
+# Claude Code 2.x stores credentials at <cfg_dir>/.credentials.json (file
+# with mode 600) rather than in the macOS Keychain — diagnosed 2026-05-10
+# during the FOOTHOLD dogfood when `subctl usage --json` reported "no
+# Keychain entry" for every alias even though Claude Code itself was
+# clearly authed (a worker was actively running on the dev account).
+#
+# Resolution order:
+#   1. <cfg_dir>/.credentials.json     (Claude Code 2.x default)
+#   2. macOS Keychain at "Claude Code-credentials-<sha256(cfg_dir)[0:8]>"
+#                                      (legacy 1.x scheme)
+#   3. macOS Keychain at "Claude Code-credentials" with no suffix
+#                                      (1.x default cfg_dir only)
+#
 # Echoes the token on stdout (never logged). Returns non-zero with a
 # warning to stderr when no entry is found or no accessToken inside.
-#
-# First read on a given keychain item triggers macOS approval dialog;
-# subsequent reads from the same caller path use the user's "Always Allow"
-# decision.
 subctl_usage_bearer() {
   local cfg_dir="${1:-}"
   [[ -z "$cfg_dir" ]] && { subctl_err "usage_bearer: cfg_dir required"; return 1; }
   cfg_dir="${cfg_dir/#\~/$HOME}"
 
+  local cred_file="$cfg_dir/.credentials.json"
+  local blob token
+
+  # 1. Claude Code 2.x file-based credentials.
+  if [[ -r "$cred_file" ]]; then
+    token=$(jq -r '.claudeAiOauth.accessToken // empty' "$cred_file" 2>/dev/null)
+    if [[ -n "$token" ]]; then
+      printf '%s' "$token"
+      return 0
+    fi
+    subctl_warn "$cred_file present but has no .claudeAiOauth.accessToken (re-auth?)" >&2
+    return 1
+  fi
+
+  # 2 & 3. Legacy Keychain fallbacks (Claude Code 1.x).
   if ! subctl_have security; then
     subctl_warn "macOS 'security' CLI unavailable — Keychain bearer extraction unsupported on this platform" >&2
     return 1
   fi
-
-  local svc blob
+  local svc
   svc=$(subctl_usage_keychain_service "$cfg_dir")
   blob=$(security find-generic-password -w -s "$svc" 2>/dev/null || true)
-
   if [[ -z "$blob" && "$cfg_dir" == "$HOME/.claude" ]]; then
-    # Default-config legacy entry has no hash suffix.
     blob=$(security find-generic-password -w -s "Claude Code-credentials" 2>/dev/null || true)
   fi
-
   if [[ -z "$blob" ]]; then
-    subctl_warn "no Keychain entry for $cfg_dir (looked for: $svc) — has 'subctl auth claude <alias>' been run?" >&2
+    subctl_warn "no .credentials.json at $cred_file and no Keychain fallback (looked for: $svc) — has 'subctl auth claude <alias>' been run?" >&2
     return 1
   fi
-
-  local token
   token=$(printf '%s' "$blob" | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
   if [[ -z "$token" ]]; then
     subctl_warn "Keychain entry for $cfg_dir has no .claudeAiOauth.accessToken (re-auth?)" >&2
     return 1
   fi
-
   printf '%s' "$token"
 }
 
