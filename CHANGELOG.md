@@ -4,6 +4,34 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.1.4] — 2026-05-10
+
+Patch — runtime claim-verification gate, Argent-style.
+
+### Added
+
+- **Post-turn claim verifier** (`components/master/verifier.ts`). After the master settles a turn, the runtime scans the assistant text for "claim triggers" (specific future check-in times, asserted team status, host-fact claims, message-sent claims, decision-logged claims) and checks each against tool calls made IN THE SAME TURN. If a claim isn't backed by the corresponding tool, the runtime feeds a synthetic `[verifier]` correction prompt and re-runs the turn. Capped at 2 corrections per original prompt to prevent loops; on giveup, the gap is logged to `decisions.jsonl` (`verifier_giveup`) and the response ships with the gap on record.
+- **Five initial verification rules:**
+  - `future-checkin-time` — "I'll check in N minutes" / "I'll follow up at T" → must have called `schedule_followup`
+  - `team-status-claim` — "the team is making progress" / "team is stuck" → must have called `subctl_orch_status` or `subctl_orch_list`
+  - `host-fact-claim` — "qwen is loaded" / "Docker is running" → must have called `system_lmstudio_models` or `system_tmux_sessions` etc.
+  - `message-sent-claim` — "I sent a message to Jason" / "I nudged the team" → must have called `telegram_send` / `subctl_orch_msg` / `notify_dashboard`
+  - `decision-logged-claim` — "I logged this to the vault" → must have called `vault_append` or `memory_remember`
+- **`verifier_gap` SSE event** — broadcast when a gap is detected, surfacing in real time which rule fired and what the unbacked phrase was. Visible in `/api/master/events` and the dashboard's live activity feed.
+- **`verifier_resolved` / `verifier_giveup` decision-log entries** — operator can grep `decisions.jsonl` to see how often the verifier had to intervene and which rules trip most.
+
+### Why this exists
+
+Operator pattern from ArgentOS, paraphrased 2026-05-10: *"If Argent tries to say something and can't prove it or back it up with actual tool use proof, Argent is looped back and gated. You'll hear her say 'oh you're right' and then the turn gets blocked."*
+
+v2.1.3 added the `schedule_followup` tool + SKILL guidance — that's the polite layer ("please don't lie"). v2.1.4 adds the runtime gate ("you literally can't ship a lie without us catching it"). They reinforce each other. SKILL alone wasn't enough during dogfood — model produced a 15-min-checkin promise without scheduling. Verifier catches that pattern at the runtime level and re-runs the turn until backed by tool use OR explicitly logged as unverified.
+
+### Notes
+
+- The verifier skips itself for `[verifier]`, `[watchdog]`, `[scheduled]`, `[team-report]` prefixed prompts — those are runtime-internal, not operator-facing claims.
+- Iteration cap is 2 — i.e., one correction loop maximum. If the model can't get its own claim backed after one pointed retry, the response ships with a `verifier_giveup` log entry rather than looping forever. Operator can grep that to see chronic offenders.
+- Rules are extensible — add to `VERIFICATION_RULES` in `verifier.ts`. Keep `requires_any_tool` honest; over-strict rules (requiring tools that don't actually verify the claim) cause friction without quality gain.
+
 ## [2.1.3] — 2026-05-10
 
 Patch — anti-hallucination scaffolding for the master daemon.

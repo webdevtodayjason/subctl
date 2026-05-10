@@ -61,6 +61,7 @@ import { skillAuthorTools } from "./tools/skill-author";
 import { notifyTools, bindNotifyBroadcast } from "./tools/notify";
 import { specforgeTools } from "./tools/specforge";
 import { schedulerTools, popDueFollowups } from "./tools/scheduler";
+import { extractLastTurn, findGaps, formatCorrectionPrompt } from "./verifier";
 import {
   startMasterNotifyListener,
   stopMasterNotifyListener,
@@ -784,7 +785,13 @@ async function main() {
   // support concurrent runs on the same agent), but QUEUES instead of
   // dropping when busy. Earlier behavior dropped messages 2..N when the
   // first was still processing — Telegram bursts vanished silently.
-  type PendingPrompt = { text: string; source: "chat" | "telegram" | "watchdog" };
+  type PendingPrompt = {
+    text: string;
+    source: "chat" | "telegram" | "watchdog";
+    // Used by the verifier to cap correction loop iterations. Caller does
+    // not set this; the verifier bumps it on re-entry.
+    verifier_iteration?: number;
+  };
   const promptQueue: PendingPrompt[] = [];
 
   async function processOnePrompt(p: PendingPrompt): Promise<{ ok: boolean; error?: string }> {
@@ -812,6 +819,69 @@ async function main() {
           rationale: err ?? "unknown",
         });
         return { ok: false, error: err ?? "unknown error" };
+      }
+
+      // ── claim-verification gate ────────────────────────────────────────
+      // Argent-style anti-hallucination: scan the assistant text for
+      // "claim triggers" (specific check-in times, asserted team status,
+      // host-fact claims, message-sent claims). Each rule names tool(s)
+      // that must have been called THIS turn for the claim to count as
+      // verified. If we find unbacked claims, feed a synthetic correction
+      // prompt and re-run the turn. Cap iterations to 2 to prevent loops.
+      // The text the operator eventually sees is either (a) verified, or
+      // (b) flagged in decisions.jsonl as a verification giveup.
+      //
+      // Gate skips itself for [verifier] re-entries so we don't recurse
+      // on our own correction prompts. Gate also skips for source=
+      // "watchdog" with "[scheduled]" or "[watchdog]" prefixes — those
+      // are runtime-internal prompts, not operator-facing claims.
+      const isInternalSynthPrompt =
+        p.source === "watchdog" &&
+        (p.text.startsWith("[verifier]") ||
+          p.text.startsWith("[watchdog]") ||
+          p.text.startsWith("[scheduled]") ||
+          p.text.startsWith("[team-report]"));
+      if (!isInternalSynthPrompt && !stopped) {
+        const turn = extractLastTurn(agent.state.messages as ReadonlyArray<{ role?: string; content?: unknown }>);
+        const gaps = findGaps(turn);
+        if (gaps.length > 0) {
+          broadcast("verifier_gap", {
+            ts: new Date().toISOString(),
+            source: p.source,
+            iteration: p.verifier_iteration ?? 0,
+            gaps: gaps.map((g) => ({ id: g.rule.id, phrase: g.matched_phrase })),
+          });
+          const iter = p.verifier_iteration ?? 0;
+          if (iter < 2) {
+            const correction = formatCorrectionPrompt(gaps);
+            await agent.prompt(correction);
+            // Recurse the verification once more on the newly-settled turn.
+            // We re-use processOnePrompt with bumped iteration counter so
+            // serialization stays through promptQueue. But since we're
+            // already inside processOnePrompt, do it inline.
+            const turn2 = extractLastTurn(agent.state.messages as ReadonlyArray<{ role?: string; content?: unknown }>);
+            const gaps2 = findGaps(turn2);
+            if (gaps2.length === 0) {
+              logDecision({
+                project: "_master",
+                action: "verifier_resolved",
+                rationale: `iteration ${iter + 1} — claims now backed by tool use`,
+              });
+            } else if (iter + 1 >= 2) {
+              logDecision({
+                project: "_master",
+                action: "verifier_giveup",
+                rationale: `gave up after 2 corrections; unmet rules: ${gaps2.map((g) => g.rule.id).join(",")}`,
+              });
+            }
+          } else {
+            logDecision({
+              project: "_master",
+              action: "verifier_giveup",
+              rationale: `iter cap reached; unmet: ${gaps.map((g) => g.rule.id).join(",")}`,
+            });
+          }
+        }
       }
       return { ok: true };
     } catch (err) {
