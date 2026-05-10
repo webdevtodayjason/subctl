@@ -110,6 +110,56 @@ export const subctlOrchTools = {
   },
 
   /**
+   * Spawn a worker orchestrator using a saved team template. Same as
+   * spawn() but reads ~/.config/subctl/master/team-templates/<name>.json
+   * to get the persona, skills, autonomy, and boot prompt — no need to
+   * pass a freeform prompt. Use this when a template fits the work; use
+   * raw spawn() only for one-offs that don't match any template.
+   */
+  spawn_template: {
+    description:
+      "Spawn a worker orchestrator using a saved team template. Reads ~/.config/subctl/master/team-templates/<template>.json for persona + skills + autonomy + boot prompt and applies them automatically. Prefer this over raw spawn() when a template fits — it codifies the role and skill set so dev-team behavior is consistent. Costs rate-limit on the chosen account just like spawn(). Always confirm with Jason before invoking — this is irreversible-ish (creates a tmux session, may push to git via the lead's work).",
+    schema: {
+      type: "object",
+      properties: {
+        template: {
+          type: "string",
+          description:
+            "Template name (filename without .json). Use subctl templates list / the dashboard Teams tab to see available ones. Common: code-review, feature-dev.",
+        },
+        account: {
+          type: "string",
+          description: "Account alias from accounts.conf (e.g. claude-jason).",
+        },
+        project: {
+          type: "string",
+          description: "Absolute path to the project directory.",
+        },
+        prompt: {
+          type: "string",
+          description: "Optional additional scope to layer on top of the template's boot_prompt (e.g. 'Specifically focus on PR #42'). Empty if none.",
+        },
+      },
+      required: ["template", "account", "project"],
+    },
+    invoke: async (args: {
+      template: string;
+      account: string;
+      project: string;
+      prompt?: string;
+    }) => {
+      return apiPost("/api/orchestration/spawn", {
+        template: args.template,
+        account: args.account,
+        project: args.project,
+        prompt: args.prompt ?? "",
+        orchestrator: false, // template's persona owns the role definition
+        skip_perms: true,    // template's default_autonomy gets enforced server-side
+      });
+    },
+  },
+
+  /**
    * Inject a message into a running session's tmux pane.
    * The agent picks it up on its next turn.
    */

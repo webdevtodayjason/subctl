@@ -179,12 +179,38 @@ provider_openai_auth() {
   printf "  Email expected: ${C_GRN}%s${C_RST}\n" "$email"
   printf "  Config dir:     %s\n" "$cfg_dir"
   echo
-  echo "  Codex will open a browser for OAuth. Sign in with the ChatGPT plan account that"
-  echo "  matches the email above. Codex returns control automatically once login completes."
-  echo
-  read -r -p "  Press Enter to launch (Ctrl-C to skip): " _
 
-  CODEX_HOME="$cfg_dir" command codex login || true
+  # Detect headless/remote environments. SSH'd-in shells, tmux outside a
+  # GUI, or anything without DISPLAY can't open a browser locally — codex
+  # will silently fail or hang. The --device-auth flag prints a URL +
+  # short code instead, which the user opens in a browser anywhere.
+  local headless=false
+  if [[ -n "${SSH_CONNECTION:-}${SSH_CLIENT:-}" ]]; then
+    headless=true
+  fi
+
+  # Also let the user force device-auth via env (useful when codex
+  # misdetects the environment, e.g. inside tmux on a host with a GUI).
+  if [[ "${SUBCTL_CODEX_DEVICE_AUTH:-}" == "1" ]]; then
+    headless=true
+  fi
+
+  if $headless; then
+    echo "  ${C_YLW}Detected headless / SSH session${C_RST} — using device-code flow."
+    echo "  Codex will print a URL and a short code. Open the URL in any browser,"
+    echo "  paste the code, and approve. NOTE: device-code requires that you've"
+    echo "  enabled it once in ChatGPT web → Settings → Security → 'Enable device"
+    echo "  code authorization for Codex' for the account you're authenticating."
+    echo
+    read -r -p "  Press Enter to launch (Ctrl-C to skip): " _
+    CODEX_HOME="$cfg_dir" command codex login --device-auth || true
+  else
+    echo "  Codex will open a browser for OAuth. Sign in with the ChatGPT plan account that"
+    echo "  matches the email above. Codex returns control automatically once login completes."
+    echo
+    read -r -p "  Press Enter to launch (Ctrl-C to skip): " _
+    CODEX_HOME="$cfg_dir" command codex login || true
+  fi
 
   local after_status
   after_status=$(_provider_openai_auth_mode_check "$cfg_dir")

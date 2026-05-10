@@ -1299,6 +1299,86 @@ function buildAccountSummaries(
   });
 }
 
+// ---------- orchestration list ----------
+
+// Filter tmux sessions to those spawned by `subctl teams claude` —
+// they have a CLAUDE_CONFIG_DIR set in their tmux env, which is the
+// signal that distinguishes "orchestrator session" from random tmux noise.
+// Used by the /api/orchestration endpoint AND included in buildState() so
+// the dashboard UI can render an Orchestrations panel.
+// In-memory cache of master /teams response. Refreshed in the background
+// every 2s so buildState() stays synchronous (called from many places, some
+// HTTP-handler-sync) and never blocks on a master fetch.
+type MasterTeamRow = {
+  name: string;
+  last_activity_seconds_ago: number;
+  last_event: { ts: string; type: string; text?: string; [k: string]: unknown } | null;
+};
+let _masterTeams = new Map<string, MasterTeamRow>();
+let _masterTeamsLastSyncMs: number | null = null;
+
+async function refreshMasterTeams(): Promise<void> {
+  try {
+    const port = process.env.SUBCTL_MASTER_PORT ?? "8788";
+    const r = await fetch(`http://127.0.0.1:${port}/teams`, {
+      signal: AbortSignal.timeout(1500),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const j = (await r.json()) as { ok: boolean; teams: MasterTeamRow[] };
+    const map = new Map<string, MasterTeamRow>();
+    for (const t of j.teams ?? []) map.set(t.name, t);
+    _masterTeams = map;
+    _masterTeamsLastSyncMs = Date.now();
+  } catch {
+    // Master may be down — keep the last known map so the dashboard still
+    // shows something, but mark it stale via _masterTeamsLastSyncMs.
+  }
+}
+// Kick off the background refresh loop (only once per process).
+let _masterTeamsPoller: ReturnType<typeof setInterval> | null = null;
+function ensureMasterTeamsPoller() {
+  if (_masterTeamsPoller) return;
+  void refreshMasterTeams(); // fire one immediately
+  _masterTeamsPoller = setInterval(() => void refreshMasterTeams(), 2000);
+}
+
+// Dev teams = tmux sessions with CLAUDE_CONFIG_DIR set (spawned by `subctl
+// teams claude`). We enrich each with last-activity from the master daemon's
+// inbox tracker. The team name in tmux matches the inbox file basename when
+// the lead reports under that name; if it doesn't match, last_activity stays
+// null (still rendered, just without the staleness signal).
+function buildOrchestrations(): Array<{
+  name: string;
+  path: string;
+  attached: boolean;
+  windows: number;
+  claude_account_dir: string | null;
+  is_orchestrator: boolean;
+  last_activity_seconds_ago: number | null;
+  last_event_type: string | null;
+  last_event_text: string | null;
+}> {
+  ensureMasterTeamsPoller();
+  const rawSessions = listTmuxSessions();
+  return rawSessions
+    .map((s) => {
+      const cfg = tmuxShowEnv(s.name, "CLAUDE_CONFIG_DIR");
+      const team = _masterTeams.get(s.name);
+      return {
+        name: s.name,
+        path: s.path,
+        attached: s.attached,
+        windows: s.windows,
+        claude_account_dir: cfg,
+        is_orchestrator: cfg !== null,
+        last_activity_seconds_ago: team?.last_activity_seconds_ago ?? null,
+        last_event_type: team?.last_event?.type ?? null,
+        last_event_text: (team?.last_event?.text as string | undefined) ?? null,
+      };
+    })
+    .filter((x) => x.is_orchestrator);
+}
+
 // ---------- top-level state builder ----------
 
 function buildState() {
@@ -1383,6 +1463,7 @@ function buildState() {
     },
     accounts: accountSummaries,
     sessions: sessionsOut,
+    orchestrations: buildOrchestrations(),
     active_conversations: activeConversations,
     rate_limits: rateLimits,
     dispatch,
@@ -2055,9 +2136,20 @@ if (_listener.running) {
 
 // ---------- server ----------
 
+// Default to localhost-only — safer for fresh installs. Opt in to LAN
+// exposure via SUBCTL_DASHBOARD_HOST=0.0.0.0 (or a specific interface IP)
+// in the launchd plist or shell env. The dashboard is a control plane
+// (spawns/kills orchestrators), so binding to 0.0.0.0 should be a
+// deliberate choice on a trusted network.
+const HOSTNAME = process.env.SUBCTL_DASHBOARD_HOST || "127.0.0.1";
+
 const server = Bun.serve({
   port: PORT,
-  hostname: "127.0.0.1",
+  hostname: HOSTNAME,
+  // SSE pass-through (/api/master/events) and our own WebSocket (/api/live)
+  // are long-lived. The default 10s idleTimeout was killing them every 10s,
+  // making the chat connection pill flash CONNECTED↔RECONNECTING forever.
+  idleTimeout: 0,
   async fetch(req, srv) {
     const url = new URL(req.url);
     if (url.pathname === "/api/live") {
@@ -2072,11 +2164,1608 @@ const server = Bun.serve({
         },
       });
     }
+
+    // ── /api/models — LM Studio model catalog (native API, richer than /v1) ──
+    if (url.pathname === "/api/models") {
+      const host = process.env.SUBCTL_LMSTUDIO_HOST ?? "http://localhost:1234";
+      try {
+        const r = await fetch(`${host}/api/v0/models`, {
+          signal: AbortSignal.timeout(2500),
+        });
+        if (!r.ok) {
+          return Response.json(
+            { ok: false, error: `LM Studio HTTP ${r.status}`, host },
+            { status: 502 },
+          );
+        }
+        const j = (await r.json()) as { data?: Array<Record<string, unknown>> };
+        const models = j.data ?? [];
+        return Response.json({
+          ok: true,
+          host,
+          ts: new Date().toISOString(),
+          total: models.length,
+          loaded_count: models.filter((m) => m.state === "loaded").length,
+          models,
+        });
+      } catch (err) {
+        return Response.json(
+          { ok: false, error: (err as Error).message, host },
+          { status: 502 },
+        );
+      }
+    }
+
+    // ── /api/projects — scan ~/code, mark which are in policy.json ──
+    if (url.pathname === "/api/projects") {
+      const codeRoot = process.env.SUBCTL_CODE_ROOT ?? `${process.env.HOME}/code`;
+      let policyProjects: Array<{ path: string; autonomy_level?: string }> = [];
+      try {
+        const policyPath = join(SUBCTL_CONFIG_DIR, "master", "policy.json");
+        if (existsSync(policyPath)) {
+          const raw = readFileSync(policyPath, "utf8");
+          const stripped = raw.split("\n").filter((l) => !/^\s*"_comment[^"]*"\s*:/.test(l)).join("\n").replace(/,(\s*[}\]])/g, "$1");
+          const policy = JSON.parse(stripped) as { projects?: Array<{ path: string; autonomy_level?: string }> };
+          policyProjects = policy.projects ?? [];
+        }
+      } catch { /* ignore parse errors */ }
+      const policyByPath = new Map<string, string>();
+      for (const p of policyProjects) {
+        const expanded = p.path.replace(/^~/, process.env.HOME ?? "");
+        policyByPath.set(expanded, p.autonomy_level ?? "unknown");
+      }
+
+      let dirs: string[] = [];
+      try {
+        if (existsSync(codeRoot)) {
+          dirs = readdirSync(codeRoot, { withFileTypes: true })
+            .filter((d) => d.isDirectory() && !d.name.startsWith("."))
+            .map((d) => join(codeRoot, d.name));
+        }
+      } catch { /* ignore */ }
+
+      const projects = dirs.map((path) => {
+        const name = path.split("/").pop() ?? path;
+        const lastCommit = (() => {
+          try {
+            const r = spawnSync("git", ["-C", path, "log", "-1", "--format=%h %s (%cr)"], { encoding: "utf8", timeout: 1500 });
+            return r.status === 0 ? r.stdout.trim() : null;
+          } catch { return null; }
+        })();
+        const branch = (() => {
+          try {
+            const r = spawnSync("git", ["-C", path, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8", timeout: 1000 });
+            return r.status === 0 ? r.stdout.trim() : null;
+          } catch { return null; }
+        })();
+        const has = (rel: string) => existsSync(join(path, rel));
+        return {
+          name,
+          path,
+          branch,
+          last_commit: lastCommit,
+          has_claude_md: has("CLAUDE.md"),
+          has_package_json: has("package.json"),
+          has_pyproject: has("pyproject.toml") || has("requirements.txt"),
+          has_readme: has("README.md") || has("README"),
+          in_policy: policyByPath.has(path),
+          autonomy_level: policyByPath.get(path) ?? null,
+        };
+      });
+      return Response.json({ ok: true, code_root: codeRoot, projects });
+    }
+
+    // ── Logs: streaming tail of master + dashboard launchd logs ──────────
+    // GET /api/logs/sources    list available log files with size + mtime
+    // GET /api/logs/<id>?tail=N return last N lines of one log
+    // GET /api/logs/<id>/stream SSE: tail -f equivalent
+    if (url.pathname === "/api/logs/sources" && req.method === "GET") {
+      const home = process.env.HOME ?? "";
+      const logsDir = `${home}/Library/Logs/subctl`;
+      const sources = [
+        { id: "master",        path: `${logsDir}/master.log`,         label: "master daemon (com.subctl.master)" },
+        { id: "dashboard-out", path: `${logsDir}/dashboard.out.log`,  label: "dashboard stdout (com.subctl.dashboard)" },
+        { id: "dashboard-err", path: `${logsDir}/dashboard.err.log`,  label: "dashboard stderr" },
+        { id: "decisions",     path: `${home}/.config/subctl/master/decisions.jsonl`, label: "master decisions log (JSONL)" },
+      ];
+      const enriched = sources.map((s) => {
+        try {
+          const { statSync } = require("node:fs") as typeof import("node:fs");
+          const st = statSync(s.path);
+          return { ...s, exists: true, size: st.size, mtime: st.mtimeMs };
+        } catch {
+          return { ...s, exists: false, size: 0, mtime: 0 };
+        }
+      });
+      return Response.json({ ok: true, sources: enriched });
+    }
+
+    {
+      const m = url.pathname.match(/^\/api\/logs\/([\w-]+)(?:\/stream)?$/);
+      if (m) {
+        const id = m[1]!;
+        const isStream = url.pathname.endsWith("/stream");
+        const home = process.env.HOME ?? "";
+        const map: Record<string, string> = {
+          "master":         `${home}/Library/Logs/subctl/master.log`,
+          "dashboard-out":  `${home}/Library/Logs/subctl/dashboard.out.log`,
+          "dashboard-err":  `${home}/Library/Logs/subctl/dashboard.err.log`,
+          "decisions":      `${home}/.config/subctl/master/decisions.jsonl`,
+        };
+        const path = map[id];
+        if (!path) return Response.json({ ok: false, error: "unknown log id" }, { status: 404 });
+        if (!existsSync(path)) return Response.json({ ok: false, error: "log file does not exist", path }, { status: 404 });
+
+        if (req.method === "GET" && !isStream) {
+          const tailN = Math.max(1, Math.min(2000, Number(url.searchParams.get("tail") ?? "200")));
+          try {
+            const raw = readFileSync(path, "utf8");
+            const lines = raw.split("\n");
+            const slice = lines.slice(-tailN);
+            const { statSync } = require("node:fs") as typeof import("node:fs");
+            const st = statSync(path);
+            return Response.json({
+              ok: true,
+              path,
+              size: st.size,
+              mtime: st.mtimeMs,
+              total_lines: lines.length,
+              returned: slice.length,
+              lines: slice,
+            });
+          } catch (err) {
+            return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+          }
+        }
+
+        if (req.method === "GET" && isStream) {
+          // Stream new appended bytes via SSE. Polls the file's size every
+          // 700ms and emits any newly-appended chunk as line events. Not
+          // as efficient as fs.watch but works around the unreliable
+          // FSEvents behavior on macOS for log files written by launchd-
+          // managed processes.
+          const stream = new ReadableStream({
+            start(controller) {
+              const encoder = new TextEncoder();
+              const { statSync, openSync, readSync, closeSync } = require("node:fs") as typeof import("node:fs");
+              let lastSize = 0;
+              try { lastSize = statSync(path).size; } catch { lastSize = 0; }
+              const send = (event: string, data: unknown) => {
+                try { controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)); }
+                catch { /* client gone */ }
+              };
+              // Initial: send the last 200 lines so the UI doesn't start empty
+              try {
+                const raw = readFileSync(path, "utf8");
+                const lines = raw.split("\n");
+                const last200 = lines.slice(-200);
+                send("snapshot", { lines: last200, total_lines: lines.length });
+              } catch { /* no-op */ }
+              const tick = () => {
+                let curSize = 0;
+                try { curSize = statSync(path).size; } catch { return; }
+                if (curSize === lastSize) return;
+                if (curSize < lastSize) {
+                  // file truncated/rotated — re-emit a fresh snapshot
+                  try {
+                    const raw = readFileSync(path, "utf8");
+                    const lines = raw.split("\n");
+                    send("snapshot", { lines: lines.slice(-200), total_lines: lines.length });
+                  } catch { /* no-op */ }
+                  lastSize = curSize;
+                  return;
+                }
+                try {
+                  const fd = openSync(path, "r");
+                  const buf = Buffer.alloc(curSize - lastSize);
+                  readSync(fd, buf, 0, buf.length, lastSize);
+                  closeSync(fd);
+                  const newLines = buf.toString("utf8").split("\n").filter((l) => l.length);
+                  if (newLines.length) send("append", { lines: newLines });
+                  lastSize = curSize;
+                } catch { /* fs errored, retry next tick */ }
+              };
+              const ticker = setInterval(tick, 700);
+              const ka = setInterval(() => {
+                try { controller.enqueue(encoder.encode(`: keep-alive ${Date.now()}\n\n`)); } catch { clearInterval(ka); }
+              }, 25_000);
+              (controller as any)._cleanup = () => {
+                clearInterval(ticker);
+                clearInterval(ka);
+              };
+              req.signal?.addEventListener("abort", () => {
+                const c = (controller as any)._cleanup; if (c) c();
+                try { controller.close(); } catch {}
+              });
+            },
+            cancel() {
+              const c = (this as any)._cleanup; if (c) c();
+            },
+          });
+          return new Response(stream, {
+            headers: {
+              "Content-Type": "text/event-stream",
+              "Cache-Control": "no-cache, no-transform",
+              "Connection": "keep-alive",
+            },
+          });
+        }
+      }
+    }
+
+    // ── Teams (dev-team templates) ──────────────────────────────────────
+    // GET    /api/teams         list every template
+    // GET    /api/teams/:name   one template's full JSON
+    // POST   /api/teams         create a new template
+    // PUT    /api/teams/:name   update a template in place
+    // DELETE /api/teams/:name   remove a template
+    const TEAMS_DIR = process.env.SUBCTL_TEAM_TEMPLATES_DIR ?? `${process.env.HOME}/.config/subctl/master/team-templates`;
+
+    // /api/teams/tools — list available tool families. MUST come BEFORE
+    // the /api/teams/:name regex below or the regex eats "tools" as a
+    // template name and 404's.
+    if (url.pathname === "/api/teams/tools" && req.method === "GET") {
+      return Response.json({
+        ok: true,
+        tool_families: [
+          { id: "subctl_orch_*", description: "spawn / list / status / msg / kill dev-team tmux sessions" },
+          { id: "gh_*",          description: "GitHub PRs, issues, checks" },
+          { id: "coderabbit_*",  description: "AI code review on a branch or PR" },
+          { id: "telegram_*",    description: "send messages to Jason via the master bot" },
+          { id: "system_*",      description: "introspect host: hardware, load, models, processes, projects" },
+          { id: "project_create", description: "create a new project (clone/init + vault + policy)" },
+          { id: "vault_append",  description: "append-only writes inside ~/Documents/Obsidian Vault" },
+        ],
+      });
+    }
+
+    if (url.pathname === "/api/teams" && req.method === "GET") {
+      const teams: Array<Record<string, unknown>> = [];
+      try {
+        if (existsSync(TEAMS_DIR)) {
+          for (const entry of readdirSync(TEAMS_DIR, { withFileTypes: true })) {
+            if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+            const p = join(TEAMS_DIR, entry.name);
+            try {
+              const t = JSON.parse(readFileSync(p, "utf8"));
+              teams.push({
+                name: t.name ?? entry.name.replace(/\.json$/, ""),
+                description: t.description ?? "",
+                persona_preview: ((t.persona as string) ?? "").slice(0, 140),
+                skills_count: Array.isArray(t.skills) ? t.skills.length : 0,
+                tools_count: Array.isArray(t.tools) ? t.tools.length : 0,
+                default_autonomy: t.default_autonomy ?? "ask",
+                file: p,
+              });
+            } catch { /* skip bad JSON */ }
+          }
+        }
+      } catch (err) {
+        return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+      }
+      teams.sort((a: any, b: any) => (a.name || "").localeCompare(b.name || ""));
+      return Response.json({ ok: true, teams_dir: TEAMS_DIR, teams });
+    }
+
+    {
+      const m = url.pathname.match(/^\/api\/teams\/([^/]+)\/?$/);
+      if (m) {
+        const name = decodeURIComponent(m[1]!);
+        const file = join(TEAMS_DIR, `${name}.json`);
+
+        if (req.method === "GET") {
+          if (!existsSync(file)) return Response.json({ ok: false, error: "template not found" }, { status: 404 });
+          try {
+            return Response.json({ ok: true, name, file, template: JSON.parse(readFileSync(file, "utf8")) });
+          } catch (err) {
+            return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+          }
+        }
+
+        if (req.method === "PUT") {
+          if (!existsSync(file)) return Response.json({ ok: false, error: "template not found" }, { status: 404 });
+          let body: Record<string, unknown>;
+          try { body = await req.json(); } catch { return Response.json({ ok: false, error: "invalid JSON" }, { status: 400 }); }
+          // Force the name on disk to match the file name
+          body.name = name;
+          try {
+            const { writeFileSync } = require("node:fs") as typeof import("node:fs");
+            writeFileSync(file, JSON.stringify(body, null, 2));
+            return Response.json({ ok: true, name, file });
+          } catch (err) {
+            return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+          }
+        }
+
+        if (req.method === "DELETE") {
+          if (!existsSync(file)) return Response.json({ ok: false, error: "template not found" }, { status: 404 });
+          try {
+            const { unlinkSync } = require("node:fs") as typeof import("node:fs");
+            unlinkSync(file);
+            return Response.json({ ok: true, deleted: name });
+          } catch (err) {
+            return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+          }
+        }
+      }
+    }
+
+    if (url.pathname === "/api/teams" && req.method === "POST") {
+      let body: { name?: string; description?: string; persona?: string; skills?: string[]; tools?: string[]; default_autonomy?: string; boot_prompt?: string; from_template?: string };
+      try { body = await req.json(); } catch { return Response.json({ ok: false, error: "invalid JSON" }, { status: 400 }); }
+      const name = (body.name ?? "").trim();
+      if (!name) return Response.json({ ok: false, error: "name required" }, { status: 400 });
+      if (!/^[a-zA-Z0-9._-]+$/.test(name)) {
+        return Response.json({ ok: false, error: "name must be alphanumerics + . - _ only" }, { status: 400 });
+      }
+      const file = join(TEAMS_DIR, `${name}.json`);
+      if (existsSync(file)) return Response.json({ ok: false, error: `template '${name}' already exists` }, { status: 409 });
+      const tpl: Record<string, unknown> = {
+        name,
+        description: body.description ?? "(describe what this dev team does)",
+        persona: body.persona ?? "You are the lead of a dev team. Replace this with the persona prompt your team should boot with.",
+        skills: Array.isArray(body.skills) ? body.skills : [],
+        tools: Array.isArray(body.tools) && body.tools.length ? body.tools : ["subctl_orch_*", "gh_*", "telegram_*"],
+        default_autonomy: body.default_autonomy ?? "ask",
+        boot_prompt: body.boot_prompt ?? "Read CLAUDE.md and any RESUME.md in the project, then ask Jason what scope to start with.",
+      };
+      try {
+        const { mkdirSync, writeFileSync } = require("node:fs") as typeof import("node:fs");
+        mkdirSync(TEAMS_DIR, { recursive: true });
+        writeFileSync(file, JSON.stringify(tpl, null, 2));
+        return Response.json({ ok: true, name, file, template: tpl });
+      } catch (err) {
+        return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+      }
+    }
+
+    // ── Skills catalog endpoints ────────────────────────────────────────
+    // GET /api/skills        — list all skills with frontmatter
+    // GET /api/skills/sources — list imported sources
+    // GET /api/skills/<id>   — get one skill's full SKILL.md content
+    // POST /api/skills/import — { repo, source?, branch? } → clone + register
+
+    const SKILLS_DIR = process.env.SUBCTL_SKILLS_DIR ?? `${process.env.HOME}/.config/subctl/skills`;
+
+    if (url.pathname === "/api/skills" && req.method === "GET") {
+      const skills: Array<{
+        id: string;
+        source: string;
+        category: string;
+        name: string;
+        description: string;
+        path: string;
+      }> = [];
+      try {
+        if (existsSync(SKILLS_DIR)) {
+          const stack = [SKILLS_DIR];
+          while (stack.length) {
+            const cur = stack.pop()!;
+            const entries = readdirSync(cur, { withFileTypes: true });
+            for (const e of entries) {
+              if (e.name.startsWith(".")) continue;
+              const p = join(cur, e.name);
+              if (e.isDirectory()) {
+                stack.push(p);
+              } else if (e.name === "SKILL.md") {
+                // p = <SKILLS_DIR>/<source>/skills/<rest>/SKILL.md
+                const rel = p.slice(SKILLS_DIR.length + 1);
+                const segs = rel.split("/");
+                const source = segs[0]!;
+                // segs: [source, "skills", ...rest, "SKILL.md"]
+                const inner = segs.slice(2, -1).join("/");
+                const id = `${source}/${inner}`;
+                const category = segs.length > 4 ? segs[2]! : "general";
+                // Parse frontmatter
+                const raw = readFileSync(p, "utf8");
+                let name = "", description = "";
+                const fmMatch = raw.match(/^---\s*\n([\s\S]*?)\n---/);
+                if (fmMatch) {
+                  for (const line of fmMatch[1]!.split("\n")) {
+                    const nm = line.match(/^name:\s*(.*)$/);
+                    if (nm) name = nm[1]!.trim();
+                    const dm = line.match(/^description:\s*(.*)$/);
+                    if (dm) description = dm[1]!.trim();
+                  }
+                }
+                skills.push({
+                  id,
+                  source,
+                  category,
+                  name: name || (segs.at(-2) ?? "?"),
+                  description: description.replace(/^['"]|['"]$/g, ""),
+                  path: p,
+                });
+              }
+            }
+          }
+        }
+      } catch (err) {
+        return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+      }
+      skills.sort((a, b) => a.id.localeCompare(b.id));
+      return Response.json({ ok: true, skills_dir: SKILLS_DIR, total: skills.length, skills });
+    }
+
+    if (url.pathname === "/api/skills/sources" && req.method === "GET") {
+      const sources: Array<{ name: string; origin: string | null; skill_count: number; path: string }> = [];
+      try {
+        if (existsSync(SKILLS_DIR)) {
+          for (const entry of readdirSync(SKILLS_DIR, { withFileTypes: true })) {
+            if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+            const sourceDir = join(SKILLS_DIR, entry.name);
+            // Count SKILL.md files
+            let count = 0;
+            const stack = [join(sourceDir, "skills")];
+            while (stack.length) {
+              const cur = stack.pop()!;
+              if (!existsSync(cur)) continue;
+              try {
+                for (const e of readdirSync(cur, { withFileTypes: true })) {
+                  if (e.name.startsWith(".")) continue;
+                  const p = join(cur, e.name);
+                  if (e.isDirectory()) stack.push(p);
+                  else if (e.name === "SKILL.md") count++;
+                }
+              } catch { /* ignore */ }
+            }
+            // git origin if present
+            let origin: string | null = null;
+            const gitDir = join(sourceDir, ".git");
+            if (existsSync(gitDir)) {
+              const r = spawnSync("git", ["-C", sourceDir, "config", "--get", "remote.origin.url"], { encoding: "utf8", timeout: 1500 });
+              if (r.status === 0) origin = r.stdout.trim();
+            }
+            sources.push({ name: entry.name, origin, skill_count: count, path: sourceDir });
+          }
+        }
+      } catch (err) {
+        return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+      }
+      return Response.json({ ok: true, skills_dir: SKILLS_DIR, sources });
+    }
+
+    {
+      const m = url.pathname.match(/^\/api\/skills\/(.+)$/);
+      if (m && req.method === "GET" && m[1] !== "sources") {
+        const id = decodeURIComponent(m[1]!);
+        // Resolve id → on-disk path
+        // id format: <source>/<rest>  → SKILLS_DIR/<source>/skills/<rest>/SKILL.md
+        const segs = id.split("/");
+        if (segs.length < 2) return Response.json({ ok: false, error: "invalid skill id" }, { status: 400 });
+        const source = segs[0]!;
+        const rest = segs.slice(1).join("/");
+        const path = join(SKILLS_DIR, source, "skills", rest, "SKILL.md");
+        if (!existsSync(path)) {
+          return Response.json({ ok: false, error: `skill not found: ${id}` }, { status: 404 });
+        }
+        try {
+          const raw = readFileSync(path, "utf8");
+          return Response.json({ ok: true, id, path, content: raw });
+        } catch (err) {
+          return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+        }
+      }
+    }
+
+    if (url.pathname === "/api/skills/import" && req.method === "POST") {
+      let body: { repo?: string; source?: string; branch?: string };
+      try { body = await req.json(); }
+      catch { return Response.json({ ok: false, error: "invalid JSON body" }, { status: 400 }); }
+      const repo = (body.repo ?? "").trim();
+      if (!repo) return Response.json({ ok: false, error: "repo required" }, { status: 400 });
+      // Use the subctl CLI so all the validation + fallback logic stays in one place
+      const subctlBin = join(REPO_ROOT, "bin", "subctl");
+      const args = ["skills", "import", repo];
+      if (body.source) args.push("--source", body.source);
+      if (body.branch) args.push("--branch", body.branch);
+      const r = spawnSync(subctlBin, args, {
+        encoding: "utf8",
+        timeout: 120_000,
+        env: { ...process.env, PATH: "/usr/sbin:/usr/bin:/bin:/sbin:/opt/homebrew/bin:/usr/local/bin", SUBCTL_SKILLS_DIR },
+      });
+      if (r.status !== 0) {
+        return Response.json(
+          { ok: false, error: ((r.stderr || r.stdout) ?? "").slice(0, 1500) },
+          { status: 500 },
+        );
+      }
+      return Response.json({
+        ok: true,
+        output: ((r.stdout || "") + (r.stderr || "")).slice(-500),
+      });
+    }
+
+    // ── Settings page endpoints ─────────────────────────────────────────
+
+    // /api/settings/install-checks — broad install matrix beyond /diag.
+    // Each entry: {name, ok, version, install_cmd, required}
+    if (url.pathname === "/api/settings/install-checks" && req.method === "GET") {
+      const home = process.env.HOME ?? "";
+      // PATH for install probes — extends launchd's minimal default with
+      // common user-binary locations that installers drop binaries into:
+      //   ~/.bun/bin       — bun installer
+      //   ~/.local/bin     — coderabbit, many other curl|sh installers
+      //   ~/.lmstudio/bin  — LM Studio's `lms` after "Use lms in terminal"
+      //   ~/.cargo/bin     — rust toolchain
+      const checkPath = [
+        "/usr/sbin", "/usr/bin", "/bin", "/sbin",
+        "/opt/homebrew/bin", "/usr/local/bin",
+        `${home}/.bun/bin`,
+        `${home}/.local/bin`,
+        `${home}/.lmstudio/bin`,
+        `${home}/.cargo/bin`,
+      ].join(":");
+
+      const tools: Array<{
+        name: string;
+        check: string[];
+        install: string;
+        required?: boolean;
+        // Optional explicit fallback paths to test when the command isn't on PATH
+        fallback_paths?: string[];
+      }> = [
+        { name: "git",        check: ["git", "--version"],            install: "preinstalled on macOS / xcode-select --install", required: true },
+        { name: "tmux",       check: ["tmux", "-V"],                  install: "brew install tmux", required: true },
+        { name: "bun",        check: ["bun", "--version"],            install: "curl -fsSL https://bun.sh/install | bash", required: true,
+          fallback_paths: [`${home}/.bun/bin/bun`] },
+        { name: "jq",         check: ["jq", "--version"],             install: "brew install jq", required: true },
+        { name: "gh",         check: ["gh", "--version"],             install: "brew install gh && gh auth login", required: true },
+        { name: "claude",     check: ["claude", "--version"],         install: "curl -fsSL https://claude.ai/install.sh | bash", required: true },
+        // claude-mem is a Claude Code plugin, not a standalone CLI. After
+        // `npx claude-mem install` lands, the canonical disk signals are:
+        //   ~/.claude/plugins/marketplaces/thedotmack/  (plugin dir)
+        //   ~/.claude-mem/                              (memory state dir)
+        // and a worker on http://localhost:37701. We check the plugin dir
+        // as the install signal (binary may not be on PATH).
+        { name: "claude-mem", check: ["test", "-d", `${home}/.claude/plugins/marketplaces/thedotmack`],
+          install: "npx claude-mem install   (Claude Code memory plugin — used by team leads for persistent memory across sessions)", required: true,
+          fallback_paths: [] },
+        { name: "codex",      check: ["codex", "--version"],          install: "npm i -g @openai/codex   (upgrade: npm i -g @openai/codex@latest)", required: true,
+          fallback_paths: [`${home}/.npm-global/bin/codex`, `/opt/homebrew/bin/codex`, `/usr/local/bin/codex`] },
+        { name: "coderabbit", check: ["coderabbit", "--version"],     install: "curl -fsSL https://cli.coderabbit.ai/install.sh | sh", required: true,
+          fallback_paths: [`${home}/.local/bin/coderabbit`] },
+        { name: "obsidian",   check: ["test", "-d", "/Applications/Obsidian.app"], install: "brew install --cask obsidian", required: false },
+        { name: "lms",        check: ["lms", "version"],              install: "Open LM Studio app → Power user → Developer → Use lms in terminal (CLI lands at ~/.lmstudio/bin/lms)",
+          required: false,
+          fallback_paths: [`${home}/.lmstudio/bin/lms`, `${home}/.cache/lm-studio/bin/lms`] },
+      ];
+
+      // Strip ANSI escape codes — lms's --version emits a colored ASCII
+      // banner that renders as garbage in the dashboard's plain-text rows.
+      const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
+      // Also extract a sensible single-line version from output that may be
+      // multi-line (lms prints a banner). Prefer a line containing a digit.
+      const cleanVersion = (raw: string): string => {
+        const cleaned = stripAnsi(raw).trim();
+        const lines = cleaned.split("\n").filter((l) => l.trim());
+        const versionLine = lines.find((l) => /\d+\.\d+/.test(l)) ?? lines[0] ?? "";
+        return versionLine.trim().slice(0, 80);
+      };
+
+      async function probeOne(t: typeof tools[number]) {
+        try {
+          const r = spawnSync(t.check[0]!, t.check.slice(1), {
+            encoding: "utf8",
+            timeout: 2500,
+            env: { ...process.env, PATH: checkPath },
+          });
+          if (r.status === 0) {
+            // For app/dir checks (test -d X), version output is empty;
+            // emit a friendly "installed" string so the row reads cleanly.
+            const isDirCheck = t.check[0] === "test";
+            const version = isDirCheck ? "installed" : cleanVersion(r.stdout || "");
+            return { name: t.name, ok: true, version: version || "ok", install: t.install, required: !!t.required };
+          }
+          for (const fp of t.fallback_paths ?? []) {
+            if (existsSync(fp)) {
+              const r2 = spawnSync(fp, t.check.slice(1), { encoding: "utf8", timeout: 2500 });
+              if (r2.status === 0) {
+                const version = cleanVersion(r2.stdout || "");
+                return { name: t.name, ok: true, version: version || "ok (via fallback path)", install: t.install, required: !!t.required };
+              }
+            }
+          }
+          return { name: t.name, ok: false, version: null, install: t.install, required: !!t.required, detail: stripAnsi((r.stderr || r.stdout) ?? "").slice(0, 120) };
+        } catch (err) {
+          return { name: t.name, ok: false, version: null, install: t.install, required: !!t.required, detail: (err as Error).message };
+        }
+      }
+
+      const results = await Promise.all(tools.map(probeOne));
+      const required = results.filter((r) => r.required);
+      return Response.json({
+        ok: true,
+        checks: results,
+        summary: `${results.filter((r) => r.ok).length}/${results.length} installed (${required.filter((r) => r.ok).length}/${required.length} required)`,
+      });
+    }
+
+    // /api/settings/obsidian — get/set the configured Obsidian vault root path
+    if (url.pathname === "/api/settings/obsidian" && req.method === "GET") {
+      const cfgPath = join(SUBCTL_CONFIG_DIR, "master", "obsidian.json");
+      let vaultRoot = `${process.env.HOME}/Documents/Obsidian Vault`;
+      let configured = false;
+      try {
+        if (existsSync(cfgPath)) {
+          const j = JSON.parse(readFileSync(cfgPath, "utf8")) as { vault_root?: string };
+          if (j.vault_root) {
+            vaultRoot = j.vault_root.replace(/^~/, process.env.HOME ?? "");
+            configured = true;
+          }
+        }
+      } catch { /* ignore */ }
+      return Response.json({
+        ok: true,
+        vault_root: vaultRoot,
+        configured,
+        exists: existsSync(vaultRoot),
+        config_path: cfgPath,
+      });
+    }
+    if (url.pathname === "/api/settings/obsidian" && req.method === "POST") {
+      let body: { vault_root?: string };
+      try { body = await req.json(); } catch { return Response.json({ ok: false, error: "invalid JSON" }, { status: 400 }); }
+      const path = (body.vault_root ?? "").trim();
+      if (!path) return Response.json({ ok: false, error: "vault_root required" }, { status: 400 });
+      const expanded = path.replace(/^~/, process.env.HOME ?? "");
+      const cfgPath = join(SUBCTL_CONFIG_DIR, "master", "obsidian.json");
+      try {
+        const { mkdirSync, writeFileSync } = require("node:fs") as typeof import("node:fs");
+        mkdirSync(join(SUBCTL_CONFIG_DIR, "master"), { recursive: true });
+        writeFileSync(cfgPath, JSON.stringify({ vault_root: path, _comment: `set via dashboard ${new Date().toISOString()}` }, null, 2));
+        return Response.json({
+          ok: true,
+          vault_root: expanded,
+          exists: existsSync(expanded),
+          config_path: cfgPath,
+        });
+      } catch (err) {
+        return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+      }
+    }
+
+    // /api/settings/keys — STATUS only (presence flag, never the value)
+    if (url.pathname === "/api/settings/keys" && req.method === "GET") {
+      const vars = [
+        { name: "ANTHROPIC_API_KEY",    purpose: "Anthropic direct API (claude-sonnet, claude-opus)" },
+        { name: "OPENAI_API_KEY",       purpose: "OpenAI direct API (gpt-4, gpt-5, codex)" },
+        { name: "GEMINI_API_KEY",       purpose: "Google Gemini" },
+        { name: "GROQ_API_KEY",         purpose: "Groq inference" },
+        { name: "OPENROUTER_API_KEY",   purpose: "OpenRouter (200+ models via one key)" },
+        { name: "GITHUB_TOKEN",         purpose: "gh CLI fallback (usually authed via gh auth login)" },
+        { name: "CONTEXT7_API_KEY",     purpose: "Context7 — up-to-date library docs (master tool + MCP for dev-team Claude leads)" },
+      ];
+      // Read from process.env on the dashboard process. NOTE: env vars set
+      // in shell profiles for the user's interactive shell are NOT
+      // automatically inherited by launchd-spawned processes. Hint at that.
+      const results = vars.map((v) => {
+        const val = process.env[v.name];
+        return {
+          name: v.name,
+          ok: !!val,
+          length: val ? val.length : 0,
+          purpose: v.purpose,
+        };
+      });
+      return Response.json({
+        ok: true,
+        keys: results,
+        note: "These reflect the dashboard process environment. Keys set in your shell ~/.zshrc may NOT be inherited by launchd services. Set them in ~/Library/LaunchAgents/com.subctl.master.plist EnvironmentVariables for the master to use them.",
+      });
+    }
+
+    // /api/settings/oauth — Claude/OpenAI account auth status from accounts.conf
+    // Format: pipe-delimited "alias | provider | email | config_dir | description"
+    // (whitespace around pipes is normal — strip after split)
+    if (url.pathname === "/api/settings/oauth" && req.method === "GET") {
+      const accountsPath = join(SUBCTL_CONFIG_DIR, "accounts.conf");
+      const accounts: Array<{ alias: string; provider: string; email: string; config_dir: string; auth_status: string; description: string }> = [];
+      try {
+        if (existsSync(accountsPath)) {
+          const raw = readFileSync(accountsPath, "utf8");
+          for (const line of raw.split("\n")) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith("#")) continue;
+            const parts = trimmed.split("|").map((p) => p.trim());
+            if (parts.length < 4) continue;
+            const [alias, provider, email, configDirRaw, description = ""] = parts;
+            const configDir = configDirRaw!.replace(/^~/, process.env.HOME ?? "");
+            // Different providers store creds differently:
+            //   claude: <config_dir>/.credentials.json  (mac keychain too, but this file is the disk signal)
+            //   openai (codex): <config_dir>/auth.json with .tokens
+            let authStatus = "not_authenticated";
+            const claudeCred = join(configDir, ".credentials.json");
+            const codexAuth = join(configDir, "auth.json");
+            if (existsSync(claudeCred)) {
+              authStatus = "ready";
+            } else if (existsSync(codexAuth)) {
+              try {
+                const j = JSON.parse(readFileSync(codexAuth, "utf8"));
+                if (j && (j.tokens || j.access_token)) authStatus = "ready";
+              } catch { /* ignore */ }
+            }
+            accounts.push({
+              alias: alias!,
+              provider: provider!,
+              email: email!,
+              config_dir: configDirRaw!,
+              auth_status: authStatus,
+              description: description,
+            });
+          }
+        }
+      } catch (err) {
+        return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+      }
+      return Response.json({ ok: true, accounts });
+    }
+
+    // /api/settings/telegram — update bot_token / chat_id in master-notify.json
+    if (url.pathname === "/api/settings/telegram" && req.method === "POST") {
+      let body: { bot_token?: string; chat_id?: string };
+      try { body = await req.json(); }
+      catch { return Response.json({ ok: false, error: "invalid JSON body" }, { status: 400 }); }
+      const notifyPath = join(SUBCTL_CONFIG_DIR, "master-notify.json");
+      let cur: Record<string, unknown> = {};
+      try {
+        if (existsSync(notifyPath)) cur = JSON.parse(readFileSync(notifyPath, "utf8"));
+      } catch { /* ignore */ }
+      const newToken = (body.bot_token ?? "").trim();
+      const newChatId = (body.chat_id ?? "").trim();
+      if (newToken) cur.bot_token = newToken;
+      if (newChatId) cur.chat_id = newChatId;
+      // Test the resulting config by hitting Telegram /getMe
+      const testToken = (cur.bot_token as string | undefined) ?? null;
+      if (!testToken) {
+        return Response.json({ ok: false, error: "bot_token missing — provide one or set previously" }, { status: 400 });
+      }
+      try {
+        const r = await fetch(`https://api.telegram.org/bot${testToken}/getMe`, {
+          signal: AbortSignal.timeout(4000),
+        });
+        const j = (await r.json()) as { ok: boolean; result?: { username?: string }; description?: string };
+        if (!j.ok) {
+          return Response.json({ ok: false, error: `getMe failed: ${j.description ?? "unknown"}` }, { status: 400 });
+        }
+        // Persist
+        const { writeFileSync } = require("node:fs") as typeof import("node:fs");
+        writeFileSync(notifyPath, JSON.stringify(cur, null, 2));
+        // Bounce master so the listener picks up new config
+        const label = "com.subctl.master";
+        const plist = `${process.env.HOME}/Library/LaunchAgents/${label}.plist`;
+        if (existsSync(plist)) {
+          spawnSync("launchctl", ["unload", plist], { encoding: "utf8", timeout: 5000 });
+          for (let i = 0; i < 5; i++) {
+            const ps = spawnSync("pgrep", ["-f", "subctl.*master/server.ts"], { encoding: "utf8", timeout: 1000 });
+            if (!ps.stdout?.trim()) break;
+            await new Promise((r) => setTimeout(r, 1000));
+          }
+          spawnSync("launchctl", ["load", plist], { encoding: "utf8", timeout: 5000 });
+        }
+        return Response.json({
+          ok: true,
+          bot_username: j.result?.username ?? null,
+          chat_id_set: !!cur.chat_id,
+          message: "saved + master restarted",
+        });
+      } catch (err) {
+        return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+      }
+    }
+
+    // /api/settings/telegram/test — test the CURRENT config without changing
+    if (url.pathname === "/api/settings/telegram/test" && req.method === "POST") {
+      const notifyPath = join(SUBCTL_CONFIG_DIR, "master-notify.json");
+      if (!existsSync(notifyPath)) return Response.json({ ok: false, error: "master-notify.json missing" }, { status: 404 });
+      try {
+        const cfg = JSON.parse(readFileSync(notifyPath, "utf8")) as { bot_token?: string; chat_id?: string };
+        const token = cfg.bot_token;
+        if (!token) return Response.json({ ok: false, error: "no bot_token in master-notify.json" }, { status: 400 });
+        const r = await fetch(`https://api.telegram.org/bot${token}/getMe`, { signal: AbortSignal.timeout(4000) });
+        const j = (await r.json()) as { ok: boolean; result?: { username?: string }; description?: string };
+        return Response.json({
+          ok: !!j.ok,
+          bot_username: j.result?.username ?? null,
+          chat_id: cfg.chat_id ?? null,
+          error: j.ok ? undefined : (j.description ?? "getMe failed"),
+        });
+      } catch (err) {
+        return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+      }
+    }
+
+    // /api/settings/config/:name — return raw config file content (read-only)
+    {
+      const m = url.pathname.match(/^\/api\/settings\/config\/(\w+)\/?$/);
+      if (m && req.method === "GET") {
+        const name = m[1]!;
+        const map: Record<string, string> = {
+          policy:    join(SUBCTL_CONFIG_DIR, "master", "policy.json"),
+          providers: join(SUBCTL_CONFIG_DIR, "master", "providers.json"),
+          notify:    join(SUBCTL_CONFIG_DIR, "master-notify.json"),
+        };
+        const path = map[name];
+        if (!path) return Response.json({ ok: false, error: "unknown config" }, { status: 400 });
+        if (!existsSync(path)) return Response.json({ ok: false, error: `${name} not found at ${path}` }, { status: 404 });
+        try {
+          let content = readFileSync(path, "utf8");
+          // Redact obvious secrets in the displayed content
+          content = content.replace(/("bot_token"\s*:\s*")[^"]+(")/g, "$1<redacted>$2");
+          return Response.json({ ok: true, name, path, content });
+        } catch (err) {
+          return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+        }
+      }
+    }
+
+    // ── /api/projects/create — wizard endpoint ───────────────────────────
+    // Body: {name, git_url?, autonomy_level: "drive"|"ask"|"shadow",
+    //        create_vault: boolean, add_to_policy: boolean}
+    // Steps:
+    //   1. Validate name (no shell-special chars, not already at ~/code/<name>)
+    //   2. Either git clone or mkdir into ~/code/<name>
+    //   3. If create_vault: mkdir ~/Documents/Obsidian Vault/<name>/{,design,reviews,postmortems}
+    //      and seed RESUME.md with a tiny template
+    //   4. If add_to_policy: append entry to ~/.config/subctl/master/policy.json
+    //   5. Return success + path + vault_path so the UI can refresh and select it
+    if (url.pathname === "/api/projects/create" && req.method === "POST") {
+      let body: {
+        name?: string;
+        git_url?: string;
+        autonomy_level?: "drive" | "ask" | "shadow";
+        create_vault?: boolean;
+        add_to_policy?: boolean;
+        create_github_repo?: boolean;
+        github_visibility?: "public" | "private" | "internal";
+      };
+      try {
+        body = await req.json();
+      } catch {
+        return Response.json({ ok: false, error: "invalid JSON body" }, { status: 400 });
+      }
+      // Normalize name: trim, collapse whitespace runs to a single dash,
+      // strip any other non-alphanumeric+.-_ chars, then trim leading/
+      // trailing dashes. Avoids forcing the user to type a slug manually.
+      const rawName = (body.name ?? "").trim();
+      const name = rawName
+        .replace(/\s+/g, "-")
+        .replace(/[^a-zA-Z0-9._-]/g, "")
+        .replace(/^-+|-+$/g, "");
+
+      // Normalize git URL: accept several forms users actually paste:
+      //   - "gh repo clone owner/repo"          → https://github.com/owner/repo.git
+      //   - "owner/repo"                        → https://github.com/owner/repo.git
+      //   - "https://github.com/owner/repo"     → leave as-is (git accepts)
+      //   - "git@github.com:owner/repo.git"     → leave as-is
+      let gitUrl = (body.git_url ?? "").trim();
+      if (gitUrl.startsWith("gh repo clone ")) {
+        gitUrl = gitUrl.replace(/^gh repo clone\s+/, "").trim();
+      }
+      if (/^[\w.-]+\/[\w.-]+$/.test(gitUrl)) {
+        gitUrl = `https://github.com/${gitUrl}.git`;
+      }
+      const autonomy = body.autonomy_level ?? "ask";
+      const createVault = body.create_vault !== false; // default true
+      const addToPolicy = body.add_to_policy !== false; // default true
+      const createGithub = body.create_github_repo === true;
+      const ghVisibility = body.github_visibility ?? "private";
+
+      // Validate (after normalization)
+      if (!name) return Response.json({ ok: false, error: "name required (after normalizing spaces/special chars, nothing was left)" }, { status: 400 });
+      if (!/^[a-zA-Z0-9._-]+$/.test(name)) {
+        return Response.json(
+          { ok: false, error: `normalized name "${name}" still contains invalid chars — alphanumerics + dots/dashes/underscores only` },
+          { status: 400 },
+        );
+      }
+      if (!["drive", "ask", "shadow"].includes(autonomy)) {
+        return Response.json({ ok: false, error: "autonomy_level must be drive/ask/shadow" }, { status: 400 });
+      }
+
+      const codeRoot = process.env.SUBCTL_CODE_ROOT ?? `${process.env.HOME}/code`;
+      const projectPath = join(codeRoot, name);
+      if (existsSync(projectPath)) {
+        return Response.json({ ok: false, error: `~/code/${name} already exists` }, { status: 409 });
+      }
+
+      const steps: Array<{ step: string; ok: boolean; detail?: string }> = [];
+
+      // 1. Clone or mkdir
+      if (gitUrl) {
+        const r = spawnSync("git", ["clone", gitUrl, projectPath], {
+          encoding: "utf8",
+          timeout: 120_000,
+        });
+        if (r.status !== 0) {
+          steps.push({ step: "clone", ok: false, detail: (r.stderr || r.stdout || "").slice(0, 500) });
+          return Response.json({ ok: false, error: "git clone failed", steps }, { status: 500 });
+        }
+        steps.push({ step: "clone", ok: true, detail: gitUrl });
+      } else {
+        try {
+          const { mkdirSync, writeFileSync } = require("node:fs") as typeof import("node:fs");
+          mkdirSync(projectPath, { recursive: true });
+          // Seed README so it's not totally empty
+          writeFileSync(
+            join(projectPath, "README.md"),
+            `# ${name}\n\nCreated via subctl new-project wizard on ${new Date().toISOString()}.\n`,
+          );
+          // Init git so the project page can show branch / commits
+          spawnSync("git", ["-C", projectPath, "init", "--initial-branch=main"], { encoding: "utf8", timeout: 10_000 });
+          spawnSync("git", ["-C", projectPath, "add", "."], { encoding: "utf8", timeout: 5_000 });
+          spawnSync("git", ["-C", projectPath, "commit", "-m", "Initial commit"], { encoding: "utf8", timeout: 10_000 });
+          steps.push({ step: "mkdir+init", ok: true, detail: projectPath });
+
+          // 1b. Optionally create + push to GitHub
+          if (createGithub) {
+            // gh repo create accepts <owner>/<name> or just <name> (uses
+            // currently-authed user as owner). --source=<path> --push pushes
+            // the initial commit; --remote=origin wires the remote.
+            const visFlag = ghVisibility === "public" ? "--public" : ghVisibility === "internal" ? "--internal" : "--private";
+            const ghArgs = [
+              "repo", "create", name,
+              visFlag,
+              "--source", projectPath,
+              "--remote", "origin",
+              "--push",
+              "--description", `Created via subctl on ${new Date().toISOString().slice(0, 10)}`,
+            ];
+            const ghProc = spawnSync("gh", ghArgs, {
+              encoding: "utf8",
+              timeout: 60_000,
+              env: { ...process.env, PATH: "/usr/sbin:/usr/bin:/bin:/sbin:/opt/homebrew/bin:/usr/local/bin" },
+            });
+            if (ghProc.status === 0) {
+              const out = ((ghProc.stdout || "") + (ghProc.stderr || "")).trim();
+              steps.push({ step: "github", ok: true, detail: out.slice(-200) || `created ${ghVisibility} repo` });
+            } else {
+              steps.push({
+                step: "github",
+                ok: false,
+                detail: ((ghProc.stderr || ghProc.stdout) ?? "").slice(0, 500) + "  (project created locally; you can push later with: gh repo create " + name + " " + visFlag + " --source=" + projectPath + " --remote=origin --push)",
+              });
+              // Non-fatal — local project still exists, vault + policy steps continue
+            }
+          }
+        } catch (err) {
+          steps.push({ step: "mkdir+init", ok: false, detail: (err as Error).message });
+          return Response.json({ ok: false, error: "init failed", steps }, { status: 500 });
+        }
+      }
+
+      // 2. Vault
+      let vaultPath: string | null = null;
+      if (createVault) {
+        try {
+          const { mkdirSync, writeFileSync } = require("node:fs") as typeof import("node:fs");
+          const vaultRoot = `${process.env.HOME}/Documents/Obsidian Vault`;
+          vaultPath = join(vaultRoot, name);
+          mkdirSync(join(vaultPath, "design"), { recursive: true });
+          mkdirSync(join(vaultPath, "reviews"), { recursive: true });
+          mkdirSync(join(vaultPath, "postmortems"), { recursive: true });
+          writeFileSync(
+            join(vaultPath, "RESUME.md"),
+            [
+              `# ${name} — RESUME`,
+              "",
+              `**Path:** \`${projectPath}\``,
+              gitUrl ? `**Repo:** ${gitUrl}` : "**Repo:** (local-only)",
+              `**Created:** ${new Date().toISOString()}`,
+              "",
+              "## Current state",
+              "",
+              "_New project. Master will populate this as work progresses._",
+              "",
+              "## What's next",
+              "",
+              "- [ ] Define initial scope",
+              "- [ ] Spawn first dev team",
+              "",
+            ].join("\n"),
+          );
+          steps.push({ step: "vault", ok: true, detail: vaultPath });
+        } catch (err) {
+          steps.push({ step: "vault", ok: false, detail: (err as Error).message });
+          // non-fatal — vault is optional
+        }
+      }
+
+      // 3. policy.json append
+      if (addToPolicy) {
+        try {
+          const policyPath = join(SUBCTL_CONFIG_DIR, "master", "policy.json");
+          if (existsSync(policyPath)) {
+            const raw = readFileSync(policyPath, "utf8");
+            const stripped = raw.split("\n").filter((l) => !/^\s*"_comment[^"]*"\s*:/.test(l)).join("\n").replace(/,(\s*[}\]])/g, "$1");
+            const policy = JSON.parse(stripped) as { projects?: Array<Record<string, unknown>> };
+            policy.projects = policy.projects ?? [];
+            policy.projects.push({
+              path: projectPath,
+              autonomy_level: autonomy,
+              _comment_autonomy: `Added via dashboard wizard on ${new Date().toISOString().slice(0, 10)}`,
+            });
+            const { writeFileSync } = require("node:fs") as typeof import("node:fs");
+            writeFileSync(policyPath, JSON.stringify(policy, null, 2));
+            steps.push({ step: "policy", ok: true, detail: `appended ${name} (autonomy=${autonomy})` });
+            // Restart master so it picks up the new project
+            const label = "com.subctl.master";
+            const plist = `${process.env.HOME}/Library/LaunchAgents/${label}.plist`;
+            if (existsSync(plist)) {
+              spawnSync("launchctl", ["unload", plist], { encoding: "utf8", timeout: 5000 });
+              for (let i = 0; i < 5; i++) {
+                const ps = spawnSync("pgrep", ["-f", "subctl.*master/server.ts"], { encoding: "utf8", timeout: 1000 });
+                if (!ps.stdout?.trim()) break;
+                await new Promise((r) => setTimeout(r, 1000));
+              }
+              spawnSync("launchctl", ["load", plist], { encoding: "utf8", timeout: 5000 });
+              steps.push({ step: "master-restart", ok: true });
+            }
+          } else {
+            steps.push({ step: "policy", ok: false, detail: "policy.json missing" });
+          }
+        } catch (err) {
+          steps.push({ step: "policy", ok: false, detail: (err as Error).message });
+        }
+      }
+
+      return Response.json({
+        ok: true,
+        name,
+        path: projectPath,
+        vault_path: vaultPath,
+        steps,
+      });
+    }
+
+    // ── /api/projects/:name — drill-down detail for one project ──────────
+    {
+      const m = url.pathname.match(/^\/api\/projects\/([^/]+)\/?$/);
+      if (m && req.method === "GET") {
+        const name = decodeURIComponent(m[1]!);
+        const codeRoot = process.env.SUBCTL_CODE_ROOT ?? `${process.env.HOME}/code`;
+        const path = join(codeRoot, name);
+        if (!existsSync(path)) {
+          return Response.json({ ok: false, error: "project not found" }, { status: 404 });
+        }
+        const gitOut = (args: string[]) => {
+          const r = spawnSync("git", ["-C", path, ...args], { encoding: "utf8", timeout: 1500 });
+          return r.status === 0 ? r.stdout.trim() : "";
+        };
+        const branch = gitOut(["rev-parse", "--abbrev-ref", "HEAD"]) || null;
+        const lastCommit = gitOut(["log", "-1", "--format=%h%x09%s%x09%cr%x09%an"]) || null;
+        const remoteUrl = gitOut(["config", "--get", "remote.origin.url"]) || null;
+        const dirty = gitOut(["status", "--porcelain"]).length > 0;
+        // ahead / behind
+        const aheadBehind = gitOut(["rev-list", "--left-right", "--count", `HEAD...@{u}`]).split("\t");
+        const ahead = parseInt(aheadBehind[0] ?? "0", 10) || 0;
+        const behind = parseInt(aheadBehind[1] ?? "0", 10) || 0;
+        // last 10 commits
+        const log10 = gitOut(["log", "-10", "--format=%h%x09%s%x09%cr%x09%an"])
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => {
+            const [sha, subject, when, author] = line.split("\t");
+            return { sha, subject, when, author };
+          });
+        const has = (rel: string) => existsSync(join(path, rel));
+        // Policy lookup
+        let policyEntry: Record<string, unknown> | null = null;
+        try {
+          const policyPath = join(SUBCTL_CONFIG_DIR, "master", "policy.json");
+          if (existsSync(policyPath)) {
+            const raw = readFileSync(policyPath, "utf8");
+            const stripped = raw.split("\n").filter((l) => !/^\s*"_comment[^"]*"\s*:/.test(l)).join("\n").replace(/,(\s*[}\]])/g, "$1");
+            const policy = JSON.parse(stripped) as { projects?: Array<{ path: string; [k: string]: unknown }> };
+            const expanded = path;
+            policyEntry = (policy.projects ?? []).find((p) => {
+              const pPath = (p.path as string).replace(/^~/, process.env.HOME ?? "");
+              return pPath === expanded;
+            }) ?? null;
+          }
+        } catch { /* ignore parse errors */ }
+
+        // Pull recent decisions from master decisions log, filtered by project
+        const decisions: Array<Record<string, unknown>> = [];
+        try {
+          const decPath = join(SUBCTL_CONFIG_DIR, "master", "decisions.jsonl");
+          if (existsSync(decPath)) {
+            const raw = readFileSync(decPath, "utf8");
+            const lines = raw.split("\n").filter(Boolean).slice(-200); // last 200 lines
+            for (const line of lines) {
+              try {
+                const d = JSON.parse(line) as Record<string, unknown>;
+                if (d.project === name || d.project === path) decisions.push(d);
+              } catch { /* skip */ }
+            }
+            decisions.reverse(); // newest first
+          }
+        } catch { /* ignore */ }
+
+        // Identify dev teams targeting this project (tmux session whose path == project path)
+        const teamsForThis: Array<Record<string, unknown>> = [];
+        try {
+          const allOrch = buildOrchestrations();
+          for (const o of allOrch) {
+            if (o.path === path) teamsForThis.push(o);
+          }
+        } catch { /* ignore */ }
+
+        // Vault status
+        const vaultRoot = `${process.env.HOME}/Documents/Obsidian Vault`;
+        const vaultProjectDir = join(vaultRoot, name);
+        const vaultExists = existsSync(vaultProjectDir);
+
+        // GitHub PR list (best-effort) — only if remoteUrl looks like github.com/owner/repo
+        let ghRepo: string | null = null;
+        const ghMatch = remoteUrl?.match(/github\.com[:/]([^/]+)\/([^/.]+)(?:\.git)?$/);
+        if (ghMatch) ghRepo = `${ghMatch[1]}/${ghMatch[2]}`;
+        let prs: Array<Record<string, unknown>> = [];
+        let issues: Array<Record<string, unknown>> = [];
+        if (ghRepo) {
+          try {
+            const r = spawnSync(
+              "gh",
+              ["pr", "list", "--repo", ghRepo, "--state", "open", "--limit", "10",
+               "--json", "number,title,state,isDraft,headRefName,statusCheckRollup,url,updatedAt"],
+              { encoding: "utf8", timeout: 4000 },
+            );
+            if (r.status === 0) prs = JSON.parse(r.stdout || "[]");
+          } catch { /* gh unavail */ }
+          try {
+            const r = spawnSync(
+              "gh",
+              ["issue", "list", "--repo", ghRepo, "--state", "open", "--limit", "10",
+               "--json", "number,title,state,labels,url,updatedAt"],
+              { encoding: "utf8", timeout: 4000 },
+            );
+            if (r.status === 0) issues = JSON.parse(r.stdout || "[]");
+          } catch { /* gh unavail */ }
+        }
+
+        return Response.json({
+          ok: true,
+          name,
+          path,
+          remote_url: remoteUrl,
+          github_repo: ghRepo,
+          branch,
+          last_commit: lastCommit,
+          dirty,
+          ahead,
+          behind,
+          recent_commits: log10,
+          flags: {
+            has_claude_md: has("CLAUDE.md"),
+            has_package_json: has("package.json"),
+            has_pyproject: has("pyproject.toml") || has("requirements.txt"),
+            has_readme: has("README.md") || has("README"),
+          },
+          in_policy: !!policyEntry,
+          policy: policyEntry,
+          decisions: decisions.slice(0, 20),
+          dev_teams: teamsForThis,
+          vault: {
+            project_dir: vaultProjectDir,
+            exists: vaultExists,
+            root: vaultRoot,
+          },
+          prs,
+          issues,
+        });
+      }
+    }
+
+    // ── /api/memory/tier1 — read/write master's always-in-context memory ──
+    // memory.md (learned facts, ~2200 char limit) and user.md (operator
+    // profile, ~1375 char limit). Both auto-injected into master's
+    // system prompt every turn. Edits land in the next turn without
+    // master restart.
+    if (url.pathname === "/api/memory/tier1" && req.method === "GET") {
+      const home = process.env.HOME ?? "";
+      const memPath = join(home, ".config/subctl/master/memory.md");
+      const userPath = join(home, ".config/subctl/master/user.md");
+      const readSafe = (p: string, limit: number) => {
+        if (!existsSync(p)) return { exists: false, content: "", char_count: 0, char_limit: limit };
+        try {
+          const c = readFileSync(p, "utf8");
+          return { exists: true, content: c, char_count: c.length, char_limit: limit };
+        } catch (e) {
+          return { exists: false, content: "", char_count: 0, char_limit: limit, error: (e as Error).message };
+        }
+      };
+      return Response.json({
+        ok: true,
+        memory: { path: memPath, ...readSafe(memPath, 2200) },
+        user_profile: { path: userPath, ...readSafe(userPath, 1375) },
+      });
+    }
+    if (url.pathname === "/api/memory/tier1" && req.method === "POST") {
+      let body: { which?: "memory" | "user"; content?: string };
+      try { body = await req.json(); } catch { return Response.json({ ok: false, error: "invalid JSON" }, { status: 400 }); }
+      if (body.which !== "memory" && body.which !== "user") {
+        return Response.json({ ok: false, error: "which must be 'memory' or 'user'" }, { status: 400 });
+      }
+      const home = process.env.HOME ?? "";
+      const path = body.which === "memory"
+        ? join(home, ".config/subctl/master/memory.md")
+        : join(home, ".config/subctl/master/user.md");
+      const limit = body.which === "memory" ? 2200 : 1375;
+      const content = (body.content ?? "").trim();
+      if (content.length > limit) {
+        return Response.json({ ok: false, error: `content exceeds char limit (${content.length} > ${limit})` }, { status: 400 });
+      }
+      try {
+        const { mkdirSync, writeFileSync } = require("node:fs") as typeof import("node:fs");
+        mkdirSync(join(home, ".config/subctl/master"), { recursive: true });
+        writeFileSync(path, content);
+        return Response.json({ ok: true, path, char_count: content.length, char_limit: limit, message: "next agent prompt will pick up the new content" });
+      } catch (err) {
+        return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+      }
+    }
+
+    // ── /api/memory — Obsidian + vault state ─────────────────────────────
+    if (url.pathname === "/api/memory") {
+      const obsidianApp = "/Applications/Obsidian.app";
+      const obsidianInstalled = existsSync(obsidianApp);
+      // Configured vault root (from dashboard Settings) takes precedence
+      let configuredRoot: string | null = null;
+      try {
+        const cfgPath = join(SUBCTL_CONFIG_DIR, "master", "obsidian.json");
+        if (existsSync(cfgPath)) {
+          const j = JSON.parse(readFileSync(cfgPath, "utf8")) as { vault_root?: string };
+          if (j.vault_root) configuredRoot = j.vault_root.replace(/^~/, process.env.HOME ?? "");
+        }
+      } catch { /* ignore */ }
+      const candidates = configuredRoot ? [configuredRoot] : [
+        `${process.env.HOME}/Documents/Obsidian Vault`,
+        `${process.env.HOME}/Documents/ObsidianVault`,
+        `${process.env.HOME}/Obsidian`,
+        `${process.env.HOME}/vaults`,
+      ];
+      const vaults: Array<{ path: string; note_count: number; last_modified: string | null }> = [];
+      for (const candidate of candidates) {
+        if (!existsSync(candidate)) continue;
+        try {
+          const entries = readdirSync(candidate, { withFileTypes: true });
+          // Each subdir with a .obsidian/ dir is a vault root
+          for (const entry of entries) {
+            if (!entry.isDirectory()) continue;
+            const vaultDir = join(candidate, entry.name);
+            if (!existsSync(join(vaultDir, ".obsidian"))) continue;
+            // Count .md files (one level deep is plenty for the index)
+            let count = 0;
+            const stack = [vaultDir];
+            while (stack.length && count < 5000) {
+              const cur = stack.pop()!;
+              for (const e of readdirSync(cur, { withFileTypes: true })) {
+                if (e.name.startsWith(".")) continue;
+                const p = join(cur, e.name);
+                if (e.isDirectory()) stack.push(p);
+                else if (e.name.endsWith(".md")) count++;
+              }
+            }
+            const stat = require("node:fs").statSync(vaultDir);
+            vaults.push({
+              path: vaultDir,
+              note_count: count,
+              last_modified: new Date(stat.mtimeMs).toISOString(),
+            });
+          }
+        } catch { /* ignore */ }
+      }
+      return Response.json({
+        ok: true,
+        obsidian_installed: obsidianInstalled,
+        obsidian_app_path: obsidianInstalled ? obsidianApp : null,
+        vaults,
+        suggested_install: "brew install --cask obsidian",
+        suggested_vault_path: `${process.env.HOME}/Documents/Obsidian Vault`,
+      });
+    }
     if (url.pathname === "/api/version") {
       return new Response(JSON.stringify({ version: VERSION }), {
         headers: { "Content-Type": "application/json; charset=utf-8" },
       });
     }
+    // ── /api/providers — list available providers + their profiles + which
+    //    are usable as supervisor right now (auth status + load state) ─────
+    if (url.pathname === "/api/providers" && req.method === "GET") {
+      // Provider catalog. Local-first: lmstudio shows up with its model
+      // catalog; cloud providers show up if at least one ready profile.
+      const providers: Array<Record<string, unknown>> = [];
+
+      // 1. lmstudio — query LM Studio API directly for loaded state
+      const lmHost = process.env.SUBCTL_LMSTUDIO_HOST ?? "http://localhost:1234";
+      try {
+        const r = await fetch(`${lmHost}/api/v0/models`, { signal: AbortSignal.timeout(2500) });
+        if (r.ok) {
+          const j = (await r.json()) as { data?: Array<Record<string, unknown>> };
+          const models = (j.data ?? []).filter((m) => m.type === "vlm" || m.type === "llm");
+          providers.push({
+            id: "lmstudio",
+            display: "LM Studio (local)",
+            kind: "local",
+            host: lmHost,
+            available: true,
+            note: "Always-on local inference. Per-model availability depends on LM Studio's loaded state.",
+            models: models.map((m) => ({
+              id: m.id,
+              state: m.state,                  // "loaded" | "not-loaded"
+              loaded: m.state === "loaded",
+              quantization: m.quantization,
+              loaded_context_length: m.loaded_context_length,
+              max_context_length: m.max_context_length,
+              capabilities: m.capabilities ?? [],
+            })),
+          });
+        }
+      } catch { /* lmstudio offline; skip */ }
+
+      // 2. accounts.conf — find any cloud providers with at least one
+      //    authenticated profile. Pull the relevant profile metadata.
+      const accountsPath = join(SUBCTL_CONFIG_DIR, "accounts.conf");
+      const profilesByProvider: Record<string, Array<Record<string, unknown>>> = {};
+      try {
+        if (existsSync(accountsPath)) {
+          const raw = readFileSync(accountsPath, "utf8");
+          for (const line of raw.split("\n")) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith("#")) continue;
+            const parts = trimmed.split("|").map((p) => p.trim());
+            if (parts.length < 4) continue;
+            const [alias, provider, email, configDirRaw, description = ""] = parts;
+            const configDir = configDirRaw!.replace(/^~/, process.env.HOME ?? "");
+            // Auth detection per provider (matches /api/settings/oauth)
+            let authed = false;
+            if (provider === "claude") {
+              authed = existsSync(join(configDir, ".credentials.json"));
+            } else if (provider === "openai") {
+              const codexAuth = join(configDir, "auth.json");
+              if (existsSync(codexAuth)) {
+                try {
+                  const j = JSON.parse(readFileSync(codexAuth, "utf8"));
+                  authed = !!(j && (j.tokens || j.access_token));
+                } catch { authed = false; }
+              }
+            }
+            (profilesByProvider[provider!] ??= []).push({
+              alias, email, config_dir: configDirRaw, description, authed,
+            });
+          }
+        }
+      } catch { /* ignore */ }
+
+      // Curated cloud-provider catalog. Each entry maps to a default model
+      // suggestion, mostly so the chat dropdown has something to populate.
+      const CLOUD = [
+        { id: "anthropic",   display: "Anthropic Claude",      kind: "cloud", default_model: "claude-sonnet-4-6" },
+        { id: "openai-codex", display: "OpenAI Codex (ChatGPT)", kind: "cloud", default_model: "gpt-5.2" },
+        // Future: gemini, zai, minimax — add when accounts.conf has profiles for them
+      ];
+      // claude profiles in accounts.conf land under provider="claude"; the
+      // ANTHROPIC API surface uses provider="anthropic". For our purposes,
+      // any authed claude profile makes Anthropic "available" since Claude
+      // Code OAuth doubles for the master's Anthropic-API call path.
+      for (const cp of CLOUD) {
+        const profileKey = cp.id === "anthropic" ? "claude" : (cp.id === "openai-codex" ? "openai" : cp.id);
+        const profiles = profilesByProvider[profileKey] ?? [];
+        const anyAuthed = profiles.some((p) => p.authed);
+        providers.push({
+          id: cp.id,
+          display: cp.display,
+          kind: cp.kind,
+          default_model: cp.default_model,
+          available: anyAuthed,
+          profiles,
+          note: anyAuthed ? `${profiles.filter((p) => p.authed).length} authed profile(s)` : "no authed profile yet — run subctl auth on a profile first",
+        });
+      }
+
+      // Also surface any provider-scoped profile group the user has but
+      // we don't have a curated cloud entry for (so they're visible at all).
+      const known = new Set(["claude", "openai"]);
+      for (const [provider, profiles] of Object.entries(profilesByProvider)) {
+        if (known.has(provider)) continue;
+        providers.push({
+          id: provider,
+          display: provider,
+          kind: "cloud",
+          available: profiles.some((p) => p.authed),
+          profiles,
+          note: "no curated config in dashboard yet",
+        });
+      }
+
+      return Response.json({ ok: true, providers });
+    }
+
+    // ── /api/providers/profiles — accounts.conf CRUD ────────────────────
+    // GET: returns parsed profiles (same shape as /api/settings/oauth)
+    // POST: add/edit a profile
+    // DELETE: remove a profile
+    if (url.pathname === "/api/providers/profiles" && req.method === "POST") {
+      let body: { alias?: string; provider?: string; email?: string; config_dir?: string; description?: string; mode?: "add" | "edit" };
+      try { body = await req.json(); } catch { return Response.json({ ok: false, error: "invalid JSON" }, { status: 400 }); }
+      const { alias, provider, email, config_dir, description = "", mode = "add" } = body;
+      if (!alias || !provider || !email || !config_dir) {
+        return Response.json({ ok: false, error: "alias, provider, email, config_dir required" }, { status: 400 });
+      }
+      if (!/^[a-zA-Z0-9._-]+$/.test(alias)) {
+        return Response.json({ ok: false, error: "alias must be alphanumerics + . - _" }, { status: 400 });
+      }
+      const accountsPath = join(SUBCTL_CONFIG_DIR, "accounts.conf");
+      let lines: string[] = [];
+      if (existsSync(accountsPath)) lines = readFileSync(accountsPath, "utf8").split("\n");
+      const newRow = `${alias.padEnd(15)} | ${provider.padEnd(7)} | ${email.padEnd(32)} | ${config_dir.padEnd(25)} | ${description}`;
+      // Find existing line for this alias
+      const existingIdx = lines.findIndex((l) => {
+        const t = l.trim();
+        if (!t || t.startsWith("#")) return false;
+        const parts = t.split("|").map((p) => p.trim());
+        return parts[0] === alias;
+      });
+      if (mode === "edit") {
+        if (existingIdx === -1) return Response.json({ ok: false, error: "alias not found to edit" }, { status: 404 });
+        lines[existingIdx] = newRow;
+      } else {
+        if (existingIdx !== -1) return Response.json({ ok: false, error: `alias '${alias}' already exists` }, { status: 409 });
+        lines.push(newRow);
+      }
+      try {
+        const { writeFileSync, mkdirSync } = require("node:fs") as typeof import("node:fs");
+        mkdirSync(SUBCTL_CONFIG_DIR, { recursive: true });
+        writeFileSync(accountsPath, lines.join("\n"));
+        return Response.json({ ok: true, alias, mode });
+      } catch (err) {
+        return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+      }
+    }
+    if (url.pathname === "/api/providers/profiles" && req.method === "DELETE") {
+      let body: { alias?: string };
+      try { body = await req.json(); } catch { return Response.json({ ok: false, error: "invalid JSON" }, { status: 400 }); }
+      const { alias } = body;
+      if (!alias) return Response.json({ ok: false, error: "alias required" }, { status: 400 });
+      const accountsPath = join(SUBCTL_CONFIG_DIR, "accounts.conf");
+      if (!existsSync(accountsPath)) return Response.json({ ok: false, error: "accounts.conf missing" }, { status: 404 });
+      try {
+        const lines = readFileSync(accountsPath, "utf8").split("\n");
+        const filtered = lines.filter((l) => {
+          const t = l.trim();
+          if (!t || t.startsWith("#")) return true;
+          const parts = t.split("|").map((p) => p.trim());
+          return parts[0] !== alias;
+        });
+        if (filtered.length === lines.length) return Response.json({ ok: false, error: "alias not found" }, { status: 404 });
+        const { writeFileSync } = require("node:fs") as typeof import("node:fs");
+        writeFileSync(accountsPath, filtered.join("\n"));
+        return Response.json({ ok: true, alias });
+      } catch (err) {
+        return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+      }
+    }
+
+    // ── /api/master/supervisor — switch the master's supervisor model ────
+    // Edits ~/.config/subctl/master/providers.json (writes the picked id
+    // into models.supervisor.model and models.reviewer.model — they share
+    // a model in our setup) and bounces the master launchd job. The
+    // master's transcript persists across restart, so the switch is
+    // effectively in-place.
+    if (url.pathname === "/api/master/supervisor" && req.method === "POST") {
+      let body: { provider?: string; model?: string; host?: string };
+      try {
+        body = await req.json();
+      } catch {
+        return Response.json({ ok: false, error: "invalid JSON body" }, { status: 400 });
+      }
+      const newProvider = (body.provider ?? "").trim();
+      const modelId = (body.model ?? "").trim();
+      const newHost = (body.host ?? "").trim();
+      if (!modelId) return Response.json({ ok: false, error: "model required" }, { status: 400 });
+      const providersPath = join(SUBCTL_CONFIG_DIR, "master", "providers.json");
+      if (!existsSync(providersPath)) {
+        return Response.json({ ok: false, error: "providers.json missing" }, { status: 404 });
+      }
+      try {
+        const raw = readFileSync(providersPath, "utf8");
+        const stripped = raw.split("\n").filter((l) => !/^\s*"_comment[^"]*"\s*:/.test(l)).join("\n").replace(/,(\s*[}\]])/g, "$1");
+        const cfg = JSON.parse(stripped) as {
+          models?: Record<string, { provider?: string; model?: string; host?: string }>;
+        };
+        if (!cfg.models?.supervisor) {
+          return Response.json({ ok: false, error: "no models.supervisor in providers.json" }, { status: 400 });
+        }
+        const prev = `${cfg.models.supervisor.provider}/${cfg.models.supervisor.model}`;
+        cfg.models.supervisor.model = modelId;
+        if (newProvider) cfg.models.supervisor.provider = newProvider;
+        if (newHost) cfg.models.supervisor.host = newHost;
+        else if (newProvider && newProvider !== "lmstudio") {
+          // Cloud provider switch — clear the local host so the openai-completions
+          // path doesn't try to hit localhost:1234 for an Anthropic / Codex call.
+          delete cfg.models.supervisor.host;
+        }
+        if (cfg.models.reviewer) {
+          cfg.models.reviewer.model = modelId;
+          if (newProvider) cfg.models.reviewer.provider = newProvider;
+          if (newHost) cfg.models.reviewer.host = newHost;
+          else if (newProvider && newProvider !== "lmstudio") delete cfg.models.reviewer.host;
+        }
+        (cfg as any)._comment = `models.supervisor switched via /api/master/supervisor at ${new Date().toISOString()} (was: ${prev})`;
+        const { writeFileSync } = require("node:fs") as typeof import("node:fs");
+        writeFileSync(providersPath, JSON.stringify(cfg, null, 2));
+        // Bounce master via launchctl. The new daemon's boot-time
+        // ensureModelLoaded() will re-pin the LM Studio context for the
+        // supervisor (and reviewer) using the freshly-written providers.json,
+        // so the new model lands at the right context window automatically.
+        const label = "com.subctl.master";
+        const plist = `${process.env.HOME}/Library/LaunchAgents/${label}.plist`;
+        spawnSync("launchctl", ["unload", plist], { encoding: "utf8", timeout: 5000 });
+        for (let i = 0; i < 5; i++) {
+          const ps = spawnSync("pgrep", ["-f", "subctl.*master/server.ts"], { encoding: "utf8", timeout: 1000 });
+          if (!ps.stdout?.trim()) break;
+          await new Promise((r) => setTimeout(r, 1000));
+        }
+        spawnSync("launchctl", ["load", plist], { encoding: "utf8", timeout: 5000 });
+        return Response.json({
+          ok: true,
+          previous: prev,
+          new: modelId,
+          message: "providers.json updated, master daemon restarted, supervisor will be re-pinned at the configured context_length on first boot tick",
+        });
+      } catch (err) {
+        return Response.json(
+          { ok: false, error: (err as Error).message },
+          { status: 500 },
+        );
+      }
+    }
+
+    // ── master proxy: /api/master/* → http://127.0.0.1:8788/* ────────────
+    // The master daemon listens locally; the dashboard fronts it for the
+    // browser. POST /api/master/chat forwards the JSON body. GET
+    // /api/master/events streams the SSE through. /health is just convenient.
+    if (url.pathname.startsWith("/api/master/")) {
+      const masterPort = process.env.SUBCTL_MASTER_PORT ?? "8788";
+      const masterUrl = `http://127.0.0.1:${masterPort}${url.pathname.replace(/^\/api\/master/, "")}${url.search}`;
+      try {
+        if (url.pathname === "/api/master/events" && req.method === "GET") {
+          // SSE pass-through. Bun's fetch returns a streaming Response;
+          // we forward its body directly so the browser sees text/event-stream.
+          const upstream = await fetch(masterUrl, {
+            headers: { Accept: "text/event-stream" },
+            signal: req.signal,
+          });
+          return new Response(upstream.body, {
+            status: upstream.status,
+            headers: {
+              "Content-Type": "text/event-stream",
+              "Cache-Control": "no-cache, no-transform",
+              "Connection": "keep-alive",
+            },
+          });
+        }
+        const init: RequestInit = {
+          method: req.method,
+          headers: { "Content-Type": "application/json" },
+        };
+        if (req.method !== "GET" && req.method !== "HEAD") {
+          init.body = await req.text();
+        }
+        const upstream = await fetch(masterUrl, init);
+        const body = await upstream.text();
+        return new Response(body, {
+          status: upstream.status,
+          headers: { "Content-Type": upstream.headers.get("Content-Type") ?? "application/json" },
+        });
+      } catch (err) {
+        return Response.json(
+          { ok: false, error: `master daemon unreachable: ${(err as Error).message}` },
+          { status: 502 },
+        );
+      }
+    }
+
     // POST or GET /api/refresh — bypass usage caches (in-process AND on-disk)
     // and return a fresh state snapshot. Clicked from the dashboard "↻" button
     // or invoked by scripts. Costs one API call per claude account; rest of
@@ -2357,6 +4046,9 @@ const server = Bun.serve({
       if (typeof body.prompt === "string" && body.prompt) {
         args.push("-p", body.prompt);
       }
+      if (typeof body.template === "string" && body.template) {
+        args.push("--template", body.template);
+      }
       const subctlBin = join(REPO_ROOT, "bin", "subctl");
       const r = spawnSync(subctlBin, args, {
         cwd: project,
@@ -2394,22 +4086,7 @@ const server = Bun.serve({
     }
 
     if (url.pathname === "/api/orchestration" && req.method === "GET") {
-      // List sessions whose env contains CLAUDE_CONFIG_DIR (i.e. spawned by
-      // subctl teams claude) — separates orchestrator sessions from random
-      // tmux noise.
-      const rawSessions = listTmuxSessions();
-      const result = rawSessions.map(s => {
-        const cfg = tmuxShowEnv(s.name, "CLAUDE_CONFIG_DIR");
-        return {
-          name: s.name,
-          path: s.path,
-          attached: s.attached,
-          windows: s.windows,
-          claude_account_dir: cfg,
-          is_orchestrator: cfg !== null,
-        };
-      }).filter(x => x.is_orchestrator);
-      return new Response(JSON.stringify({ orchestrations: result }), {
+      return new Response(JSON.stringify({ orchestrations: buildOrchestrations() }), {
         headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
       });
     }
@@ -2540,4 +4217,4 @@ const server = Bun.serve({
   },
 });
 
-console.log(`subctl dashboard v${VERSION} listening on http://127.0.0.1:${server.port}`);
+console.log(`subctl dashboard v${VERSION} listening on http://${HOSTNAME}:${server.port}`);

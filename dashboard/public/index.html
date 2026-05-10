@@ -7,6 +7,46 @@
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
+  <!-- Live tmux pane preview modal. Polls /api/orchestration/<name> every
+       2s while open, renders the latest captured pane content as monospace.
+       Read-only — for actual interaction use the SSH attach command from
+       the same card. -->
+  <div class="modal-backdrop" id="tmux-preview-modal" hidden>
+    <div class="modal modal-wide tmux-preview">
+      <header class="modal-header">
+        <h3>Live tmux pane <span class="dim small" id="tmux-preview-name">—</span></h3>
+        <button type="button" class="modal-close" id="tmux-preview-close">✕</button>
+      </header>
+      <div class="modal-body">
+        <div class="tmux-preview-toolbar">
+          <span class="tmux-preview-status" id="tmux-preview-status">connecting…</span>
+          <span class="tmux-preview-meta" id="tmux-preview-meta">—</span>
+          <button type="button" class="secondary-btn" id="tmux-preview-attach">copy ssh attach command</button>
+        </div>
+        <pre class="tmux-preview-pane" id="tmux-preview-pane">loading…</pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- Generic notice/confirm modal — replaces browser alert() and confirm()
+       so popups match the dashboard's dark theme instead of jarring
+       OS-level dialogs. Driven by window.notice() defined in app.js. -->
+  <div class="modal-backdrop" id="notice-modal" hidden>
+    <div class="modal modal-narrow" role="dialog" aria-labelledby="notice-title" aria-describedby="notice-body">
+      <header class="modal-header">
+        <h3 id="notice-title">Notice</h3>
+        <button type="button" class="modal-close" id="notice-close" aria-label="close">✕</button>
+      </header>
+      <div class="modal-body">
+        <div id="notice-body" class="notice-body">…</div>
+        <footer class="modal-footer">
+          <button type="button" class="secondary-btn" id="notice-cancel" hidden>cancel</button>
+          <button type="button" class="primary-btn" id="notice-ok">OK</button>
+        </footer>
+      </div>
+    </div>
+  </div>
+
   <header class="topbar">
     <div class="brand">
       <span class="brand-name">subctl</span>
@@ -24,8 +64,185 @@
     </div>
   </header>
 
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <nav class="sidebar-nav" id="sidebar-nav">
+        <button type="button" class="nav-btn active" data-tab="chat">
+          <span class="nav-icon">◉</span><span class="nav-label">Chat</span>
+        </button>
+        <button type="button" class="nav-btn" data-tab="orchestration">
+          <span class="nav-icon">⚙</span><span class="nav-label">Orchestration</span>
+        </button>
+        <button type="button" class="nav-btn" data-tab="dashboard">
+          <span class="nav-icon">▣</span><span class="nav-label">Dashboard</span>
+        </button>
+        <button type="button" class="nav-btn" data-tab="projects">
+          <span class="nav-icon">⌘</span><span class="nav-label">Projects</span>
+        </button>
+        <button type="button" class="nav-btn" data-tab="teams">
+          <span class="nav-icon">▤</span><span class="nav-label">Teams</span>
+        </button>
+        <button type="button" class="nav-btn" data-tab="sessions">
+          <span class="nav-icon">≡</span><span class="nav-label">Claude Sessions</span>
+        </button>
+        <button type="button" class="nav-btn" data-tab="models">
+          <span class="nav-icon">◈</span><span class="nav-label">Models</span>
+        </button>
+        <button type="button" class="nav-btn" data-tab="providers">
+          <span class="nav-icon">◐</span><span class="nav-label">Providers</span>
+        </button>
+        <button type="button" class="nav-btn" data-tab="memory">
+          <span class="nav-icon">✦</span><span class="nav-label">Memory</span>
+        </button>
+        <button type="button" class="nav-btn" data-tab="skills">
+          <span class="nav-icon">★</span><span class="nav-label">Skills</span>
+        </button>
+        <button type="button" class="nav-btn" data-tab="logs">
+          <span class="nav-icon">≣</span><span class="nav-label">Live Logs</span>
+        </button>
+        <button type="button" class="nav-btn" data-tab="settings">
+          <span class="nav-icon">⚒</span><span class="nav-label">Settings</span>
+        </button>
+        <div class="sidebar-divider"></div>
+        <a class="nav-btn nav-link" href="/cheat" title="Scannable one-pager: every command, shim, shortcut">
+          <span class="nav-icon">?</span><span class="nav-label">Cheat sheet</span>
+        </a>
+        <a class="nav-btn nav-link" href="/help" title="Full documentation">
+          <span class="nav-icon">i</span><span class="nav-label">Docs</span>
+        </a>
+      </nav>
+      <button class="sidebar-collapse-btn" id="sidebar-collapse-btn" type="button" aria-label="Collapse sidebar" title="Collapse sidebar">‹</button>
+    </aside>
+
   <main>
-    <section class="panel dispatch" id="dispatch-panel">
+
+    <!-- ── Chat: master conversation, model picker, full-height with sidecar ─── -->
+    <section class="orchestration-screen chat-screen" data-tab="chat">
+      <section class="panel master-chat" id="master-chat-panel">
+        <div class="ctx-overflow-banner" id="ctx-overflow-banner" hidden>
+          <strong>Context window overflowed</strong> — the supervisor model only has <span id="ctx-overflow-cap">?</span> tokens of context loaded but the transcript is ~<span id="ctx-overflow-now">?</span> tokens. Recent messages may be silently truncated and master will hallucinate "Standing by" responses to questions it can't see.
+          <div class="ctx-overflow-actions">
+            <button type="button" class="ctx-overflow-fix-1" id="ctx-overflow-compact">compact transcript now</button>
+            <span class="dim small">or in LM Studio: eject qwen3.6-35b-a3b → reload with Context Length 65536</span>
+          </div>
+        </div>
+        <div class="chat-toolbar">
+          <label class="chat-model-label">model
+            <select id="chat-model-select" class="chat-model-select">
+              <option value="">loading…</option>
+            </select>
+          </label>
+          <button type="button" class="chat-toolbar-btn" id="chat-model-apply" title="Switch the master's supervisor model. Edits providers.json and restarts the master daemon (transcript preserved).">apply</button>
+          <button type="button" class="chat-toolbar-btn" id="chat-compact-btn" title="Compact older turns of this conversation into a single summary message. Master keeps a working memory but the supervisor's prompt window stays manageable. Use when the context meter goes red.">compact</button>
+          <button type="button" class="chat-toolbar-btn chat-toolbar-btn-warn" id="chat-new-btn" title="Archive the current transcript and start a fresh conversation. Your prior chat is saved to ~/.config/subctl/master/agent-state.archive-*.json.">+ new chat</button>
+          <button type="button" class="chat-toolbar-btn chat-toolbar-btn-icon" id="chat-fullscreen-btn" title="Toggle full-screen chat (Esc exits)" aria-label="toggle full-screen">⛶</button>
+          <span class="chat-context-meter" id="chat-context-meter" title="Approximate transcript tokens vs LM Studio's loaded context length. Includes system prompt + tool schemas overhead.">
+            <span class="ctx-fill" id="ctx-fill" style="width: 0%"></span>
+            <span class="ctx-label" id="ctx-label">ctx --</span>
+          </span>
+          <span class="chat-toolbar-hint" id="chat-model-current">supervisor: --</span>
+        </div>
+      <h2>Master <span class="panel-hint">conversational dev-team orchestrator on the M3 Ultra · streams from <code>/api/master/events</code></span>
+        <span class="master-conn-state" id="master-conn-state">disconnected</span>
+      </h2>
+      <div class="master-log" id="master-log">
+        <div class="master-log-empty">no messages yet — type below to start a conversation, or try <code>/help</code> for slash commands</div>
+      </div>
+      <form class="master-input" id="master-input-form" autocomplete="off">
+        <input type="text" id="master-input" placeholder="message subctl master… (enter to send)" autocomplete="off">
+        <button type="submit" id="master-send">send</button>
+      </form>
+    </section>
+
+      <!-- right-side context: active dev teams + curated notifications -->
+      <aside class="orchestration-sidecar" id="orchestration-sidecar">
+        <section class="orch-sidecar-block">
+          <h3>Active dev teams <span class="dim" id="orch-teams-count">0</span></h3>
+          <div class="orch-teams-list" id="orch-teams-list">
+            <div class="dim small">no teams running</div>
+          </div>
+        </section>
+        <section class="orch-sidecar-block">
+          <h3>Notifications <span class="dim small">curated · <button type="button" id="notify-clear" class="notify-clear-btn">clear</button></span></h3>
+          <div class="orch-notify-list" id="orch-notify-list">
+            <div class="dim small">no notifications yet — master will publish here as work progresses</div>
+          </div>
+        </section>
+      </aside>
+    </section>
+    <!-- ── /Chat ──────────────────────────────────────────────────────── -->
+
+    <!-- ── Orchestration: live ops cockpit ────────────────────────────── -->
+    <section class="orch-screen" data-tab="orchestration">
+      <header class="screen-header">
+        <h2>Orchestration <span class="screen-sub">live ops view of every dev team in flight, watchdog state, and pending decisions</span></h2>
+      </header>
+
+      <div class="orch-grid">
+        <section class="orch-card">
+          <div class="orch-card-head">
+            <h3>Active Dev Teams <span class="dim" id="orch-active-count">0</span></h3>
+            <span class="orch-card-meta" id="orch-active-meta">—</span>
+          </div>
+          <div class="orch-card-body" id="orch-active-body">
+            <div class="orch-empty">no dev teams running — chat with master to spawn one</div>
+          </div>
+        </section>
+
+        <section class="orch-card">
+          <div class="orch-card-head">
+            <h3>Watchdog</h3>
+            <span class="orch-card-meta" id="orch-watchdog-meta">interval --</span>
+          </div>
+          <div class="orch-card-body" id="orch-watchdog-body">
+            <div class="orch-empty">no recent watchdog firings</div>
+          </div>
+        </section>
+
+        <section class="orch-card orch-card-wide">
+          <div class="orch-card-head">
+            <h3>Live Activity <span class="dim small">last 50 events from /api/master/events</span></h3>
+            <button type="button" class="orch-clear-btn" id="orch-activity-clear">clear</button>
+          </div>
+          <div class="orch-card-body orch-activity-feed" id="orch-live-activity">
+            <div class="orch-empty">waiting for activity…</div>
+          </div>
+        </section>
+
+        <section class="orch-card">
+          <div class="orch-card-head">
+            <h3>Master daemon</h3>
+            <span class="orch-card-meta" id="orch-daemon-meta">--</span>
+          </div>
+          <div class="orch-card-body" id="orch-daemon-body">
+            <table class="orch-kv">
+              <tbody>
+                <tr><td>uptime</td><td id="orch-daemon-uptime">—</td></tr>
+                <tr><td>transcript</td><td id="orch-daemon-transcript">—</td></tr>
+                <tr><td>queue depth</td><td id="orch-daemon-queue">—</td></tr>
+                <tr><td>SSE subs</td><td id="orch-daemon-subs">—</td></tr>
+                <tr><td>telegram</td><td id="orch-daemon-tg">—</td></tr>
+                <tr><td>supervisor</td><td id="orch-daemon-sup">—</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="orch-card">
+          <div class="orch-card-head">
+            <h3>Diagnostics</h3>
+            <button type="button" class="orch-clear-btn" id="orch-diag-refresh">refresh</button>
+          </div>
+          <div class="orch-card-body" id="orch-diag-body">
+            <div class="dim small">click refresh to run full /diag</div>
+          </div>
+        </section>
+      </div>
+    </section>
+    <!-- ── /Orchestration ─────────────────────────────────────────────── -->
+
+    <!-- ── Dashboard view ─────────────────────────────────────────────── -->
+    <section class="panel dispatch" data-tab="dashboard" id="dispatch-panel">
       <div class="dispatch-row">
         <div class="dispatch-verdict" id="dispatch-verdict">--</div>
         <div class="dispatch-summary">
@@ -39,12 +256,6 @@
         <span class="info-cell"><span class="info-num" id="info-ready">0</span> ready accounts</span>
         <span class="info-sep">·</span>
         <span class="info-cell"><span class="info-num" id="info-rl">0</span> RL today</span>
-        <nav class="tab-nav" id="tab-nav">
-          <button type="button" class="tab-btn active" data-tab="dashboard">Dashboard</button>
-          <button type="button" class="tab-btn" data-tab="sessions">Sessions</button>
-          <a class="tab-btn" href="/cheat" title="Scannable one-pager: every command, shim, shortcut">Cheat sheet</a>
-          <a class="tab-btn" href="/help" title="Full documentation, signal reference, CLI commands">Docs</a>
-        </nav>
       </div>
     </section>
 
@@ -90,6 +301,26 @@
         </thead>
         <tbody id="sessions-body">
           <tr><td colspan="9" class="empty">no tmux sessions</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" data-tab="dashboard" id="orchestrations-panel">
+      <h2>Dev Teams <span class="panel-hint">tmux sessions spawned by the master · last activity from <code>~/.config/subctl/master/inbox/&lt;team&gt;.jsonl</code> · row turns yellow at 15min stale, red at 30min</span></h2>
+      <table class="data-table" id="orchestrations-table">
+        <thead>
+          <tr>
+            <th>team</th>
+            <th>account</th>
+            <th>project</th>
+            <th class="num">windows</th>
+            <th>last activity</th>
+            <th>last event</th>
+            <th>actions</th>
+          </tr>
+        </thead>
+        <tbody id="orchestrations-body">
+          <tr><td colspan="7" class="empty">no dev teams running — master will spawn them via <code>subctl_orch_spawn</code> when conversations conclude one is needed</td></tr>
         </tbody>
       </table>
     </section>
@@ -193,7 +424,488 @@
         </tbody>
       </table>
     </section>
+
+    <!-- ── Models tab ──────────────────────────────────────────────── -->
+    <section class="panel" data-tab="models" id="models-panel">
+      <h2>LM Studio models
+        <span class="panel-hint">read-only catalog from <code>/api/v0/models</code> on the M3 Ultra</span>
+        <span class="models-status" id="models-status">loading…</span>
+      </h2>
+      <div class="models-summary" id="models-summary"></div>
+      <table class="data-table" id="models-table">
+        <thead>
+          <tr>
+            <th>id</th>
+            <th>type</th>
+            <th>state</th>
+            <th>publisher</th>
+            <th>arch</th>
+            <th>quant</th>
+            <th class="num">max ctx</th>
+            <th class="num">loaded ctx</th>
+            <th>capabilities</th>
+          </tr>
+        </thead>
+        <tbody id="models-body">
+          <tr><td colspan="9" class="empty">loading model catalog…</td></tr>
+        </tbody>
+      </table>
+      <div class="models-note">
+        <strong>Load/unload control</strong> requires the <code>lms</code> CLI on the M3 Ultra (LM Studio app → Developer → Use lms in terminal). Once installed, this panel can wire load/unload buttons.
+      </div>
+    </section>
+
+    <!-- ── Projects tab: master/detail with drill-down ─────────────── -->
+    <section class="projects-screen" data-tab="projects">
+      <header class="screen-header projects-header">
+        <h2>Projects <span class="screen-sub">code projects on the M3 Ultra at <code id="projects-root">~/code</code></span></h2>
+        <button type="button" class="primary-btn" id="project-new-btn">+ New Project</button>
+      </header>
+
+      <!-- New Project wizard modal -->
+      <div class="modal-backdrop" id="new-project-modal" hidden>
+        <div class="modal" role="dialog" aria-labelledby="new-project-title">
+          <header class="modal-header">
+            <h3 id="new-project-title">New Project</h3>
+            <button type="button" class="modal-close" id="new-project-close" aria-label="close">✕</button>
+          </header>
+          <form class="modal-body" id="new-project-form">
+            <div class="form-row">
+              <label for="np-name">Name <span class="required">*</span></label>
+              <input type="text" id="np-name" name="name" placeholder="my-new-project" autocomplete="off" required />
+              <div class="form-hint">Becomes <code>~/code/<span id="np-name-preview">my-new-project</span></code> on the M3 Ultra. Spaces auto-convert to dashes; non-alphanumeric chars are stripped.</div>
+            </div>
+            <div class="form-row">
+              <label for="np-git-url">Git URL <span class="dim">(optional)</span></label>
+              <input type="text" id="np-git-url" name="git_url" placeholder="owner/repo, gh repo clone owner/repo, https://…, or git@…" autocomplete="off" />
+              <div class="form-hint">Accepts <code>owner/repo</code>, <code>gh repo clone owner/repo</code>, or any normal Git URL. If blank, an empty directory is created with a README and a fresh <code>git init</code>.</div>
+            </div>
+            <div class="form-row">
+              <label for="np-autonomy">Autonomy</label>
+              <select id="np-autonomy" name="autonomy_level">
+                <option value="ask" selected>ask — master proposes, you approve every action</option>
+                <option value="drive">drive — master can act on most things, escalates push/merge/deploy</option>
+                <option value="shadow">shadow — master observes only, never spawns workers without explicit go</option>
+              </select>
+            </div>
+            <div class="form-row form-checks">
+              <label class="form-check">
+                <input type="checkbox" id="np-create-vault" checked />
+                Create Obsidian vault folder at <code>~/Documents/Obsidian Vault/<span class="np-name-mirror">my-new-project</span>/</code> with RESUME.md + design/, reviews/, postmortems/
+              </label>
+              <label class="form-check">
+                <input type="checkbox" id="np-add-policy" checked />
+                Add to <code>policy.json</code> so master watches it (also restarts master to pick it up)
+              </label>
+              <label class="form-check">
+                <input type="checkbox" id="np-create-github" />
+                Create GitHub repo via <code>gh</code> + push the initial commit (only when Git URL above is empty)
+              </label>
+              <div class="form-row" id="np-github-vis-row" style="margin-left:24px; display:none">
+                <label>Visibility</label>
+                <select id="np-github-vis">
+                  <option value="private" selected>private</option>
+                  <option value="public">public</option>
+                  <option value="internal">internal (orgs only)</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-status" id="np-status" hidden></div>
+            <footer class="modal-footer">
+              <button type="button" class="secondary-btn" id="new-project-cancel">cancel</button>
+              <button type="submit" class="primary-btn" id="new-project-submit">create</button>
+            </footer>
+          </form>
+        </div>
+      </div>
+
+      <div class="projects-layout">
+        <aside class="projects-list-pane">
+          <div class="projects-list-search">
+            <input type="text" id="project-list-filter" placeholder="filter projects…" />
+          </div>
+          <div class="projects-list" id="projects-list">
+            <div class="dim small" style="padding:12px">loading…</div>
+          </div>
+        </aside>
+
+        <section class="project-detail-pane" id="project-detail-pane">
+          <div class="project-detail-empty" id="project-detail-empty">
+            <div class="dim">select a project on the left to drill in, or click <strong>+ New Project</strong> to start a new one</div>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <!-- ── Memory tab ──────────────────────────────────────────────── -->
+    <section class="memory-screen" data-tab="memory">
+      <header class="screen-header">
+        <h2>Memory <span class="screen-sub">tier 1: always-in-context (memory.md + user.md) · tier 2: claude-mem (semantic recall) · tier 3: Obsidian vault (operator-curated)</span></h2>
+      </header>
+
+      <div class="memory-grid">
+        <section class="memory-card">
+          <div class="memory-card-head">
+            <h3>Operator profile <span class="dim small">user.md</span></h3>
+            <span class="memory-card-meta" id="user-md-meta">— / 1375 chars</span>
+          </div>
+          <div class="memory-card-body">
+            <p class="memory-card-doc">Stable description of Jason — role, infrastructure, work style, preferences. Master sees this every turn so it doesn't have to re-discover the basics. Edit conservatively; this is durable context.</p>
+            <textarea id="user-md-textarea" rows="10" placeholder="Jason — MSP owner, AI application developer. Runs subctl on the M3 Ultra (256GB RAM, 400Gbps backbone). Deeply technical (30+ yrs IT). Prefers FREE/open-source first..."></textarea>
+            <div class="memory-card-actions">
+              <button type="button" class="primary-btn" data-mem-save="user">save</button>
+              <span class="memory-card-result" id="user-md-result"></span>
+            </div>
+          </div>
+        </section>
+
+        <section class="memory-card">
+          <div class="memory-card-head">
+            <h3>Learned facts <span class="dim small">memory.md</span></h3>
+            <span class="memory-card-meta" id="memory-md-meta">— / 2200 chars</span>
+          </div>
+          <div class="memory-card-body">
+            <p class="memory-card-doc">Things master has remembered as durable across sessions — recurring decisions, project facts, gotchas. Master can edit this itself via memory_remember / memory_forget tools; you can edit here directly. Use the § character (Option-6 on Mac) between entries.</p>
+            <textarea id="memory-md-textarea" rows="14" placeholder="Down-Time-Arena's primary branch is `main`; Speartip is the prospective sponsor.&#10;§&#10;LM Studio's loaded_context_length resets to 4K on JIT — auto-pin via /api/v1/models/load handles this; if drift happens, hit /reload-supervisor."></textarea>
+            <div class="memory-card-actions">
+              <button type="button" class="primary-btn" data-mem-save="memory">save</button>
+              <span class="memory-card-result" id="memory-md-result"></span>
+            </div>
+          </div>
+        </section>
+
+        <section class="memory-card memory-card-wide">
+          <div class="memory-card-head">
+            <h3>Obsidian vault <span class="dim small">tier 3 — long-form operator notes</span></h3>
+            <span class="memory-status" id="memory-status">checking…</span>
+          </div>
+          <div class="memory-card-body" id="memory-content">loading…</div>
+        </section>
+      </div>
+    </section>
+
+    <!-- ── Providers tab ───────────────────────────────────────────── -->
+    <section class="providers-screen" data-tab="providers">
+      <header class="screen-header">
+        <h2>Providers <span class="screen-sub">OAuth profiles per provider · add / remove / authenticate · master uses these for chat + dev-team spawning</span></h2>
+        <button type="button" class="primary-btn" id="provider-new-btn">+ New Profile</button>
+      </header>
+
+      <!-- Add/edit profile modal -->
+      <div class="modal-backdrop" id="provider-profile-modal" hidden>
+        <div class="modal" role="dialog">
+          <header class="modal-header">
+            <h3 id="provider-profile-title">New profile</h3>
+            <button type="button" class="modal-close" id="provider-profile-close">✕</button>
+          </header>
+          <form class="modal-body" id="provider-profile-form">
+            <div class="form-row">
+              <label>Provider</label>
+              <select id="profile-provider">
+                <option value="claude">claude (Anthropic Claude Code)</option>
+                <option value="openai">openai (Codex CLI / ChatGPT subscription)</option>
+                <option value="gemini">gemini (future)</option>
+                <option value="zai">zai (future)</option>
+                <option value="minimax">minimax (future)</option>
+              </select>
+            </div>
+            <div class="form-row">
+              <label>Alias <span class="required">*</span></label>
+              <input type="text" id="profile-alias" placeholder="e.g. claude-jason or openai-personal" pattern="[a-zA-Z0-9._-]+" required />
+              <div class="form-hint">Local name for this profile. Used in <code>subctl auth claude &lt;alias&gt;</code> and similar.</div>
+            </div>
+            <div class="form-row">
+              <label>Email</label>
+              <input type="text" id="profile-email" placeholder="account@example.com" />
+              <div class="form-hint">Helps you identify which login this is — not used by master beyond display.</div>
+            </div>
+            <div class="form-row">
+              <label>Config dir</label>
+              <input type="text" id="profile-config-dir" placeholder="~/.claude-jason or ~/.codex-jason" />
+              <div class="form-hint">Per-account isolation dir. Each profile must have its own.</div>
+            </div>
+            <div class="form-row">
+              <label>Description <span class="dim">(optional)</span></label>
+              <input type="text" id="profile-description" placeholder="e.g. daily driver, work account" />
+            </div>
+            <div class="form-status" id="profile-result" hidden></div>
+            <footer class="modal-footer">
+              <button type="button" class="secondary-btn" id="provider-profile-cancel">cancel</button>
+              <button type="submit" class="primary-btn" id="provider-profile-submit">save</button>
+            </footer>
+          </form>
+        </div>
+      </div>
+
+      <div class="providers-list" id="providers-list">
+        <div class="dim small" style="padding:24px">loading…</div>
+      </div>
+    </section>
+
+    <!-- ── Logs ───────────────────────────────────────────────────── -->
+    <section class="logs-screen" data-tab="logs">
+      <header class="screen-header">
+        <h2>Live Logs <span class="screen-sub">streaming tail of master + dashboard launchd output</span></h2>
+        <div class="screen-header-actions">
+          <select id="logs-source">
+            <option value="master">master daemon</option>
+            <option value="dashboard-out">dashboard stdout</option>
+            <option value="dashboard-err">dashboard stderr</option>
+            <option value="decisions">master decisions log</option>
+          </select>
+          <label class="logs-autoscroll">
+            <input type="checkbox" id="logs-autoscroll" checked /> auto-scroll
+          </label>
+          <button type="button" class="secondary-btn" id="logs-clear-btn">clear view</button>
+          <button type="button" class="secondary-btn" id="logs-copy-btn">copy all</button>
+          <span class="logs-status" id="logs-status">disconnected</span>
+        </div>
+      </header>
+
+      <pre class="logs-view" id="logs-view"></pre>
+    </section>
+
+    <!-- ── Teams (dev-team templates) ─────────────────────────────── -->
+    <section class="teams-screen" data-tab="teams">
+      <header class="screen-header">
+        <h2>Teams <span class="screen-sub">dev-team templates · persona + skills + tool whitelist + boot prompt · used when master spawns a worker</span></h2>
+        <button type="button" class="primary-btn" id="team-new-btn">+ New Template</button>
+      </header>
+
+      <!-- New / edit modal -->
+      <div class="modal-backdrop" id="team-modal" hidden>
+        <div class="modal modal-wide">
+          <header class="modal-header">
+            <h3 id="team-modal-title">New Team Template</h3>
+            <button type="button" class="modal-close" id="team-modal-close">✕</button>
+          </header>
+          <form class="modal-body" id="team-form">
+            <div class="form-row">
+              <label>Name <span class="required">*</span></label>
+              <input type="text" id="team-name" placeholder="e.g. code-review, feature-dev, incident-response" autocomplete="off" required />
+              <div class="form-hint">Used as the template ID and filename. Alphanumerics + . - _ only.</div>
+            </div>
+            <div class="form-row">
+              <label>Description</label>
+              <input type="text" id="team-description" placeholder="One-line description of what this team does" autocomplete="off" />
+            </div>
+            <div class="form-row">
+              <label>Persona <span class="dim">(system prompt for the team lead)</span></label>
+              <textarea id="team-persona" rows="6" placeholder="You are an AI code reviewer. Your job is to read PR diffs, run coderabbit_review_local, synthesize findings into a single readable summary, and report back to the master via subctl_team_report. You never push, merge, or modify code yourself."></textarea>
+              <div class="form-hint">Sets the lead's role + tone + scope. Master prepends a worker-preface before this when spawning, so don't redefine "you are subctl master".</div>
+            </div>
+            <div class="form-row">
+              <label>Default autonomy</label>
+              <select id="team-autonomy">
+                <option value="ask">ask — propose every action</option>
+                <option value="drive">drive — act on most, escalate push/merge/deploy</option>
+                <option value="shadow">shadow — observe only</option>
+              </select>
+            </div>
+            <div class="form-row">
+              <label>Boot prompt <span class="dim">(first message after spawn)</span></label>
+              <textarea id="team-boot-prompt" rows="3" placeholder="Read CLAUDE.md and any RESUME.md in the project. Then ask Jason what scope to start with."></textarea>
+            </div>
+            <div class="form-row">
+              <label>Tool families <span class="dim">(what the lead may call)</span></label>
+              <div class="team-tools-grid" id="team-tools-grid">
+                <div class="dim small">loading…</div>
+              </div>
+            </div>
+            <div class="form-row">
+              <label>Skills <span class="dim">(from your local catalog · select multiple)</span></label>
+              <div class="team-skills-picker">
+                <input type="text" id="team-skills-filter" placeholder="filter skills…" autocomplete="off" />
+                <div class="team-skills-list" id="team-skills-list">
+                  <div class="dim small">loading…</div>
+                </div>
+                <div class="team-skills-selected" id="team-skills-selected">
+                  <div class="dim small">no skills selected</div>
+                </div>
+              </div>
+            </div>
+            <div class="form-status" id="team-result" hidden></div>
+            <footer class="modal-footer">
+              <button type="button" class="secondary-btn" id="team-cancel">cancel</button>
+              <button type="submit" class="primary-btn" id="team-submit">save</button>
+            </footer>
+          </form>
+        </div>
+      </div>
+
+      <div class="teams-layout">
+        <aside class="teams-list-pane">
+          <div class="teams-list" id="teams-list">
+            <div class="dim small" style="padding:18px">loading…</div>
+          </div>
+        </aside>
+
+        <section class="team-detail-pane" id="team-detail-pane">
+          <div class="dim small" style="padding:24px">select a template on the left, or click <strong>+ New Template</strong> above</div>
+        </section>
+      </div>
+    </section>
+
+    <!-- ── Skills tab ──────────────────────────────────────────────── -->
+    <section class="skills-screen" data-tab="skills">
+      <header class="screen-header">
+        <h2>Skills <span class="screen-sub">catalog of imported Claude Code skills · used by team templates to give dev-team leads scoped capabilities</span></h2>
+        <div class="screen-header-actions">
+          <button type="button" class="secondary-btn" id="skills-refresh-btn">refresh</button>
+          <button type="button" class="primary-btn" id="skills-import-btn">+ Import from GitHub</button>
+        </div>
+      </header>
+
+      <!-- Import modal -->
+      <div class="modal-backdrop" id="skills-import-modal" hidden>
+        <div class="modal" role="dialog" aria-labelledby="skills-import-title">
+          <header class="modal-header">
+            <h3 id="skills-import-title">Import skills from a GitHub repo</h3>
+            <button type="button" class="modal-close" id="skills-import-close" aria-label="close">✕</button>
+          </header>
+          <form class="modal-body" id="skills-import-form">
+            <div class="form-row">
+              <label>Repository</label>
+              <input type="text" id="skills-import-repo" placeholder="owner/repo or full https URL" autocomplete="off" required />
+              <div class="form-hint">Examples: <code>mattpocock/skills</code>, <code>affaan-m/everything-claude-code</code>. The repo must have a top-level <code>skills/</code> directory of <code>SKILL.md</code> files.</div>
+            </div>
+            <div class="form-row">
+              <label>Source name <span class="dim">(optional)</span></label>
+              <input type="text" id="skills-import-source" placeholder="defaults to the owner name" autocomplete="off" />
+              <div class="form-hint">Local label for this collection. Used to namespace skill IDs (e.g. <code>mattpocock/engineering/grill-with-docs</code>).</div>
+            </div>
+            <div class="form-status" id="skills-import-status" hidden></div>
+            <footer class="modal-footer">
+              <button type="button" class="secondary-btn" id="skills-import-cancel">cancel</button>
+              <button type="submit" class="primary-btn" id="skills-import-submit">import</button>
+            </footer>
+          </form>
+        </div>
+      </div>
+
+      <div class="skills-layout">
+        <aside class="skills-sources-pane">
+          <div class="skills-sources-head">
+            <h3>Sources</h3>
+            <span class="dim small" id="skills-sources-count">0</span>
+          </div>
+          <div class="skills-sources-list" id="skills-sources-list">
+            <div class="dim small" style="padding:12px">no sources imported</div>
+          </div>
+        </aside>
+
+        <section class="skills-main-pane">
+          <div class="skills-toolbar">
+            <input type="text" id="skills-filter" placeholder="filter skills by name or description…" />
+            <span class="skills-meta" id="skills-meta">0 skills</span>
+          </div>
+          <div class="skills-list" id="skills-list">
+            <div class="dim small" style="padding:24px">no skills imported yet — click <strong>+ Import from GitHub</strong> above</div>
+          </div>
+        </section>
+
+        <section class="skills-detail-pane" id="skills-detail-pane">
+          <div class="dim small" style="padding:24px">select a skill to preview its SKILL.md</div>
+        </section>
+      </div>
+    </section>
+
+    <!-- ── Settings tab ────────────────────────────────────────────── -->
+    <section class="settings-screen" data-tab="settings">
+      <header class="screen-header">
+        <h2>Settings <span class="screen-sub">system health · channels · API keys · OAuth · config files</span></h2>
+        <button type="button" class="secondary-btn" id="settings-refresh-btn">refresh all</button>
+      </header>
+
+      <div class="settings-grid">
+        <!-- 1. System health: are required tools installed? -->
+        <section class="settings-card">
+          <div class="settings-card-head">
+            <h3>System health</h3>
+            <span class="settings-card-meta" id="settings-health-summary">checking…</span>
+          </div>
+          <div class="settings-card-body" id="settings-health-body">loading…</div>
+        </section>
+
+        <!-- 2. Telegram channel -->
+        <section class="settings-card">
+          <div class="settings-card-head">
+            <h3>Telegram</h3>
+            <span class="settings-card-meta" id="settings-tg-status">checking…</span>
+          </div>
+          <div class="settings-card-body" id="settings-tg-body">
+            <div class="form-row">
+              <label>Bot token <span class="dim">(BotFather)</span></label>
+              <input type="password" id="settings-tg-token" placeholder="paste new token to replace, or leave blank to keep current" autocomplete="new-password" />
+            </div>
+            <div class="form-row">
+              <label>Chat ID</label>
+              <input type="text" id="settings-tg-chatid" placeholder="numeric chat id (your DM)" autocomplete="off" />
+            </div>
+            <div class="settings-actions">
+              <button type="button" class="primary-btn" id="settings-tg-save">save & test</button>
+              <button type="button" class="secondary-btn" id="settings-tg-test">test current</button>
+            </div>
+            <div class="settings-result" id="settings-tg-result" hidden></div>
+          </div>
+        </section>
+
+        <!-- 3. API keys / cloud providers (status only, set via shell) -->
+        <section class="settings-card">
+          <div class="settings-card-head">
+            <h3>API keys (cloud providers)</h3>
+            <span class="settings-card-meta dim small">read-only — set via shell profile</span>
+          </div>
+          <div class="settings-card-body" id="settings-keys-body">loading…</div>
+        </section>
+
+        <!-- Obsidian vault path -->
+        <section class="settings-card">
+          <div class="settings-card-head">
+            <h3>Obsidian vault</h3>
+            <span class="settings-card-meta" id="settings-vault-status">checking…</span>
+          </div>
+          <div class="settings-card-body" id="settings-vault-body">
+            <div class="form-row">
+              <label>Vault root path</label>
+              <input type="text" id="settings-vault-root" placeholder="/Users/sem/Documents/Obsidian Vault" autocomplete="off" />
+              <div class="form-hint">Where master writes vault entries via <code>vault_append</code> and where the Memory tab + project pages look for vaults. Use <code>~</code> for your home directory.</div>
+            </div>
+            <div class="settings-actions">
+              <button type="button" class="primary-btn" id="settings-vault-save">save</button>
+            </div>
+            <div class="settings-result" id="settings-vault-result" hidden></div>
+          </div>
+        </section>
+
+        <!-- 4. OAuth connections per Claude account -->
+        <section class="settings-card">
+          <div class="settings-card-head">
+            <h3>OAuth (Claude accounts)</h3>
+            <span class="settings-card-meta dim small">run <code>subctl auth claude &lt;alias&gt;</code> to authenticate</span>
+          </div>
+          <div class="settings-card-body" id="settings-oauth-body">loading…</div>
+        </section>
+
+        <!-- 5. Config files -->
+        <section class="settings-card settings-card-wide">
+          <div class="settings-card-head">
+            <h3>Config files</h3>
+            <span class="settings-card-meta dim small">read-only viewer · edit on disk + restart to apply</span>
+          </div>
+          <div class="settings-card-body" id="settings-configs-body">
+            <div class="settings-config-tabs" id="settings-config-tabs">
+              <button type="button" class="config-tab active" data-config="policy">policy.json</button>
+              <button type="button" class="config-tab" data-config="providers">providers.json</button>
+              <button type="button" class="config-tab" data-config="notify">master-notify.json</button>
+            </div>
+            <pre class="settings-config-view" id="settings-config-view">loading…</pre>
+          </div>
+        </section>
+      </div>
+    </section>
   </main>
+  </div><!-- /.app-shell -->
 
   <footer class="footer">
     <span>subctl <span id="footer-version">v0.0.0</span></span>

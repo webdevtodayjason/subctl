@@ -51,13 +51,14 @@ EOF
 
 # subctl orch spawn --account <a> --project <p> [--prompt "..."] [--orchestrator] [--continue] [--skip-perms] [--resume <sid>]
 subctl_orch_spawn() {
-  local account="" project="" prompt=""
+  local account="" project="" prompt="" template=""
   local orchestrator=false skip_perms=false continue_flag=false resume=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --account|-a)     account="$2"; shift 2 ;;
       --project|-c)     project="$2"; shift 2 ;;
       --prompt|-p)      prompt="$2"; shift 2 ;;
+      --template|-t)    template="$2"; shift 2 ;;
       --orchestrator|-o) orchestrator=true; shift ;;
       --skip-perms|-y)  skip_perms=true; shift ;;
       --continue)       continue_flag=true; shift ;;
@@ -98,13 +99,15 @@ the operator. Don't dispatch sub-workers without explicit authorization.
     --arg p "$project" \
     --arg pr "$prompt" \
     --arg rs "$resume" \
+    --arg tpl "$template" \
     --argjson o "$orchestrator" \
     --argjson sp "$skip_perms" \
     --argjson c "$continue_flag" \
     '{
       account: $a, project: $p, prompt: $pr,
       orchestrator: $o, skip_perms: $sp, continue: $c,
-      resume: (if $rs == "" then null else $rs end)
+      resume: (if $rs == "" then null else $rs end),
+      template: (if $tpl == "" then null else $tpl end)
     }')
   local resp
   resp=$(curl -sS --max-time 35 -X POST \
