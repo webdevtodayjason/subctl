@@ -1,0 +1,33 @@
+# config/policy/defaults.toml
+# Shipped defaults — lowest-priority policy in the resolution chain.
+# Per docs/policy-schema.md §1, this file ships with subctl and is the
+# fallback when no project policy, no user config, and no preset apply.
+# If a project's ecosystem is detected, the corresponding preset
+# (config/policy/presets/<eco>.toml) provides the gated allowlist.
+# This file is the floor: it sets the default mode and the most
+# universal deny_always set that always applies regardless of preset.
+
+default_mode = "gated"
+
+[mode.gated]
+
+[mode.gated.deny_always]
+substrings = [
+  # The most universally-destructive patterns. Presets may add more.
+  "rm -rf /",
+  "rm -rf $HOME",
+  ":(){:|:&};:",
+  ":(){ :|:& };:",
+  "dd if=/dev/zero of=/dev/sd",
+  "mkfs.",
+  "shred -uvz",
+]
+
+regex = [
+  # The single most important rule — close inline interpreters
+  # everywhere, even before any preset loads.
+  '\bnode\s+-e\b',
+  '\bpython3?\s+-c\b',
+  '\bbash\s+-c\b',
+  '\bsh\s+-c\b',
+]

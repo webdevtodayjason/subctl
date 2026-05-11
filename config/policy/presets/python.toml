@@ -1,0 +1,255 @@
+# config/policy/presets/python.toml
+# Gated-mode policy for Python projects.
+# Loaded automatically when pyproject.toml / setup.py / requirements.txt / Pipfile / uv.lock is detected.
+
+[mode.gated]
+
+[mode.gated.allow]
+commands = [
+  # filesystem inspection (read-only)
+  "pwd", "ls", "cat", "head", "tail", "wc", "file", "tree",
+
+  # text processing
+  "echo", "grep", "rg", "fd", "find", "sort", "uniq", "cut", "awk", "sed",
+  "jq", "yq", "tr", "diff",
+
+  # archive (read)
+  "tar", "unzip", "gunzip", "gzip",
+
+  # process
+  "which", "type", "env", "date", "true", "false",
+
+  # python toolchain — restricted forms only
+  # 'python' and 'python3' raw are NOT here; they're in allow_pattern with strict args
+]
+
+# --- python / python3 (strict — only -m and script path) ---
+
+[[mode.gated.allow_pattern]]
+command = "python"
+args = ["-m"]
+# After -m, the next token must be in allowed python_modules below
+
+[[mode.gated.allow_pattern]]
+command = "python3"
+args = ["-m"]
+
+# Allow 'python script.py' style — the args list is empty so the first non-flag
+# arg is whatever the agent passed. The deny_always regex blocks '-c' inline forms.
+[[mode.gated.allow_pattern]]
+command = "python"
+args = []
+deny_if_arg_contains = ["-c", "-i"]
+# blocks: python -c '...' (inline code), python -i (interactive REPL)
+# tradeoff: bare 'python -' (stdin) and 'python --' are intentionally NOT blocked
+# here; the deny_always.regex below catches the most common stdin-inline-code
+# variants (heredoc 'python <<EOF' and here-string 'python <<<').
+
+[[mode.gated.allow_pattern]]
+command = "python3"
+args = []
+deny_if_arg_contains = ["-c", "-i"]
+
+[mode.gated.python_modules]
+allowed = [
+  "pytest",
+  "unittest",
+  "pip",
+  "uv",
+  "venv",
+  "build",
+  "ruff",
+  "mypy",
+  "pyright",
+  "black",
+  "isort",
+  "tox",
+  "nox",
+  "twine",        # for pkg upload — push-equivalent, leave in but document
+  "compileall",
+  "json.tool",
+  "http.server",  # opt-out per project if undesired
+]
+
+# --- pip ---
+
+[[mode.gated.allow_pattern]]
+command = "pip"
+args = [
+  "install", "uninstall", "list", "show", "freeze",
+  "check", "download", "wheel", "config",
+]
+deny_if_arg_contains = [
+  "--target=/",
+  "--root=/",
+  "--prefix=/",
+  "--install-option=--prefix=/",
+]
+
+[[mode.gated.allow_pattern]]
+command = "pip3"
+args = [
+  "install", "uninstall", "list", "show", "freeze",
+  "check", "download", "wheel", "config",
+]
+deny_if_arg_contains = [
+  "--target=/",
+  "--root=/",
+  "--prefix=/",
+]
+
+# --- uv (modern python toolchain) ---
+
+[[mode.gated.allow_pattern]]
+command = "uv"
+args = [
+  "add", "remove", "sync", "lock", "tree",
+  "run", "pip", "python", "tool", "venv",
+  "build", "publish",
+  "init", "cache",
+]
+
+# 'uv run X' has the same escape-hatch risk as 'npm run X' — uv run executes
+# any installed entrypoint. Constrain to declared scripts in pyproject.toml.
+[mode.gated.uv]
+allowed_run_targets = [
+  "pytest", "ruff", "mypy", "black", "isort",
+  "test", "lint", "build", "format",
+]
+
+# --- pytest (direct) ---
+
+[[mode.gated.allow_pattern]]
+command = "pytest"
+args = []
+deny_if_arg_contains = [
+  "--collect-only-and-execute",   # hypothetical; placeholder for future flags
+  "--rootdir=/",
+  "--basetemp=/",
+]
+
+# --- poetry ---
+
+[[mode.gated.allow_pattern]]
+command = "poetry"
+args = [
+  "add", "remove", "install", "update", "lock",
+  "show", "version", "build", "publish",
+  "run", "shell",
+  "config",
+]
+
+# 'poetry run' has the same constraint as 'uv run' / 'npm run'
+[mode.gated.poetry]
+allowed_run_targets = [
+  "pytest", "ruff", "mypy", "black",
+  "test", "lint", "build", "format",
+]
+
+# --- pipenv (legacy but extant) ---
+
+[[mode.gated.allow_pattern]]
+command = "pipenv"
+args = ["install", "uninstall", "lock", "sync", "graph", "check"]
+
+# --- conda / mamba (heavy hands; restricted) ---
+
+[[mode.gated.allow_pattern]]
+command = "conda"
+args = ["info", "list", "env", "search", "config"]
+# conda install / remove are NOT in the default; opt-in per project
+
+[[mode.gated.allow_pattern]]
+command = "mamba"
+args = ["info", "list", "env", "search"]
+
+# --- git (same as node preset) ---
+
+[[mode.gated.allow_pattern]]
+command = "git"
+args = [
+  "status", "diff", "log", "show", "branch", "tag",
+  "blame", "ls-files", "rev-parse", "config",
+  "remote", "describe", "shortlog",
+  "add", "commit", "checkout", "switch", "restore",
+  "merge", "rebase", "cherry-pick", "stash", "reset",
+  "mv", "rm",
+  "fetch", "pull",
+]
+deny_if_arg_contains = [
+  "--hard",
+  "clean -fdx",
+  "clean -fd",
+]
+
+# --- gh ---
+
+[[mode.gated.allow_pattern]]
+command = "gh"
+args = [
+  "repo", "pr", "issue", "release",
+  "workflow", "run",
+  "auth", "api", "label", "browse",
+]
+
+# --- docker (read-only by default) ---
+
+[[mode.gated.allow_pattern]]
+command = "docker"
+args = ["ps", "images", "logs", "inspect", "version", "info", "compose"]
+
+# --- curl / wget ---
+
+[[mode.gated.allow_pattern]]
+command = "curl"
+args = []
+
+[[mode.gated.allow_pattern]]
+command = "wget"
+args = []
+
+# --- universal deny ---
+
+[mode.gated.deny_always]
+substrings = [
+  "rm -rf", "rm -fr", "rm  -rf", "rm -r -f", "rm -f -r",
+  "find / -delete", "find . -delete",
+  "dd if=", "mkfs", "mkfs.", "shred",
+  "> /dev/sd", "> /dev/nvme",
+  "chmod -R 777", "chown -R",
+  ":(){:|:&};:", ":(){ :|:& };:",
+  "rm -rf .venv", "rm -rf venv",
+  "rm -rf ~/.cache/pip", "rm -rf ~/.cache/uv",
+  "| sh\n", "| bash\n", "|sh ", "|bash ",
+]
+
+regex = [
+  # curl/wget piped to shell
+  '\bcurl\b[^|]*\|\s*(sh|bash|zsh|dash)\b',
+  '\bwget\b[^|]*\|\s*(sh|bash|zsh|dash)\b',
+
+  # inline code across interpreters
+  '\bpython3?\s+-c\b',
+  '\bnode\s+-e\b',
+  '\bbun\s+-e\b',
+  '\bperl\s+-e\b',
+  '\bruby\s+-e\b',
+  '\bbash\s+-c\b',
+  '\bsh\s+-c\b',
+  '\bzsh\s+-c\b',
+
+  # exec / eval surfaces
+  '\beval\s+["\047]?\$\(',
+  '\bsource\s+/(tmp|var/tmp)/',
+  '\.\s+/(tmp|var/tmp)/',
+
+  # base64 -> shell
+  '\bbase64\s+-d\b.*\|\s*(sh|bash)\b',
+
+  # dotfile auto-source persistence
+  '>>?\s*~/\.(bashrc|zshrc|profile|bash_profile|zprofile|zshenv)\b',
+
+  # python-specific: heredoc executing inline code
+  'python3?\s*<<\s*["\047]?EOF',
+  'python3?\s*<<<',
+]

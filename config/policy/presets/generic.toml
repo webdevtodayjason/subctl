@@ -1,0 +1,96 @@
+# config/policy/presets/generic.toml
+# Gated-mode policy for projects with no detected ecosystem.
+# Restrictive by design — opt in to additional surface per project.
+
+[mode.gated]
+
+[mode.gated.allow]
+commands = [
+  # filesystem inspection (read-only)
+  "pwd", "ls", "cat", "head", "tail", "wc", "file", "tree",
+  "stat", "du", "df",
+
+  # text processing
+  "echo", "grep", "rg", "fd", "find", "sort", "uniq", "cut", "awk", "sed",
+  "jq", "yq", "tr", "diff", "comm",
+
+  # archive (read)
+  "tar", "unzip", "gunzip", "gzip", "zcat",
+
+  # process / shell built-ins
+  "which", "type", "env", "date", "true", "false", "printf",
+
+  # version inspection (read-only, no install)
+  "uname", "hostname", "whoami", "id", "groups",
+]
+
+# --- git (same shape as ecosystem presets) ---
+
+[[mode.gated.allow_pattern]]
+command = "git"
+args = [
+  "status", "diff", "log", "show", "branch", "tag",
+  "blame", "ls-files", "rev-parse", "config",
+  "remote", "describe", "shortlog",
+  "add", "commit", "checkout", "switch", "restore",
+  "merge", "rebase", "cherry-pick", "stash", "reset",
+  "mv", "rm",
+  "fetch", "pull",
+]
+deny_if_arg_contains = [
+  "--hard",
+  "clean -fdx",
+  "clean -fd",
+]
+
+# --- gh ---
+
+[[mode.gated.allow_pattern]]
+command = "gh"
+args = [
+  "repo", "pr", "issue", "release",
+  "workflow", "run",
+  "auth", "api", "label", "browse",
+]
+
+# --- curl / wget (no pipe to shell; same as ecosystem presets) ---
+
+[[mode.gated.allow_pattern]]
+command = "curl"
+args = []
+
+[[mode.gated.allow_pattern]]
+command = "wget"
+args = []
+
+# --- universal deny ---
+
+[mode.gated.deny_always]
+substrings = [
+  "rm -rf", "rm -fr", "rm  -rf", "rm -r -f", "rm -f -r",
+  "find / -delete", "find . -delete",
+  "dd if=", "mkfs", "mkfs.", "shred",
+  "> /dev/sd", "> /dev/nvme",
+  "chmod -R 777", "chown -R",
+  ":(){:|:&};:", ":(){ :|:& };:",
+  "| sh\n", "| bash\n", "|sh ", "|bash ",
+]
+
+regex = [
+  '\bcurl\b[^|]*\|\s*(sh|bash|zsh|dash)\b',
+  '\bwget\b[^|]*\|\s*(sh|bash|zsh|dash)\b',
+  '\bnode\s+-e\b',
+  '\bbun\s+-e\b',
+  '\bpython3?\s+-c\b',
+  '\bperl\s+-e\b',
+  '\bruby\s+-e\b',
+  '\bbash\s+-c\b',
+  '\bsh\s+-c\b',
+  '\bzsh\s+-c\b',
+  '\beval\s+["\047]?\$\(',
+  '\bsource\s+/(tmp|var/tmp)/',
+  '\.\s+/(tmp|var/tmp)/',
+  '\bbase64\s+-d\b.*\|\s*(sh|bash)\b',
+  '>>?\s*~/\.(bashrc|zshrc|profile|bash_profile|zprofile|zshenv)\b',
+  'python3?\s*<<\s*["\047]?EOF',
+]

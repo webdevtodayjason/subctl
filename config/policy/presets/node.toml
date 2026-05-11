@@ -1,0 +1,252 @@
+# config/policy/presets/node.toml
+# Gated-mode policy for Node/TypeScript/JavaScript projects.
+# Loaded automatically when package.json is detected.
+
+[mode.gated]
+
+[mode.gated.allow]
+commands = [
+  # filesystem inspection (read-only)
+  "pwd", "ls", "cat", "head", "tail", "wc", "file", "tree",
+
+  # text processing
+  "echo", "grep", "rg", "fd", "find", "sort", "uniq", "cut", "awk", "sed",
+  "jq", "yq", "tr", "diff",
+
+  # archive (read)
+  "tar", "unzip", "gunzip", "gzip",
+
+  # network read (very narrow)
+  # NOTE: 'curl' and 'wget' are intentionally NOT in raw allow.
+  # they appear under allow_pattern with strict arg validation.
+
+  # process / shell built-ins
+  "which", "type", "env", "date", "true", "false",
+
+  # node ecosystem
+  "node", "npx", "tsc", "tsx",
+  # NOTE: 'node -e' is denied by deny_always regex
+  # NOTE: 'npx' is allowed but npx-installed binaries still pass through the policy gate on next call
+]
+
+# --- npm (most surface area, most care) ---
+
+[[mode.gated.allow_pattern]]
+command = "npm"
+args = [
+  "install", "i", "ci",
+  "uninstall", "un", "remove", "rm",
+  "update", "up",
+  "list", "ls", "ll",
+  "view", "info", "show",
+  "audit",
+  "outdated",
+  "test", "t",
+  "run", "run-script",
+  "start",
+  "version",
+  "init",
+  "config",
+  "pack",
+]
+deny_if_arg_contains = [
+  "--ignore-scripts=false",   # explicit lifecycle script enable; default is fine
+  "--unsafe-perm",
+  "--allow-root",
+]
+
+[mode.gated.npm]
+# 'npm run X' is constrained to scripts named here OR declared in package.json
+# Most package.json scripts will be in this set automatically.
+allowed_scripts = [
+  "test", "test:unit", "test:integration", "test:e2e", "test:ci", "test:watch",
+  "lint", "lint:fix",
+  "build", "build:dev", "build:prod",
+  "typecheck", "tsc",
+  "format", "fmt", "prettier",
+  "dev", "start", "serve",
+  "clean",
+]
+
+# --- pnpm ---
+
+[[mode.gated.allow_pattern]]
+command = "pnpm"
+args = [
+  "install", "i", "add", "remove", "rm",
+  "update", "up", "outdated",
+  "list", "ls", "why",
+  "test", "run",
+  "exec", "dlx",
+  "audit",
+]
+deny_if_arg_contains = ["--ignore-scripts=false", "--unsafe-perm"]
+
+[mode.gated.pnpm]
+allowed_scripts = [
+  "test", "test:unit", "test:integration", "test:e2e",
+  "lint", "lint:fix",
+  "build", "typecheck",
+  "format", "fmt",
+  "dev", "start",
+  "clean",
+]
+
+# --- bun ---
+
+[[mode.gated.allow_pattern]]
+command = "bun"
+args = [
+  "install", "add", "remove",
+  "update", "outdated",
+  "run", "test", "x",
+  "pm", "build",
+]
+deny_if_arg_contains = ["--unsafe-perm"]
+
+[mode.gated.bun]
+allowed_scripts = [
+  "test", "test:unit", "test:integration",
+  "lint", "build", "typecheck", "format",
+  "dev", "start", "clean",
+]
+
+# --- yarn (classic + berry) ---
+
+[[mode.gated.allow_pattern]]
+command = "yarn"
+args = [
+  "install", "add", "remove",
+  "upgrade", "outdated",
+  "list", "info", "why",
+  "test", "run",
+  "audit",
+]
+deny_if_arg_contains = ["--unsafe-perm"]
+
+# --- git (broad, but no push by default) ---
+
+[[mode.gated.allow_pattern]]
+command = "git"
+args = [
+  # read
+  "status", "diff", "log", "show", "branch", "tag",
+  "blame", "ls-files", "rev-parse", "config",
+  "remote", "describe", "shortlog",
+
+  # write (local)
+  "add", "commit", "checkout", "switch", "restore",
+  "merge", "rebase", "cherry-pick", "stash", "reset",
+  "mv", "rm",
+
+  # write (remote, read direction)
+  "fetch", "pull",
+
+  # not allowed by default: push, push --force, clean -fdx
+]
+deny_if_arg_contains = [
+  "--hard",     # 'git reset --hard' opt-in (operator must allowlist it)
+  "clean -fdx", # 'git clean -fdx' opt-in
+  "clean -fd",
+]
+
+# --- gh (GitHub CLI) ---
+
+[[mode.gated.allow_pattern]]
+command = "gh"
+args = [
+  "repo", "pr", "issue", "release",
+  "workflow", "run",
+  "auth", "api",
+  "label", "browse",
+]
+
+# --- docker (read-only by default; opt-in for run) ---
+
+[[mode.gated.allow_pattern]]
+command = "docker"
+args = [
+  "ps", "images", "logs", "inspect", "version", "info",
+  "compose",
+]
+# Notably absent: run, exec, build, push, rm, rmi, system prune.
+# These are opt-in per project — many node projects don't need docker at all.
+
+# --- curl / wget (read-only HTTP, no pipe-to-shell) ---
+
+[[mode.gated.allow_pattern]]
+command = "curl"
+args = []   # no first non-flag arg constraint; URL is the typical first arg
+# deny_always regex blocks: curl ... | sh
+
+[[mode.gated.allow_pattern]]
+command = "wget"
+args = []
+
+# --- universal deny ---
+
+[mode.gated.deny_always]
+substrings = [
+  # destructive filesystem
+  "rm -rf",
+  "rm -fr",
+  "rm  -rf",
+  "rm -r -f",
+  "rm -f -r",
+  "find / -delete",
+  "find . -delete",
+
+  # destructive system
+  "dd if=",
+  "mkfs",
+  "mkfs.",
+  "shred",
+  "> /dev/sd",
+  "> /dev/nvme",
+  "chmod -R 777",
+  "chown -R",
+
+  # fork bomb
+  ":(){:|:&};:",
+  ":(){ :|:& };:",
+
+  # package manager nukes
+  "rm -rf node_modules",        # use 'npm/pnpm/bun store prune' instead
+  "rm -rf ~/.npm",
+  "rm -rf ~/.pnpm-store",
+
+  # network -> shell pipelines
+  "| sh\n",
+  "| bash\n",
+  "|sh ",
+  "|bash ",
+]
+
+regex = [
+  # curl/wget piped to shell (the canonical drive-by execution pattern)
+  '\bcurl\b[^|]*\|\s*(sh|bash|zsh|dash)\b',
+  '\bwget\b[^|]*\|\s*(sh|bash|zsh|dash)\b',
+
+  # inline code execution across interpreters
+  '\bnode\s+-e\b',
+  '\bnode\s+--eval\b',
+  '\bbun\s+-e\b',
+  '\bdeno\s+eval\b',
+  '\bpython3?\s+-c\b',
+  '\bperl\s+-e\b',
+  '\bruby\s+-e\b',
+  '\bbash\s+-c\b',
+  '\bsh\s+-c\b',
+  '\bzsh\s+-c\b',
+
+  # eval / source of untrusted content
+  '\beval\s+["\047]?\$\(',                         # eval $(...)
+  '\bsource\s+/(tmp|var/tmp)/',                    # source from temp dirs
+  '\.\s+/(tmp|var/tmp)/',                          # `. /tmp/...`
+
+  # base64 -> shell
+  '\bbase64\s+-d\b.*\|\s*(sh|bash)\b',
+
+  # writing to dotfiles that auto-source on next shell
+  '>>?\s*~/\.(bashrc|zshrc|profile|bash_profile|zprofile|zshenv)\b',
+]
