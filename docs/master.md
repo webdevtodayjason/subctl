@@ -971,6 +971,140 @@ and approved before it lands in the repo.
   are managed by `npx claude-mem install` and similar; subctl
   doesn't replicate that surface.
 
+### Phase 3p — Personal Skills System (ArgentOS-style)
+
+Operator request 2026-05-10: "I don't see a personal skills system
+like we have in ArgentOS."
+
+Today (post v2.1.0) subctl has:
+- `subctl_skills_*` imports skills from public git repos into a
+  catalog at `~/.config/subctl/skills/`
+- `skill_create / skill_revise / skill_remove` master tools, but
+  **constrained to the master-skill source only** with a category
+  allowlist (`team-coordination`, `escalation-patterns`,
+  `code-review-synthesis`, …). The master can author skills FOR
+  ITSELF; the operator cannot author skills via the dashboard.
+- Per-cfg-dir symlinking via `subctl_settings_install_claude_dir`,
+  which lifts repo-baked skills (`subctl`, `autonomy`,
+  `orchestrator-mode`) into every Claude config dir at install
+  time.
+
+What ArgentOS has and subctl doesn't:
+
+1. **Operator-facing skill authoring UI** — write/edit a skill from
+   the dashboard without dropping to a text editor. Live preview
+   of the SKILL.md, frontmatter validation, syntax highlight.
+2. **Multi-source authoring** — author skills targeted at the
+   master, AT specific dev-team templates, AT specific Claude
+   accounts, OR at the operator's own global `~/.claude/`.
+3. **Per-skill enable/disable toggles** — turn a skill off without
+   deleting it, with a per-source override.
+4. **Skill marketplace / sharing** — export a skill as a portable
+   bundle, import from a URL or other operator's bundle.
+5. **Version history** — track edits over time, diff between
+   revisions, roll back.
+
+**Design sketch (build later):**
+
+- New Settings → Skills tab in the dashboard with three sub-tabs:
+  - **Catalog** — every skill across every source, filterable by
+    source / target / enabled-state. Click → editor pane.
+  - **Editor** — markdown + frontmatter editor (CodeMirror or
+    Lexical, no build step). Live syntax check on frontmatter
+    (`name`, `description`, `model?`, `tools?`). Save → writes to
+    the source's filesystem location + reloads relevant daemons.
+  - **Bundles** — export selected skills as a `.subctl-skills.tar.gz`
+    (manifest + content + signatures). Import from URL.
+- Backend additions:
+  - `POST /api/skills/author` { source, path, body } — write a skill
+    with safety checks (path under expected source root, no `..`,
+    valid frontmatter).
+  - `POST /api/skills/toggle` { id, enabled } — flip an enable bit
+    stored in `~/.config/subctl/skills/.state.json`.
+  - `GET /api/skills/bundle/export` — stream a tar.gz.
+  - `POST /api/skills/bundle/import` (multipart) — sandboxed import.
+- New master tool `skill_propose` — when claude-mem captures a
+  recurring pattern, the master proposes a skill via
+  `notify_dashboard({kind: "memory"})` with a click-to-author link
+  pointing at the editor pre-populated with a draft.
+
+**Out of scope for first cut:**
+
+- Cross-operator sharing (no auth / discovery yet).
+- Skill testing harness (running a skill against a worker in a
+  sandbox before committing).
+- Automated linting beyond frontmatter validation.
+
+**Acceptance:** operator can compose a new skill from the dashboard,
+save it, see it loaded by the next master/worker prompt without
+restart.
+
+### Phase 3q — Vault editor (canvas)
+
+Operator request 2026-05-10: "The Obsidian Vault. I need to be
+able to edit those documents or add new ones, so that needs to
+have an editor. I think that's going to have to be a canvas."
+
+Today (v2.5.0) the vault viewer is read-only — Phase 3n shipped
+the tree + rendered note pane + wikilink navigation, but no edit
+path. Master writes via `vault_append`; humans edit via the
+desktop Obsidian app. That's friction for the operator working
+remotely (chromebook / phone / no-Obsidian-app machine).
+
+**Design sketch:**
+
+- **Editor surface:** CodeMirror 6 in markdown mode. (Considered:
+  Lexical, ProseMirror, Monaco. CM6 has the smallest CDN footprint,
+  cleanest markdown story, and works without a build step — matches
+  subctl's "no build" convention.)
+- **Toggle:** the rendered-note pane gets a `[ Edit ]` button in
+  its meta header. Click → switches the right pane to CM6 with the
+  raw markdown loaded; click `[ Save ]` → POST to `/api/vault/<v>/note`
+  with `{path, body, expected_mtime}`; conflict-check the mtime
+  against what's on disk and refuse if it changed (operator just
+  reloads the note). Click `[ Cancel ]` discards.
+- **New note:** `[ + New Note ]` button in the tree pane → prompts
+  for a path → POST `/api/vault/<v>/note` with empty body.
+- **Canvas mode** (operator specifically asked): a third pane mode
+  beyond render/edit — an HTML canvas with Excalidraw-style
+  freeform drawing + sticky-note placement, saved as
+  `<note>.excalidraw.json` next to the .md. Could lean on Excalidraw's
+  own embed library (CDN, no build).
+- **File watching:** new `GET /api/vault/<v>/stream` SSE endpoint
+  pushes `note-changed`/`note-added`/`note-removed` events as
+  filesystem events fire. The viewer subscribes when active and
+  re-fetches affected notes; reduces stale-content surprise when
+  the master writes via `vault_append` mid-edit.
+- **Conflict protocol:** save endpoint compares `expected_mtime`
+  (sent by client at edit-start) against current on-disk mtime;
+  if different, return 409 with the new content so the editor can
+  show a 3-way diff UI. Phase 1 just refuses + reloads.
+- **Backups:** every save snapshots the prior content to
+  `<note>.bak.<unix-ts>.md` (per-note, kept for 30 days). `vault_append`
+  unchanged — only the editor's writes create snapshots.
+
+**Backend additions:**
+
+```
+POST /api/vault/<v>/note          { path, body, expected_mtime? }
+DELETE /api/vault/<v>/note?path=  (operator-confirmed; rare)
+GET /api/vault/<v>/stream         (SSE: note changes)
+POST /api/vault/<v>/canvas        { path, scene }   // excalidraw scene
+GET /api/vault/<v>/canvas?path=   { scene }
+```
+
+**Out of scope for first cut:**
+
+- Real-time collaborative editing (single-operator for now).
+- Markdown WYSIWYG (CM6 stays plain-text + preview pane).
+- Cross-vault link rewriting on move/rename.
+- Plugin parity with Obsidian (Templater, DataView, etc.).
+
+**Acceptance:** operator opens a note, clicks Edit, types a paragraph,
+hits Save. The note updates on disk and via SSE the master's next
+`vault_link` reflects the new mtime. Saving with a stale mtime
+shows the conflict UI.
+
 ### Backlog (non-blocking)
 
 - Rename the dashboard's `detached` team-status label to

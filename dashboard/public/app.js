@@ -1283,12 +1283,79 @@
     }
     wireVaultForm();
 
+    // ── Personality preset tile (Phase 3k UI, v2.5.7) ──────────────────
+    // Hits /api/master/personality (GET = list + active, POST = swap).
+    // Hot-swap takes effect on next prompt — no daemon restart.
+    async function loadPersonality() {
+      const sel = $("personality-select");
+      const active = $("settings-personality-active");
+      const preview = $("personality-preview");
+      if (!sel) return;
+      try {
+        const r = await fetch("/api/master/personality");
+        const j = await r.json();
+        if (!j.ok) {
+          sel.innerHTML = "<option value=''>master unreachable</option>";
+          if (active) active.textContent = "—";
+          return;
+        }
+        sel.innerHTML = (j.presets || []).map((p) =>
+          `<option value="${escapeText(p.id)}" ${p.id === j.active ? "selected" : ""}>${escapeText(p.id)}</option>`
+        ).join("");
+        if (active) active.textContent = `active: ${j.active || "—"}`;
+        // Show preview text for the currently-selected preset
+        const updatePreview = () => {
+          const cur = (j.presets || []).find((p) => p.id === sel.value);
+          if (preview) preview.textContent = cur ? cur.preview : "";
+        };
+        sel.removeEventListener("change", sel._previewHandler);
+        sel._previewHandler = updatePreview;
+        sel.addEventListener("change", updatePreview);
+        updatePreview();
+      } catch (err) {
+        sel.innerHTML = "<option value=''>error</option>";
+        if (active) active.textContent = String(err).slice(0, 60);
+      }
+    }
+    const personalityApply = $("personality-apply");
+    if (personalityApply) {
+      personalityApply.addEventListener("click", async () => {
+        const sel = $("personality-select");
+        const pick = sel && sel.value;
+        if (!pick) return;
+        personalityApply.disabled = true;
+        try {
+          const r = await fetch("/api/master/personality", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ preset: pick }),
+          });
+          const j = await r.json();
+          if (!j.ok) {
+            if (window.notice && window.notice.error) {
+              window.notice.error("Personality switch failed", j.error || `HTTP ${r.status}`);
+            } else {
+              alert(j.error || `HTTP ${r.status}`);
+            }
+            return;
+          }
+          await loadPersonality();
+          if (window.notice) {
+            window.notice("Personality applied", `Master voice → ${j.active}. Takes effect on the next prompt.`);
+          }
+        } finally {
+          personalityApply.disabled = false;
+        }
+      });
+    }
+
     function refreshAll() {
       loadHealth();
       loadKeys();
       loadOAuth();
       loadTelegramStatus();
       loadVault();
+      loadPersonality();
     }
     refreshBtn.addEventListener("click", refreshAll);
     refreshAll();

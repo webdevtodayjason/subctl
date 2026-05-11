@@ -886,6 +886,29 @@
           <div class="settings-card-body" id="settings-health-body">loading…</div>
         </section>
 
+        <!-- Personality presets (Phase 3k) — voice/cadence selector for the
+             master daemon. Persona stays fixed; only HOW the master talks
+             changes. Hot-swap: takes effect on the next prompt, no restart. -->
+        <section class="settings-card">
+          <div class="settings-card-head">
+            <h3>Master personality</h3>
+            <span class="settings-card-meta" id="settings-personality-active">—</span>
+          </div>
+          <div class="settings-card-body" id="settings-personality-body">
+            <p class="dim small" style="margin-bottom:10px">Voice preset for the master daemon. Anti-hallucination rules apply across every preset — switching changes delivery, not behavior.</p>
+            <div class="form-row">
+              <label for="personality-select">Active preset</label>
+              <select id="personality-select" class="form-input">
+                <option value="">loading…</option>
+              </select>
+            </div>
+            <p class="dim small" id="personality-preview" style="margin-top:6px"></p>
+            <div class="form-actions">
+              <button type="button" class="primary-btn" id="personality-apply">Apply</button>
+            </div>
+          </div>
+        </section>
+
         <!-- 2. Telegram channel -->
         <section class="settings-card">
           <div class="settings-card-head">

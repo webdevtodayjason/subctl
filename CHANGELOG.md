@@ -4,6 +4,19 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.6.0] — 2026-05-10
+
+Minor — personality picker in the dashboard UI + roadmap (Phase 3p Personal Skills System, Phase 3q Vault Canvas Editor).
+
+### Added
+
+- **Settings → Master personality tile** with dropdown picker + Apply button. Hits the existing `/api/master/personality` endpoints (GET catalog, POST swap). Shows the currently-active preset, the seven built-ins (`straight-shooter`, `witty`, `sarcastic`, `robotic`, `arnold`, `elon`, `hilarious`), and a one-line preview of the selected preset. Hot-swap takes effect on the next prompt; no restart. Closes the gap reported 2026-05-10: "I don't see personas yet. Where would I get to that?" — answer: CLI worked since v2.2.0, dashboard UI lands now.
+
+### Roadmap (docs/master.md)
+
+- **Phase 3p — Personal Skills System (ArgentOS-style).** Operator-facing skill authoring UI: editor pane with frontmatter validation, multi-source targeting (master / dev-team templates / specific Claude accounts / global `~/.claude/`), per-skill enable-disable, bundle export/import. Design block sketches backend endpoints (`POST /api/skills/author`, `POST /api/skills/toggle`, `GET /api/skills/bundle/export`, `POST /api/skills/bundle/import`) plus a `skill_propose` master tool that surfaces recurring-pattern claude-mem observations as click-to-author drafts.
+- **Phase 3q — Vault editor (canvas).** Make the Phase 3n vault viewer writable. CodeMirror 6 from CDN for markdown editing (matches the "no build step" convention), `[ Edit ]` toggle on the rendered-note pane, conflict-detect on save via expected_mtime, optional Excalidraw-style freeform canvas mode for diagrams stored as `<note>.excalidraw.json`. New file-watch SSE so master writes via `vault_append` show up in real time in the viewer.
+
 ## [2.5.7] — 2026-05-10
 
 Patch — three operator-reported fixes from the post-shutdown playtest.
