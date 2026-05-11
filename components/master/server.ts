@@ -63,6 +63,7 @@ import { specforgeTools } from "./tools/specforge";
 import { schedulerTools, popDueFollowups } from "./tools/scheduler";
 import { attachmentsTools } from "./tools/attachments";
 import { vaultLinkTools } from "./tools/vault-link";
+import { policyTools } from "./tools/policy";
 import {
   saveAttachment,
   listAttachments,
@@ -343,6 +344,12 @@ export const toolRegistry: Record<string, InternalTool> = {
   ...Object.fromEntries(
     Object.entries(vaultLinkTools).map(([k, v]) => [
       k, // vault_link
+      v as unknown as InternalTool,
+    ]),
+  ),
+  ...Object.fromEntries(
+    Object.entries(policyTools).map(([k, v]) => [
+      `policy_${k}`,
       v as unknown as InternalTool,
     ]),
   ),
