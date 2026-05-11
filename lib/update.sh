@@ -67,6 +67,26 @@ EOF
     subctl_die "no 'origin' remote configured — can't pull updates"
   fi
 
+  # The local checkout may be on a branch that doesn't exist on origin
+  # (e.g. a local-only feat/ branch the operator created, or a dev-team
+  # worker's fix/* branch that never got pushed). Without this guard
+  # `git fetch origin <branch>` dies with "couldn't find remote ref"
+  # and update aborts. Detect that case and fall back to main.
+  # Diagnosed 2026-05-10: dev team worker had created
+  # fix/watchdog-skip-dead-sessions locally; subctl update on the M3
+  # Ultra broke until we manually checked out main.
+  if ! git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+    subctl_warn "branch '$branch' doesn't exist on origin — falling back to main"
+    if [[ "$current_branch" != "main" ]]; then
+      subctl_info "switching local checkout from '$current_branch' to 'main' (your work on '$current_branch' is preserved as a local branch)"
+      if ! git checkout main 2>&1 | tail -2; then
+        subctl_die "checkout main failed — resolve manually then re-run"
+      fi
+      current_branch="main"
+    fi
+    branch="main"
+  fi
+
   # Working-tree cleanliness check
   local stashed=false
   if ! git diff --quiet || ! git diff --cached --quiet || [[ -n "$(git ls-files --others --exclude-standard)" ]]; then

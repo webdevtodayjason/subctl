@@ -4,6 +4,18 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.6.2] — 2026-05-10
+
+Patch — `subctl update` survives local-only branches.
+
+### Fixed
+
+- **`subctl update` no longer dies with "couldn't find remote ref"** when the local checkout is on a branch that doesn't exist on origin. Reproduced 2026-05-10: the dev-team worker on the M3 Ultra had created a local-only `fix/watchdog-skip-dead-sessions` branch; the operator's next `subctl update` aborted because `git fetch origin fix/watchdog-skip-dead-sessions` failed. New behavior: `lib/update.sh` probes the remote with `git ls-remote --exit-code --heads origin <branch>` before fetching; if the branch isn't there, warns and automatically falls back to `main` (`git checkout main` + retry). Local-only branches are preserved as plain local branches the operator can return to.
+
+### Notes
+
+- Live-fixed on M3 Ultra: switched the checkout back to `main`, fast-forwarded 4 commits to v2.6.1, bounced tmux daemons. Master + dashboard now running v2.6.1.
+
 ## [2.6.1] — 2026-05-10
 
 Patch — doc overhaul: README + dashboard `/cheat` + `/help` + ROADMAP all reframed for the v2.x agentic-harness scope.
