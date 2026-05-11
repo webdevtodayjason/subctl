@@ -12,6 +12,7 @@ Thumbs.db
 *.bak.*
 *.archived-*
 *.tmp
+tmp/
 
 # Orchestration scratch (multi-agent ledger + worker deliverables — local only)
 .orchestration/
