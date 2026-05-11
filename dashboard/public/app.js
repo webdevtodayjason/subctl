@@ -1847,6 +1847,54 @@
   }
 
   // ----- Orchestration cockpit -----
+  // ── Watchdog panel renderer (Phase 3 finish-up) ─────────────────────────
+  // Shared module-level renderer used by the wireMasterChat SSE handlers AND
+  // the wireOrchestrationCockpit setup. Tracks the last N ticks (default 8)
+  // so the operator sees the watchdog IS alive even when nothing's stale —
+  // previously the panel showed "no recent watchdog firings" forever, which
+  // looked broken. Now: last tick timestamp + status pill + collapsible
+  // history of recent ticks.
+  const _watchdogHistory = []; // newest last
+  const WATCHDOG_HISTORY_MAX = 8;
+  function fmtTimeShort(iso) {
+    if (!iso) return "—";
+    try {
+      const d = new Date(iso);
+      return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+    } catch { return "—"; }
+  }
+  function renderWatchdogPanel(tick) {
+    _watchdogHistory.push(tick);
+    if (_watchdogHistory.length > WATCHDOG_HISTORY_MAX) _watchdogHistory.shift();
+    const body = document.getElementById("orch-watchdog-body");
+    const meta = document.getElementById("orch-watchdog-meta");
+    if (!body) return;
+    const latest = _watchdogHistory[_watchdogHistory.length - 1];
+    if (meta) {
+      meta.textContent = `last tick · ${fmtTimeShort(latest.ts)}`;
+    }
+    const rows = _watchdogHistory.slice().reverse().map((t) => {
+      const cls = t.kind === "fire" ? "watchdog-row-fire" : "watchdog-row-ok";
+      const pill = t.kind === "fire"
+        ? `<span class="watchdog-pill fire">FIRE</span>`
+        : `<span class="watchdog-pill ok">OK</span>`;
+      const detail = t.kind === "fire"
+        ? `<span class="watchdog-detail">${t.stale ?? "?"} stale</span><span class="watchdog-summary">${escForWatchdog(t.summary || "")}</span>`
+        : `<span class="watchdog-detail">${t.teams ?? 0} teams, ${t.stale ?? 0} stale</span>`;
+      return `<div class="watchdog-row ${cls}">
+        <span class="watchdog-when">${fmtTimeShort(t.ts)}</span>
+        ${pill}
+        ${detail}
+      </div>`;
+    }).join("");
+    body.innerHTML = rows;
+  }
+  function escForWatchdog(s) {
+    return String(s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
   function wireOrchestrationCockpit() {
     const activeBody = $("orch-active-body");
     const activeCount = $("orch-active-count");
@@ -2013,12 +2061,14 @@
         try {
           const d = JSON.parse(e.data);
           appendLiveRow("watchdog", "fired", String(d.prompt || "").slice(0, 160));
+          renderWatchdogPanel({ ts: d.ts, kind: "fire", stale: (d.stale || []).length, summary: String(d.prompt || "").slice(0, 220) });
         } catch {}
       });
       es.addEventListener("watchdog_ok", (e) => {
         try {
           const d = JSON.parse(e.data);
           appendLiveRow("watchdog", "ok", `${d.teams_tracked ?? 0} teams, ${d.stale ?? 0} stale`);
+          renderWatchdogPanel({ ts: d.ts, kind: "ok", teams: d.teams_tracked ?? 0, stale: d.stale ?? 0 });
         } catch {}
       });
       es.addEventListener("message_update", (e) => {

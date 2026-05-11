@@ -2910,6 +2910,48 @@ main {
   .orchestration-sidecar { order: 2; }
 }
 
+/* ── Watchdog rows (Orchestration card) ───────────────────────────────────
+   Each tick of the master's watchdog renders as a row here so the operator
+   can see the watchdog is alive (was: "no recent watchdog firings" forever,
+   looked broken). OK ticks dim, FIRE ticks have a red accent. */
+.watchdog-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  padding: 5px 0;
+  border-bottom: 1px dashed #1a1a1a;
+}
+.watchdog-row:last-child { border-bottom: none; }
+.watchdog-row .watchdog-when {
+  color: #666;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 10.5px;
+}
+.watchdog-pill {
+  display: inline-block;
+  padding: 1px 7px;
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border-radius: 9px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.watchdog-pill.ok { background: #0e2a16; color: #6cd697; }
+.watchdog-pill.fire { background: #2a1010; color: #d66c6c; }
+.watchdog-detail { color: #888; font-size: 11px; }
+.watchdog-summary {
+  color: #aaa;
+  font-size: 11px;
+  margin-left: 8px;
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.watchdog-row-fire .watchdog-detail { color: #d66c6c; }
+
 /* ── Vault viewer (Phase 3n) — two-pane Obsidian-flavoured note browser. */
 .vault-screen { display: block; }
 .vault-root-select {

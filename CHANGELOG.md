@@ -4,6 +4,19 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.5.6] — 2026-05-10
+
+Patch — watchdog observability. Backlog item shipped.
+
+### Changed
+
+- **Watchdog panel in Orchestration tab renders every tick, not just firings.** Previously the panel showed "no recent watchdog firings" indefinitely — true but useless, looked like the watchdog was broken. Now: the master's existing `watchdog_ok` SSE event populates a rolling history of the last 8 ticks with timestamp + `OK` pill + team/stale counts. `watchdog_fire` events show with a red `FIRE` pill and a summary of the synthesized prompt. The card header surfaces `last tick · HH:MM:SS` so the operator can see when the watchdog last ran without scrolling.
+- **Empty-state copy** updated from "no recent watchdog firings" to "armed — first tick lands within the configured interval (default 3 min)" so a fresh-loaded dashboard tells the truth.
+
+### Architecture note
+
+The renderer (`renderWatchdogPanel`) lives at module scope in `app.js`, called from the SSE event handlers. Module-level placement was deliberate so the function is reachable from the wireMasterChat listeners without rewiring `wireOrchestrationCockpit`'s closure scope.
+
 ## [2.5.5] — 2026-05-10
 
 Patch — launchd resilience after today's death spiral.
