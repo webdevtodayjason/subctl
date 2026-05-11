@@ -86,27 +86,70 @@ subctl_resolve_alias() {
   '
 }
 
+# Compute the macOS Keychain service name for a Claude Code config dir.
+# Claude Code 2.x stores OAuth credentials in Keychain:
+#   - Default $HOME/.claude → service "Claude Code-credentials" (legacy unsuffixed)
+#   - Other CLAUDE_CONFIG_DIR → service "Claude Code-credentials-<sha256-first-8>"
+# Outputs the service name on stdout; caller checks with `security`.
+subctl_claude_keychain_service() {
+  local cfg_dir="$1"
+  if [[ "$cfg_dir" == "$HOME/.claude" ]]; then
+    echo "Claude Code-credentials"
+  else
+    local hash
+    hash=$(printf '%s' "$cfg_dir" | shasum -a 256 | cut -c1-8)
+    echo "Claude Code-credentials-$hash"
+  fi
+}
+
+# True if a Claude Code 2.x credential lives in macOS Keychain for cfg_dir.
+subctl_claude_keychain_has_credential() {
+  local cfg_dir="$1" svc
+  svc=$(subctl_claude_keychain_service "$cfg_dir")
+  security find-generic-password -s "$svc" >/dev/null 2>&1
+}
+
 # Auth status of an account by config_dir. Returns: ready | empty | missing
 # Detects the provider by file shape so callers don't have to thread the
-# provider through. Today we know two shapes:
-#   - Claude:  $cfg_dir/.credentials.json  OR  non-empty $cfg_dir/projects/
-#   - Codex:   $cfg_dir/auth.json with .tokens populated (OAuth tokens present)
+# provider through. Today we know three shapes:
+#   - Claude 2.x: macOS Keychain entry "Claude Code-credentials[-<hash>]"
+#   - Claude 1.x: $cfg_dir/.credentials.json  OR  non-empty $cfg_dir/projects/
+#   - Codex:      $cfg_dir/auth.json with .tokens populated (OAuth tokens present)
 # We deliberately do NOT key off Codex's auth_mode field: the simplified
 # login flow (current default) doesn't write it at all, while older flows
 # did. Token presence is the durable signal across both schemas.
 subctl_auth_status() {
   local cfg_dir="$1"
   [[ -d "$cfg_dir" ]] || { echo missing; return; }
+  # Claude 2.x — Keychain-stored credential (current default on macOS)
+  if subctl_claude_keychain_has_credential "$cfg_dir"; then
+    echo ready; return
+  fi
+  # Claude 1.x — file-based credential or populated projects/ dir
   if [[ -f "$cfg_dir/.credentials.json" ]] \
      || { [[ -d "$cfg_dir/projects" ]] && [[ -n "$(ls -A "$cfg_dir/projects" 2>/dev/null)" ]]; }; then
     echo ready; return
   fi
+  # Codex
   if [[ -f "$cfg_dir/auth.json" ]] \
      && jq -e '(.tokens.id_token // .tokens.access_token // "") | length > 0' \
               "$cfg_dir/auth.json" >/dev/null 2>&1; then
     echo ready; return
   fi
   echo empty
+}
+
+# Where does Claude Code 2.x credential live for this cfg_dir? Returns:
+#   file        — $cfg_dir/.credentials.json exists
+#   keychain    — macOS Keychain has Claude Code-credentials[-hash]
+#   projects    — only $cfg_dir/projects/ has content (no actual credential)
+#   none        — nothing found
+subctl_claude_credential_source() {
+  local cfg_dir="$1"
+  [[ -f "$cfg_dir/.credentials.json" ]] && { echo file; return; }
+  subctl_claude_keychain_has_credential "$cfg_dir" && { echo keychain; return; }
+  [[ -d "$cfg_dir/projects" ]] && [[ -n "$(ls -A "$cfg_dir/projects" 2>/dev/null)" ]] && { echo projects; return; }
+  echo none
 }
 
 # Filter accounts by provider. Outputs same format as subctl_list_accounts.

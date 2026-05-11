@@ -27,7 +27,28 @@ provider_claude_auth() {
   if [[ "$before_status" == "ready" ]]; then
     subctl_ok "$alias is already authenticated ($cfg_dir)"
     printf "  email expected: %s\n" "$email"
-    printf "  to re-auth, delete %s/.credentials.json and re-run.\n" "$cfg_dir"
+    local cred_source
+    cred_source=$(subctl_claude_credential_source "$cfg_dir")
+    case "$cred_source" in
+      file)
+        printf "  to re-auth, delete %s/.credentials.json and re-run.\n" "$cfg_dir"
+        ;;
+      keychain)
+        local svc
+        svc=$(subctl_claude_keychain_service "$cfg_dir")
+        printf "  to re-auth (Claude Code 2.x — credential in macOS Keychain):\n"
+        printf "    security delete-generic-password -s \"%s\" && subctl auth claude %s\n" \
+               "$svc" "$alias"
+        ;;
+      projects)
+        printf "  ${C_YLW}note:${C_RST} no credential file or keychain entry, but %s/projects has data.\n" "$cfg_dir"
+        printf "  this may be a stale config dir from a deleted credential. to force re-auth:\n"
+        printf "    CLAUDE_CONFIG_DIR=%s claude  (then /login)\n" "$cfg_dir"
+        ;;
+      *)
+        printf "  to re-auth: CLAUDE_CONFIG_DIR=%s claude  (then /login)\n" "$cfg_dir"
+        ;;
+    esac
     return 0
   fi
 
