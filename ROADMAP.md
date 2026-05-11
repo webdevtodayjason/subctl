@@ -1,12 +1,14 @@
 # subctl roadmap
 
-> **Status as of v1.0 (2026-05-05).** Claude support is shipping. Every other provider in this document is _planned_ — none of the OAuth flows, config-dir conventions, or rate-limit signal sources below are wired up yet. Treat this file as the strawman; per-provider stubs under `providers/<name>/README.md` track the same scope at the implementation level.
+> **Status as of v2.6.0 (2026-05-10).** This file tracks **provider expansion** — the multi-provider dispatch substrate. For the agentic harness / master daemon / dev-team orchestration roadmap, see [`docs/master.md`](docs/master.md) §4. The 2.x series sits on top of the v1.x provider plumbing; both layers ship together.
 
 ## Vision
 
-Every coding subscription you pay for, on one control plane.
+Every coding subscription you pay for, on one agentic control plane.
 
-The unit of work is _the subscription you already pay every month_, not _the API account someone gave you keys for_. subctl's job is to surface the same things across all of them: which account is active right now, how close it is to its rate limit, what it's costing you vs the API list price equivalent, and which sessions are running where.
+The unit of work is _the subscription you already pay every month_, not _the API account someone gave you keys for_. subctl's job is to (a) surface the same dispatch signals across all of them — which account is active, how close to rate limit, cost vs API list price, sessions in flight — and (b) run a persistent conversational orchestrator (`subctl master`) on top that drives projects forward across whichever subscription is healthiest at the moment.
+
+**Today:** Claude (shipping) + OpenAI Codex via OAuth (shipping). Anthropic API as escalation fallback. The master daemon talks to local LM Studio (qwen, gpt-oss, etc.) by default and routes to cloud only when explicitly needed.
 
 ## The plugin model
 
@@ -26,7 +28,7 @@ Plus optional `statusline.sh`, `hooks/`, `commands/`. Full contract at [docs/add
 | Provider               | CLI / surface           | Target | Status         |
 |------------------------|-------------------------|--------|----------------|
 | Claude Code            | `claude` (Anthropic)    | v1.0   | **shipping**   |
-| OpenAI Codex           | `codex` (OpenAI)        | v1.1   | planned (next) |
+| OpenAI Codex           | `codex` (OpenAI)        | v2.0+  | **shipping**   |
 | Gemini Code Assist     | `gemini` (Google)       | v1.2   | planned        |
 | Z.AI Coding (GLM)      | tbd — likely IDE+API    | v1.3   | investigating  |
 | Minimax Coder          | tbd — likely IDE+API    | v1.4   | investigating  |

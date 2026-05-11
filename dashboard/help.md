@@ -1,12 +1,36 @@
 # subctl dashboard help
 
-Reference for the `localhost:8787` dashboard. Read top-down — sections are
-ordered for mid-flight skimming.
+Reference for the `localhost:8787` dashboard. Read top-down — sections
+are ordered for mid-flight skimming.
 
-## At a glance
+> **What this dashboard actually is.** A web front-end for **subctl
+> master** — a persistent agentic harness that runs on this machine,
+> talks to you via the Chat tab or Telegram, spawns Claude Code dev-
+> team tmux sessions on demand, and pushes projects forward. The
+> classic dispatch-readiness view (the verdict banner) is one tab of
+> twelve.
+
+## The twelve sidebar tabs
+
+| Tab | What it does |
+|---|---|
+| **Chat** | Conversational front door to the master daemon. SSE-streamed responses, attachment paperclip + drag-drop + paste-as-attach for >4 KB, personality picker via Settings. |
+| **Orchestration** | NVR-style camera grid of every active dev-team tmux pane (polls 2 Hz), Active Dev Teams card, Watchdog tick history, Live Activity feed, Diagnostics. |
+| **Dashboard** | The classic verdict banner + accounts table + active tmux + cost + utilization + RL events. |
+| **Projects** | `~/code` scan + per-project policy state + per-project chat + Open in Vault Viewer + Spawn dev team. |
+| **Teams** | Team template CRUD — persona, skills, autonomy, boot prompt. |
+| **Claude Sessions** | Search every session across all accounts; copy resume cmd or open in iTerm. |
+| **Models** | LM Studio catalog + which are loaded + context lengths. |
+| **Providers** | Profile CRUD + supervisor swap. Unwired providers (e.g. Codex w/o local impl yet) are listed but disabled. |
+| **Memory** | Tier-1 `user.md` + `memory.md` editors + claude-mem worker health + Obsidian vault status. |
+| **Vault** | In-page Obsidian viewer. Tree + rendered note + wikilink navigation. Deep-linkable via `#vault?root=&path=`. |
+| **Skills** | 3-pane catalog browser with import modal. |
+| **Live Logs** | SSE-streamed tail of master / dashboard / launchd logs. |
+| **Settings** | System health (install-checks) + Master personality picker + Telegram + API keys + OAuth profiles + Obsidian config. |
 
 The dashboard answers one question on every glance: **can I dispatch
-another agent right now?** The big banner verdict is the answer.
+another agent right now?** The big banner verdict on the Dashboard tab
+is the answer.
 
 | Verdict | Color  | Meaning |
 |---------|--------|---------|
@@ -112,6 +136,106 @@ explicit `account` field from the hook.
 **Act when:** repeated 429s on one account in a short window → that
 account is rate-limited; switch with `subctl teams claude -a
 <other-alias>`.
+
+## Chat with the master
+
+The **Chat** sidebar tab is the conversational front door to the
+master daemon. Everything you can do via CLI verbs the master can do
+on your behalf if you describe it in chat. The master also operates
+proactively — watchdog ticks every 3 min, watches dev teams for
+staleness, escalates to Telegram if needed.
+
+**Toolbar:** model selector (LM Studio + cloud providers, ●/○ for
+loaded state) + Apply (swap supervisor, restarts master) + Compact
+(force transcript compaction) + + New Chat (archive transcript +
+start fresh) + ⛶ fullscreen.
+
+**Attachments (Phase 3l):**
+- 📎 paperclip → file picker (multi-select)
+- Drag-drop onto chat panel → highlights drop zone, attaches dropped
+  files
+- Paste >4 KB → auto-converted to attachment with pill chip ("📎
+  pasted-2026-05-10-1342.md · 8.4 KB")
+- × on pill chip → remove before send
+- Visible chat shows `📎 filename` lines; the model still sees full
+  inline `<attachment>…</attachment>` blocks. After auto-compaction
+  drops the inline content, the master can re-fetch via
+  `read_attachment(id)`.
+- Mime allowlist: text/* + JSON/YAML/TOML/XML/script families. PDF
+  + images deferred to Phase 2 (vision-capable supervisor required).
+- 5 MiB cap per attachment — anything larger should go to the vault
+  via `vault_append` instead.
+
+**Personality (Phase 3k):** hot-swap the master's voice via Settings
+→ Master personality. Seven built-ins: `straight-shooter` (default),
+`witty`, `sarcastic`, `robotic`, `arnold-inspired`, `elon-inspired`,
+`hilarious`. Takes effect on the next prompt; no daemon restart.
+Anti-hallucination rules + behavioral SKILL apply across every
+preset — switching changes delivery, not behavior.
+
+**Telegram bidirectional:** messages arriving from Telegram render
+with a purple left-border + `✈ you · telegram` label in the chat
+panel. The master's response auto-relays back to the same Telegram
+chat (no tool call required by the model). Truncates at 3900 chars
+with a "see dashboard for full reply" footer if longer.
+
+## Orchestration tab
+
+**Camera View (Phase 3m):** top section of the Orchestration tab.
+NVR-style grid of every active dev-team tmux pane, polling every
+2 seconds. Tiles auto-fit (1/2/2×2/3×3/4×4). Status pill per tile:
+🟢 active (last activity <60 s), gray idle (<15 min), 🟡 stale
+(>15 min), 🔴 error (error pattern in last 10 lines), ⚫ ended
+(session disappeared).
+
+- **Click tile** → expand to full-pane view
+- **Esc / click backdrop / ✕** → collapse back to grid
+- **Polling is tab-aware** — stops when you switch to a different
+  tab; restarts when you come back. Saves network + tmux capture
+  cost.
+
+**Active Dev Teams card:** per-team metadata + View / Copy SSH
+attach / Kill buttons. View opens the letterboxed tmux preview
+modal.
+
+**Watchdog card:** rolling history of the last 8 watchdog ticks
+with timestamps. Most ticks are `OK` (green pill — N teams, M
+stale). `FIRE` (red pill) means the watchdog synthesized a
+corrective prompt for a stale team and dispatched it to the agent.
+
+**Live Activity feed:** last 50 events from `/api/master/events`
+SSE stream — every tool call, every chat inbound, every watchdog
+firing.
+
+## Vault tab
+
+In-page Obsidian-flavoured note viewer. Picks up any sub-directory
+of your configured vault root (set in Settings → Obsidian) that
+has either a `.obsidian/` marker dir OR `.md` files. Two panes:
+file tree (left, auto-expanded 2 levels deep) + rendered note
+(right).
+
+**Rendering supports:**
+- `[[wikilink]]` and `[[wikilink|alias]]` → click-navigable purple
+  anchors (case-insensitive last-segment fallback for unqualified
+  refs). Missing targets render dashed red.
+- `![[embed.png]]` → `<img>` via `/api/vault/<v>/asset`
+- `> [!note]` / `> [!warning]` / `> [!danger]` → styled callout
+  blockquotes
+- `#tag` (in body text, not headings or URLs) → coloured pill
+- YAML frontmatter → metadata header above the note
+
+**Deep-link URL pattern:**
+`/dashboard#vault?root=<vault-slug>&path=<rel-path>`
+
+**Master integration:** the master can drop you straight into a
+specific note via the `vault_link` tool — chat URLs look like
+`http://<host>:8787/dashboard#vault?root=master&path=Down-Time-Arena/decisions.md`.
+The Projects tab's **Open in Vault Viewer** button does the same
+for any tracked project.
+
+**Read-only today.** Phase 3q will add a CodeMirror 6 editor + a
+canvas mode (Excalidraw-style freeform) for diagrams.
 
 ## Setting up an account
 

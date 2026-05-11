@@ -4,6 +4,26 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.6.1] — 2026-05-10
+
+Patch — doc overhaul: README + dashboard `/cheat` + `/help` + ROADMAP all reframed for the v2.x agentic-harness scope.
+
+### Changed
+
+- **README.md** — full rewrite. Was framed as "multi-account dispatch tool for Claude" (v1.0 scope) when the project's actual scope is now "agentic harness for AI subscriptions" with the master daemon as the centerpiece. New structure: tagline → ASCII arch diagram → 12 capability bullets → install → daily ops → architecture pointer (`docs/master.md`) → repo layout → roadmap pointer → contributing.
+- **`/cheat` page** (`renderCheatsheetPage` in `dashboard/server.ts`) — added 8 new sections covering features that shipped in v2.x: Master daemon control, Master personality presets, Document attachments in chat, Vault viewer, Multi-team camera view, Update + versioning, Skills catalog, Team templates, Plugin system. "Web dashboard UI" section was 2 rows; now it's 13 (one per sidebar tab) plus a separate Interactions section.
+- **`/help` page** (`dashboard/help.md`) — header rewritten to lead with "front-end for subctl master." Added a 12-row tab table at the top + dedicated sections on Chat (attachments, personality, Telegram bidirectional), Orchestration (camera view, watchdog history), and Vault (rendering rules + deep-link URL pattern + master integration).
+- **`ROADMAP.md`** — preamble now correctly scopes this file to **provider expansion** (multi-provider dispatch substrate), with the agentic-harness roadmap pointed at `docs/master.md` §4. OpenAI Codex marked **shipping** (was "planned next" — already shipped in 2.x).
+
+### Why
+
+Operator playthrough revealed the docs were a release behind reality. New operator landing on the README would see "Subscription Central CLI" pitch and miss the actual product (conversational orchestrator with 50+ tools and a 12-tab dashboard). Cheat sheet didn't mention `subctl master`, personality, attachments, vault viewer, or camera view. The /help page led with "verdict banner" — true but no longer the headline.
+
+### Out of scope for this patch
+
+- `docs/multi-account.md`, `docs/master.md`, `docs/release-workflow.md` already current (master.md was rewritten through Phase 3o; release-workflow.md got the 3-digit bump policy in v2.1.x).
+- `START-HERE.md` (separate clean-Mac install copy) — covered briefly in README but not rewritten; still valid for fresh installs.
+
 ## [2.6.0] — 2026-05-10
 
 Minor — personality picker in the dashboard UI + roadmap (Phase 3p Personal Skills System, Phase 3q Vault Canvas Editor).
