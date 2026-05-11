@@ -1,0 +1,11 @@
+# components/master/tools/policy/__tests__/fixtures/project-with-extra-allow.toml
+# Project that uses the node preset and adds one extra allow_pattern.
+# Validates the additive-array contract from pack 02 §6:
+# the resolved policy should contain all node-preset patterns PLUS this new
+# `gh issue` pattern, with the project's entry appearing AT THE END.
+
+preset = "node"
+
+[[mode.gated.allow_pattern]]
+command = "gh"
+args = ["issue"]

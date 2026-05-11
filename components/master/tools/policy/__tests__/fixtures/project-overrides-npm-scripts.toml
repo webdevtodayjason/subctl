@@ -1,0 +1,10 @@
+# components/master/tools/policy/__tests__/fixtures/project-overrides-npm-scripts.toml
+# Project that inherits the node preset BUT overrides npm.allowed_scripts.
+# Per pack 03 §5 — ecosystem-specific arrays are REPLACE, not extend. The
+# resolved policy's npm.allowed_scripts must be exactly the two scripts
+# listed below, NOT the union with the preset's larger list.
+
+preset = "node"
+
+[mode.gated.npm]
+allowed_scripts = ["deploy:staging", "migrate:up"]

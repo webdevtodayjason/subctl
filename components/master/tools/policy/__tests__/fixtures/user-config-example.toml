@@ -1,0 +1,10 @@
+# components/master/tools/policy/__tests__/fixtures/user-config-example.toml
+# Sample ~/.config/subctl/policy.toml. The user-level config lives between
+# project policies (priority 1+2) and shipped defaults / preset (priority 4 / preset).
+# Setting default_mode = "trusted" here means: any project that does NOT
+# override default_mode will spawn workers in trusted mode by default.
+
+default_mode = "trusted"
+
+[mode.gated.deny_always]
+substrings = ["aws ", "kubectl delete "]

@@ -1,0 +1,3 @@
+# components/master/tools/policy/__tests__/fixtures/empty.toml
+# Empty project policy — exercises the "no project content, fall through to
+# preset + defaults" branch of loadResolvedPolicy.

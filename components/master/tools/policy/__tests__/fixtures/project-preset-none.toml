@@ -1,0 +1,21 @@
+# components/master/tools/policy/__tests__/fixtures/project-preset-none.toml
+# Project that opts out of inheritance entirely. Per pack 02 §6:
+# "If a project needs to weaken the preset, it must opt out of the preset
+# entirely by setting preset = 'none' and declaring its full policy inline."
+# The resolved policy must contain ONLY this content — no preset, no shipped
+# defaults.
+
+preset = "none"
+default_mode = "gated"
+
+[mode.gated]
+
+[mode.gated.allow]
+commands = ["pwd", "echo"]
+
+[[mode.gated.allow_pattern]]
+command = "git"
+args = ["status"]
+
+[mode.gated.deny_always]
+substrings = ["sudo "]
