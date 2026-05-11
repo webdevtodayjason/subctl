@@ -4,6 +4,33 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.5.5] — 2026-05-10
+
+Patch — launchd resilience after today's death spiral.
+
+### Changed
+
+- **Master plist `KeepAlive` is now conditional.** Was `<true/>` (restart unconditionally). Now `{SuccessfulExit: false, Crashed: true}` — launchd restarts on crash but NOT after a clean operator stop. Prevents `subctl master disable` from being instantly undone by KeepAlive.
+- **Master plist `ThrottleInterval` 10s → 30s.** Today's failure mode: LM Studio crashed → master ctx-pin hung 60s → daemon exited → launchd respawned within 10s → master hung 60s again. macOS's internal respawn-limit detector flagged the job as failing and gave up. 30s gives the environment breathing room and resets the failure counter more aggressively. (Combined with v2.5.3's 2s LM Studio reachability probe, master now boots fast even when LM Studio is dead.)
+- **Master plist `ExitTimeOut` added (20s).** SIGTERM → wait 20s → SIGKILL. Stops zombie processes when a shutdown path hangs.
+- **Dashboard plist mirrors the same `ThrottleInterval` (30) + `ExitTimeOut` (20)** for consistency.
+
+### Added
+
+- **`subctl master kick`** — force-recover when launchd has thrown up its hands. Bootouts the stale job, kills any orphan master process squatting on the port, bootstraps a fresh launchd entry. Must be run from a local TTY (Terminal.app on the machine) because `launchctl bootstrap` targets `gui/$UID` which isn't reachable from a vanilla SSH session. Falls back to a printed `tmux new-session` recovery command if bootstrap fails.
+
+### To apply on an existing install
+
+```
+subctl master disable && subctl master enable    # re-renders the plist
+```
+
+Or from local Terminal.app on the M3 Ultra:
+
+```
+subctl master kick
+```
+
 ## [2.5.4] — 2026-05-10
 
 Patch — three operator-reported issues from the post-recovery playtest.

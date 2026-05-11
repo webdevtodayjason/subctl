@@ -51,8 +51,15 @@
         <false/>
     </dict>
 
+    <!-- 30s (was 10). Matches master plist v2.5.5+. Lets the environment
+         settle between crash-restarts so launchd's respawn-limit doesn't
+         throttle the job into a stuck state during cascading failures. -->
     <key>ThrottleInterval</key>
-    <integer>10</integer>
+    <integer>30</integer>
+
+    <!-- 20s graceful shutdown window. Same rationale as master plist. -->
+    <key>ExitTimeOut</key>
+    <integer>20</integer>
 
     <key>ProcessType</key>
     <string>Background</string>

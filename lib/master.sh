@@ -37,6 +37,7 @@ subctl_master() {
     pause)       subctl_master_pause "$@" ;;
     resume)      subctl_master_resume "$@" ;;
     restart)     subctl_master_restart "$@" ;;
+    kick)        subctl_master_kick "$@" ;;
     personality) subctl_master_personality "$@" ;;
     help|-h|--help|"")
       cat <<'EOF'
@@ -55,6 +56,11 @@ Verbs:
   pause           Halt the autonomous review loop (manual mode only)
   resume          Resume after pause
   restart         disable + enable (full reload)
+  kick            Force-recover when launchd is throttled. Kills any
+                  orphan master process, then bootstraps the launchd job
+                  fresh. Use after the daemon has been crash-looping and
+                  launchd has given up. Must run from a local TTY (not
+                  SSH) — bootstrap requires a GUI domain.
   personality     Set/inspect the master's voice preset (use 'personality help')
 
 Examples:
@@ -67,6 +73,65 @@ EOF
       ;;
     *) subctl_die "unknown master verb: $sub (try: subctl master help)" ;;
   esac
+}
+
+# ── launchd recovery (kick) ──────────────────────────────────────────────────
+# When the daemon has crash-looped enough that launchd has hit its respawn
+# limit, even `launchctl load` won't restart it. The recovery: bootout the
+# stale job entry, kill any orphan processes squatting on the port, then
+# bootstrap a fresh job. Requires a local TTY (GUI session) — does NOT
+# work over SSH because bootstrap targets the gui/$UID domain.
+subctl_master_kick() {
+  local label="${SUBCTL_MASTER_LABEL:-com.subctl.master}"
+  local plist="${SUBCTL_MASTER_PLIST:-$HOME/Library/LaunchAgents/${label}.plist}"
+  local port="${SUBCTL_MASTER_PORT:-8788}"
+
+  [[ -f "$plist" ]] || subctl_die "no plist at $plist — run 'subctl master enable' first"
+
+  # GUI-domain check. bootout/bootstrap fail with "Domain does not support
+  # specified action" when invoked outside a user-attached session (e.g.
+  # SSH without -t).
+  if [[ -z "${TERM:-}" || -z "${USER:-}" ]]; then
+    subctl_warn "no controlling TTY detected — kick may fail via SSH. Run from local Terminal.app."
+  fi
+
+  local uid
+  uid=$(id -u)
+  local target="gui/$uid/$label"
+
+  subctl_info "bootout $target"
+  launchctl bootout "$target" 2>&1 | tail -3
+
+  # Kill any orphan master process still squatting on the port (e.g. one
+  # that survived a stale launchctl entry).
+  local pids
+  pids=$(lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | awk 'NR>1 {print $2}' | sort -u)
+  if [[ -n "$pids" ]]; then
+    subctl_warn "orphan process(es) on :$port — killing: $pids"
+    for p in $pids; do kill -TERM "$p" 2>/dev/null; done
+    sleep 2
+    pids=$(lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | awk 'NR>1 {print $2}' | sort -u)
+    if [[ -n "$pids" ]]; then
+      for p in $pids; do kill -KILL "$p" 2>/dev/null; done
+    fi
+  fi
+
+  sleep 2
+  subctl_info "bootstrap gui/$uid $plist"
+  if ! launchctl bootstrap "gui/$uid" "$plist" 2>&1; then
+    subctl_err "bootstrap failed — likely no GUI session. From local Terminal.app, retry: subctl master kick"
+    subctl_info "fallback: tmux daemon — tmux new-session -d -s subctl-master -c ~/code/subctl '~/.bun/bin/bun components/master/server.ts > /tmp/master.log 2>&1'"
+    return 1
+  fi
+
+  sleep 4
+  local health
+  health=$(curl -s --max-time 3 "http://127.0.0.1:$port/health" 2>/dev/null)
+  if [[ -n "$health" ]]; then
+    subctl_ok "master back on :$port — $(printf '%s' "$health" | jq -r '"version=" + .version + " uptime=" + (.uptime_s|tostring) + "s"' 2>/dev/null || echo "responding")"
+  else
+    subctl_warn "bootstrap returned ok but /health didn't respond within 4s — check 'subctl master logs'"
+  fi
 }
 
 # ── personality presets ──────────────────────────────────────────────────────
