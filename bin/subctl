@@ -392,23 +392,54 @@ case "$cmd" in
     printf "  Accounts file:  %s " "$SUBCTL_ACCOUNTS_CONF"
     [[ -f "$SUBCTL_ACCOUNTS_CONF" ]] && printf "${C_GRN}✓${C_RST}\n" || printf "${C_RED}missing${C_RST}\n"
     echo
-    echo "Required tools:"
-    for tool in jq tmux git; do
-      if command -v "$tool" >/dev/null 2>&1; then
-        printf "  ${C_GRN}✓${C_RST} %-8s %s\n" "$tool" "$(command -v "$tool")"
-      else
-        printf "  ${C_RED}✗${C_RST} %-8s missing\n" "$tool"
-      fi
-    done
-    echo
-    echo "Optional tools:"
-    for tool in gum bun launchctl; do
-      if command -v "$tool" >/dev/null 2>&1; then
-        printf "  ${C_GRN}✓${C_RST} %-10s %s\n" "$tool" "$(command -v "$tool")"
-      else
-        printf "  ${C_DIM}-${C_RST} %-10s missing (some features unavailable)\n" "$tool"
-      fi
-    done
+    # Read deps from canonical manifest (lib/dep-manifest.json) — same source
+    # consumed by install.sh, lib/setup.sh, dashboard /api/settings/install-checks.
+    _doctor_manifest="$SUBCTL_REPO_ROOT/lib/dep-manifest.json"
+    if [[ ! -f "$_doctor_manifest" ]] || ! command -v jq >/dev/null 2>&1; then
+      echo "Required tools:"
+      for tool in jq tmux git; do
+        if command -v "$tool" >/dev/null 2>&1; then
+          printf "  ${C_GRN}✓${C_RST} %-8s %s\n" "$tool" "$(command -v "$tool")"
+        else
+          printf "  ${C_RED}✗${C_RST} %-8s missing\n" "$tool"
+        fi
+      done
+    else
+      _doctor_detect() {
+        local _id="$1" _argv _fp _rest
+        _argv=$(jq -r --arg id "$_id" '.deps[] | select(.id==$id) | .detect | @sh' "$_doctor_manifest")
+        eval "$_argv" >/dev/null 2>&1 && return 0
+        while IFS= read -r _fp; do
+          [[ -z "$_fp" ]] && continue
+          eval "_fp=\"$_fp\""
+          [[ -e "$_fp" ]] || continue
+          _rest=$(jq -r --arg id "$_id" '.deps[] | select(.id==$id) | .detect[1:] | @sh' "$_doctor_manifest")
+          eval "\"\$_fp\" $_rest" >/dev/null 2>&1 && return 0
+        done < <(jq -r --arg id "$_id" '.deps[] | select(.id==$id) | .fallback_paths[]?' "$_doctor_manifest")
+        return 1
+      }
+      echo "Hard deps (from $(basename "$_doctor_manifest")):"
+      while IFS= read -r _id; do
+        _name=$(jq -r --arg id "$_id" '.deps[] | select(.id==$id) | .name' "$_doctor_manifest")
+        _method=$(jq -r --arg id "$_id" '.deps[] | select(.id==$id) | .install_method' "$_doctor_manifest")
+        if _doctor_detect "$_id"; then
+          printf "  ${C_GRN}✓${C_RST} %-22s %s\n" "$_name" "(${_method})"
+        else
+          printf "  ${C_RED}✗${C_RST} %-22s missing — install via: %s\n" "$_name" "$_method"
+        fi
+      done < <(jq -r '.deps[] | select(.tier=="hard") | .id' "$_doctor_manifest")
+      echo
+      echo "Soft deps:"
+      while IFS= read -r _id; do
+        _name=$(jq -r --arg id "$_id" '.deps[] | select(.id==$id) | .name' "$_doctor_manifest")
+        _method=$(jq -r --arg id "$_id" '.deps[] | select(.id==$id) | .install_method' "$_doctor_manifest")
+        if _doctor_detect "$_id"; then
+          printf "  ${C_GRN}✓${C_RST} %-22s %s\n" "$_name" "(${_method})"
+        else
+          printf "  ${C_DIM}-${C_RST} %-22s missing (optional) — %s\n" "$_name" "$_method"
+        fi
+      done < <(jq -r '.deps[] | select(.tier=="soft") | .id' "$_doctor_manifest")
+    fi
     echo
     echo "Claude Code integration:"
     . "$SUBCTL_REPO_ROOT/lib/settings.sh"

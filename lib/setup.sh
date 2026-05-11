@@ -19,49 +19,65 @@ _SUBCTL_SETUP_LOADED=1
 . "$(dirname "${BASH_SOURCE[0]}")/service.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/tui.sh"
 
-# ── deps map: cmd → friendly_name | brew_pkg | required(true|false) ─────────
+# ── canonical dep manifest reader ──────────────────────────────────────────
+# Single source of truth: lib/dep-manifest.json. Consumed here, by install.sh,
+# by `subctl doctor`, and by the dashboard's /api/settings/install-checks.
 
-# Format: cmd|brew_pkg
-# Friendly display name = cmd. brew_pkg differs only when the tap path differs
-# from the binary name (e.g. bun → oven-sh/bun/bun).
+SUBCTL_DEP_MANIFEST="${SUBCTL_DEP_MANIFEST:-$SUBCTL_REPO_ROOT/lib/dep-manifest.json}"
 
-# Required tools — install fails without these.
-_setup_required_deps() {
-  printf "jq|jq\n"
-  printf "git|git\n"
+_subctl_setup_manifest_field() {
+  jq -r --arg id "$1" --arg f "$2" '.deps[] | select(.id==$id) | .[$f] // empty' "$SUBCTL_DEP_MANIFEST"
 }
 
-# Recommended — features degrade without them but install still works.
-_setup_recommended_deps() {
-  printf "tmux|tmux\n"
-  printf "gum|gum\n"
-  printf "bun|oven-sh/bun/bun\n"
-  printf "go|go\n"
+_subctl_setup_manifest_ids_by_tier() {
+  jq -r --arg t "$1" '.deps[] | select(.tier==$t) | .id' "$SUBCTL_DEP_MANIFEST"
 }
 
-# Try to install one binary via brew. Returns 0 on success, 1 otherwise.
-_setup_install_via_brew() {
-  local cmd="$1" pkg="$2"
-  local friendly="$cmd"
+# Detect a single dep by running its detect argv (PATH first, then fallbacks).
+_subctl_setup_dep_detect() {
+  local id="$1" argv_str fp rest
+  argv_str=$(jq -r --arg id "$id" '.deps[] | select(.id==$id) | .detect | @sh' "$SUBCTL_DEP_MANIFEST")
+  [[ -z "$argv_str" ]] && return 1
+  if eval "$argv_str" >/dev/null 2>&1; then return 0; fi
+  while IFS= read -r fp; do
+    [[ -z "$fp" ]] && continue
+    eval "fp=\"$fp\""
+    [[ -e "$fp" ]] || continue
+    rest=$(jq -r --arg id "$id" '.deps[] | select(.id==$id) | .detect[1:] | @sh' "$SUBCTL_DEP_MANIFEST")
+    if eval "\"\$fp\" $rest" >/dev/null 2>&1; then return 0; fi
+  done < <(jq -r --arg id "$id" '.deps[] | select(.id==$id) | .fallback_paths[]?' "$SUBCTL_DEP_MANIFEST")
+  return 1
+}
 
-  if command -v "$cmd" >/dev/null 2>&1; then
-    return 0  # already there
-  fi
+# Try to install one brew dep by manifest id. Used for the wizard's "install
+# missing recommended tools" pass. Auto-install + manual deps are out of scope
+# here — install.sh owns the full install matrix.
+_subctl_setup_brew_install() {
+  local id="$1" name method cmd
+  name=$(_subctl_setup_manifest_field "$id" "name")
+  method=$(_subctl_setup_manifest_field "$id" "install_method")
+  cmd=$(_subctl_setup_manifest_field "$id" "install_cmd")
 
-  if ! command -v brew >/dev/null 2>&1; then
-    subctl_warn "$friendly missing — Homebrew not found, can't auto-install"
-    subctl_warn "  install brew first: https://brew.sh"
+  if _subctl_setup_dep_detect "$id"; then return 0; fi
+
+  if [[ "$method" != "brew" && "$method" != "brew-cask" ]]; then
+    subctl_warn "$name install method is '$method' — run install.sh for the full installer"
     return 1
   fi
 
-  subctl_info "installing $friendly via brew ($pkg)..."
-  if brew install "$pkg" >/dev/null 2>&1; then
-    subctl_ok "$friendly installed"
+  if ! command -v brew >/dev/null 2>&1; then
+    subctl_warn "$name missing — Homebrew not found, can't auto-install"
+    subctl_warn "  bootstrap brew first: bash $SUBCTL_REPO_ROOT/install.sh"
+    return 1
+  fi
+
+  subctl_info "installing $name via $cmd ..."
+  if eval "$cmd" >/dev/null 2>&1; then
+    subctl_ok "$name installed"
     return 0
   else
-    # Show stderr on failure
-    brew install "$pkg" 2>&1 | tail -10
-    subctl_err "brew install $pkg failed"
+    eval "$cmd" 2>&1 | tail -10
+    subctl_err "install failed: $cmd"
     return 1
   fi
 }
@@ -69,61 +85,50 @@ _setup_install_via_brew() {
 # ── stage 1: pre-flight check + auto-install ───────────────────────────────
 
 subctl_setup_preflight() {
-  _subctl_tui_header "subctl setup · pre-flight" "Checking required + recommended tools"
+  _subctl_tui_header "subctl setup · pre-flight" "Reading $SUBCTL_DEP_MANIFEST"
 
-  local missing_required=() missing_recommended=()
+  if ! command -v jq >/dev/null 2>&1; then
+    subctl_die "jq required to read manifest — bootstrap with: bash $SUBCTL_REPO_ROOT/install.sh"
+  fi
+  [[ -f "$SUBCTL_DEP_MANIFEST" ]] || subctl_die "manifest not found: $SUBCTL_DEP_MANIFEST"
 
-  while IFS='|' read -r cmd pkg; do
-    [[ -z "$cmd" ]] && continue
-    if command -v "$cmd" >/dev/null 2>&1; then
-      printf "  %s✓%s %-12s %s\n" "$C_GRN" "$C_RST" "$cmd" "$(command -v "$cmd")"
+  local id name tier missing_hard=() missing_soft=()
+  printf "  %-22s %-6s %s\n" "name" "tier" "status"
+  while IFS= read -r id; do
+    name=$(_subctl_setup_manifest_field "$id" "name")
+    tier=$(_subctl_setup_manifest_field "$id" "tier")
+    if _subctl_setup_dep_detect "$id"; then
+      printf "  ${C_GRN}✓${C_RST} %-20s %-6s present\n" "$name" "$tier"
     else
-      printf "  %s✗%s %-12s missing (REQUIRED)\n" "$C_RED" "$C_RST" "$cmd"
-      missing_required+=("$cmd|$pkg")
+      if [[ "$tier" == "hard" ]]; then
+        printf "  ${C_RED}✗${C_RST} %-20s %-6s missing (HARD)\n" "$name" "$tier"
+        missing_hard+=("$id")
+      else
+        printf "  ${C_DIM}-${C_RST} %-20s %-6s missing (soft)\n" "$name" "$tier"
+        missing_soft+=("$id")
+      fi
     fi
-  done < <(_setup_required_deps)
+  done < <(jq -r '.deps[].id' "$SUBCTL_DEP_MANIFEST")
 
   echo
-  while IFS='|' read -r cmd pkg; do
-    [[ -z "$cmd" ]] && continue
-    if command -v "$cmd" >/dev/null 2>&1; then
-      printf "  %s✓%s %-12s %s\n" "$C_GRN" "$C_RST" "$cmd" "$(command -v "$cmd")"
-    else
-      printf "  %s-%s %-12s not installed (optional, some features unavailable)\n" "$C_DIM" "$C_RST" "$cmd"
-      missing_recommended+=("$cmd|$pkg")
-    fi
-  done < <(_setup_recommended_deps)
-
-  echo
-  if [[ ${#missing_required[@]} -gt 0 ]]; then
-    subctl_warn "Required tools missing: ${#missing_required[@]}"
-    if _subctl_tui_confirm "Install them now via brew?"; then
-      for entry in "${missing_required[@]}"; do
-        IFS='|' read -r cmd pkg <<< "$entry"
-        _setup_install_via_brew "$cmd" "$pkg" || subctl_die "$cmd is required to continue"
+  if [[ ${#missing_hard[@]} -gt 0 ]]; then
+    subctl_warn "${#missing_hard[@]} hard dep(s) missing"
+    subctl_info "Run the full installer to handle them: bash $SUBCTL_REPO_ROOT/install.sh"
+    if _subctl_tui_confirm "Attempt brew-only install of missing hard deps now?"; then
+      local id
+      for id in "${missing_hard[@]}"; do
+        _subctl_setup_brew_install "$id" || true
       done
-    else
-      subctl_die "Cannot continue without required tools."
     fi
   fi
 
-  if [[ ${#missing_recommended[@]} -gt 0 ]]; then
+  if [[ ${#missing_soft[@]} -gt 0 ]]; then
     echo
-    subctl_info "${#missing_recommended[@]} recommended tool(s) missing — these unlock features:"
-    for entry in "${missing_recommended[@]}"; do
-      IFS='|' read -r cmd pkg <<< "$entry"
-      case "$cmd" in
-        tmux) printf "  - %-8s claude-teams launcher (REQUIRED for that feature)\n" "$cmd" ;;
-        gum)  printf "  - %-8s polished TUI prompts (this wizard works without it)\n" "$cmd" ;;
-        bun)  printf "  - %-8s dashboard web service\n" "$cmd" ;;
-        go)   printf "  - %-8s deck (Go TUI session manager)\n" "$cmd" ;;
-      esac
-    done
-    echo
-    if _subctl_tui_confirm "Install the missing recommended tools via brew?"; then
-      for entry in "${missing_recommended[@]}"; do
-        IFS='|' read -r cmd pkg <<< "$entry"
-        _setup_install_via_brew "$cmd" "$pkg" || true
+    subctl_info "${#missing_soft[@]} soft dep(s) missing — install for full feature set"
+    if _subctl_tui_confirm "Try brew install for the brew-installable subset?"; then
+      local id
+      for id in "${missing_soft[@]}"; do
+        _subctl_setup_brew_install "$id" || true
       done
     else
       subctl_info "OK, skipping. Re-run \`subctl setup --check\` to revisit."
@@ -133,6 +138,13 @@ subctl_setup_preflight() {
   echo
   subctl_ok "pre-flight done"
   return 0
+}
+
+# ── BotFather walkthrough wrapper (delegates to install.sh) ─────────────────
+# Callable as `subctl setup --botfather`. install.sh hosts the actual
+# walkthrough function so install.sh can offer it standalone too.
+subctl_setup_botfather() {
+  bash "$SUBCTL_REPO_ROOT/install.sh" --botfather
 }
 
 # ── stage 2: detect existing config ────────────────────────────────────────
@@ -399,6 +411,7 @@ subctl_setup() {
       --auth-only)     mode="auth"; shift ;;
       --service-only)  mode="service"; shift ;;
       --check)         mode="check"; shift ;;
+      --botfather)     mode="botfather"; shift ;;
       -h|--help)
         cat <<EOF
 subctl setup [mode]
@@ -409,6 +422,7 @@ subctl setup [mode]
   --auth-only     → just walk OAuth for unauthenticated accounts
   --service-only  → just the dashboard service prompt
   --check         → just pre-flight (tool availability)
+  --botfather     → run the Telegram BotFather walkthrough
 EOF
         return 0 ;;
       *) subctl_die "unknown setup flag: $1" ;;
@@ -422,5 +436,6 @@ EOF
     auth)         subctl_setup_walk_auth ;;
     service)      subctl_setup_service ;;
     check)        subctl_setup_preflight ;;
+    botfather)    subctl_setup_botfather ;;
   esac
 }

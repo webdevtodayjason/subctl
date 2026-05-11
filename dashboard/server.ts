@@ -2856,48 +2856,65 @@ const server = Bun.serve({
         `${home}/.cargo/bin`,
       ].join(":");
 
-      const tools: Array<{
+      // Canonical dep list lives in lib/dep-manifest.json — single source of
+      // truth shared with install.sh, lib/setup.sh, and `subctl doctor`. This
+      // endpoint reads + maps the manifest into the legacy {name, check,
+      // install, required, fallback_paths} shape so the dashboard UI doesn't
+      // need to change. The manifest IS the canonical version of this list;
+      // edit it (not this file) when adding/removing a dep.
+      type ManifestDep = {
+        id: string;
+        name: string;
+        type: string;
+        tier: "hard" | "soft";
+        detect: string[];
+        fallback_paths?: string[];
+        install_cmd?: string;
+        install_method?: string;
+        manual_url?: string;
+        post_install_hint?: string;
+      };
+      type DashboardTool = {
         name: string;
         check: string[];
         install: string;
         required?: boolean;
-        // Optional explicit fallback paths to test when the command isn't on PATH
         fallback_paths?: string[];
-      }> = [
-        { name: "git",        check: ["git", "--version"],            install: "preinstalled on macOS / xcode-select --install", required: true },
-        { name: "tmux",       check: ["tmux", "-V"],                  install: "brew install tmux", required: true },
-        { name: "bun",        check: ["bun", "--version"],            install: "curl -fsSL https://bun.sh/install | bash", required: true,
-          fallback_paths: [`${home}/.bun/bin/bun`] },
-        { name: "jq",         check: ["jq", "--version"],             install: "brew install jq", required: true },
-        { name: "gh",         check: ["gh", "--version"],             install: "brew install gh && gh auth login", required: true },
-        { name: "claude",     check: ["claude", "--version"],         install: "curl -fsSL https://claude.ai/install.sh | bash", required: true },
-        // claude-mem is a Claude Code plugin, not a standalone CLI. After
-        // `npx claude-mem install` lands, the canonical disk signals are:
-        //   ~/.claude/plugins/marketplaces/thedotmack/  (plugin dir)
-        //   ~/.claude-mem/                              (memory state dir)
-        // and a worker on http://localhost:37701. We check the plugin dir
-        // as the install signal (binary may not be on PATH).
-        { name: "claude-mem", check: ["test", "-d", `${home}/.claude/plugins/marketplaces/thedotmack`],
-          install: "npx claude-mem install   (Claude Code memory plugin — used by team leads for persistent memory across sessions)", required: true,
-          fallback_paths: [] },
-        { name: "codex",      check: ["codex", "--version"],          install: "npm i -g @openai/codex   (upgrade: npm i -g @openai/codex@latest)", required: true,
-          fallback_paths: [`${home}/.npm-global/bin/codex`, `/opt/homebrew/bin/codex`, `/usr/local/bin/codex`] },
-        { name: "coderabbit", check: ["coderabbit", "--version"],     install: "curl -fsSL https://cli.coderabbit.ai/install.sh | sh", required: true,
-          fallback_paths: [`${home}/.local/bin/coderabbit`] },
-        // Docker is required for dev teams that spin up containers
-        // (FOOTHOLD bridge, per-level wargame images, anything containerized
-        // a worker builds). The check has to verify both: (a) the docker
-        // binary exists and (b) the daemon is responsive — `docker info`
-        // exits non-zero when Desktop is installed but not running.
-        // Operators commonly hit this after a reboot. Listed BEFORE obsidian
-        // so the order in the table reads "core tools, then optional UX".
-        { name: "docker",     check: ["docker", "--version"],         install: "brew install --cask docker  (then start Docker Desktop: open -a Docker)", required: true,
-          fallback_paths: ["/Applications/Docker.app/Contents/Resources/bin/docker", "/opt/homebrew/bin/docker", "/usr/local/bin/docker"] },
-        { name: "obsidian",   check: ["test", "-d", "/Applications/Obsidian.app"], install: "brew install --cask obsidian", required: false },
-        { name: "lms",        check: ["lms", "version"],              install: "Open LM Studio app → Power user → Developer → Use lms in terminal (CLI lands at ~/.lmstudio/bin/lms)",
-          required: false,
-          fallback_paths: [`${home}/.lmstudio/bin/lms`, `${home}/.cache/lm-studio/bin/lms`] },
-      ];
+      };
+      const expand = (s: string): string =>
+        s.replace(/\$HOME/g, home).replace(/\$\{HOME\}/g, home);
+
+      const manifestPath = join(REPO_ROOT, "lib", "dep-manifest.json");
+      let tools: DashboardTool[] = [];
+      try {
+        const raw = readFileSync(manifestPath, "utf8");
+        const parsed = JSON.parse(raw) as { deps: ManifestDep[] };
+        tools = parsed.deps.map((d) => {
+          // Compose the install hint shown in the dashboard. Append manual_url
+          // and post_install_hint so the row carries everything the operator
+          // needs without a click-through.
+          const parts: string[] = [];
+          if (d.install_cmd) parts.push(d.install_cmd);
+          if (d.manual_url) parts.push(`[${d.manual_url}]`);
+          if (d.post_install_hint) parts.push(d.post_install_hint);
+          return {
+            name: d.name,
+            check: (d.detect ?? []).map(expand),
+            install: parts.join("   "),
+            required: d.tier === "hard",
+            fallback_paths: (d.fallback_paths ?? []).map(expand),
+          };
+        });
+      } catch (err) {
+        // If the manifest is unreadable, return an error rather than falling
+        // back silently — drift between the manifest and the dashboard is
+        // exactly what this refactor is meant to prevent.
+        return Response.json({
+          ok: false,
+          error: `dep-manifest.json unreadable: ${(err as Error).message}`,
+          manifest_path: manifestPath,
+        }, { status: 500 });
+      }
 
       // Strip ANSI escape codes — lms's --version emits a colored ASCII
       // banner that renders as garbage in the dashboard's plain-text rows.

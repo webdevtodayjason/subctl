@@ -13,6 +13,9 @@ Thumbs.db
 *.archived-*
 *.tmp
 
+# Orchestration scratch (multi-agent ledger + worker deliverables — local only)
+.orchestration/
+
 # Node/Bun
 node_modules/
 dist/

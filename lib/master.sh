@@ -229,14 +229,10 @@ subctl_master_pid() {
     | awk -F'=' '/"PID"/ {gsub(/[^0-9]/, "", $2); print $2}'
 }
 
-# ── enable ──────────────────────────────────────────────────────────────────
-subctl_master_enable() {
-  subctl_require bun "install: curl -fsSL https://bun.sh/install | bash" || return 1
-  [[ ! -f "$SUBCTL_MASTER_PLIST_TPL" ]] && subctl_die "plist template missing: $SUBCTL_MASTER_PLIST_TPL"
-
-  if [[ ! -f "$SUBCTL_MASTER_NOTIFY_CFG" ]]; then
-    subctl_err "master Telegram config missing: $SUBCTL_MASTER_NOTIFY_CFG"
-    cat <<EOF >&2
+# Manual BotFather setup instructions — printed on decline, missing installer,
+# or walkthrough failure. Reads $SUBCTL_MASTER_NOTIFY_CFG from caller scope.
+_subctl_master_print_notify_manual() {
+  cat <<EOF
 
 subctl master uses a SEPARATE Telegram bot from 'subctl notify' (the worker-
 escalation bot). To set it up:
@@ -254,7 +250,47 @@ escalation bot). To set it up:
        chmod 600 $SUBCTL_MASTER_NOTIFY_CFG
   3. Re-run: subctl master enable
 EOF
-    return 1
+}
+
+# ── enable ──────────────────────────────────────────────────────────────────
+subctl_master_enable() {
+  subctl_require bun "install: curl -fsSL https://bun.sh/install | bash" || return 1
+  [[ ! -f "$SUBCTL_MASTER_PLIST_TPL" ]] && subctl_die "plist template missing: $SUBCTL_MASTER_PLIST_TPL"
+
+  if [[ ! -f "$SUBCTL_MASTER_NOTIFY_CFG" ]]; then
+    subctl_warn "master Telegram config missing — running BotFather walkthrough"
+
+    # Resolve install.sh: lib/master.sh → lib/ → repo root → install.sh
+    local _lib_dir _repo_root _installer
+    _lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    _repo_root="$(cd "$_lib_dir/.." && pwd)"
+    _installer="$_repo_root/install.sh"
+
+    if [[ ! -f "$_installer" ]]; then
+      subctl_err "installer not found at $_installer — see manual setup below"
+      _subctl_master_print_notify_manual >&2
+      return 1
+    fi
+
+    local _reply
+    read -r -p "Run BotFather walkthrough now via 'bash install.sh --botfather'? [Y/n] " _reply
+    _reply="${_reply:-Y}"
+    if [[ ! "$_reply" =~ ^[Yy] ]]; then
+      _subctl_master_print_notify_manual >&2
+      return 1
+    fi
+
+    # Run as subprocess — `source` would execute the full installer (no
+    # __main__ guard at the bottom of install.sh).
+    bash "$_installer" --botfather
+
+    if [[ -f "$SUBCTL_MASTER_NOTIFY_CFG" ]]; then
+      subctl_ok "master-notify.json now present — continuing master enable"
+    else
+      subctl_err "BotFather walkthrough did not write $SUBCTL_MASTER_NOTIFY_CFG — see manual setup below"
+      _subctl_master_print_notify_manual >&2
+      return 1
+    fi
   fi
 
   if [[ ! -d "$SUBCTL_MASTER_DIR/node_modules" ]]; then

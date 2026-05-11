@@ -69,17 +69,56 @@ A persistent conversational orchestrator that runs on your hardware, talks to yo
 ```bash
 git clone https://github.com/webdevtodayjason/subctl.git
 cd subctl
+
+# 1. See what's missing without touching anything (recommended first step)
+bash install.sh --check-only
+
+# 2. Run the full installer (preflight → install → verify → wire)
 bash install.sh
 ```
 
-The installer:
-1. Symlinks `bin/subctl` into your PATH (default `~/bin/`)
-2. Wires the Claude statusline + Stop hook into every Claude config dir
-3. Symlinks the baseline skills (`subctl`, `autonomy`, `orchestrator-mode`) into every Claude config dir's `skills/` so dev-team workers boot with the right protocol baked in
-4. Drops launchd plists for the master daemon + dashboard
-5. Runs `subctl doctor` to surface any missing tools
+The installer reads its full dep matrix from `lib/dep-manifest.json` (the single source of truth shared with `subctl doctor`, `subctl setup --check`, and the dashboard's Settings → Install Checks panel — edit one file, all four stay in sync).
 
-Required (checked by doctor): `git`, `tmux`, `bun`, `jq`, `gh`, `claude`, `codex`, `coderabbit`, `docker`, `claude-mem` (plugin). Recommended: `lms` (LM Studio CLI for the supervisor model), Obsidian (vault), a Telegram bot via `BotFather`.
+**Three phases:**
+
+1. **Preflight** — prints a status table of every hard + soft dep. No side effects.
+2. **Install** — topologically ordered: Homebrew (auto-bootstrap if missing) → brew packages (jq, tmux, gh, gum, go, node) → bun (curl installer with `BUN_INSTALL_NO_PROFILE=1`) → claude CLI → codex → coderabbit → docker (cask, confirm) → claude-mem (npx) → Telegram bot walkthrough. Every step is confirm-gated unless `--yes` is passed.
+3. **Verify** — re-runs preflight, prints a final go/no-go table, then wires the Claude statusline + Stop hook + skills + MCP server + master daemon + dashboard service.
+
+**Auto vs. manual vs. detect-only:**
+
+| Dep | How |
+|-----|-----|
+| Homebrew, jq, git, tmux, gh, node, gum, go | Auto via `brew install` |
+| bun | Auto via `curl https://bun.sh/install` (with `BUN_INSTALL_NO_PROFILE=1`) |
+| claude | Auto via `curl https://claude.ai/install.sh` |
+| codex | Auto via `npm i -g @openai/codex` |
+| coderabbit | Auto via `curl https://cli.coderabbit.ai/install.sh` |
+| Docker Desktop | Auto via `brew install --cask docker` (confirm) — open the app once after install for system-extension prompts |
+| claude-mem (Claude Code plugin) | Auto via `npx --yes claude-mem install` |
+| **LM Studio**, **Obsidian**, **Context7 key** | Detect-only — manual install link printed, never auto-installed |
+| **Telegram bot** | Walkthrough — see below |
+
+**LM Studio default model.** After LM Studio + `lms` are both detected, the installer offers to pull `qwen/qwen3.6-35b-a3b` (~20 GB) via `lms get …` with a Y/n confirm. Default is yes — `subctl master` can't supervise without a model loaded.
+
+**BotFather walkthrough.** `subctl master enable` hard-aborts if `~/.config/subctl/master-notify.json` is missing. The installer offers an interactive walkthrough for the @BotFather → token → chat_id → write config dance. Run it standalone any time:
+
+```bash
+bash install.sh --botfather       # or: subctl setup --botfather
+```
+
+**Useful flags:**
+
+```bash
+bash install.sh --check-only          # preflight + verify; NO installs
+bash install.sh --skip-deps           # jump to component wiring
+bash install.sh --yes                 # non-interactive; assume yes everywhere
+bash install.sh --allow-missing-hard  # don't abort on missing hard deps
+bash install.sh --botfather           # JUST the Telegram walkthrough
+bash install.sh --dry-run             # show what would happen
+```
+
+**Idempotent.** Re-running on a fully-installed machine prints the ✓ table and skips the install phase entirely.
 
 Add accounts to `~/.config/subctl/accounts.conf` then run `subctl install` again — per-account isolation model is documented in [`docs/multi-account.md`](docs/multi-account.md).
 
