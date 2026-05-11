@@ -456,6 +456,79 @@ const ROLE_DEFAULT_CONTEXT: Record<string, number> = {
   embeddings: 0, // 0 = don't enforce; LM Studio's default is fine
 };
 
+// LM Studio rounds the actual loaded context down from the requested value
+// (likely page-alignment / KV-cache reservation). Observed in the wild:
+// requesting 65,536 yields loaded_context_length=65,023 — a 513-token gap.
+// Without tolerance, every restart re-triggers a 20s reload that produces
+// the same 65,023 result, so the daemon never reaches a stable "loaded"
+// state. 2k tokens of slack absorbs the quirk without masking real drift
+// (a model that loaded at 32k when 64k was asked is still flagged).
+const CTX_PIN_TOLERANCE_TOKENS = 2048;
+
+// LM Studio's /api/v0/models shape (only the fields we read here).
+export interface LMStudioModelSnapshot {
+  state?: string;
+  loaded_context_length?: number;
+  max_context_length?: number;
+}
+
+export interface CtxPinDecision {
+  skip: boolean;
+  detail: string;
+}
+
+// Pure decision: given LM Studio's current view of a model and the desired
+// context, should we skip the (slow, evict-and-replace) reload?
+//
+// Three reasons to skip:
+//   1. Loaded ≥ desired exactly — happy path.
+//   2. Model's max_context_length is below desired — desired is physically
+//      unreachable, so reloading is pointless; accept what we have.
+//   3. Loaded is within CTX_PIN_TOLERANCE_TOKENS of desired — absorbs the
+//      LM Studio rounding-down quirk (e.g. 65,023 vs 65,536) that otherwise
+//      causes a reload-on-every-restart loop.
+//
+// Exported for unit tests; not for general consumption.
+export function decideCtxPinReload(
+  current: LMStudioModelSnapshot | undefined,
+  desired: number,
+  modelId: string,
+  role: string,
+): CtxPinDecision {
+  if (
+    !current ||
+    current.state !== "loaded" ||
+    typeof current.loaded_context_length !== "number"
+  ) {
+    return { skip: false, detail: `${role}=${modelId} not currently loaded — will load` };
+  }
+  const loaded = current.loaded_context_length;
+  if (loaded >= desired) {
+    return {
+      skip: true,
+      detail: `${role}=${modelId} already loaded with ctx ${loaded.toLocaleString()} (≥ desired ${desired.toLocaleString()}) — skipping reload`,
+    };
+  }
+  const maxCtx =
+    typeof current.max_context_length === "number" ? current.max_context_length : null;
+  if (maxCtx !== null && maxCtx < desired) {
+    return {
+      skip: true,
+      detail: `${role}=${modelId} already loaded with ctx ${loaded.toLocaleString()} (model max=${maxCtx.toLocaleString()}; desired ${desired.toLocaleString()} unreachable — accepting loaded)`,
+    };
+  }
+  if (loaded >= desired - CTX_PIN_TOLERANCE_TOKENS) {
+    return {
+      skip: true,
+      detail: `${role}=${modelId} already loaded with ctx ${loaded.toLocaleString()} (within ${CTX_PIN_TOLERANCE_TOKENS.toLocaleString()} of desired ${desired.toLocaleString()}) — skipping reload`,
+    };
+  }
+  return {
+    skip: false,
+    detail: `${role}=${modelId} loaded ctx ${loaded.toLocaleString()} below desired ${desired.toLocaleString()} (>${CTX_PIN_TOLERANCE_TOKENS.toLocaleString()} gap) — reloading`,
+  };
+}
+
 async function ensureModelLoaded(cfg: { provider: string; model: string; host?: string; context_length?: number }, role: string): Promise<{ ok: boolean; detail: string }> {
   if (cfg.provider !== "lmstudio") {
     return { ok: true, detail: `${role} is ${cfg.provider} (cloud) — no local load needed` };
@@ -463,31 +536,20 @@ async function ensureModelLoaded(cfg: { provider: string; model: string; host?: 
   const desired = cfg.context_length ?? ROLE_DEFAULT_CONTEXT[role] ?? 0;
   if (!desired) return { ok: true, detail: `${role} context_length=0; not enforcing` };
   const apiBase = (cfg.host ?? "http://localhost:1234/v1").replace(/\/v1\/?$/, "");
-  // 1. Check current load state — skip the reload if it's already where we
-  //    want it. Tight 2s timeout: if LM Studio isn't even responding to a
-  //    GET we shouldn't dump a load request into it — bail to JIT.
+  // 1. Check current load state — skip the reload if it's already close
+  //    enough (see decideCtxPinReload above). Tight 2s timeout: if LM
+  //    Studio isn't even responding to a GET we shouldn't dump a load
+  //    request into it — bail to JIT.
   let lmReachable = false;
   try {
     const r = await fetch(`${apiBase}/api/v0/models`, { signal: AbortSignal.timeout(2000) });
     if (r.ok) {
       lmReachable = true;
-      const j = (await r.json()) as { data?: Array<{ id: string; state?: string; loaded_context_length?: number }> };
+      const j = (await r.json()) as { data?: Array<LMStudioModelSnapshot & { id: string }> };
       const current = (j.data ?? []).find((m) => m.id === cfg.model);
-      if (current?.state === "loaded" && current.loaded_context_length === desired) {
-        return { ok: true, detail: `${role}=${cfg.model} already loaded with ctx ${desired.toLocaleString()}` };
-      }
-      // Already loaded but at a different context — and another role may
-      // share this exact model. If desired <= currently-loaded, treat as
-      // good enough (no need to evict + reload). This avoids the
-      // supervisor-at-65K-then-reviewer-wants-32K cascade that crashed
-      // the daemon during the LM Studio recovery 2026-05-10.
-      if (current?.state === "loaded" &&
-          typeof current.loaded_context_length === "number" &&
-          current.loaded_context_length >= desired) {
-        return {
-          ok: true,
-          detail: `${role}=${cfg.model} already loaded with ctx ${current.loaded_context_length.toLocaleString()} (≥ desired ${desired.toLocaleString()}) — skipping reload`,
-        };
+      const decision = decideCtxPinReload(current, desired, cfg.model, role);
+      if (decision.skip) {
+        return { ok: true, detail: decision.detail };
       }
     }
   } catch { /* fall through */ }
@@ -2037,7 +2099,13 @@ async function main() {
   process.on("SIGINT", () => shutdown("SIGINT"));
 }
 
-main().catch((err) => {
-  console.error(`[master] fatal:`, err);
-  process.exit(1);
-});
+// Guard so test files can import named helpers (e.g. decideCtxPinReload)
+// without booting the daemon. `bun run server.ts` and the launchd plist
+// both invoke this module as the entrypoint, so import.meta.main is true
+// in production but false when a test does `import { ... } from "../server"`.
+if (import.meta.main) {
+  main().catch((err) => {
+    console.error(`[master] fatal:`, err);
+    process.exit(1);
+  });
+}
