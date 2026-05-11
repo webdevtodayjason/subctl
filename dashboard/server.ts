@@ -66,7 +66,7 @@
 
 import { readFileSync, readdirSync, statSync, existsSync, appendFileSync, mkdirSync, rmSync } from "node:fs";
 import { join, basename } from "node:path";
-import { homedir } from "node:os";
+import { homedir, hostname as osHostname } from "node:os";
 import { spawnSync } from "node:child_process";
 import { aggregateAll as aggregateCostAll, type AccountCostSummary } from "./lib/cost.ts";
 
@@ -2321,6 +2321,30 @@ const server = Bun.serve({
           "Content-Type": "application/json; charset=utf-8",
           "Cache-Control": "no-store",
         },
+      });
+    }
+
+    // ── /api/host — local host identity for dashboard labels ────────────────
+    // Frontend calls this once on boot to delabel every "M3 Ultra" mention
+    // baked into the static UI. Operator can override the label by writing a
+    // one-line text file at ~/.config/subctl/host_label (e.g. "Jason's Studio").
+    // Otherwise we use the short hostname (everything before the first ".").
+    if (url.pathname === "/api/host" && req.method === "GET") {
+      const userLabelPath = join(SUBCTL_CONFIG_DIR, "host_label");
+      let userLabel: string | null = null;
+      try {
+        if (existsSync(userLabelPath)) {
+          const raw = readFileSync(userLabelPath, "utf8").trim();
+          userLabel = raw.length > 0 ? raw : null;
+        }
+      } catch { /* ignore unreadable file */ }
+      const hostname = osHostname();
+      const shortHostname = hostname.split(".")[0] || hostname;
+      return Response.json({
+        ok: true,
+        hostname,
+        short_hostname: shortHostname,
+        user_label: userLabel ?? shortHostname,
       });
     }
 

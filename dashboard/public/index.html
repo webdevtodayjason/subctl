@@ -159,7 +159,7 @@
           </span>
           <span class="chat-toolbar-hint" id="chat-model-current">supervisor: --</span>
         </div>
-      <h2>Master <span class="panel-hint">conversational dev-team orchestrator on the M3 Ultra · streams from <code>/api/master/events</code></span>
+      <h2>Master <span class="panel-hint">conversational dev-team orchestrator on <span class="host-label">this Mac</span> · streams from <code>/api/master/events</code></span>
         <span class="master-conn-state" id="master-conn-state">disconnected</span>
       </h2>
       <div class="master-log" id="master-log">
@@ -463,7 +463,7 @@
     <!-- ── Models tab ──────────────────────────────────────────────── -->
     <section class="panel" data-tab="models" id="models-panel">
       <h2>LM Studio models
-        <span class="panel-hint">read-only catalog from <code>/api/v0/models</code> on the M3 Ultra</span>
+        <span class="panel-hint">read-only catalog from <code>/api/v0/models</code> on <span class="host-label">this Mac</span></span>
         <span class="models-status" id="models-status">loading…</span>
       </h2>
       <div class="models-summary" id="models-summary"></div>
@@ -486,14 +486,14 @@
         </tbody>
       </table>
       <div class="models-note">
-        <strong>Load/unload control</strong> requires the <code>lms</code> CLI on the M3 Ultra (LM Studio app → Developer → Use lms in terminal). Once installed, this panel can wire load/unload buttons.
+        <strong>Load/unload control</strong> requires the <code>lms</code> CLI on <span class="host-label">this Mac</span> (LM Studio app → Developer → Use lms in terminal). Once installed, this panel can wire load/unload buttons.
       </div>
     </section>
 
     <!-- ── Projects tab: master/detail with drill-down ─────────────── -->
     <section class="projects-screen" data-tab="projects">
       <header class="screen-header projects-header">
-        <h2>Projects <span class="screen-sub">code projects on the M3 Ultra at <code id="projects-root">~/code</code></span></h2>
+        <h2>Projects <span class="screen-sub">code projects on <span class="host-label">this Mac</span> at <code id="projects-root">~/code</code></span></h2>
         <button type="button" class="primary-btn" id="project-new-btn">+ New Project</button>
       </header>
 
@@ -508,7 +508,7 @@
             <div class="form-row">
               <label for="np-name">Name <span class="required">*</span></label>
               <input type="text" id="np-name" name="name" placeholder="my-new-project" autocomplete="off" required />
-              <div class="form-hint">Becomes <code>~/code/<span id="np-name-preview">my-new-project</span></code> on the M3 Ultra. Spaces auto-convert to dashes; non-alphanumeric chars are stripped.</div>
+              <div class="form-hint">Becomes <code>~/code/<span id="np-name-preview">my-new-project</span></code> on <span class="host-label">this Mac</span>. Spaces auto-convert to dashes; non-alphanumeric chars are stripped.</div>
             </div>
             <div class="form-row">
               <label for="np-git-url">Git URL <span class="dim">(optional)</span></label>
@@ -586,7 +586,7 @@
           </div>
           <div class="memory-card-body">
             <p class="memory-card-doc">Stable description of Jason — role, infrastructure, work style, preferences. Master sees this every turn so it doesn't have to re-discover the basics. Edit conservatively; this is durable context.</p>
-            <textarea id="user-md-textarea" rows="10" placeholder="Jason — MSP owner, AI application developer. Runs subctl on the M3 Ultra (256GB RAM, 400Gbps backbone). Deeply technical (30+ yrs IT). Prefers FREE/open-source first..."></textarea>
+            <textarea id="user-md-textarea" rows="10" placeholder="Jason — MSP owner, AI application developer. Runs subctl on this Mac (256GB RAM, 400Gbps backbone). Deeply technical (30+ yrs IT). Prefers FREE/open-source first..."></textarea>
             <div class="memory-card-actions">
               <button type="button" class="primary-btn" data-mem-save="user">save</button>
               <span class="memory-card-result" id="user-md-result"></span>

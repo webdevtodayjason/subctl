@@ -7,6 +7,48 @@
 (() => {
   "use strict";
 
+  // ---- Host identity (v2.6.x: delabel hardcoded "M3 Ultra" mentions) ----
+  // Filled in on boot by GET /api/host. Until that resolves, prose uses
+  // "this Mac" so a flash of "M3 Ultra" on a non-M3 host never appears.
+  // The operator can override via ~/.config/subctl/host_label (one line of text).
+  let HOST_LABEL = "this Mac";
+  // TODO(v2.7): make SSH host alias configurable per-host. The dashboard runs
+  // on whatever Mac the operator opened it on, but the master daemon may live
+  // on a different machine (commonly the M3 Ultra). The /attach SSH command
+  // needs the REMOTE host, not the local one. Until that's wired through
+  // (probably via a `subctl_master_ssh_alias` setting in policy.json), the
+  // attach command stays hardcoded so the operator's existing ~/.ssh/config
+  // entry keeps working.
+  const SSH_HOST_ALIAS = "argent-m3-ultra-dev";
+
+  function applyHostLabel() {
+    try {
+      document.querySelectorAll(".host-label").forEach((el) => {
+        el.textContent = HOST_LABEL;
+      });
+    } catch { /* DOM not ready — bootstrap retries after fetch resolves */ }
+  }
+
+  // Fire-and-forget; default label is fine if this never resolves.
+  fetch("/api/host")
+    .then((r) => r.json())
+    .then((j) => {
+      if (j && j.ok && typeof j.user_label === "string" && j.user_label.length > 0) {
+        HOST_LABEL = j.user_label;
+        applyHostLabel();
+      }
+    })
+    .catch(() => { /* fall back to default */ });
+  // Also paint once on DOMContentLoaded in case the static spans render
+  // before fetch resolves — keeps them from showing "M3 Ultra" mid-flash
+  // (they already say "this Mac" by default, but in case future spans land
+  // with different default text).
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", applyHostLabel, { once: true });
+  } else {
+    applyHostLabel();
+  }
+
   const VERDICT_TEXT     = { green: "GO",   yellow: "HOLD",  red: "STOP"  };
   const VERDICT_TAGLINE  = {
     green:  "all clear — dispatch normally",
@@ -1098,7 +1140,7 @@
             const cmd = document.createElement("code");
             cmd.className = "install-cmd";
             cmd.textContent = cmdText;
-            cmd.title = "click to copy — run this on the M3 Ultra (ssh argent-m3-ultra-dev)";
+            cmd.title = `click to copy — run this on ${HOST_LABEL} (ssh ${SSH_HOST_ALIAS})`;
             cmd.addEventListener("click", () => {
               navigator.clipboard.writeText(cmdText);
               cmd.textContent = "copied ✓";
@@ -1268,7 +1310,7 @@
             result.textContent = "Failed: " + (j.error || "?");
           } else {
             result.className = "settings-result ok";
-            result.textContent = "✓ saved · " + (j.exists ? "vault exists" : "path saved but vault dir doesn't exist yet — create it on the M3 Ultra");
+            result.textContent = "✓ saved · " + (j.exists ? "vault exists" : `path saved but vault dir doesn't exist yet — create it on ${HOST_LABEL}`);
             loadVault();
           }
         } catch (err) {
@@ -2240,7 +2282,9 @@
     function onBackdrop(e) { if (e.target === modal) close(); }
     function onKey(e) { if (e.key === "Escape") close(); }
     function onAttach() {
-      const cmd = `ssh argent-m3-ultra-dev -t tmux attach -t ${name}`;
+      // TODO(v2.7): SSH_HOST_ALIAS is hardcoded; the master daemon may live on
+      // a different host than the dashboard. Wire from policy.json/host_label.
+      const cmd = `ssh ${SSH_HOST_ALIAS} -t tmux attach -t ${name}`;
       navigator.clipboard.writeText(cmd);
       attachBtn.textContent = "copied ✓";
       setTimeout(() => { attachBtn.textContent = "copy ssh attach command"; }, 1500);
@@ -2251,7 +2295,8 @@
     attachBtn.addEventListener("click", onAttach);
   }
   function copyAttachCommand(name, btn) {
-    const cmd = `ssh argent-m3-ultra-dev -t tmux attach -t ${name}`;
+    // TODO(v2.7): see onAttach() — same SSH-host hardcoding caveat.
+    const cmd = `ssh ${SSH_HOST_ALIAS} -t tmux attach -t ${name}`;
     navigator.clipboard.writeText(cmd);
     if (btn) {
       const original = btn.textContent;
@@ -2982,8 +3027,8 @@
           if (status) { status.textContent = "obsidian not installed"; status.dataset.state = "warn"; }
           content.innerHTML =
             "<div class=\"memory-block\">" +
-              "<h3>Obsidian is not installed on the M3 Ultra</h3>" +
-              "<p>The master's long-term memory lives in Obsidian vaults — project portfolios, decisions, RESUME.md per project, references that survive across sessions. Install on the M3 Ultra:</p>" +
+              `<h3>Obsidian is not installed on ${escapeForHtml(HOST_LABEL)}</h3>` +
+              `<p>The master's long-term memory lives in Obsidian vaults — project portfolios, decisions, RESUME.md per project, references that survive across sessions. Install on ${escapeForHtml(HOST_LABEL)}:</p>` +
               "<pre class=\"memory-cmd\">brew install --cask obsidian</pre>" +
               "<p>Then create a vault at:</p>" +
               "<pre class=\"memory-cmd\">" + escapeForHtml(j.suggested_vault_path) + "</pre>" +
@@ -3479,17 +3524,17 @@
       "/spawn <account> <project> [prompt]",
       "                                 ask master to spawn a dev team",
       "/kill <team>                   — ask master to kill a dev team session",
-      "/attach <team>                 — show the SSH command to attach to a team's tmux on the M3 Ultra",
+      `/attach <team>                 — show the SSH command to attach to a team's tmux on ${HOST_LABEL}`,
       "/config                        — show config file paths and what each controls",
       "",
       "How dev teams work:",
-      "  • Master spawns tmux sessions on the M3 Ultra via subctl_orch_spawn",
+      `  • Master spawns tmux sessions on ${HOST_LABEL} via subctl_orch_spawn`,
       "  • The lead Claude Code in pane 0 uses TeamCreate + Agent(team_name=\"…\") to make workers",
       "  • Each lead writes status to ~/.config/subctl/master/inbox/<team>.jsonl",
       "  • Master tails inboxes (2s poll), reacts to blocked/error events, watchdog at 30min",
-      "  • Attach manually with: ssh argent-m3-ultra-dev tmux attach -t <team>",
+      `  • Attach manually with: ssh ${SSH_HOST_ALIAS} tmux attach -t <team>`,
       "",
-      "Config (all on the M3 Ultra):",
+      `Config (all on ${HOST_LABEL}):`,
       "  ~/.config/subctl/master/policy.json     operator + projects + autonomy + intervals",
       "  ~/.config/subctl/master/providers.json  model routing (router/supervisor/reviewer/embeddings/escalate/fallback)",
       "  ~/.config/subctl/master-notify.json     Telegram bot token + chat_id",
@@ -3606,8 +3651,8 @@
             return;
           }
           appendSystemBlock(
-            `Attach to dev team "${args}" on the M3 Ultra:\n\n` +
-            `  ssh argent-m3-ultra-dev -t tmux attach -t ${args}\n\n` +
+            `Attach to dev team "${args}" on ${HOST_LABEL}:\n\n` +
+            `  ssh ${SSH_HOST_ALIAS} -t tmux attach -t ${args}\n\n` +
             `Detach with Ctrl-b then d. The master and team keep running after detach.`,
           );
           return;
@@ -3615,7 +3660,7 @@
 
         case "config":
           appendSystemBlock([
-            "config files (all on the M3 Ultra at ~/.config/subctl/master/):",
+            `config files (all on ${HOST_LABEL} at ~/.config/subctl/master/):`,
             "",
             "  policy.json",
             "    operator info, project portfolio, autonomy levels (drive/ask/shadow),",
@@ -3633,7 +3678,7 @@
             "  inbox/ (auto-created)",
             "    one .jsonl per dev team. master tails for status events.",
             "",
-            "edit the file directly on the M3 Ultra, then restart with:",
+            `edit the file directly on ${HOST_LABEL}, then restart with:`,
             "  launchctl unload  ~/Library/LaunchAgents/com.subctl.master.plist",
             "  launchctl load    ~/Library/LaunchAgents/com.subctl.master.plist",
           ].join("\n"));

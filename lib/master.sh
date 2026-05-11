@@ -46,7 +46,10 @@ subctl master <verb> [args]
   Control subctl master — the master orchestrator daemon.
 
 Verbs:
-  enable          Install + load launchd plist (auto-starts at login)
+  enable [--no-telegram]
+                  Install + load launchd plist (auto-starts at login).
+                  --no-telegram skips BotFather walkthrough; daemon runs
+                  without notification surface (can be added later).
   disable         Unload + remove the plist (state preserved)
   status          launchd state, PID, recent log, models, active workers
   logs [-f]       tail (or tail -f with --follow) ~/Library/Logs/subctl/master.log
@@ -65,6 +68,7 @@ Verbs:
 
 Examples:
   subctl master enable
+  subctl master enable --no-telegram
   subctl master prompt "review the AMP Cortex PR queue and pick what's safe to merge"
   subctl master logs --follow
   subctl master personality list
@@ -253,11 +257,35 @@ EOF
 }
 
 # ── enable ──────────────────────────────────────────────────────────────────
+# Flags:
+#   --no-telegram  Skip Telegram bot setup (BotFather walkthrough + master-notify.json
+#                  presence check). The master daemon's notify listener already
+#                  handles a missing master-notify.json gracefully (see
+#                  components/master/master-notify-listener.ts:118-121 — returns
+#                  {ok:false, reason:"no master-notify.json…"} without crashing),
+#                  so the daemon runs fine without notification surface. Use when
+#                  you want master enabled now and will set up Telegram later via
+#                  _subctl_master_print_notify_manual (or just bash install.sh --botfather).
 subctl_master_enable() {
+  local no_telegram=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --no-telegram) no_telegram=true; shift ;;
+      --)            shift; break ;;
+      -*)            subctl_die "unknown flag: $1 (try: subctl master help)" ;;
+      *)             break ;;
+    esac
+  done
+
   subctl_require bun "install: curl -fsSL https://bun.sh/install | bash" || return 1
   [[ ! -f "$SUBCTL_MASTER_PLIST_TPL" ]] && subctl_die "plist template missing: $SUBCTL_MASTER_PLIST_TPL"
 
-  if [[ ! -f "$SUBCTL_MASTER_NOTIFY_CFG" ]]; then
+  if $no_telegram; then
+    subctl_warn "Telegram disabled (--no-telegram) — master daemon will run without notification surface."
+    subctl_info "  to enable later, see manual setup: subctl master enable (without --no-telegram), or:"
+    subctl_info "    bash install.sh --botfather   # walkthrough"
+    subctl_info "    or write $SUBCTL_MASTER_NOTIFY_CFG manually (see _subctl_master_print_notify_manual)"
+  elif [[ ! -f "$SUBCTL_MASTER_NOTIFY_CFG" ]]; then
     subctl_warn "master Telegram config missing — running BotFather walkthrough"
 
     # Resolve install.sh: lib/master.sh → lib/ → repo root → install.sh
