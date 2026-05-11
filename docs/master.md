@@ -825,7 +825,23 @@ documents. This viewer is that place. Attachments become
 first-class notes in the master's vault when the operator wants
 them durable.
 
-### Phase 3o — Bake the operator's Claude config baseline into the repo
+### Phase 3o — Policy engine (Trusted/Gated/Sealed) (in progress)
+
+v2.7.0 ships the per-worker policy engine with three execution modes
+decided at spawn time: **Trusted** (unrestricted bash, opt-in),
+**Gated** (default — `PreToolUse` hook routes every `Bash`
+invocation through `subctl policy check` against a TOML allowlist),
+**Sealed** (no bash, MCP-only tool set). The canonical spec lives
+at [`docs/policy.md`](./policy.md); the schema at
+[`docs/policy-schema.md`](./policy-schema.md). The default mode
+flip (Trusted → Gated for `subctl teams claude`) is the headline
+change; defang (`bypassPermissions` + `--dangerously-skip-permissions`
++ `CLAUDE_AUTONOMY=full`) stays in all three modes — the hook is
+additive, never replacement.
+
+Tracking: 15-PR sequence in `.orchestration/HANDOFF_DIGEST.md`.
+
+### Phase 3r — Bake the operator's Claude config baseline into the repo
 
 Operator request 2026-05-10 during the FOOTHOLD dogfood: a chunk
 of the customizations subctl actually depends on live in the
