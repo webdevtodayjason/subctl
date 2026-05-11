@@ -1,0 +1,231 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://subctl.com/schemas/policy.schema.json",
+  "title": "Subctl Policy",
+  "description": "Schema for subctl policy documents (`policy.toml`, the four merge sources, and the per-team snapshot). Expanded from the truncated example in .orchestration/handoff-pack/02-policy-schema.md §5. The TypeScript types in lib/policy/types.ts are the source of truth; this schema mirrors them for IDE validation. Per HANDOFF_DIGEST §3.1 (D9), the policy modes do NOT control the defang — they layer an additive gate on top.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "preset": {
+      "type": "string",
+      "description": "Ecosystem preset to inherit from. The shipped set in v2.7.0 is node/python/generic. Rust/Go are reserved for v2.8.0+. Use `none` to opt out of inheritance entirely (required if you need to weaken a preset's deny_always).",
+      "enum": ["node", "python", "generic", "rust", "go", "none"]
+    },
+    "default_mode": {
+      "type": "string",
+      "description": "Default mode when `subctl teams <provider>` is invoked without --mode. Subctl's hardcoded fallback is `gated`.",
+      "enum": ["trusted", "gated", "sealed"]
+    },
+    "mode": {
+      "type": "object",
+      "description": "Per-mode configuration tables. Each mode is optional in a source file; a project that only customizes Gated need only declare `[mode.gated]`.",
+      "additionalProperties": false,
+      "properties": {
+        "trusted": { "$ref": "#/$defs/trustedMode" },
+        "gated": { "$ref": "#/$defs/gatedMode" },
+        "sealed": { "$ref": "#/$defs/sealedMode" }
+      }
+    },
+    "__meta": {
+      "$ref": "#/$defs/meta",
+      "description": "Populated by the policy loader after the merge pass. Source files on disk MUST NOT set this — it appears only on resolved policies in memory and in the per-team snapshot's header comments."
+    }
+  },
+  "$defs": {
+    "trustedMode": {
+      "type": "object",
+      "description": "Trusted-mode configuration. Intentionally empty in v2.7.0 — trusted has no per-mode config (the defang stays at the worker level, not the mode level). Per docs/policy.md §1.1.",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "gatedMode": {
+      "type": "object",
+      "description": "Gated-mode configuration. The bulk of the policy surface. Resolution at check time: deny_always > deny_if_arg_contains > allow_pattern > allow.commands > default-deny. Per docs/policy-schema.md §3.",
+      "additionalProperties": false,
+      "properties": {
+        "allow": {
+          "type": "object",
+          "description": "Exact-match command names (first whitespace-separated token). No arg checking. Use conservatively; most commands belong in allow_pattern.",
+          "additionalProperties": false,
+          "properties": {
+            "commands": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "uniqueItems": true
+            }
+          }
+        },
+        "allow_pattern": {
+          "type": "array",
+          "description": "The core allowlist. Each entry is a command + arg-list filter with optional deny_if_arg_contains refinement.",
+          "items": { "$ref": "#/$defs/allowPattern" }
+        },
+        "deny_always": {
+          "type": "object",
+          "description": "Patterns that override every allow rule. Substring matches are case-sensitive; regex is RE2 syntax (Go-style; no lookbehind). Per docs/policy-schema.md §3.4.",
+          "additionalProperties": false,
+          "properties": {
+            "substrings": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "regex": {
+              "type": "array",
+              "items": { "type": "string", "format": "regex", "minLength": 1 }
+            }
+          }
+        },
+        "npm": { "$ref": "#/$defs/allowedScripts" },
+        "pnpm": { "$ref": "#/$defs/allowedScripts" },
+        "bun": { "$ref": "#/$defs/allowedScripts" },
+        "yarn": { "$ref": "#/$defs/allowedScripts" },
+        "make": { "$ref": "#/$defs/allowedTargets" },
+        "just": { "$ref": "#/$defs/allowedRecipes" },
+        "python_modules": { "$ref": "#/$defs/allowedModules" },
+        "uv": { "$ref": "#/$defs/allowedRunTargets" },
+        "poetry": { "$ref": "#/$defs/allowedRunTargets" }
+      }
+    },
+    "allowPattern": {
+      "type": "object",
+      "description": "A single allow_pattern entry. Per docs/policy-schema.md §3.2: command matches first non-flag token; args[] gates first non-flag argument; deny_if_arg_contains is a second-pass token-substring filter.",
+      "required": ["command"],
+      "additionalProperties": false,
+      "properties": {
+        "command": { "type": "string", "minLength": 1 },
+        "args": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "deny_if_arg_contains": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "allowedScripts": {
+      "type": "object",
+      "description": "`<runner> run <script>` allowlist (npm/pnpm/bun/yarn). Also covers `npm test` (treated as `npm run test`). The hook reads `<cwd>/package.json` at check time.",
+      "required": ["allowed_scripts"],
+      "additionalProperties": false,
+      "properties": {
+        "allowed_scripts": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      }
+    },
+    "allowedTargets": {
+      "type": "object",
+      "description": "`make <target>` allowlist. The hook reads `<cwd>/Makefile` or `GNUmakefile` and validates the requested target.",
+      "required": ["allowed_targets"],
+      "additionalProperties": false,
+      "properties": {
+        "allowed_targets": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      }
+    },
+    "allowedRecipes": {
+      "type": "object",
+      "description": "`just <recipe>` allowlist. The hook may run `just --summary` to enumerate available recipes.",
+      "required": ["allowed_recipes"],
+      "additionalProperties": false,
+      "properties": {
+        "allowed_recipes": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      }
+    },
+    "allowedModules": {
+      "type": "object",
+      "description": "`python -m <module>` allowlist. Pairs with `deny_always` regex for `python -c` so the only Python execution path through Gated is `python -m`.",
+      "required": ["allowed"],
+      "additionalProperties": false,
+      "properties": {
+        "allowed": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      }
+    },
+    "allowedRunTargets": {
+      "type": "object",
+      "description": "`uv run <target>` / `poetry run <target>` allowlist.",
+      "required": ["allowed_run_targets"],
+      "additionalProperties": false,
+      "properties": {
+        "allowed_run_targets": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      }
+    },
+    "sealedMode": {
+      "type": "object",
+      "description": "Sealed-mode configuration. The worker has no Bash; an MCP server exposes the named tool set. Per docs/policy.md §5 + docs/policy-schema.md §4.",
+      "required": ["mcp_tools"],
+      "additionalProperties": false,
+      "properties": {
+        "mcp_tools": {
+          "type": "array",
+          "description": "The whitelisted MCP tool names. The v1 set is enumerated in docs/policy.md §5 but the schema does NOT enum-restrict so new tools (added by user MCP servers) don't trip the validator.",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "test_command": {
+          "type": "string",
+          "description": "Exact string the `test_run` MCP tool will execute. No interpolation, no piping, no `&&` chains. `subctl policy validate` rejects pipelines / chains.",
+          "minLength": 1
+        },
+        "escalation": {
+          "type": "object",
+          "description": "What `policy_request` does when the worker asks for a one-off command.",
+          "required": ["target", "require_approval", "timeout_seconds"],
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "string",
+              "enum": ["master", "operator"]
+            },
+            "require_approval": { "type": "boolean" },
+            "timeout_seconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 86400
+            }
+          }
+        }
+      }
+    },
+    "meta": {
+      "type": "object",
+      "description": "Resolved-policy metadata. Populated by the loader, not by source files. Per docs/policy-schema.md §8 (snapshot header).",
+      "required": ["sourcePaths", "allowlistSha", "resolvedAt"],
+      "additionalProperties": false,
+      "properties": {
+        "sourcePaths": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "allowlistSha": {
+          "type": "string",
+          "description": "First 8 hex chars of the snapshot's allowlist sha256.",
+          "minLength": 1
+        },
+        "resolvedAt": {
+          "type": "string",
+          "description": "ISO 8601 with milliseconds, UTC.",
+          "format": "date-time"
+        }
+      }
+    }
+  }
+}
