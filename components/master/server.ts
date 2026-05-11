@@ -1829,13 +1829,25 @@ async function main() {
     const stale: Array<{ team: string; lastSeenMin: number; lastEventType?: string }> = [];
     for (const [team, v] of teamLastActivity) {
       const ageMin = (now - v.ts) / 60_000;
-      if (ageMin > stalenessThresholdMin) {
-        stale.push({
-          team,
-          lastSeenMin: Math.round(ageMin),
-          lastEventType: v.lastEvent?.type,
-        });
+      if (ageMin <= stalenessThresholdMin) continue;
+      // 404 check: if the tmux session is gone, the team is dead, not
+      // stale — drop it from tracking so we stop alerting every tick.
+      // (Triggered by claude-Down-Time-Arena, which was firing every
+      // watchdog tick after its tmux session had already been killed.)
+      const check = Bun.spawnSync(["tmux", "has-session", "-t", team], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      if (check.exitCode !== 0) {
+        teamLastActivity.delete(team);
+        teamPaneHash.delete(team);
+        continue;
       }
+      stale.push({
+        team,
+        lastSeenMin: Math.round(ageMin),
+        lastEventType: v.lastEvent?.type,
+      });
     }
     if (stale.length === 0) {
       broadcast("watchdog_ok", {
