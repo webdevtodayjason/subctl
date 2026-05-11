@@ -4,6 +4,19 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.5.7] — 2026-05-10
+
+Patch — three operator-reported fixes from the post-shutdown playtest.
+
+### Fixed
+
+- **Watchdog no longer fires on dead tmux sessions.** `refreshTeamActivityFromTmux` now PRUNES entries whose tmux session is no longer alive. Diagnosed live during operator playtest: "Looks like your watchdog is kicking off even though you closed the tab out." Was caused by `teamLastActivity` keeping the spawn-seed event in memory after `tmux kill-session` ran — the team's `last_activity` aged forever, watchdog flagged stale every tick, master tool-called `subctl_orch_status` and got HTTP 404 each time. New behavior: any `claude-*` entry missing from the live tmux session list gets dropped, plus a `team_pruned` SSE event + `watchdog_pruned` decisions.jsonl line for audit. Guarded against false positives — only prunes when the tmux query succeeded.
+- **Dev-team card no longer renders "undefined: (no text)".** Synthetic spawn-seed events use `kind`/`detail`/`by` fields; the renderer was expecting `type`/`text`. Fallback chain added so seed events render as `spawned: retroactive seed for live team …` instead of `undefined: (no text)`.
+
+### Changed
+
+- **Master SKILL nudges `claude-mem` usage more aggressively.** Operator noted the master was relying solely on `memory.md` (tier-1) and rarely calling `memory_search` / `memory_timeline`. New rule in the system prompt: call claude-mem proactively when (a) operator references a past project/decision/incident, (b) about to assert a fact from loose recall, (c) spawning into a project worked on before, (d) transcript was auto-compacted. Plus an explicit boundary call-out: `memory.md` is operator notes; claude-mem is project/incident history.
+
 ## [2.5.6] — 2026-05-10
 
 Patch — watchdog observability. Backlog item shipped.

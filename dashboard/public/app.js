@@ -1947,9 +1947,16 @@
           head.appendChild(age);
           card.appendChild(head);
           if (t.last_event) {
+            // Synthetic spawn-seed events use `kind` (not `type`) and have no
+            // `text` field — earlier code rendered them as "undefined: (no text)".
+            // Render gracefully by falling back to kind/detail/by fields.
             const ev = document.createElement("div");
             ev.className = "last-event";
-            ev.textContent = t.last_event.type + ": " + (t.last_event.text || "(no text)");
+            const label = t.last_event.type
+                       || t.last_event.kind
+                       || (t.last_event.by ? `by ${t.last_event.by}` : "report");
+            const body = t.last_event.text || t.last_event.detail || "";
+            ev.textContent = body ? `${label}: ${body}` : label;
             card.appendChild(ev);
           } else {
             const meta = document.createElement("div");

@@ -1811,6 +1811,41 @@ async function main() {
         // really is idle in the pane (might still be alive; the watchdog's
         // staleness threshold is what flags real concern).
       }
+
+      // PRUNE dead sessions. Without this, the watchdog kept firing on
+      // sessions the operator killed because their teamLastActivity entry
+      // (set from the inbox seed event at spawn time) lingered forever.
+      // Operator caught it 2026-05-10: "Looks like your watchdog is
+      // kicking off even though you closed the tab out." Diagnosed: the
+      // tmux session was gone but teamLastActivity still had it. Now: any
+      // entry whose session name isn't in the live tmux list gets dropped.
+      // Guarded — we only prune when the tmux query SUCCEEDED (exitCode
+      // 0). If tmux is offline or broken, we leave teamLastActivity alone
+      // rather than wiping it on a false negative.
+      const liveSet = new Set(sessions);
+      const removed: string[] = [];
+      for (const team of [...teamLastActivity.keys()]) {
+        // Only prune subctl-spawned sessions (claude-*). Other entries
+        // might be there for reasons we don't model here.
+        if (!team.startsWith("claude-")) continue;
+        if (!liveSet.has(team)) {
+          teamLastActivity.delete(team);
+          teamPaneHash.delete(team);
+          removed.push(team);
+        }
+      }
+      if (removed.length > 0) {
+        broadcast("team_pruned", {
+          ts: new Date().toISOString(),
+          teams: removed,
+          reason: "tmux session no longer alive",
+        });
+        logDecision({
+          project: "_master",
+          action: "watchdog_pruned",
+          rationale: `removed ${removed.length} dead team(s) from tracking: ${removed.join(", ")}`,
+        });
+      }
     } catch {
       // tmux not on PATH or no server running — skip silently. The
       // inbox-only signal still works as a fallback.
