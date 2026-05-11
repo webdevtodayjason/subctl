@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./docs/images/og-card.png" alt="subctl — an agentic coding harness for the AI subscriptions you already pay for" width="720" />
+</p>
+
 # subctl
 
 **An agentic harness for the AI subscriptions you already pay for.**
