@@ -4,75 +4,160 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
-## [2.7.4] — 2026-05-12
+## [2.7.5] — 2026-05-12
 
-### LM Studio API token support — honor the "Require API Token" toggle
+### `subctl update` UX — version state up front, lockfile drift auto-stashes
 
-LM Studio recently shipped an optional **"Require API Token"** server setting. Operators who enable it get a `sk-lm-XXXXXXXX:YYYYYYYYYYYY`-shaped bearer token that every request — OpenAI-compatible `/v1/*` AND LM Studio's native `/api/v0/*` / `/api/v1/models/load` surfaces — must carry as `Authorization: Bearer <token>` or the server 401s. Before v2.7.4, subctl sent a `"not-needed"` sentinel for local providers and hit 401 the moment the operator flipped the toggle. v2.7.4 adds first-class support: set `LMSTUDIO_API_TOKEN` in the daemon's environment and every LM Studio call subctl makes carries the bearer.
+Two narrow operator-facing improvements to `lib/update.sh`. Both came out of dogfooding v2.7.4 across the M3 Ultra / M5 / Mac Studio fleet: operators were typing `subctl update`, hitting "working tree has uncommitted changes" with no version context, then re-typing `subctl update --force` only to discover the dirt was a `bun.lock` rewrite they didn't make. v2.7.5 fixes both.
 
 ### What's new
 
-**Helper:** `lmstudioAuthHeader()` lives in `components/master/server.ts` (also duplicated in `components/master/tools/diag.ts` and `dashboard/server.ts` to keep import graphs disjoint). Returns `{Authorization: "Bearer <token>"}` when `LMSTUDIO_API_TOKEN` is set, `{}` when absent. Callers spread the result into their `headers` object unconditionally — the `{}` form is a no-op, so back-compat is preserved.
+**Version-state block printed BEFORE the working-tree gate.** Today the dirty-tree abort hides the very thing the operator wants to know: what version they're on and what's available remotely. v2.7.5 runs `git fetch` (read-only at the working-tree level — only updates remote-tracking refs) up front and prints a compact 4-line status block before any cleanliness gate fires:
 
-**pi-ai `getApiKey` callback** in `components/master/server.ts` now branches on provider. For `provider === "lmstudio"` it returns `process.env.LMSTUDIO_API_TOKEN ?? "not-needed"` — real token when the env var is set, the v2.7.3 sentinel when it isn't. Other local providers (`mlx`, `ollama`, `vllm`) still get `"not-needed"` unconditionally. Cloud providers still fall through to `undefined` so pi-ai's own env-var / OAuth resolution kicks in.
+```
+==> subctl update — version state
+    current: v2.7.4 (74ae7ae7)
+    branch:  main
+    remote:  v2.7.5 (abcd1234) — 1 commits ahead
+```
 
-**All direct LM Studio HTTP calls** thread the bearer header. Six call sites in `components/master/server.ts`:
+Three render modes: `same — already up to date` (fast-exit 0); `<N> commits ahead` (behind remote, proceed); `local is <N> commits AHEAD of remote` (operator dev branch, ff-only no-ops); `diverged (<X> ahead / <Y> behind)` (genuine divergence, ff-only fails cleanly). Even when the dirty-tree gate aborts the run, the version block is already on screen.
 
-- `ensureModelLoaded` — three calls (`GET /api/v0/models`, `POST /api/v1/models/unload`, `POST /api/v1/models/load`).
-- `getSupervisorLoadedCtx` — one call (`GET /api/v0/models`).
-- `/transcript/util` inline probe — one call (`GET /api/v0/models`).
+**Lockfile-only auto-stash.** `bun.lock` rewrites itself with platform-specific hashes on every `bun install`. Operators were typing `--force` repeatedly across machines for what is genuinely expected drift. v2.7.5 introduces a NARROW carve-out: when EVERY dirty file is a known package-manager lockfile (`bun.lock`, `bun.lockb`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml` — and only those, not `Cargo.lock` / `Gemfile.lock` / `poetry.lock`), the update auto-stashes those files silently and restores after.
 
-Three call sites in `components/master/tools/diag.ts`:
+```
+==> dirty lockfile detected (bun lockfile drift is normal across machines)
+    auto-stashing: components/master/bun.lock
+    will restore after update
+```
 
-- `system_lmstudio_health` — two calls (`/v1/models` reachability + `/v1/chat/completions` ping).
-- `system_supervisor_info` — one call (`/api/v0/models`).
+After the update completes:
 
-Two call sites in `dashboard/server.ts`:
+```
+==> auto-stashed lockfile restored
+```
 
-- `/api/models` — LM Studio model catalog for the dashboard.
-- `/api/providers` — LM Studio entry for the provider catalog (model picker).
+If `git stash pop` collides with a lockfile rewritten by the new commit, the operator gets a structured guidance block (inspect / abandon / accept-theirs) instead of the cryptic git default.
 
-**Dashboard `/api/settings/keys`** gains a `LMSTUDIO_API_TOKEN` row alongside the v2.7.2 cloud-provider rows (BRAVE_API_KEY, FIRECRAWL_API_KEY, LINEAR_API_KEY, …). Operator can confirm at a glance whether the daemon's process environment carries the token.
+**`--force` semantics preserved.** `--force` still stashes ANY dirty file (lockfile or not) and proceeds. The auto-stash is strictly additive — it removes a `--force` requirement for the lockfile case only.
 
-**`fetchText` deps in diag.ts** gained an optional `headers` field. Tests can swap in a recording fetchText stub and assert the captured header, mirroring the `_setDepsForTesting` pattern.
+**New helpers (extracted so they're testable in isolation):**
+
+- `_subctl_update_is_lockfile <path>` — basename match against the 5-entry allow-list.
+- `_subctl_update_classify_dirty "<porcelain>"` — emits one of `clean` / `lockfile-only|<csv>` / `mixed|<count>`.
+- `_subctl_update_pop_stash <kind>` — pops with kind-aware messaging (`auto-stashed lockfile restored` vs `stash restored`) and structured conflict guidance.
 
 ### Test coverage
 
-`components/master/__tests__/lmstudio-token.test.ts` — 14 tests / 40 assertions covering:
+`lib/__tests__/update.test.ts` — **36 tests / 79 assertions** in ~6.6 s.
 
-- `lmstudioAuthHeader`: returns `{}` when env var unset, returns the bearer header when set, treats empty string as unset.
-- `getApiKeyForProvider`: returns token for `lmstudio` when env var set; returns `"not-needed"` for `lmstudio` when unset (the back-compat path); returns `"not-needed"` for `mlx` / `ollama` / `vllm` regardless of `LMSTUDIO_API_TOKEN`; returns `undefined` for cloud providers (`anthropic`, `openai`) — token must not leak to other providers.
-- `ensureModelLoaded`: includes `Bearer <token>` on all three LM Studio calls (probe + unload + load) when env var set; emits no `Authorization` header on any call when env var unset (the back-compat trip wire); short-circuits before any fetch when `provider !== "lmstudio"`.
-- `diagTools.system_lmstudio_health`: threads the bearer through to `fetchText.headers` on both the `/v1/models` reachability probe and the `/v1/chat/completions` ping; omits the header entirely when env var unset.
+- **Pure helpers (16 tests)**: `_subctl_update_is_lockfile` covers all 5 allow-listed lockfiles + nested paths + `./bun.lock`, plus negative cases for `Cargo.lock` / `Gemfile.lock` / `poetry.lock` / `bun.lock.bak` (basename trailing junk) / source files.
+- **Classify-dirty (8 tests)**: empty → clean; single + multiple lockfile → `lockfile-only|<csv>`; untracked (`?? bun.lock`); rename rows (`R old -> bun.lock`); any non-lockfile → `mixed|<n>`; lockfile + source mix → mixed; Cargo.lock → mixed.
+- **Version-state block (5 integration tests)**: up-to-date prints `same — already up to date` and exits 0; behind prints `<N> commits ahead` and proceeds; ahead prints `AHEAD of remote` and the ff-only no-op succeeds; diverged prints `diverged` and exits 2 with `fast-forward failed`; the version block always appears on screen BEFORE the dirty-tree abort.
+- **Lockfile carve-out (6 integration tests)**: lockfile-only drift auto-stashes + restores (drift content survives the round-trip); mixed without `--force` errors with no stash created and source drift preserved; mixed WITH `--force` stashes everything and uses the simple `stash restored` message; up-to-date + lockfile-only drift no-ops with drift preserved (no stash dance); `Cargo.lock` drift fails the cleanliness gate (carve-out is narrow); nested `components/master/bun.lock` auto-stashes correctly.
+- **`--force` regression (1 test)**: clean tree + `--force` still updates with no spurious stash message.
 
-Every test saves and restores `process.env.LMSTUDIO_API_TOKEN` in beforeEach/afterEach so order doesn't matter.
-
-### Back-compat
-
-Non-negotiable: deploys without LM Studio token auth must keep working unchanged. The test suite pins this — running with `LMSTUDIO_API_TOKEN` unset reproduces the v2.7.3 behavior exactly (no `Authorization` header on direct fetches; `"not-needed"` sentinel returned for pi-ai). If the env var is the empty string the helper treats it as unset.
+Hermetic: every integration test creates its own `mkdtempSync` repo pair (`origin.git` + local clone), `SUBCTL_REPO_ROOT` is overridden per-test, `--no-restart` always passes (launchctl never fires), the temp local repo never contains `bin/subctl` so `doctor` never runs, and `NO_COLOR=1` strips ANSI for simple substring assertions.
 
 ### Operator deploy step
 
-Add the token to the master daemon's launchd plist:
-
-```xml
-<key>EnvironmentVariables</key>
-<dict>
-  <key>LMSTUDIO_API_TOKEN</key>
-  <string>sk-lm-XXXXXXXX:YYYYYYYYYYYY</string>
-  ...
-</dict>
-```
-
-Reload (`launchctl unload && load`), then enable "Require API Token" in LM Studio's server settings. The dashboard's `/api/settings/keys` panel will flip the row to `ok: true` once the daemon picks it up.
+`subctl update` on every host. The new version block prints automatically. The next time `bun.lock` drift accumulates, `subctl update` (no flag) will auto-stash through it instead of demanding `--force`.
 
 ### Canonical references
 
-- `components/master/server.ts` `lmstudioAuthHeader()` + `getApiKeyForProvider()` — the helper + branching key resolver.
-- `components/master/tools/diag.ts` — duplicated helper kept in sync.
-- `dashboard/server.ts` `lmstudioAuthHeader()` + `/api/settings/keys` panel row.
-- `components/master/__tests__/lmstudio-token.test.ts` — 14 tests, including the back-compat trip wires.
-- `docs/master.md` Phase 3o.4 — the story behind v2.7.4.
+- `lib/update.sh` — version-state block at lines ~165–207, lockfile carve-out at ~218–263, helpers at ~16–86.
+- `lib/__tests__/update.test.ts` — 36 tests / 79 assertions.
+- `docs/master.md` Phase 3o.5 — the story.
+
+## [2.7.4] — 2026-05-12
+
+### LM Studio token support + dashboard-managed secrets layer
+
+LM Studio recently shipped an optional **"Require API Token"** server setting. Operators who enable it get a `sk-lm-XXXXXXXX:YYYYYYYYYYYY`-shaped bearer that every request — OpenAI-compatible `/v1/*` AND LM Studio's native `/api/v0/*` / `/api/v1/models/load` — must carry as `Authorization: Bearer <token>` or the server 401s. Before v2.7.4, subctl sent a `"not-needed"` sentinel for local providers and hit 401 the moment the operator flipped the toggle.
+
+v2.7.4 closes that gap **and** generalizes the fix: a new on-disk secrets layer at `~/.config/subctl/secrets.json` (chmod 600, atomic writes, dashboard-editable) holds LM Studio + Brave + Firecrawl + Linear + Context7 credentials, with an env-var override on top so power users / CI keep the launchd plist as source-of-truth. The operator no longer has to edit a plist every time a key rotates.
+
+### What's new
+
+**Priority chain.** Every credential resolves through:
+
+1. Process env var (e.g. `LMSTUDIO_API_TOKEN` from the launchd plist `EnvironmentVariables`).
+2. `~/.config/subctl/secrets.json` field (e.g. `lmstudio_api_token`) — managed via the dashboard.
+3. Absent → caller behaves as today (e.g. `lmstudioAuthHeader()` returns `{}`, pi-ai gets the `"not-needed"` sentinel).
+
+**`components/master/secrets.ts`** (NEW) — pure module exporting `loadSecret(key)`, `setSecret(key, value | null)`, `listSecrets()`, `resolveSecret(key)`, `envVarFor(key)`, plus a `SECRET_KEYS` allow-list. Atomic writes (tmp-file + rename), `chmod 0600` on every write, 5-second in-memory read cache invalidated on mtime change. Malformed JSON / missing file / wrong-type fields all fall back to an empty map without throwing — a bad `secrets.json` MUST NOT crash the daemon.
+
+**`lmstudioAuthHeader()`** (in `components/master/server.ts`, mirrored in `components/master/tools/diag.ts` and `dashboard/server.ts`) now routes through `resolveSecret("lmstudio_api_token")`. Behavior identical for env-only deploys; new deploys can manage the same token via the dashboard.
+
+**`getApiKeyForProvider()`** in `components/master/server.ts` returns `resolveSecret("lmstudio_api_token") ?? "not-needed"` for `provider === "lmstudio"`. Other local providers (`mlx`, `ollama`, `vllm`) still return `"not-needed"` unconditionally. The LM Studio token never leaks across providers.
+
+**Tool key resolution updated.** `components/master/tools/web.ts` (`web_search` → `brave_api_key`, `web_fetch` → `firecrawl_api_key`), `components/master/tools/linear.ts` (`linear_api_key`), and `components/master/tools/context7.ts` (`context7_api_key`) all flip from `process.env.*` to `resolveSecret(<key>)`. Error messages now point operators at BOTH paths (dashboard panel OR plist).
+
+**LM Studio HTTP call sites — 11 total** thread the bearer header through `lmstudioAuthHeader()`:
+
+- `components/master/server.ts` (6): `ensureModelLoaded` probe + unload + load, `getSupervisorLoadedCtx`, the `/transcript/util` inline probe.
+- `components/master/tools/diag.ts` (3): `system_lmstudio_health` `/v1/models` + `/v1/chat/completions`, `system_supervisor_info` `/api/v0/models`.
+- `dashboard/server.ts` (2): `/api/models`, `/api/providers`.
+
+**Dashboard endpoints.**
+
+- `GET /api/settings/secrets` — returns `{ ok, secrets: [{ key, isSet, envOverride, lastModified }], priority }`. Presence flags only; **values never appear** in this response.
+- `POST /api/settings/secrets/:key` — body `{ value: string | null }`. Allow-listed against `SECRET_KEYS`. Returns `{ ok: true, secret: <updated-row-from-listSecrets> }` — the value is **not** echoed back. `null` (or empty string) clears the field.
+- `GET /api/settings/keys` extended — each row now carries `env` (boolean) + `secrets_json` (boolean or null), and `ok` is `env || secrets_json`. Note string mentions both paths and the priority order. The CRITICAL invariant — never serialize the value — is preserved.
+
+**Dashboard UI.** New "API tokens" card above the existing "API keys (cloud providers)" card. Renders a table: key, purpose, status pill (`Set` / `Not set` plus `env override` chip when the env var is present), last-modified, and an `Edit` / `Set` button. Clicking opens a modal with a `type="password"` input + Save / Cancel / Remove buttons. On save the value goes over the dashboard's `127.0.0.1`-bound HTTP (never crosses the LAN), the input is wiped from the DOM on close, and both panels re-render from the presence-only endpoints. Backed by new `.danger-btn` + `.secrets-table` CSS in `dashboard/public/style.css`.
+
+**`.gitignore`** now explicitly blocks `secrets.json` by name in addition to the canonical `~/.config/subctl/secrets.json` location being outside the repo entirely.
+
+**`fetchText` deps in diag.ts** gained an optional `headers` field. Tests can swap in a recording fetchText stub and assert the captured header, mirroring the `_setDepsForTesting` pattern.
+
+**Boot guard.** `components/master/server.ts` now wraps its bottom-of-file `main()` invocation in `if (import.meta.main)` so the test suite can import the helpers without booting the full daemon.
+
+### Test coverage
+
+`components/master/__tests__/secrets.test.ts` (renamed from the WIP `lmstudio-token.test.ts`) — **39 tests / 89 assertions** in 62 ms — covers:
+
+- **Secrets module:** read/write/round-trip; `setSecret(null)` and `setSecret("")` both clear; siblings preserved; `listSecrets` never serializes values (asserted by `JSON.stringify(rows).not.toContain("VERY-SENSITIVE-TOKEN-VALUE")`); `envVarFor` mapping incl. uppercase fallback.
+- **Defensive parsing:** missing file → null; malformed JSON → empty + no throw; array-shaped JSON → empty; non-string values silently dropped; empty-string field treated as unset.
+- **File permissions:** `statSync(secretsFile).mode & 0o777 === 0o600` after first write AND after a second write.
+- **Priority chain:** env wins; file wins when env unset; both absent → null; empty-string env treated as unset (file wins); works for every key in `SECRET_KEYS`.
+- **`listSecrets envOverride` flag:** true when env set; false when only file populated.
+- **`lmstudioAuthHeader`:** `{}` baseline; bearer from env; bearer from file; env wins.
+- **`getApiKeyForProvider`:** lmstudio resolves file token; env wins; nothing → `"not-needed"` (back-compat trip wire); `mlx`/`ollama`/`vllm` never get the token; cloud providers always undefined.
+- **`ensureModelLoaded`:** bearer on all 3 calls (probe + unload + load) regardless of which source supplied the token; no Authorization on any call when both layers are absent (the back-compat trip wire).
+- **`diagTools.system_lmstudio_health`:** bearer threaded into `fetchText.headers` on both `/v1/models` and `/v1/chat/completions`; omitted when neither layer has it.
+- **Cache invalidation:** `setSecret` clears the cache; external file edits picked up after `_resetCacheForTesting`.
+
+All env vars touched are snapshot-and-restored in beforeEach/afterEach. The on-disk path is overridden to a per-suite tmpdir via `_setPathForTesting` so tests never touch the operator's real `~/.config/subctl/secrets.json`. Full master suite remains green: **65 tests / 147 assertions / 67 ms** (39 new secrets + 26 existing compact-policy).
+
+### Security contract
+
+Non-negotiable rules — broken by any single counterexample:
+
+- `secrets.json` values NEVER appear in any HTTP response body emitted by `dashboard/server.ts`. The `POST /api/settings/secrets/:key` handler returns the updated `listSecrets()` row, not the value.
+- `listSecrets()` returns presence flags only — pinned by a test that asserts the literal token bytes don't appear in `JSON.stringify(rows)`.
+- Every write goes through `setSecret`, which `chmod 0600`'s both the tmp file and the final path. Two tests assert the mode on first write AND after a subsequent write.
+- The dashboard `<input>` is `type="password" + autocomplete="new-password" + spellcheck="false"`, and is wiped from the DOM on modal close. The dashboard request stays on `127.0.0.1` (dashboard is localhost-bound).
+- `.gitignore` blocks `secrets.json` by name. The canonical path is `~/.config/subctl/secrets.json`, outside the repo.
+- Error messages around missing keys say "not configured" rather than echoing any envvar or filesystem state that could surprise an operator.
+
+### Back-compat
+
+Existing v2.7.3 deploys with `LMSTUDIO_API_TOKEN` already in their launchd plist behave identically — the env var is priority 1, so the resolution chain returns the same bytes. Deploys with no token configured anywhere return `{}` from `lmstudioAuthHeader()` and `"not-needed"` from `getApiKeyForProvider("lmstudio")`, just like v2.7.3. Both paths are pinned by tests.
+
+### Operator deploy step
+
+Easiest path: open the dashboard's **Settings → API tokens** panel, click **Set** next to a row, paste the token, click **Save**. The daemon picks it up on the next call (5s cache TTL). Power-user path (CI / immutable infra): keep the env var in the launchd plist — it still wins over the on-disk file.
+
+### Canonical references
+
+- `components/master/secrets.ts` — read/write/atomic + chmod 600 + 5s cache + priority chain.
+- `components/master/server.ts` `lmstudioAuthHeader()` + `getApiKeyForProvider()` — exported, used by tests.
+- `components/master/tools/{diag,web,linear,context7}.ts` — all flipped to `resolveSecret(<key>)`.
+- `dashboard/server.ts` `GET/POST /api/settings/secrets[/:key]`, extended `/api/settings/keys`.
+- `dashboard/public/index.html` "API tokens" card + edit modal; `dashboard/public/app.js` `loadSecrets() + openSecretsModal() + wireSecretsModal()`; `dashboard/public/style.css` `.secrets-table` + `.danger-btn`.
+- `components/master/__tests__/secrets.test.ts` — 39 tests / 89 assertions.
+- `docs/master.md` Phase 3o.4 — the story.
 
 ## [2.7.3] — 2026-05-12
 
