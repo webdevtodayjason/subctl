@@ -69,6 +69,9 @@ import { join, basename } from "node:path";
 import { homedir, hostname as osHostname } from "node:os";
 import { spawnSync } from "node:child_process";
 import { aggregateAll as aggregateCostAll, type AccountCostSummary } from "./lib/cost.ts";
+// PR 8.5 (v2.7.0): central exec helper. Coexists with the legacy `spawnSync`
+// imports; migrations land incrementally. Tracked in docs/exec-migration.md.
+import { execCommand } from "../components/master/policy/exec.ts";
 
 const PORT = Number(process.env.PORT ?? 8787);
 const STARTED_AT = Date.now();
@@ -2837,17 +2840,20 @@ const server = Bun.serve({
       catch { return Response.json({ ok: false, error: "invalid JSON body" }, { status: 400 }); }
       const repo = (body.repo ?? "").trim();
       if (!repo) return Response.json({ ok: false, error: "repo required" }, { status: 400 });
-      // Use the subctl CLI so all the validation + fallback logic stays in one place
+      // Use the subctl CLI so all the validation + fallback logic stays in one place.
+      // PR 8.5: routed through execCommand (the central helper) so this exec
+      // shows up in the migration ledger. Ungated — the gate point for
+      // "operator typed a skills repo URL" lives inside `subctl skills import`
+      // itself, not at the spawn layer. (EXEC_SURFACE §4e.)
       const subctlBin = join(REPO_ROOT, "bin", "subctl");
       const args = ["skills", "import", repo];
       if (body.source) args.push("--source", body.source);
       if (body.branch) args.push("--branch", body.branch);
-      const r = spawnSync(subctlBin, args, {
-        encoding: "utf8",
+      const r = await execCommand(subctlBin, args, {
         timeout: 120_000,
         env: { ...process.env, PATH: "/usr/sbin:/usr/bin:/bin:/sbin:/opt/homebrew/bin:/usr/local/bin", SUBCTL_SKILLS_DIR },
       });
-      if (r.status !== 0) {
+      if (r.exitCode !== 0) {
         return Response.json(
           { ok: false, error: ((r.stderr || r.stdout) ?? "").slice(0, 1500) },
           { status: 500 },
@@ -3334,12 +3340,17 @@ const server = Bun.serve({
       const steps: Array<{ step: string; ok: boolean; detail?: string }> = [];
 
       // 1. Clone or mkdir
+      // PR 8.5: routed through execCommand. EXEC_SURFACE §4f flags this as a
+      // user-supplied input path (`gitUrl` from JSON body). The argv-array
+      // form already disarms shell injection; the helper adds consistent
+      // timeout + capture semantics and registers the site in the migration
+      // ledger. Stays ungated — gating "is `git clone <url>` allowed?" lives
+      // upstream of the spawn (URL normalization at request entry).
       if (gitUrl) {
-        const r = spawnSync("git", ["clone", gitUrl, projectPath], {
-          encoding: "utf8",
+        const r = await execCommand("git", ["clone", gitUrl, projectPath], {
           timeout: 120_000,
         });
-        if (r.status !== 0) {
+        if (r.exitCode !== 0) {
           steps.push({ step: "clone", ok: false, detail: (r.stderr || r.stdout || "").slice(0, 500) });
           return Response.json({ ok: false, error: "git clone failed", steps }, { status: 500 });
         }
@@ -4482,13 +4493,20 @@ const server = Bun.serve({
         'end tell',
       ].join("\n");
 
-      const r = spawnSync("/usr/bin/osascript", ["-e", osascript], {
-        encoding: "utf8", timeout: 5_000,
+      // PR 8.5: routed through execCommand. EXEC_SURFACE §4d flags this as
+      // the 2-layer-escape risk (osascript -e <script> with fallbackCmd
+      // interpolated). Migration does NOT fix the escape concern — that
+      // requires a separate "build osascript via argv" effort tracked in
+      // exec-migration.md — but it does normalize the spawn so a future
+      // policy gate (gating "interactive iTerm spawn for sid X") has a
+      // single chokepoint to attach to.
+      const r = await execCommand("/usr/bin/osascript", ["-e", osascript], {
+        timeout: 5_000,
       });
-      if (r.error || (typeof r.status === "number" && r.status !== 0)) {
+      if (r.exitCode === null || r.exitCode !== 0) {
         return new Response(JSON.stringify({
           ok: false,
-          error: (r.stderr || r.stdout || String(r.error)).slice(0, 500),
+          error: (r.stderr || r.stdout || (r.timedOut ? "timed out" : "spawn failed")).slice(0, 500),
           fallback: fallbackCmd,
         }), { status: 500, headers: { "Content-Type": "application/json" } });
       }
@@ -4580,19 +4598,25 @@ const server = Bun.serve({
         args.push("--template", body.template);
       }
       const subctlBin = join(REPO_ROOT, "bin", "subctl");
-      const r = spawnSync(subctlBin, args, {
+      // PR 8.5: routed through execCommand. EXEC_SURFACE §4b flags the
+      // downstream tmux paste-buffer (inside teams.sh) as the highest-risk
+      // user-input path because operator-supplied `prompt` ends up pasted
+      // into a Claude Code TUI session with unrestricted Bash. Gating
+      // happens further down (PR 10 inserts the PreToolUse hook for the
+      // resulting Claude worker); at this layer we just normalize the spawn
+      // of the subctl CLI. Ungated.
+      const r = await execCommand(subctlBin, args, {
         cwd: project,
-        encoding: "utf8",
         // 30s is plenty — teams.sh now backgrounds the prompt-paste, so the
         // synchronous portion is just tmux session creation + setup (typically
         // <2s). The wait-for-ready + paste happens async in a detached subshell.
         timeout: 30_000,
         env: { ...process.env, SUBCTL_NO_ATTACH: "1" },
       });
-      if (r.error || (typeof r.status === "number" && r.status !== 0)) {
+      if (r.exitCode === null || r.exitCode !== 0) {
         return new Response(JSON.stringify({
           ok: false,
-          error: (r.stderr || r.stdout || String(r.error)).slice(0, 800),
+          error: (r.stderr || r.stdout || (r.timedOut ? "timed out" : "spawn failed")).slice(0, 800),
         }), { status: 500, headers: { "Content-Type": "application/json" } });
       }
       // Compute session name the same way claude-teams does (basename + sanitize).
@@ -4726,9 +4750,13 @@ const server = Bun.serve({
             { status: 404, headers: { "Content-Type": "application/json" } });
         }
         const subctlBin = join(REPO_ROOT, "bin", "subctl");
-        const r = spawnSync(subctlBin, ["session-kill", name], { encoding: "utf8", timeout: 8_000 });
-        if (r.error || (typeof r.status === "number" && r.status !== 0)) {
-          return new Response(JSON.stringify({ ok: false, error: (r.stderr || r.stdout || String(r.error)).slice(0, 500) }),
+        // PR 8.5: routed through execCommand. `name` is validated against
+        // `listTmuxSessions()` above, so this is not user-arbitrary command
+        // input; the argv-array form was already safe. Migration is purely
+        // for chokepoint consistency.
+        const r = await execCommand(subctlBin, ["session-kill", name], { timeout: 8_000 });
+        if (r.exitCode === null || r.exitCode !== 0) {
+          return new Response(JSON.stringify({ ok: false, error: (r.stderr || r.stdout || (r.timedOut ? "timed out" : "spawn failed")).slice(0, 500) }),
             { status: 500, headers: { "Content-Type": "application/json" } });
         }
         try {

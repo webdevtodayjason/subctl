@@ -12,6 +12,7 @@
 _SUBCTL_MASTER_LOADED=1
 
 . "$(dirname "${BASH_SOURCE[0]}")/core.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/exec.sh"
 
 SUBCTL_MASTER_LABEL="${SUBCTL_MASTER_LABEL:-com.subctl.master}"
 SUBCTL_MASTER_PLIST="$HOME/Library/LaunchAgents/${SUBCTL_MASTER_LABEL}.plist"
@@ -104,7 +105,9 @@ subctl_master_kick() {
   local target="gui/$uid/$label"
 
   subctl_info "bootout $target"
-  launchctl bootout "$target" 2>&1 | tail -3
+  # PR 8.5: routed through subctl_exec (the bash chokepoint). Ungated — this
+  # is launchd plumbing with operator-typed CLI verb, not agent-driven exec.
+  subctl_exec launchctl bootout "$target" 2>&1 | tail -3
 
   # Kill any orphan master process still squatting on the port (e.g. one
   # that survived a stale launchctl entry).
@@ -122,7 +125,8 @@ subctl_master_kick() {
 
   sleep 2
   subctl_info "bootstrap gui/$uid $plist"
-  if ! launchctl bootstrap "gui/$uid" "$plist" 2>&1; then
+  # PR 8.5: routed through subctl_exec.
+  if ! subctl_exec launchctl bootstrap "gui/$uid" "$plist" 2>&1; then
     subctl_err "bootstrap failed — likely no GUI session. From local Terminal.app, retry: subctl master kick"
     subctl_info "fallback: tmux daemon — tmux new-session -d -s subctl-master -c ~/code/subctl '~/.bun/bin/bun components/master/server.ts > /tmp/master.log 2>&1'"
     return 1

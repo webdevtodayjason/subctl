@@ -5,6 +5,7 @@
 _SUBCTL_SERVICE_LOADED=1
 
 . "$(dirname "${BASH_SOURCE[0]}")/core.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/exec.sh"
 
 SUBCTL_SERVICE_LABEL="${SUBCTL_SERVICE_LABEL:-com.subctl.dashboard}"
 SUBCTL_SERVICE_PORT="${SUBCTL_SERVICE_PORT:-8787}"
@@ -87,8 +88,9 @@ subctl_service_enable() {
   # Ensure label inside plist matches our SUBCTL_SERVICE_LABEL
   /usr/libexec/PlistBuddy -c "Set :Label $SUBCTL_SERVICE_LABEL" "$SUBCTL_SERVICE_PLIST" 2>/dev/null || true
 
-  launchctl unload "$SUBCTL_SERVICE_PLIST" 2>/dev/null || true
-  launchctl load -w "$SUBCTL_SERVICE_PLIST"
+  # PR 8.5: routed through subctl_exec. Operator-typed CLI verb, no agent input.
+  subctl_exec launchctl unload "$SUBCTL_SERVICE_PLIST" 2>/dev/null || true
+  subctl_exec launchctl load -w "$SUBCTL_SERVICE_PLIST"
 
   subctl_ok "service enabled — auto-starts at login"
   sleep 1

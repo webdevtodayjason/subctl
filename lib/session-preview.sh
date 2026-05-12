@@ -9,6 +9,7 @@
 _SUBCTL_SESSION_PREVIEW_LOADED=1
 
 . "$(dirname "${BASH_SOURCE[0]}")/core.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/exec.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/radar.sh"
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -280,8 +281,12 @@ EOF
 
   local killed=0 missing=0
   for name in "$@"; do
+    # PR 8.5: tmux kill-session routed through subctl_exec. The session name
+    # is operator-supplied (CLI argv) but pre-validated against tmux state
+    # by has-session, so this is not arbitrary-command exec; migration is
+    # for chokepoint consistency. (EXEC_SURFACE §2a line 283-4.)
     if tmux has-session -t "$name" 2>/dev/null; then
-      if tmux kill-session -t "$name" 2>/dev/null; then
+      if subctl_exec tmux kill-session -t "$name" 2>/dev/null; then
         subctl_ok "killed $name"
         killed=$((killed + 1))
       else
