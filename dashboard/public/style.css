@@ -2630,6 +2630,53 @@ body.chat-fullscreen .chat-toolbar-btn-icon { background: #1f4256; color: #5fd7f
 }
 .secondary-btn:hover { color: #c4c4c4; border-color: #555; }
 
+/* v2.7.4 — destructive action button for the "Remove" path in the
+   secrets modal. Keep the visual restrained (not red-on-red) so it
+   doesn't look like an error toast; just enough hue to read as
+   "this clears something". */
+.danger-btn {
+  background: transparent;
+  border: 1px solid #5a2a2a;
+  color: #d66c6c;
+  padding: 6px 14px;
+  border-radius: 3px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-block;
+}
+.danger-btn:hover { color: #f08080; border-color: #7a3a3a; }
+
+/* v2.7.4 API tokens panel — compact table look matching the existing
+   settings cards. Status pills mirror the OAuth panel's auth_status
+   pill style. */
+.secrets-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.secrets-table th,
+.secrets-table td {
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 1px solid #222;
+}
+.secrets-table th {
+  color: #888;
+  font-weight: normal;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 10px;
+}
+.secrets-table td.col-status .pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; letter-spacing: 0.04em; }
+.secrets-table td.col-status .pill-set { background: #1a3a2a; color: #6fdc8c; border: 1px solid #2a5a3a; }
+.secrets-table td.col-status .pill-unset { background: #2a2a2a; color: #888; border: 1px solid #3a3a3a; }
+.secrets-table td.col-status .pill-env { background: #2a3a4a; color: #5fd7ff; border: 1px solid #3a5a6a; margin-left: 4px; }
+.secrets-table td.col-modified { color: #888; font-size: 11px; }
+.secrets-table td.col-actions { text-align: right; }
+
 .projects-layout {
   display: grid;
   grid-template-columns: 280px 1fr;

@@ -1102,10 +1102,21 @@
         const rows = j.keys.map((k) => {
           const row = document.createElement("div");
           row.className = "key-row " + (k.ok ? "ok" : "warn");
+          // v2.7.4: show both env + secrets.json signals when the row
+          // has a secrets-json counterpart. Length is presented as a
+          // count so the operator can confirm rotation without leaking
+          // any character of the underlying credential.
+          const sources = [];
+          if (k.env) sources.push("env");
+          if (k.secrets_json === true) sources.push("secrets.json");
+          const sourceTag = sources.length ? ` [${sources.join(" + ")}]` : "";
+          const detail = k.ok
+            ? `set (${k.length} chars)${sourceTag}`
+            : "unset · " + k.purpose;
           row.innerHTML =
             "<span class=\"mark\">" + (k.ok ? "✓" : "○") + "</span>" +
             "<span class=\"name\">" + escapeText(k.name) + "</span>" +
-            "<span class=\"detail\">" + escapeText(k.ok ? `set (${k.length} chars)` : "unset · " + k.purpose) + "</span>";
+            "<span class=\"detail\">" + escapeText(detail) + "</span>";
           return row;
         });
         const note = document.createElement("div");
@@ -1116,6 +1127,164 @@
       } catch (err) {
         body.innerHTML = "<div class=\"dim\">error: " + escapeText(String(err)) + "</div>";
       }
+    }
+
+    // v2.7.4 — API Tokens panel (secrets.json).
+    //
+    // SECURITY NOTES:
+    //   - GET /api/settings/secrets returns presence flags only; this
+    //     function never has the actual values to render or leak.
+    //   - The modal's <input> is type="password" + autocomplete="new-password"
+    //     so the browser doesn't surface the cleartext from a saved-password
+    //     dropdown or autofill from another origin.
+    //   - On Save we POST the value to the dashboard's 127.0.0.1-bound
+    //     endpoint; nothing crosses the LAN. We do NOT log the value to
+    //     the browser console.
+    //   - On Remove we POST {value: null}. The server clears the field
+    //     and returns the updated presence row.
+    //   - On success we close the modal and force-clear the input value
+    //     in memory before re-render so a subsequent click on Edit
+    //     doesn't show the stale paste.
+    async function loadSecrets() {
+      const body = $("settings-secrets-body");
+      if (!body) return;
+      try {
+        const r = await fetch("/api/settings/secrets");
+        const j = await r.json();
+        if (!j.ok) { body.innerHTML = "<div class=\"dim\">unreachable</div>"; return; }
+        const purposes = {
+          lmstudio_api_token: "LM Studio API auth (when 'Require API Token' is enabled — v2.7.4)",
+          brave_api_key: "Brave AI Search (web_search master tool — v2.7.2)",
+          firecrawl_api_key: "Firecrawl scraping (web_fetch master tool — v2.7.2)",
+          linear_api_key: "Linear API (linear_* master tools — v2.7.2)",
+          context7_api_key: "Context7 — up-to-date library docs (master tool + MCP for dev-team Claude leads)",
+        };
+        const table = document.createElement("table");
+        table.className = "secrets-table";
+        table.innerHTML =
+          "<thead><tr>" +
+          "<th>Key</th><th>Purpose</th><th>Status</th><th>Last modified</th><th></th>" +
+          "</tr></thead>";
+        const tbody = document.createElement("tbody");
+        for (const s of j.secrets) {
+          const tr = document.createElement("tr");
+          const pillClass = s.isSet ? "pill pill-set" : "pill pill-unset";
+          const pillText = s.isSet ? "Set" : "Not set";
+          const envBadge = s.envOverride
+            ? "<span class=\"pill pill-env\" title=\"env var overrides secrets.json per v2.7.4 priority\">env override</span>"
+            : "";
+          tr.innerHTML =
+            "<td><code>" + escapeText(s.key) + "</code></td>" +
+            "<td class=\"dim\">" + escapeText(purposes[s.key] || "") + "</td>" +
+            "<td class=\"col-status\"><span class=\"" + pillClass + "\">" + pillText + "</span>" + envBadge + "</td>" +
+            "<td class=\"col-modified\">" + escapeText(s.lastModified ? new Date(s.lastModified).toLocaleString() : "—") + "</td>" +
+            "<td class=\"col-actions\"></td>";
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "secondary-btn";
+          btn.textContent = s.isSet ? "Edit" : "Set";
+          btn.addEventListener("click", () => openSecretsModal(s.key));
+          tr.querySelector(".col-actions").appendChild(btn);
+          tbody.appendChild(tr);
+        }
+        table.appendChild(tbody);
+        body.replaceChildren(table);
+      } catch (err) {
+        body.innerHTML = "<div class=\"dim\">error: " + escapeText(String(err)) + "</div>";
+      }
+    }
+
+    let _currentSecretKey = null;
+    function openSecretsModal(key) {
+      _currentSecretKey = key;
+      const modal = $("secrets-modal");
+      const valueEl = $("secrets-modal-value");
+      const keyLabel = $("secrets-modal-key-label");
+      const result = $("secrets-modal-result");
+      if (!modal || !valueEl) return;
+      keyLabel.textContent = key;
+      valueEl.value = "";
+      result.hidden = true;
+      result.textContent = "";
+      modal.hidden = false;
+      // Focus the input immediately — operator just clicked Edit, they
+      // want to paste. Use a microtask so the modal is actually visible
+      // before we steal focus (some browsers ignore focus on hidden).
+      setTimeout(() => valueEl.focus(), 0);
+    }
+
+    function closeSecretsModal() {
+      const modal = $("secrets-modal");
+      const valueEl = $("secrets-modal-value");
+      if (modal) modal.hidden = true;
+      if (valueEl) valueEl.value = ""; // wipe any pasted token from DOM
+      _currentSecretKey = null;
+    }
+
+    async function submitSecretsModal(value) {
+      if (!_currentSecretKey) return;
+      const result = $("secrets-modal-result");
+      result.hidden = false;
+      result.textContent = "saving…";
+      try {
+        const r = await fetch(
+          "/api/settings/secrets/" + encodeURIComponent(_currentSecretKey),
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ value }),
+          },
+        );
+        const j = await r.json();
+        if (!j.ok) {
+          result.textContent = "error: " + (j.error || "?");
+          return;
+        }
+        // Wipe input + close, then refresh both panels (the api-keys
+        // panel shows the combined env+secrets.json signal and must
+        // re-fetch too).
+        closeSecretsModal();
+        loadSecrets();
+        loadKeys();
+      } catch (err) {
+        result.textContent = "error: " + String(err);
+      }
+    }
+
+    function wireSecretsModal() {
+      const saveBtn = $("secrets-modal-save");
+      const cancelBtn = $("secrets-modal-cancel");
+      const removeBtn = $("secrets-modal-remove");
+      const valueEl = $("secrets-modal-value");
+      if (!saveBtn || !cancelBtn || !removeBtn || !valueEl) return;
+      // Only bind once. wireSecretsModal is called from the same
+      // entry point that calls refreshAll, so the listeners would
+      // double-bind on a refresh otherwise.
+      if (saveBtn.dataset.wired === "1") return;
+      saveBtn.dataset.wired = "1";
+      saveBtn.addEventListener("click", () => {
+        const v = valueEl.value;
+        if (!v) {
+          $("secrets-modal-result").hidden = false;
+          $("secrets-modal-result").textContent = "value is empty — use Remove to clear";
+          return;
+        }
+        submitSecretsModal(v);
+      });
+      cancelBtn.addEventListener("click", closeSecretsModal);
+      removeBtn.addEventListener("click", () => {
+        if (!confirm("Remove this token from secrets.json? Tools relying on it will fall back to the env var (if set) or report 'not configured'.")) return;
+        submitSecretsModal(null);
+      });
+      // Enter on the input → save
+      valueEl.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          saveBtn.click();
+        } else if (e.key === "Escape") {
+          closeSecretsModal();
+        }
+      });
     }
 
     async function loadOAuth() {
@@ -1397,11 +1566,13 @@
     function refreshAll() {
       loadHealth();
       loadKeys();
+      loadSecrets();
       loadOAuth();
       loadTelegramStatus();
       loadVault();
       loadPersonality();
     }
+    wireSecretsModal();
     refreshBtn.addEventListener("click", refreshAll);
     refreshAll();
   }

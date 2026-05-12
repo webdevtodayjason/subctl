@@ -84,6 +84,14 @@ import {
   readNewAuditEntries,
 } from "./lib/audit-api.ts";
 import { loadResolvedPolicy } from "../components/master/tools/policy/load.ts";
+import {
+  resolveSecret,
+  loadSecret,
+  setSecret,
+  listSecrets,
+  SECRET_KEYS,
+  envVarFor,
+} from "../components/master/secrets.ts";
 
 const PORT = Number(process.env.PORT ?? 8787);
 const STARTED_AT = Date.now();
@@ -145,6 +153,19 @@ function classifyCtx(p: number): "green" | "yellow" | "orange" | "red" {
 }
 
 // ---------- helpers ----------
+
+// v2.7.4 — LM Studio's optional "Require API Token" server setting. The
+// dashboard queries LM Studio for the model picker (/api/models,
+// /api/providers); when the operator has enabled the toggle, those
+// queries must carry `Authorization: Bearer <token>` or LM Studio 401s.
+// Token resolved via the v2.7.4 priority chain (env > secrets.json >
+// absent — see components/master/secrets.ts). Returns {} when neither
+// is configured so callers can spread it unconditionally — back-compat
+// with LM Studio servers that don't have the toggle on (the default).
+function lmstudioAuthHeader(): Record<string, string> {
+  const token = resolveSecret("lmstudio_api_token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
 
 function safeRead(path: string): string | null {
   try { return readFileSync(path, "utf8"); } catch { return null; }
@@ -2368,6 +2389,7 @@ const server = Bun.serve({
       const host = process.env.SUBCTL_LMSTUDIO_HOST ?? "http://localhost:1234";
       try {
         const r = await fetch(`${host}/api/v0/models`, {
+          headers: { ...lmstudioAuthHeader() },
           signal: AbortSignal.timeout(2500),
         });
         if (!r.ok) {
@@ -3240,6 +3262,13 @@ const server = Bun.serve({
     }
 
     // /api/settings/keys — STATUS only (presence flag, never the value)
+    //
+    // v2.7.4: each row now reflects BOTH sources — process env var AND
+    // ~/.config/subctl/secrets.json — so the operator can see exactly
+    // which path is providing the key at a glance. The known-secret rows
+    // (lmstudio + brave + firecrawl + linear + context7) carry a
+    // `secrets_json` boolean alongside the env flag; cloud-provider rows
+    // without a secrets.json counterpart leave it null.
     if (url.pathname === "/api/settings/keys" && req.method === "GET") {
       const vars = [
         { name: "ANTHROPIC_API_KEY",    purpose: "Anthropic direct API (claude-sonnet, claude-opus)" },
@@ -3248,27 +3277,109 @@ const server = Bun.serve({
         { name: "GROQ_API_KEY",         purpose: "Groq inference" },
         { name: "OPENROUTER_API_KEY",   purpose: "OpenRouter (200+ models via one key)" },
         { name: "GITHUB_TOKEN",         purpose: "gh CLI fallback (usually authed via gh auth login)" },
-        { name: "CONTEXT7_API_KEY",     purpose: "Context7 — up-to-date library docs (master tool + MCP for dev-team Claude leads)" },
-        { name: "BRAVE_API_KEY",        purpose: "Brave AI Search (web_search master tool — v2.7.2)" },
-        { name: "FIRECRAWL_API_KEY",    purpose: "Firecrawl scraping (web_fetch master tool — v2.7.2)" },
-        { name: "LINEAR_API_KEY",       purpose: "Linear API (linear_list_issues, linear_search, linear_create_issue, linear_update_issue master tools — v2.7.2)" },
+        { name: "CONTEXT7_API_KEY",     purpose: "Context7 — up-to-date library docs (master tool + MCP for dev-team Claude leads)", secret_key: "context7_api_key" },
+        { name: "BRAVE_API_KEY",        purpose: "Brave AI Search (web_search master tool — v2.7.2)", secret_key: "brave_api_key" },
+        { name: "FIRECRAWL_API_KEY",    purpose: "Firecrawl scraping (web_fetch master tool — v2.7.2)", secret_key: "firecrawl_api_key" },
+        { name: "LINEAR_API_KEY",       purpose: "Linear API (linear_list_issues, linear_search, linear_create_issue, linear_update_issue master tools — v2.7.2)", secret_key: "linear_api_key" },
+        { name: "LMSTUDIO_API_TOKEN",   purpose: "LM Studio API auth (when 'Require API Token' is enabled in LM Studio server settings — v2.7.4)", secret_key: "lmstudio_api_token" },
       ];
-      // Read from process.env on the dashboard process. NOTE: env vars set
-      // in shell profiles for the user's interactive shell are NOT
-      // automatically inherited by launchd-spawned processes. Hint at that.
+      // CRITICAL: only the boolean `ok` + length escape — value is never
+      // serialized into the response body. `length` is intentionally a
+      // length, not a prefix, so the operator can sanity-check rotation
+      // without leaking any byte of the credential.
       const results = vars.map((v) => {
         const val = process.env[v.name];
+        const secretsVal = v.secret_key ? loadSecret(v.secret_key) : null;
         return {
           name: v.name,
-          ok: !!val,
-          length: val ? val.length : 0,
+          ok: !!val || !!secretsVal,
+          env: !!val,
+          secrets_json: v.secret_key ? !!secretsVal : null,
+          length: val ? val.length : (secretsVal ? secretsVal.length : 0),
           purpose: v.purpose,
         };
       });
       return Response.json({
         ok: true,
         keys: results,
-        note: "These reflect the dashboard process environment. Keys set in your shell ~/.zshrc may NOT be inherited by launchd services. Set them in ~/Library/LaunchAgents/com.subctl.master.plist EnvironmentVariables for the master to use them.",
+        note: "v2.7.4 priority: process env beats ~/.config/subctl/secrets.json beats absent. Edit secrets via the Settings → API Tokens panel (chmod 600 file, never echoed back). Env vars set in your shell ~/.zshrc are NOT inherited by launchd services; set them in ~/Library/LaunchAgents/com.subctl.master.plist EnvironmentVariables.",
+      });
+    }
+
+    // /api/settings/secrets — list known secret keys and their presence
+    // flags. NEVER returns the values themselves. Safe to surface to the
+    // dashboard panel for the "API Tokens" UI. v2.7.4.
+    if (url.pathname === "/api/settings/secrets" && req.method === "GET") {
+      try {
+        return Response.json({
+          ok: true,
+          secrets: listSecrets(),
+          // Surface the resolution priority so the panel can render
+          // "env override active" hints next to rows where the env var
+          // is winning over the on-disk value.
+          priority: ["env_var", "secrets_json", "absent"],
+        });
+      } catch (err) {
+        return Response.json(
+          { ok: false, error: (err as Error).message },
+          { status: 500 },
+        );
+      }
+    }
+
+    // /api/settings/secrets/:key — write or clear a single secret.
+    // Body: { "value": string | null }. NEVER echoes the value back.
+    // Returns the updated listSecrets() row for the affected key so the
+    // panel can refresh in place.
+    if (
+      url.pathname.startsWith("/api/settings/secrets/") &&
+      req.method === "POST"
+    ) {
+      const key = decodeURIComponent(url.pathname.slice("/api/settings/secrets/".length));
+      // Allow-list: only the well-known SECRET_KEYS can be written
+      // through this endpoint. Prevents an attacker (or buggy client)
+      // from writing arbitrary fields into the JSON blob.
+      if (!(SECRET_KEYS as readonly string[]).includes(key)) {
+        return Response.json(
+          { ok: false, error: `unknown secret key: ${key} (allowed: ${SECRET_KEYS.join(", ")})` },
+          { status: 400 },
+        );
+      }
+      let body: { value?: unknown };
+      try {
+        body = (await req.json()) as { value?: unknown };
+      } catch {
+        return Response.json(
+          { ok: false, error: "body must be valid JSON" },
+          { status: 400 },
+        );
+      }
+      const v = body.value;
+      // null OR empty string clears the field. Anything else must be a
+      // string we accept verbatim. We do NOT trim — operator might have
+      // intentional whitespace on either end of an opaque token.
+      if (v !== null && typeof v !== "string") {
+        return Response.json(
+          { ok: false, error: "value must be a string or null" },
+          { status: 400 },
+        );
+      }
+      try {
+        await setSecret(key, (v as string | null) ?? null);
+      } catch (err) {
+        return Response.json(
+          { ok: false, error: `write failed: ${(err as Error).message}` },
+          { status: 500 },
+        );
+      }
+      // Build the response from listSecrets so the caller gets the new
+      // presence flag + last-modified without us touching the value.
+      const row = listSecrets().find((s) => s.key === key);
+      return Response.json({
+        ok: true,
+        secret: row,
+        // CRITICAL: nothing here echoes the value back to the caller.
+        // Even an audit log entry would be a leak vector — we just don't.
       });
     }
 
@@ -4132,7 +4243,10 @@ const server = Bun.serve({
       // 1. lmstudio — query LM Studio API directly for loaded state
       const lmHost = process.env.SUBCTL_LMSTUDIO_HOST ?? "http://localhost:1234";
       try {
-        const r = await fetch(`${lmHost}/api/v0/models`, { signal: AbortSignal.timeout(2500) });
+        const r = await fetch(`${lmHost}/api/v0/models`, {
+          headers: { ...lmstudioAuthHeader() },
+          signal: AbortSignal.timeout(2500),
+        });
         if (r.ok) {
           const j = (await r.json()) as { data?: Array<Record<string, unknown>> };
           const models = (j.data ?? []).filter((m) => m.type === "vlm" || m.type === "llm");

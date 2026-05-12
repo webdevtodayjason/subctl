@@ -1075,14 +1075,44 @@
           </div>
         </section>
 
-        <!-- 3. API keys / cloud providers (status only, set via shell) -->
+        <!-- 3a. API tokens — secrets.json-backed editable panel (v2.7.4) -->
+        <section class="settings-card">
+          <div class="settings-card-head">
+            <h3>API tokens</h3>
+            <span class="settings-card-meta dim small">stored in ~/.config/subctl/secrets.json · chmod 600 · never echoed back</span>
+          </div>
+          <div class="settings-card-body" id="settings-secrets-body">loading…</div>
+        </section>
+
+        <!-- 3b. API keys / cloud providers (status combining env + secrets.json) -->
         <section class="settings-card">
           <div class="settings-card-head">
             <h3>API keys (cloud providers)</h3>
-            <span class="settings-card-meta dim small">read-only — set via shell profile</span>
+            <span class="settings-card-meta dim small">priority: env var > secrets.json > absent</span>
           </div>
           <div class="settings-card-body" id="settings-keys-body">loading…</div>
         </section>
+
+        <!-- API-token edit modal (v2.7.4) -->
+        <div id="secrets-modal" class="modal-backdrop" hidden role="dialog" aria-modal="true" aria-labelledby="secrets-modal-title">
+          <div class="modal-panel">
+            <h3 id="secrets-modal-title">Edit API token</h3>
+            <div class="form-row">
+              <label id="secrets-modal-key-label" class="dim">key</label>
+            </div>
+            <div class="form-row">
+              <label for="secrets-modal-value">Token value</label>
+              <input type="password" id="secrets-modal-value" autocomplete="new-password" spellcheck="false" placeholder="paste token; never echoed back from server" />
+              <div class="form-hint">Stored locally in <code>~/.config/subctl/secrets.json</code> (chmod 600). The dashboard request is over <code>127.0.0.1</code> only. The server never returns the value once written.</div>
+            </div>
+            <div class="settings-actions">
+              <button type="button" class="primary-btn" id="secrets-modal-save">Save</button>
+              <button type="button" class="secondary-btn" id="secrets-modal-cancel">Cancel</button>
+              <button type="button" class="danger-btn" id="secrets-modal-remove">Remove</button>
+            </div>
+            <div class="settings-result" id="secrets-modal-result" hidden></div>
+          </div>
+        </div>
 
         <!-- Obsidian vault path -->
         <section class="settings-card">

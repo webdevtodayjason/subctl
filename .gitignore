@@ -39,4 +39,8 @@ credentials.json
 .credentials.json
 *.pem
 *.key
+# v2.7.4 — dashboard-managed API tokens. The canonical location is
+# ~/.config/subctl/secrets.json (outside the repo) but block any
+# accidental in-tree copy by name too.
+secrets.json
 .claude/worktrees/

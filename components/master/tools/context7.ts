@@ -7,19 +7,24 @@
 // after Phase 3c.1) so leads + workers can call it directly during work.
 //
 // Endpoint: https://mcp.context7.com/mcp (JSON-RPC over HTTP).
-// Auth:     header `CONTEXT7_API_KEY: <key>` from env.
+// Auth:     header `CONTEXT7_API_KEY: <key>` resolved via v2.7.4 priority
+//           chain (env > ~/.config/subctl/secrets.json > absent).
+
+import { resolveSecret } from "../secrets";
 
 const CONTEXT7_URL = process.env.SUBCTL_CONTEXT7_URL ?? "https://mcp.context7.com/mcp";
 
 function getApiKey(): string | null {
-  return (process.env.CONTEXT7_API_KEY ?? "").trim() || null;
+  // v2.7.4 priority chain: env > secrets.json > absent.
+  const v = resolveSecret("context7_api_key");
+  return v && v.trim() ? v.trim() : null;
 }
 
 let _rpcId = 0;
 async function rpc<T>(method: string, params: Record<string, unknown>): Promise<T | { error: string }> {
   const apiKey = getApiKey();
   if (!apiKey) {
-    return { error: "CONTEXT7_API_KEY env var not set on the master daemon process. Set it in ~/Library/LaunchAgents/com.subctl.master.plist EnvironmentVariables and reload the launchd job." };
+    return { error: "CONTEXT7_API_KEY not configured. Set it via the dashboard Settings → API Tokens panel (writes ~/.config/subctl/secrets.json, chmod 600) OR in ~/Library/LaunchAgents/com.subctl.master.plist EnvironmentVariables and reload the launchd job." };
   }
   _rpcId++;
   try {
@@ -145,11 +150,11 @@ export const context7Tools = {
 
   context7_health: {
     description:
-      "Verify that Context7 is configured (CONTEXT7_API_KEY env var set) and reachable. Returns a status snapshot.",
+      "Verify that Context7 is configured (CONTEXT7_API_KEY set via env or ~/.config/subctl/secrets.json) and reachable. Returns a status snapshot.",
     schema: { type: "object", properties: {}, required: [] },
     invoke: async () => {
       const key = getApiKey();
-      if (!key) return { ok: false, error: "CONTEXT7_API_KEY not set in master env" };
+      if (!key) return { ok: false, error: "CONTEXT7_API_KEY not configured (checked env + secrets.json)" };
       // Smallest-possible call to validate auth + connectivity
       const r = await rpc<{ content?: Array<{ type: string; text: string }> }>(
         "resolve-library-id",

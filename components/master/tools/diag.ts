@@ -28,12 +28,26 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
+import { resolveSecret } from "../secrets";
+
 const HOME = homedir();
 const SUBCTL_CONFIG_DIR =
   process.env.SUBCTL_CONFIG_DIR ?? join(HOME, ".config", "subctl");
 const REPO_ROOT = resolve(import.meta.dir, "..", "..", "..");
 const LMSTUDIO_HOST =
   process.env.SUBCTL_LMSTUDIO_HOST ?? "http://localhost:1234";
+
+// v2.7.4 — LM Studio gained an optional "Require API Token" toggle. When
+// the operator enables it, every request — including the diag tools'
+// reachability probes — must carry `Authorization: Bearer <token>` or
+// the server 401s. Token resolved via the v2.7.4 priority chain (env
+// var beats secrets.json beats absent — see components/master/secrets.ts).
+// Absent → empty headers map (back-compat for LM Studio servers without
+// the toggle enabled, which is the default).
+export function lmstudioAuthHeader(): Record<string, string> {
+  const token = resolveSecret("lmstudio_api_token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
 
 // macOS launchd PATH doesn't include /usr/sbin by default — the system.ts
 // family hit this when sysctl/vm_stat silently failed under launchd. Use
@@ -51,7 +65,7 @@ const SHELL_PATH =
 
 interface Deps {
   shell: (cmd: string, opts?: { timeout?: number }) => string;
-  fetchText: (url: string, opts?: { timeoutMs?: number; method?: string; body?: string }) => Promise<{
+  fetchText: (url: string, opts?: { timeoutMs?: number; method?: string; body?: string; headers?: Record<string, string> }) => Promise<{
     ok: boolean;
     status: number;
     text: string;
@@ -81,10 +95,16 @@ const realDeps: Deps = {
   fetchText: async (url, opts = {}) => {
     const t0 = Date.now();
     try {
+      // Merge: body→content-type baseline, plus any caller-supplied
+      // headers (used in v2.7.4 to thread the LMSTUDIO_API_TOKEN bearer
+      // through LM Studio probes). Caller headers win on conflict.
+      const headers: Record<string, string> = {};
+      if (opts.body) headers["content-type"] = "application/json";
+      if (opts.headers) Object.assign(headers, opts.headers);
       const r = await fetch(url, {
         method: opts.method ?? "GET",
         body: opts.body,
-        headers: opts.body ? { "content-type": "application/json" } : undefined,
+        headers: Object.keys(headers).length ? headers : undefined,
         signal: AbortSignal.timeout(opts.timeoutMs ?? 2500),
       });
       const text = await r.text();
@@ -319,6 +339,7 @@ const system_lmstudio_health = {
     const url = LMSTUDIO_HOST;
     const reachableR = await deps.fetchText(`${url}/v1/models`, {
       timeoutMs: 2500,
+      headers: lmstudioAuthHeader(),
     });
     const models_endpoint_ok = reachableR.ok;
     const reachable =
@@ -344,6 +365,7 @@ const system_lmstudio_health = {
         const pingR = await deps.fetchText(`${url}/v1/chat/completions`, {
           method: "POST",
           timeoutMs: 4000,
+          headers: lmstudioAuthHeader(),
           body: JSON.stringify({
             model: modelId,
             messages: [{ role: "user", content: "ping" }],
@@ -920,6 +942,7 @@ const system_supervisor_info = {
     const supHost = (sup.host ?? `${LMSTUDIO_HOST}/v1`).replace(/\/v1\/?$/, "");
     const modelsR = await deps.fetchText(`${supHost}/api/v0/models`, {
       timeoutMs: 2500,
+      headers: lmstudioAuthHeader(),
     });
     if (!modelsR.ok) {
       return {

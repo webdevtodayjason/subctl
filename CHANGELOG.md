@@ -4,6 +4,76 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.7.4] — 2026-05-12
+
+### LM Studio API token support — honor the "Require API Token" toggle
+
+LM Studio recently shipped an optional **"Require API Token"** server setting. Operators who enable it get a `sk-lm-XXXXXXXX:YYYYYYYYYYYY`-shaped bearer token that every request — OpenAI-compatible `/v1/*` AND LM Studio's native `/api/v0/*` / `/api/v1/models/load` surfaces — must carry as `Authorization: Bearer <token>` or the server 401s. Before v2.7.4, subctl sent a `"not-needed"` sentinel for local providers and hit 401 the moment the operator flipped the toggle. v2.7.4 adds first-class support: set `LMSTUDIO_API_TOKEN` in the daemon's environment and every LM Studio call subctl makes carries the bearer.
+
+### What's new
+
+**Helper:** `lmstudioAuthHeader()` lives in `components/master/server.ts` (also duplicated in `components/master/tools/diag.ts` and `dashboard/server.ts` to keep import graphs disjoint). Returns `{Authorization: "Bearer <token>"}` when `LMSTUDIO_API_TOKEN` is set, `{}` when absent. Callers spread the result into their `headers` object unconditionally — the `{}` form is a no-op, so back-compat is preserved.
+
+**pi-ai `getApiKey` callback** in `components/master/server.ts` now branches on provider. For `provider === "lmstudio"` it returns `process.env.LMSTUDIO_API_TOKEN ?? "not-needed"` — real token when the env var is set, the v2.7.3 sentinel when it isn't. Other local providers (`mlx`, `ollama`, `vllm`) still get `"not-needed"` unconditionally. Cloud providers still fall through to `undefined` so pi-ai's own env-var / OAuth resolution kicks in.
+
+**All direct LM Studio HTTP calls** thread the bearer header. Six call sites in `components/master/server.ts`:
+
+- `ensureModelLoaded` — three calls (`GET /api/v0/models`, `POST /api/v1/models/unload`, `POST /api/v1/models/load`).
+- `getSupervisorLoadedCtx` — one call (`GET /api/v0/models`).
+- `/transcript/util` inline probe — one call (`GET /api/v0/models`).
+
+Three call sites in `components/master/tools/diag.ts`:
+
+- `system_lmstudio_health` — two calls (`/v1/models` reachability + `/v1/chat/completions` ping).
+- `system_supervisor_info` — one call (`/api/v0/models`).
+
+Two call sites in `dashboard/server.ts`:
+
+- `/api/models` — LM Studio model catalog for the dashboard.
+- `/api/providers` — LM Studio entry for the provider catalog (model picker).
+
+**Dashboard `/api/settings/keys`** gains a `LMSTUDIO_API_TOKEN` row alongside the v2.7.2 cloud-provider rows (BRAVE_API_KEY, FIRECRAWL_API_KEY, LINEAR_API_KEY, …). Operator can confirm at a glance whether the daemon's process environment carries the token.
+
+**`fetchText` deps in diag.ts** gained an optional `headers` field. Tests can swap in a recording fetchText stub and assert the captured header, mirroring the `_setDepsForTesting` pattern.
+
+### Test coverage
+
+`components/master/__tests__/lmstudio-token.test.ts` — 14 tests / 40 assertions covering:
+
+- `lmstudioAuthHeader`: returns `{}` when env var unset, returns the bearer header when set, treats empty string as unset.
+- `getApiKeyForProvider`: returns token for `lmstudio` when env var set; returns `"not-needed"` for `lmstudio` when unset (the back-compat path); returns `"not-needed"` for `mlx` / `ollama` / `vllm` regardless of `LMSTUDIO_API_TOKEN`; returns `undefined` for cloud providers (`anthropic`, `openai`) — token must not leak to other providers.
+- `ensureModelLoaded`: includes `Bearer <token>` on all three LM Studio calls (probe + unload + load) when env var set; emits no `Authorization` header on any call when env var unset (the back-compat trip wire); short-circuits before any fetch when `provider !== "lmstudio"`.
+- `diagTools.system_lmstudio_health`: threads the bearer through to `fetchText.headers` on both the `/v1/models` reachability probe and the `/v1/chat/completions` ping; omits the header entirely when env var unset.
+
+Every test saves and restores `process.env.LMSTUDIO_API_TOKEN` in beforeEach/afterEach so order doesn't matter.
+
+### Back-compat
+
+Non-negotiable: deploys without LM Studio token auth must keep working unchanged. The test suite pins this — running with `LMSTUDIO_API_TOKEN` unset reproduces the v2.7.3 behavior exactly (no `Authorization` header on direct fetches; `"not-needed"` sentinel returned for pi-ai). If the env var is the empty string the helper treats it as unset.
+
+### Operator deploy step
+
+Add the token to the master daemon's launchd plist:
+
+```xml
+<key>EnvironmentVariables</key>
+<dict>
+  <key>LMSTUDIO_API_TOKEN</key>
+  <string>sk-lm-XXXXXXXX:YYYYYYYYYYYY</string>
+  ...
+</dict>
+```
+
+Reload (`launchctl unload && load`), then enable "Require API Token" in LM Studio's server settings. The dashboard's `/api/settings/keys` panel will flip the row to `ok: true` once the daemon picks it up.
+
+### Canonical references
+
+- `components/master/server.ts` `lmstudioAuthHeader()` + `getApiKeyForProvider()` — the helper + branching key resolver.
+- `components/master/tools/diag.ts` — duplicated helper kept in sync.
+- `dashboard/server.ts` `lmstudioAuthHeader()` + `/api/settings/keys` panel row.
+- `components/master/__tests__/lmstudio-token.test.ts` — 14 tests, including the back-compat trip wires.
+- `docs/master.md` Phase 3o.4 — the story behind v2.7.4.
+
 ## [2.7.3] — 2026-05-12
 
 ### Compact correctness — the ticker was the wrong design

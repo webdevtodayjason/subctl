@@ -939,6 +939,70 @@ Canonical: `components/master/compact-policy.ts`,
 `dashboard/public/app.js` `refreshContext()` + `compact_warning` SSE
 handler.
 
+### Phase 3o.4 — LM Studio API token support (v2.7.4)
+
+LM Studio shipped an optional **"Require API Token"** server setting.
+Operators who flip it on get a `sk-lm-XXXXXXXX:YYYYYYYYYYYY`-shaped
+bearer token that every request to the box must carry as
+`Authorization: Bearer <token>`. Before v2.7.4 the master daemon
+sent a `"not-needed"` sentinel for `lmstudio` (the v2.7.3 path) and
+hit 401 the moment the operator enabled the toggle. v2.7.4 closes
+the gap.
+
+**One helper, eleven call sites.** `lmstudioAuthHeader()` returns
+`{Authorization: "Bearer <token>"}` when `LMSTUDIO_API_TOKEN` is set
+and `{}` when it isn't. Callers spread the result into their
+`headers` object unconditionally — the `{}` form is a no-op, so
+back-compat is preserved for deploys that don't have the toggle on.
+Lives in `components/master/server.ts`, duplicated in
+`components/master/tools/diag.ts` and `dashboard/server.ts` to keep
+import graphs disjoint.
+
+**pi-ai key resolution branches on provider.** The master's
+`getApiKey` callback now returns `process.env.LMSTUDIO_API_TOKEN ??
+"not-needed"` for `provider === "lmstudio"` — real token when the
+env var is set, the v2.7.3 sentinel when it isn't. Other local
+providers (`mlx`, `ollama`, `vllm`) still get `"not-needed"`
+unconditionally; cloud providers still fall through to `undefined`
+so pi-ai's own env-var / OAuth resolution kicks in. The token does
+NOT leak across providers.
+
+**All eleven LM Studio HTTP call sites** thread the bearer header:
+
+- `components/master/server.ts`: `ensureModelLoaded` (probe +
+  unload + load), `getSupervisorLoadedCtx`, the `/transcript/util`
+  inline probe — six total.
+- `components/master/tools/diag.ts`:
+  `system_lmstudio_health` (`/v1/models` + `/v1/chat/completions`)
+  and `system_supervisor_info` (`/api/v0/models`) — three total.
+- `dashboard/server.ts`: `/api/models` and `/api/providers` —
+  two total.
+
+**Settings panel surfaces the env var.** The dashboard's
+`/api/settings/keys` row list gains `LMSTUDIO_API_TOKEN` alongside
+the v2.7.2 cloud-provider rows. Operator can confirm at a glance
+whether the daemon's process environment carries it.
+
+**Back-compat trip wire.** `lmstudio-token.test.ts` pins it — when
+`LMSTUDIO_API_TOKEN` is unset, `ensureModelLoaded` emits **no**
+`Authorization` header on any of its three calls, and `getApiKey`
+returns `"not-needed"` exactly as it did in v2.7.3. Empty-string
+env var is treated as unset. Existing deploys without LM Studio
+token auth must keep working unchanged after this PR.
+
+**Deploy step.** Operator adds the token to the master daemon's
+launchd plist (`EnvironmentVariables` block), reloads launchd, then
+enables "Require API Token" in LM Studio's server settings. The
+dashboard `/api/settings/keys` panel flips the row to `ok: true`
+once the daemon picks it up.
+
+Canonical: `components/master/server.ts` `lmstudioAuthHeader()` +
+`getApiKeyForProvider()`, `components/master/tools/diag.ts` (mirror
+helper), `dashboard/server.ts` (mirror helper +
+`/api/settings/keys` row),
+`components/master/__tests__/lmstudio-token.test.ts` (14 tests / 40
+assertions).
+
 ### Phase 3r — Bake the operator's Claude config baseline into the repo
 
 Operator request 2026-05-10 during the FOOTHOLD dogfood: a chunk

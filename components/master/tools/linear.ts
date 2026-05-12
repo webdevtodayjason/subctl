@@ -101,19 +101,23 @@ export function _resetDepsForTesting(): void {
 
 // ─── shared GraphQL helper ─────────────────────────────────────────────────
 
+import { resolveSecret } from "../secrets";
+
 const LINEAR_ENDPOINT = "https://api.linear.app/graphql";
 const QUERY_TIMEOUT_MS = 20_000;
 const MUTATION_TIMEOUT_MS = 30_000;
 
+// v2.7.4: hint mentions both paths (dashboard panel OR plist).
 const KEY_MISSING_HINT =
-  "Set it in ~/Library/LaunchAgents/com.subctl.master.plist EnvironmentVariables, then `launchctl kickstart -k gui/$UID/com.subctl.master`.";
+  "Set it via the dashboard Settings → API Tokens panel (writes ~/.config/subctl/secrets.json, chmod 600) OR in ~/Library/LaunchAgents/com.subctl.master.plist EnvironmentVariables followed by `launchctl kickstart -k gui/$UID/com.subctl.master`.";
 
 function requireApiKey(): { ok: true; key: string } | { ok: false; error: string } {
-  const key = process.env.LINEAR_API_KEY;
+  // v2.7.4 priority chain: env > secrets.json > absent.
+  const key = resolveSecret("linear_api_key");
   if (!key) {
     return {
       ok: false,
-      error: `LINEAR_API_KEY not set in master daemon environment. ${KEY_MISSING_HINT}`,
+      error: `LINEAR_API_KEY not configured. ${KEY_MISSING_HINT}`,
     };
   }
   return { ok: true, key };

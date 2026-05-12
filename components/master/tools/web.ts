@@ -105,8 +105,14 @@ export function _resetDepsForTesting(): void {
 
 // ─── shared helpers ────────────────────────────────────────────────────────
 
+import { resolveSecret } from "../secrets";
+
+// v2.7.4 added a dashboard-managed secrets.json layer below the env-var
+// layer, so the operator no longer has to edit the launchd plist to
+// rotate Brave / Firecrawl / Linear / Context7 keys. The hint surfaces
+// both paths.
 const KEY_MISSING_HINT =
-  "Set it in ~/Library/LaunchAgents/com.subctl.master.plist EnvironmentVariables, then `launchctl kickstart -k gui/$UID/com.subctl.master`.";
+  "Set it via the dashboard Settings → API Tokens panel (writes ~/.config/subctl/secrets.json, chmod 600) OR in ~/Library/LaunchAgents/com.subctl.master.plist EnvironmentVariables followed by `launchctl kickstart -k gui/$UID/com.subctl.master`.";
 
 /** Cap a response body excerpt so a 5MB error page doesn't flood the agent context. */
 function bodyExcerpt(text: string, max = 400): string {
@@ -164,11 +170,12 @@ const web_search = {
       return { ok: false, error: "query is required and must be a non-empty string" };
     }
     const requestedCount = Math.min(Math.max(args.count ?? 10, 1), 20);
-    const apiKey = process.env.BRAVE_API_KEY;
+    // v2.7.4 priority chain: env > secrets.json > absent.
+    const apiKey = resolveSecret("brave_api_key");
     if (!apiKey) {
       return {
         ok: false,
-        error: `BRAVE_API_KEY not set in master daemon environment. ${KEY_MISSING_HINT}`,
+        error: `BRAVE_API_KEY not configured. ${KEY_MISSING_HINT}`,
       };
     }
     const url = `${BRAVE_SEARCH_URL}?q=${encodeURIComponent(query)}&count=${requestedCount}`;
@@ -280,11 +287,12 @@ const web_fetch = {
       };
     }
     const onlyMainContent = args.onlyMainContent !== false; // default true
-    const apiKey = process.env.FIRECRAWL_API_KEY;
+    // v2.7.4 priority chain: env > secrets.json > absent.
+    const apiKey = resolveSecret("firecrawl_api_key");
     if (!apiKey) {
       return {
         ok: false,
-        error: `FIRECRAWL_API_KEY not set in master daemon environment. ${KEY_MISSING_HINT}`,
+        error: `FIRECRAWL_API_KEY not configured. ${KEY_MISSING_HINT}`,
       };
     }
     const body = JSON.stringify({

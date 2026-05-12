@@ -95,6 +95,7 @@ import {
   type CompactConfig,
   type CompactDecision,
 } from "./compact-policy";
+import { resolveSecret } from "./secrets";
 
 const HOME = homedir();
 const COMPONENT_DIR = import.meta.dir;
@@ -484,7 +485,43 @@ const ROLE_DEFAULT_CONTEXT: Record<string, number> = {
   embeddings: 0, // 0 = don't enforce; LM Studio's default is fine
 };
 
-async function ensureModelLoaded(cfg: { provider: string; model: string; host?: string; context_length?: number }, role: string): Promise<{ ok: boolean; detail: string }> {
+// LM Studio added an optional "Require API Token" toggle in its server
+// settings. When enabled, every request — including the OpenAI-compatible
+// /v1/* surface AND LM Studio's native /api/v0/* and /api/v1/models/load
+// surfaces — must carry `Authorization: Bearer <token>` or it 401s.
+//
+// Token resolution honors the v2.7.4 priority chain (see secrets.ts):
+//   1. process.env.LMSTUDIO_API_TOKEN (launchd plist EnvironmentVariables)
+//   2. ~/.config/subctl/secrets.json `lmstudio_api_token` (dashboard UI)
+//   3. Absent → return {} so the spread is a no-op (back-compat with
+//      LM Studio servers that don't have token auth enabled).
+export function lmstudioAuthHeader(): Record<string, string> {
+  const token = resolveSecret("lmstudio_api_token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+// pi-ai's openai-completions provider requires *something* in the
+// Authorization header even when talking to a local server that doesn't
+// care (LM Studio, Ollama, MLX, vLLM all accept any value when the
+// "Require API Token" toggle is off). For lmstudio specifically, if the
+// operator has enabled "Require API Token", the v2.7.4 priority chain
+// (env > secrets.json > absent) flows through here and pi-ai sends a
+// real `Authorization: Bearer <token>`. Otherwise we keep the legacy
+// "not-needed" sentinel.
+//
+// Exported so the test suite can exercise the resolution chain without
+// having to spin up the full master boot pipeline.
+export const LOCAL_PROVIDERS = new Set(["mlx", "ollama", "lmstudio", "vllm"]);
+export function getApiKeyForProvider(provider: string): string | undefined {
+  if (provider === "lmstudio") {
+    return resolveSecret("lmstudio_api_token") ?? "not-needed";
+  }
+  if (LOCAL_PROVIDERS.has(provider)) return "not-needed";
+  // Fall through — pi-ai handles real providers via env vars / OAuth
+  return undefined;
+}
+
+export async function ensureModelLoaded(cfg: { provider: string; model: string; host?: string; context_length?: number }, role: string): Promise<{ ok: boolean; detail: string }> {
   if (cfg.provider !== "lmstudio") {
     return { ok: true, detail: `${role} is ${cfg.provider} (cloud) — no local load needed` };
   }
@@ -496,7 +533,10 @@ async function ensureModelLoaded(cfg: { provider: string; model: string; host?: 
   //    GET we shouldn't dump a load request into it — bail to JIT.
   let lmReachable = false;
   try {
-    const r = await fetch(`${apiBase}/api/v0/models`, { signal: AbortSignal.timeout(2000) });
+    const r = await fetch(`${apiBase}/api/v0/models`, {
+      headers: { ...lmstudioAuthHeader() },
+      signal: AbortSignal.timeout(2000),
+    });
     if (r.ok) {
       lmReachable = true;
       const j = (await r.json()) as { data?: Array<{ id: string; state?: string; loaded_context_length?: number }> };
@@ -529,7 +569,7 @@ async function ensureModelLoaded(cfg: { provider: string; model: string; host?: 
   try {
     await fetch(`${apiBase}/api/v1/models/unload`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...lmstudioAuthHeader() },
       body: JSON.stringify({ model: cfg.model }),
       signal: AbortSignal.timeout(5_000),
     });
@@ -540,7 +580,7 @@ async function ensureModelLoaded(cfg: { provider: string; model: string; host?: 
   try {
     const r = await fetch(`${apiBase}/api/v1/models/load`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...lmstudioAuthHeader() },
       body: JSON.stringify({
         model: cfg.model,
         context_length: desired,
@@ -655,12 +695,11 @@ async function main() {
   // the Authorization header, so feed it a sentinel for local providers and
   // let real ones fall through (Anthropic + Codex pull from their own env vars
   // / OAuth flow internally; we don't need to thread those here).
-  const LOCAL_PROVIDERS = new Set(["mlx", "ollama", "lmstudio", "vllm"]);
-  const getApiKey = (provider: string): string | undefined => {
-    if (LOCAL_PROVIDERS.has(provider)) return "not-needed";
-    // Fall through — pi-ai handles real providers via env vars / OAuth
-    return undefined;
-  };
+  // v2.7.4 — see module-level getApiKeyForProvider for the env-var branching
+  // (LMSTUDIO_API_TOKEN). Kept inline-named here so pi-ai's Agent ctor
+  // callback signature matches.
+  const getApiKey = (provider: string): string | undefined =>
+    getApiKeyForProvider(provider);
 
   // Compose the initial system prompt: master persona + tier-1 memory
   // (user profile + learned facts). Both memory files are re-read on
@@ -920,7 +959,10 @@ async function main() {
   async function getSupervisorLoadedCtx(timeoutMs = 1500): Promise<number | null> {
     try {
       const host = (supervisorCfg.host ?? "http://localhost:1234/v1").replace(/\/v1\/?$/, "");
-      const r = await fetch(`${host}/api/v0/models`, { signal: AbortSignal.timeout(timeoutMs) });
+      const r = await fetch(`${host}/api/v0/models`, {
+        headers: { ...lmstudioAuthHeader() },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
       if (!r.ok) return null;
       const j = (await r.json()) as { data?: Array<{ id: string; loaded_context_length?: number }> };
       const found = (j.data ?? []).find((m) => m.id === supervisorCfg.model);
@@ -1389,7 +1431,10 @@ async function main() {
         let loadedContext: number | null = null;
         try {
           const host = (supervisorCfg.host ?? "http://localhost:1234/v1").replace(/\/v1\/?$/, "");
-          const r = await fetch(`${host}/api/v0/models`, { signal: AbortSignal.timeout(1500) });
+          const r = await fetch(`${host}/api/v0/models`, {
+            headers: { ...lmstudioAuthHeader() },
+            signal: AbortSignal.timeout(1500),
+          });
           if (r.ok) {
             const j = (await r.json()) as { data?: Array<{ id: string; loaded_context_length?: number }> };
             const found = (j.data ?? []).find((m) => m.id === supervisorCfg.model);
@@ -2264,7 +2309,13 @@ async function main() {
   process.on("SIGINT", () => shutdown("SIGINT"));
 }
 
-main().catch((err) => {
-  console.error(`[master] fatal:`, err);
-  process.exit(1);
-});
+// Only auto-boot when this file is the entrypoint (i.e. launched by
+// launchd / `subctl master start`). Skipping this when imported lets the
+// test suite pull in helpers like `getApiKeyForProvider` and
+// `ensureModelLoaded` without spinning up the full daemon.
+if (import.meta.main) {
+  main().catch((err) => {
+    console.error(`[master] fatal:`, err);
+    process.exit(1);
+  });
+}
