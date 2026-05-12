@@ -117,6 +117,9 @@
         <button type="button" class="nav-btn" data-tab="logs">
           <span class="nav-icon">≣</span><span class="nav-label">Live Logs</span>
         </button>
+        <button type="button" class="nav-btn" data-tab="policy">
+          <span class="nav-icon">⛒</span><span class="nav-label">Policy</span>
+        </button>
         <button type="button" class="nav-btn" data-tab="settings">
           <span class="nav-icon">⚒</span><span class="nav-label">Settings</span>
         </button>
@@ -697,7 +700,142 @@
         </div>
       </header>
 
+      <!-- ── PR 11 (v2.7.0): Policy filter row ──────────────────────────
+           Toggling "Policy" switches the log stream source from the
+           launchd log to the audit JSONL of the selected team. The
+           sub-chips further filter the decision type. -->
+      <div class="logs-filter-row" id="logs-filter-row">
+        <button type="button" class="logs-chip" id="logs-chip-policy" data-active="false">
+          <span class="logs-chip-dot"></span> Policy
+        </button>
+        <select id="logs-policy-team" class="logs-policy-team" disabled>
+          <option value="">(no teams)</option>
+        </select>
+        <div class="logs-subchips" id="logs-subchips" hidden>
+          <button type="button" class="logs-subchip active" data-subfilter="all">All</button>
+          <button type="button" class="logs-subchip" data-subfilter="deny">Denials only</button>
+          <button type="button" class="logs-subchip" data-subfilter="verifier">Verifier corrections</button>
+        </div>
+        <span class="logs-policy-meta dim small" id="logs-policy-meta"></span>
+      </div>
+
       <pre class="logs-view" id="logs-view"></pre>
+
+      <!-- ── PR 11 (v2.7.0): denial detail panel ──────────────────────────
+           Slides up from the bottom when the operator clicks an audit row
+           in Policy mode. Shows the full JSON + a "Suggest allowlist
+           addition" button that opens the modal below. -->
+      <aside class="logs-detail" id="logs-detail" hidden>
+        <header class="logs-detail-head">
+          <h3 id="logs-detail-title">audit entry</h3>
+          <button type="button" class="logs-detail-close" id="logs-detail-close" aria-label="close">✕</button>
+        </header>
+        <pre class="logs-detail-json" id="logs-detail-json"></pre>
+        <footer class="logs-detail-foot">
+          <button type="button" class="secondary-btn" id="logs-detail-suggest">Suggest allowlist addition</button>
+        </footer>
+      </aside>
+
+      <!-- "Suggest allowlist addition" modal — pack 09 §7.2 -->
+      <div class="modal-backdrop" id="allowlist-modal" hidden>
+        <div class="modal">
+          <header class="modal-header">
+            <h3>Suggest allowlist addition</h3>
+            <button type="button" class="modal-close" id="allowlist-modal-close" aria-label="close">✕</button>
+          </header>
+          <div class="modal-body">
+            <p class="dim small">
+              Generated TOML snippet to widen the gate for the denied command.
+              Review carefully before adding — once pasted into
+              <code>&lt;project&gt;/.subctl/policy.toml</code>, future workers spawned for
+              this project will allow the same command.
+            </p>
+            <pre class="allowlist-snippet" id="allowlist-snippet"></pre>
+            <div class="form-status" id="allowlist-status" hidden></div>
+          </div>
+          <footer class="modal-footer">
+            <button type="button" class="secondary-btn" id="allowlist-copy">Copy to clipboard</button>
+            <span class="dim small">
+              "Apply" (direct write to policy.toml) is deferred to v2.7.1 —
+              copy-and-paste for now so changes flow through your normal
+              git workflow.
+            </span>
+          </footer>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Policy (v2.7.0 PR 11): per-team policy posture + denials ───── -->
+    <section class="policy-screen" data-tab="policy">
+      <header class="screen-header">
+        <h2>Policy <span class="screen-sub">trusted · gated · sealed — what the gate is doing right now</span></h2>
+        <div class="screen-header-actions">
+          <button type="button" class="secondary-btn" id="policy-refresh-btn">refresh</button>
+          <span class="logs-status" id="policy-status">idle</span>
+        </div>
+      </header>
+
+      <!-- Section 1: per-team current mode + preset + allowlist_sha -->
+      <section class="panel">
+        <h3>Active teams <span class="panel-hint">mode + preset + allowlist sha · updates live on respawn</span></h3>
+        <table class="data-table" id="policy-teams-table">
+          <thead>
+            <tr>
+              <th>Team</th>
+              <th>Mode</th>
+              <th>Preset</th>
+              <th>Allowlist SHA</th>
+              <th>Spawned</th>
+              <th>Project root</th>
+            </tr>
+          </thead>
+          <tbody id="policy-teams-tbody">
+            <tr><td colspan="6" class="empty">no teams spawned</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- Section 2: project resolved policy (currently-selected team) -->
+      <section class="panel">
+        <h3>Resolved policy
+          <span class="panel-hint">
+            select a team above ·
+            <select id="policy-resolved-team" class="logs-policy-team">
+              <option value="">(none)</option>
+            </select>
+          </span>
+        </h3>
+        <div id="policy-resolved-view" class="policy-resolved-view">
+          <div class="dim small" style="padding:16px">pick a team to load its <code>subctl policy list --json</code> output</div>
+        </div>
+      </section>
+
+      <!-- Section 3: recent denials across all teams, grouped by rule_path -->
+      <section class="panel">
+        <h3>Recent denials <span class="panel-hint">last 24h · grouped by rule_path · top 10</span></h3>
+        <table class="data-table" id="policy-denials-table">
+          <thead>
+            <tr>
+              <th>Rule path</th>
+              <th>Count</th>
+              <th>Teams</th>
+              <th>Last fired</th>
+              <th>Rule</th>
+            </tr>
+          </thead>
+          <tbody id="policy-denials-tbody">
+            <tr><td colspan="5" class="empty">no denials in the last 24h</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- Section 4: verifier interventions timeline -->
+      <section class="panel">
+        <h3>Verifier interventions <span class="panel-hint">denial-cluster corrections fired by the master verifier</span></h3>
+        <div id="policy-verifier-timeline" class="policy-verifier-timeline">
+          <div class="dim small" style="padding:16px">no verifier corrections recorded</div>
+        </div>
+      </section>
     </section>
 
     <!-- ── Teams (dev-team templates) ─────────────────────────────── -->

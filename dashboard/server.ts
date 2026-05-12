@@ -72,6 +72,18 @@ import { aggregateAll as aggregateCostAll, type AccountCostSummary } from "./lib
 // PR 8.5 (v2.7.0): central exec helper. Coexists with the legacy `spawnSync`
 // imports; migrations land incrementally. Tracked in docs/exec-migration.md.
 import { execCommand } from "../components/master/policy/exec.ts";
+// PR 11 (v2.7.0): policy-audit dashboard surface. Pure request handlers live
+// in dashboard/lib/audit-api.ts so they're testable without booting the
+// server. The SSE stream is built inline below — it owns its ReadableStream.
+import {
+  getAuditPath,
+  handleAuditAggregate,
+  handleAuditList,
+  handlePolicyTeams,
+  isValidTeamId,
+  readNewAuditEntries,
+} from "./lib/audit-api.ts";
+import { loadResolvedPolicy } from "../components/master/tools/policy/load.ts";
 
 const PORT = Number(process.env.PORT ?? 8787);
 const STARTED_AT = Date.now();
@@ -2576,6 +2588,140 @@ const server = Bun.serve({
             },
           });
         }
+      }
+    }
+
+    // ── Policy audit endpoints (PR 11, v2.7.0) ─────────────────────────
+    //
+    // Pack 09 §6 specifies the surface. Three list endpoints + one SSE stream.
+    // Path resolution honors SUBCTL_STATE_DIR via the audit-api module.
+    //
+    //   GET /api/audit/<team>?tail=N&since=DUR&decision=allow|deny&filter=...
+    //   GET /api/audit/<team>/stream     ← SSE (server-side file tail)
+    //   GET /api/audit/aggregate         ← cross-team grouping for Policy tab
+    //   GET /api/policy/teams            ← per-team mode/preset/allowlist_sha
+    //   GET /api/policy/list?project_root=<dir>   ← resolved policy JSON
+    //   POST /api/policy/allowlist/apply ← optional "Apply" path; copy-only for v2.7.0
+    //
+    if (url.pathname === "/api/audit/aggregate" && req.method === "GET") {
+      return handleAuditAggregate(url.searchParams);
+    }
+    if (url.pathname === "/api/policy/teams" && req.method === "GET") {
+      return handlePolicyTeams();
+    }
+    if (url.pathname === "/api/policy/list" && req.method === "GET") {
+      const projectRoot = url.searchParams.get("project_root") ?? "";
+      if (!projectRoot || !projectRoot.startsWith("/")) {
+        return Response.json(
+          { ok: false, error: "project_root must be an absolute path" },
+          { status: 400 },
+        );
+      }
+      // Guard against shell-relative tricks; the resolver will read files
+      // inside this dir + global locations, so we want the path canonicalized.
+      try {
+        const policy = await loadResolvedPolicy(projectRoot);
+        return Response.json({
+          ok: true,
+          project_root: projectRoot,
+          preset: policy.preset ?? null,
+          default_mode: policy.default_mode ?? "gated",
+          source_paths: policy.__meta?.sourcePaths ?? [],
+          allowlist_sha: policy.__meta?.allowlistSha ?? "",
+          resolved_at: policy.__meta?.resolvedAt ?? null,
+          mode: {
+            gated: policy.mode?.gated ?? null,
+            sealed: policy.mode?.sealed ?? null,
+          },
+        });
+      } catch (err) {
+        return Response.json(
+          { ok: false, error: (err as Error).message },
+          { status: 500 },
+        );
+      }
+    }
+    {
+      const m = url.pathname.match(/^\/api\/audit\/([A-Za-z0-9_-]+)(\/stream)?\/?$/);
+      if (m && req.method === "GET") {
+        const teamId = m[1]!;
+        const isStream = !!m[2];
+        if (!isValidTeamId(teamId)) {
+          return Response.json({ ok: false, error: "invalid team_id" }, { status: 400 });
+        }
+        if (!isStream) {
+          return handleAuditList(teamId, url.searchParams);
+        }
+        // ── SSE stream ──────────────────────────────────────────────────
+        // Mirrors the /api/logs/<id>/stream pattern above: polls statSync()
+        // for size growth and emits new JSONL lines as SSE `audit` events.
+        // We deliberately do NOT inotify/fsevents — that's been unreliable
+        // for files written by launchd-managed processes on macOS. 700ms
+        // poll matches the logs tab and is plenty for a UI tail.
+        const path = getAuditPath(teamId);
+        const stream = new ReadableStream({
+          start(controller) {
+            const encoder = new TextEncoder();
+            const send = (event: string, data: unknown) => {
+              try { controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)); }
+              catch { /* client gone */ }
+            };
+            let lastSize = 0;
+            try { lastSize = existsSync(path) ? statSync(path).size : 0; } catch { lastSize = 0; }
+            // Initial snapshot: send the most recent tail (50 entries) so
+            // the UI doesn't start empty.
+            try {
+              const initial = handleAuditList(teamId, new URLSearchParams("tail=50"));
+              initial.json().then((j) => {
+                if (j && j.ok) send("snapshot", { entries: j.entries });
+              }).catch(() => { /* ignore */ });
+            } catch { /* ignore */ }
+
+            const tick = () => {
+              try {
+                const r = readNewAuditEntries(path, lastSize);
+                if (r.truncated) {
+                  // file rotated underneath us — re-snapshot
+                  try {
+                    const after = handleAuditList(teamId, new URLSearchParams("tail=50"));
+                    after.json().then((j) => {
+                      if (j && j.ok) send("snapshot", { entries: j.entries });
+                    }).catch(() => { /* ignore */ });
+                  } catch { /* ignore */ }
+                  lastSize = r.size;
+                  return;
+                }
+                if (r.entries.length > 0) {
+                  send("append", { entries: r.entries });
+                }
+                lastSize = r.size;
+              } catch { /* keep polling */ }
+            };
+            const ticker = setInterval(tick, 700);
+            const ka = setInterval(() => {
+              try { controller.enqueue(encoder.encode(`: keep-alive ${Date.now()}\n\n`)); }
+              catch { clearInterval(ka); }
+            }, 25_000);
+            (controller as any)._cleanup = () => {
+              clearInterval(ticker);
+              clearInterval(ka);
+            };
+            req.signal?.addEventListener("abort", () => {
+              const c = (controller as any)._cleanup; if (c) c();
+              try { controller.close(); } catch {}
+            });
+          },
+          cancel() {
+            const c = (this as any)._cleanup; if (c) c();
+          },
+        });
+        return new Response(stream, {
+          headers: {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+          },
+        });
       }
     }
 
