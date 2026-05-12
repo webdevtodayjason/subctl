@@ -1,0 +1,4 @@
+# Compiled binaries (produced by `make` / `make build-all`)
+subctl-policy-check
+subctl-policy-check-darwin-*
+subctl-policy-check-linux-*

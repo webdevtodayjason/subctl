@@ -526,6 +526,25 @@ component_install() {
     fi
   fi
 
+  # go subctl-policy-check build (PR 8 — policy engine hot path)
+  # Compiled binary sits next to the bash subctl entry; the PreToolUse hook
+  # in providers/claude (PR 10) shells out to it on every Bash invocation.
+  # If Go is missing the master daemon's TS check.ts still works as a fallback.
+  if [[ -d "$REPO_ROOT/bin/subctl-policy-check" ]]; then
+    if command -v go >/dev/null 2>&1; then
+      subctl_info "building subctl-policy-check (Go policy engine hot path)"
+      if $DRY_RUN; then
+        echo "[dry-run] cd $REPO_ROOT/bin/subctl-policy-check && make build"
+      else
+        (cd "$REPO_ROOT/bin/subctl-policy-check" && make build 2>&1) \
+          && subctl_ok "built bin/subctl-policy-check/subctl-policy-check" \
+          || subctl_warn "go build failed — policy-check unavailable (TS fallback still works)"
+      fi
+    else
+      subctl_warn "go not installed — policy-check binary skipped (brew install go to enable)"
+    fi
+  fi
+
   # dashboard service (opt-in)
   if ! $NO_SERVICE && command -v bun >/dev/null 2>&1; then
     echo
