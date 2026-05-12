@@ -139,12 +139,17 @@
     <!-- ── Chat: master conversation, model picker, full-height with sidecar ─── -->
     <section class="orchestration-screen chat-screen" data-tab="chat">
       <section class="panel master-chat" id="master-chat-panel">
-        <div class="ctx-overflow-banner" id="ctx-overflow-banner" hidden>
-          <strong>Context window overflowed</strong> — the supervisor model only has <span id="ctx-overflow-cap">?</span> tokens of context loaded but the transcript is ~<span id="ctx-overflow-now">?</span> tokens. Recent messages may be silently truncated and master will hallucinate "Standing by" responses to questions it can't see.
-          <div class="ctx-overflow-actions">
-            <button type="button" class="ctx-overflow-fix-1" id="ctx-overflow-compact">compact transcript now</button>
-            <span class="dim small">or in LM Studio: eject qwen3.6-35b-a3b → reload with Context Length 65536</span>
-          </div>
+        <!--
+          v2.7.3 4-state banner. Hidden by default. JS in app.js rewrites
+          this innerHTML based on /api/master/transcript/util and SSE
+          compact_warning events. data-state attribute drives the colour:
+            data-state="ok"         → hidden
+            data-state="warn"       → YELLOW (transcript at/over warn_tokens)
+            data-state="warn-compact" or "compacting" → BLUE (auto-compact firing)
+            data-state="overflow"   → RED (past loaded_ctx; fail-safe)
+        -->
+        <div class="ctx-overflow-banner" id="ctx-overflow-banner" data-state="ok" hidden>
+          <strong>Context budget</strong> — checking…
         </div>
         <div class="chat-toolbar">
           <label class="chat-model-label">model

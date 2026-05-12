@@ -4,6 +4,63 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.7.3] — 2026-05-12
+
+### Compact correctness — the ticker was the wrong design
+
+A few hours after v2.7.2 shipped, the operator caught the master daemon hallucinating "Standing by" responses to questions it couldn't see. The diagnosis: the 5-minute auto-compact ticker had fired AFTER the supervisor was already past 100% util on its next prompt. By the time the ticker noticed the bloat and compacted, the model had already been served a truncated transcript and produced ghosts. The ticker was architecturally wrong — a polling watchdog can't keep a synchronous prompt-composition pipeline under budget. v2.7.3 fixes it by moving the compact decision to **just-in-time** at the prompt-composition site, with a **two-stage warning policy** so the operator gets a heads-up before auto-compact fires.
+
+### What's new
+
+**Just-in-time compact gate.** `runJitCompactCheck()` runs at the top of `processOnePrompt()` in `components/master/server.ts` (around line 922) — BEFORE `composeSystemPrompt()` and BEFORE `agent.prompt()`. It estimates current transcript tokens, queries LM Studio's `loaded_context_length` for the supervisor, and applies the v2.7.3 policy decision. If the decision is `compact`, the daemon compacts synchronously before the next prompt is composed. The supervisor never sees an over-budget window during normal operation.
+
+**Two-stage warning policy** (absolute tokens, not percentages — predictable regardless of which model is loaded):
+
+- `warn_tokens = 25000` — YELLOW banner + `compact_warning` SSE event. No compact yet; operator gets a heads-up.
+- `compact_tokens = 40000` — AUTO-COMPACT fires synchronously. Banner flips BLUE during compaction, clears on `transcript_compacted`.
+- `target_tokens = 30000` — post-compact estimated transcript size.
+- `keep_recent = 6` — minimum recent turns the compactor preserves intact.
+
+Compaction target moved from 50k → 30k so the post-compact transcript has comfortable headroom against the 40k auto-compact threshold.
+
+**Compact-policy as a pure module.** `components/master/compact-policy.ts` (NEW) extracts the decision logic into a testable algorithm. `decideCompactAction(currentTokens, loadedCtx, cfg)` returns `{ action: "ok" | "warn" | "compact", current_tokens, threshold_used, reason }`. `loadCompactConfig()` handles file IO + back-compat. `estimateTranscriptTokens()` is the same char/4 heuristic used everywhere so JIT, ticker, and `/context` agree on the number.
+
+**Back-compat for `threshold_pct`.** Deployed `compact.json` files in the wild still carry the v2.7.2 shape (`{ threshold_pct: 90, target_tokens: 50000, ... }`). `decideCompactAction` honors them: when absolute thresholds are absent it falls back to percentage-of-loaded-ctx mode (compact at `threshold_pct`, warn 10pp below). New deploys ship with absolute thresholds. No migration script — the code handles both shapes gracefully.
+
+**5-min ticker demoted to safety-net.** The `auto-compact` ticker still runs every 5 minutes, but its job is now only to catch transcripts that grow due to tool outputs landing AFTER prompt composition (the JIT gate can't see those). It uses the same `decideCompactAction` algorithm so the two paths can never disagree.
+
+**Master daemon endpoint:** `GET /transcript/util` — pure read returning `{ current_tokens, transcript_tokens, overhead_tokens, loaded_ctx, util_pct, warn_at, compact_at, target_tokens, config_mode, decision }`. The dashboard banner reads this to render the 4-state model server-side instead of recomputing thresholds in the browser. Surfaced through the existing `/api/master/*` proxy.
+
+**Dashboard 4-state banner.** `ctx-overflow-banner` in `dashboard/public/index.html` now has four explicit states keyed off `data-state`:
+
+- `ok` — banner hidden.
+- `warn` — YELLOW. Current tokens past `warn_tokens` but below `compact_tokens`. Operator sees "Transcript approaching compact threshold" with a manual compact button.
+- `compacting` / `warn-compact` — BLUE. Transient — auto-compact fired and is running. Clears on `transcript_compacted` SSE event.
+- `overflow` — RED. Past `loaded_ctx` (should be impossible with JIT working; kept as fail-safe).
+
+The banner now consumes `/api/master/transcript/util` rather than recomputing `pct > 100` heuristics in JS, and also listens for the SSE `compact_warning` and `transcript_compacted` events so the YELLOW → BLUE → cleared sequence renders without waiting for the 5s poll.
+
+### Test coverage
+
+`components/master/__tests__/compact-policy.test.ts` — 26 tests / 58 assertions covering:
+
+- Absolute-threshold mode: returns ok/warn/compact at the right boundaries (including exact-equality), and ignores `loadedCtx` when absolute thresholds are set.
+- Back-compat percentage mode: warns 10pp below `threshold_pct`, compacts at/above `threshold_pct`, defaults `threshold_pct` to 90 when absent, returns ok with `threshold_used: "none"` when `loadedCtx` is unknown.
+- Edge cases: `currentTokens = 0`, `loadedCtx = 0` in pct-only mode, negative `currentTokens` is clamped, invalid absolute thresholds (`compact_tokens <= warn_tokens`) falls back to pct mode.
+- `loadCompactConfig`: parses new shape, falls back to defaults on missing file, preserves back-compat shape when file authors only `threshold_pct`, prefers absolute when new shape is present even alongside legacy `threshold_pct`, returns defaults on malformed JSON.
+- `estimateTranscriptTokens`: empty → 0, text + thinking + arguments contribute chars/4, ignores non-array content, handles circular argument objects without throwing.
+
+### Operator deploy step
+
+The daemon reads `~/.config/subctl/master/compact.json` automatically. If the file is missing the new v2.7.3 defaults apply (`warn=25k`, `compact=40k`, `target=30k`). To switch an existing M3 deployment onto absolute thresholds, edit the file in place — no migration script ships in this PR because the code handles both shapes gracefully.
+
+### Canonical references
+
+- `components/master/compact-policy.ts` — pure decision module.
+- `components/master/server.ts` `runJitCompactCheck()` — primary gate at prompt-composition time.
+- `components/master/server.ts` `runAutoCompactTick()` — demoted safety-net ticker.
+- `docs/master.md` Phase 3o.3 — the story behind v2.7.3.
+
 ## [2.7.2] — 2026-05-12
 
 ### Web + self-introspection + Linear — three capability gaps, one PR

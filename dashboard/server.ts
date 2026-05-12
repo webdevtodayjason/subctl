@@ -4415,6 +4415,11 @@ const server = Bun.serve({
     // The master daemon listens locally; the dashboard fronts it for the
     // browser. POST /api/master/chat forwards the JSON body. GET
     // /api/master/events streams the SSE through. /health is just convenient.
+    //
+    // v2.7.3: GET /api/master/transcript/util → /transcript/util on master.
+    // Returns { current_tokens, loaded_ctx, util_pct, warn_at, compact_at,
+    // decision } for the 4-state context-budget banner. No special handling
+    // here — the generic proxy below relays it.
     if (url.pathname.startsWith("/api/master/")) {
       const masterPort = process.env.SUBCTL_MASTER_PORT ?? "8788";
       const masterUrl = `http://127.0.0.1:${masterPort}${url.pathname.replace(/^\/api\/master/, "")}${url.search}`;

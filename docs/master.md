@@ -893,6 +893,52 @@ errors with `retry_after` on rate limits — tools never throw.
 Dashboard `/api/settings/keys` gains matching presence rows for
 each. Master tool count: 62 → **69**.
 
+### Phase 3o.3 — Compact correctness (v2.7.3)
+
+A few hours after v2.7.2 tagged, the operator caught the master
+hallucinating "Standing by" responses to questions it couldn't see.
+Diagnosis: the 5-minute auto-compact ticker had fired AFTER the
+supervisor was already past 100% util on its next prompt. The ticker
+was the wrong design — a polling watchdog can't keep a synchronous
+prompt-composition pipeline under budget. v2.7.3 fixes it.
+
+**Just-in-time gate.** `runJitCompactCheck()` runs at the top of
+`processOnePrompt()` — BEFORE `composeSystemPrompt()` and BEFORE
+`agent.prompt()`. The supervisor never sees an over-budget window
+during normal operation.
+
+**Two-stage policy** (absolute tokens, predictable regardless of
+loaded model):
+
+- `warn_tokens = 25000` → YELLOW banner + `compact_warning` SSE.
+- `compact_tokens = 40000` → AUTO-COMPACT fires synchronously.
+- `target_tokens = 30000` → post-compact estimated transcript size.
+- `keep_recent = 6` → minimum recent turns preserved intact.
+
+**Pure decision module** at `components/master/compact-policy.ts`:
+`decideCompactAction(currentTokens, loadedCtx, cfg)` returns
+`{action, current_tokens, threshold_used, reason}`. Tested in
+isolation — 26 tests in `components/master/__tests__/compact-policy.test.ts`.
+
+**Back-compat for `threshold_pct`.** Deployed `compact.json` files
+in the wild still carry the v2.7.2 percentage shape. When absolute
+thresholds are absent, the decider falls back to compact-at-pct,
+warn-10pp-below. New deploys ship with absolute thresholds.
+
+**5-min ticker demoted to safety-net.** Still runs every 5 minutes
+using the same `decideCompactAction`, but its only job now is to
+catch transcripts that grow due to tool outputs landing AFTER prompt
+composition (the JIT gate can't see those).
+
+**New master endpoint:** `GET /transcript/util` → util snapshot for
+the dashboard banner. The 4-state banner (ok / warn / compacting /
+overflow) reads it instead of recomputing thresholds in JS.
+
+Canonical: `components/master/compact-policy.ts`,
+`components/master/server.ts` `runJitCompactCheck()` (around line 922),
+`dashboard/public/app.js` `refreshContext()` + `compact_warning` SSE
+handler.
+
 ### Phase 3r — Bake the operator's Claude config baseline into the repo
 
 Operator request 2026-05-10 during the FOOTHOLD dogfood: a chunk

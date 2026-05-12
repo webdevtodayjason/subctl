@@ -2393,7 +2393,18 @@ body.chat-fullscreen .chat-toolbar-btn-icon { background: #1f4256; color: #5fd7f
   z-index: 1;
 }
 
-/* Context-overflow banner */
+/* Context-overflow banner (v2.7.3 — 4-state)
+ *
+ * data-state controls colour:
+ *   ok        → hidden (no rules needed)
+ *   warn      → YELLOW (transcript past warn_tokens, before compact)
+ *   warn-compact / compacting → BLUE (auto-compact firing, transient)
+ *   overflow  → RED (past loaded_ctx; should be impossible if JIT works)
+ *
+ * The default unstyled .ctx-overflow-banner colour is RED so any state we
+ * didn't explicitly model falls through to a loud signal rather than a
+ * silent yellow.
+ */
 .ctx-overflow-banner {
   background: #2a1010;
   border: 1px solid #4a1f1f;
@@ -2420,6 +2431,46 @@ body.chat-fullscreen .chat-toolbar-btn-icon { background: #1f4256; color: #5fd7f
   font-family: inherit;
 }
 .ctx-overflow-fix-1:hover { background: #5a2424; color: #ffd0d0; }
+
+/* YELLOW warn — we're between warn_tokens and compact_tokens. Not a
+ * crisis yet, but the operator should know auto-compact is approaching. */
+.ctx-overflow-banner[data-state="warn"] {
+  background: #2a2410;
+  border-color: #4a3f1f;
+  color: #d6c46c;
+}
+.ctx-overflow-banner[data-state="warn"] strong { color: #ffd96b; }
+.ctx-overflow-banner[data-state="warn"] .ctx-overflow-fix-1 {
+  background: #4a3f1f;
+  border-color: #6a5829;
+  color: #ffe4aa;
+}
+.ctx-overflow-banner[data-state="warn"] .ctx-overflow-fix-1:hover {
+  background: #5a4d24;
+  color: #fff0d0;
+}
+
+/* BLUE compacting — auto-compact is firing right now. Brief transient
+ * state; the next refreshContext / transcript_compacted clears the banner. */
+.ctx-overflow-banner[data-state="compacting"],
+.ctx-overflow-banner[data-state="warn-compact"] {
+  background: #102030;
+  border-color: #1f3f5f;
+  color: #6cb7d6;
+}
+.ctx-overflow-banner[data-state="compacting"] strong,
+.ctx-overflow-banner[data-state="warn-compact"] strong {
+  color: #6bd0ff;
+}
+
+/* RED overflow — explicit (matches the default) but called out so it's
+ * obvious at a glance from the CSS what each state intends. */
+.ctx-overflow-banner[data-state="overflow"] {
+  background: #2a1010;
+  border-color: #4a1f1f;
+  color: #d66c6c;
+}
+.ctx-overflow-banner[data-state="overflow"] strong { color: #ff8888; }
 
 /* ── Orchestration cockpit ────────────────────────────────────────────── */
 .orch-screen { display: flex; flex-direction: column; gap: 18px; }

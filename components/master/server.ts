@@ -88,6 +88,13 @@ import {
   masterNotifyListenerStatus,
 } from "./master-notify-listener";
 import { startClusterTicker } from "./tools/policy/verifier-cluster";
+import {
+  decideCompactAction,
+  estimateTranscriptTokens,
+  loadCompactConfig,
+  type CompactConfig,
+  type CompactDecision,
+} from "./compact-policy";
 
 const HOME = homedir();
 const COMPONENT_DIR = import.meta.dir;
@@ -897,8 +904,270 @@ async function main() {
   };
   const promptQueue: PendingPrompt[] = [];
 
+  // ── compact policy: just-in-time + safety-net (v2.7.3) ─────────────────
+  // The supervisor model has a finite loaded context window. If the next
+  // prompt would push us past `compact_tokens` (default 40k) the daemon
+  // MUST compact synchronously BEFORE composing & dispatching. The 5min
+  // ticker below is a safety net for transcripts that grow due to tool
+  // outputs after prompt composition — it cannot prevent overflow alone.
+  //
+  // Fixed system+tool-schema overhead in every prompt. Empirical from
+  // /v1/chat/completions logs (SKILL.md + ~70 tool descriptors). Kept in
+  // sync with the value in /context's response so dashboard + JIT agree.
+  const FIXED_PROMPT_OVERHEAD_TOKENS = 2500;
+  const COMPACT_CFG_PATH = join(MASTER_STATE_DIR, "compact.json");
+
+  async function getSupervisorLoadedCtx(timeoutMs = 1500): Promise<number | null> {
+    try {
+      const host = (supervisorCfg.host ?? "http://localhost:1234/v1").replace(/\/v1\/?$/, "");
+      const r = await fetch(`${host}/api/v0/models`, { signal: AbortSignal.timeout(timeoutMs) });
+      if (!r.ok) return null;
+      const j = (await r.json()) as { data?: Array<{ id: string; loaded_context_length?: number }> };
+      const found = (j.data ?? []).find((m) => m.id === supervisorCfg.model);
+      return found?.loaded_context_length ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  interface CompactInlineOpts {
+    target_tokens: number;
+    keep_recent: number;
+    initiator: string; // "jit" | "ticker" | "operator"
+  }
+  interface CompactInlineResult {
+    ok: boolean;
+    noop?: boolean;
+    archived_count?: number;
+    kept_msgs?: number;
+    archive_path?: string;
+    error?: string;
+    message?: string;
+  }
+  /**
+   * Compact the transcript in-place. Shared between the HTTP route, the
+   * just-in-time pre-prompt check, and the 5min safety-net ticker.
+   * Caller is responsible for ensuring no other agent.prompt() is in flight.
+   */
+  function compactTranscriptInline(opts: CompactInlineOpts): CompactInlineResult {
+    const TARGET_TOKENS = Math.max(2000, Math.min(200_000, opts.target_tokens));
+    const KEEP_RECENT = Math.max(2, Math.min(40, opts.keep_recent));
+    try {
+      const messages = agent.state.messages as Array<Record<string, unknown>>;
+      if (messages.length < KEEP_RECENT + 2) {
+        return {
+          ok: true,
+          noop: true,
+          message: `Nothing to compact — transcript only has ${messages.length} messages (last ${KEEP_RECENT} are always kept). Compaction kicks in automatically when the transcript grows past about ${KEEP_RECENT + 2} turns.`,
+        };
+      }
+      const tokenize = (m: Record<string, unknown>): number => {
+        const content = (m.content as Array<Record<string, unknown>>) ?? [];
+        let chars = 0;
+        for (const b of content) {
+          if (typeof b.text === "string") chars += b.text.length;
+          if (typeof b.thinking === "string") chars += (b.thinking as string).length;
+          if (typeof b.arguments === "object") chars += JSON.stringify(b.arguments).length;
+        }
+        return Math.ceil(chars / 4);
+      };
+      let keepN = KEEP_RECENT;
+      let recent = messages.slice(-keepN);
+      let recentTokens = recent.reduce((acc, m) => acc + tokenize(m), 0);
+      while (recentTokens > TARGET_TOKENS && keepN > 2) {
+        keepN--;
+        recent = messages.slice(-keepN);
+        recentTokens = recent.reduce((acc, m) => acc + tokenize(m), 0);
+      }
+      const toCompact = messages.slice(0, -keepN);
+
+      const userTexts: string[] = [];
+      const lastAssistantText: string[] = [];
+      const toolsCalled: Set<string> = new Set();
+      for (const m of toCompact) {
+        const role = m.role as string;
+        const content = (m.content as Array<Record<string, unknown>>) ?? [];
+        if (role === "user") {
+          const txt = content.filter((b) => b.type === "text").map((b) => b.text).join(" ").trim();
+          if (txt && !txt.startsWith("[watchdog]") && !txt.startsWith("[team-report]")) userTexts.push(txt.slice(0, 240));
+        } else if (role === "assistant") {
+          const txt = content.filter((b) => b.type === "text").map((b) => b.text).join(" ").trim();
+          if (txt) lastAssistantText.push(txt.slice(0, 240));
+          for (const b of content) {
+            if (b.type === "toolCall" && b.name) toolsCalled.add(b.name as string);
+          }
+        }
+      }
+
+      const summary =
+        `[transcript compaction · ${toCompact.length} prior messages compacted into this summary on ${new Date().toISOString()} (initiator=${opts.initiator})]\n\n` +
+        `User said:\n` + userTexts.slice(-12).map((t) => "  · " + t).join("\n") + "\n\n" +
+        `You replied (highlights):\n` + lastAssistantText.slice(-8).map((t) => "  · " + t).join("\n") + "\n\n" +
+        `Tools you used during this period: ${Array.from(toolsCalled).join(", ") || "(none)"}\n\n` +
+        `(Original messages archived to disk; resume the conversation from here.)`;
+
+      const ts = new Date().toISOString().replace(/[:.]/g, "-");
+      const archivePath = AGENT_STATE_PATH.replace(/\.json$/, `.archive-compact-${ts}.json`);
+      if (existsSync(AGENT_STATE_PATH)) {
+        const { copyFileSync } = require("node:fs") as typeof import("node:fs");
+        copyFileSync(AGENT_STATE_PATH, archivePath);
+      }
+
+      agent.state.messages.length = 0;
+      agent.state.messages.push({
+        role: "user",
+        content: [{ type: "text", text: summary }],
+        timestamp: Date.now(),
+      } as any);
+      for (const m of recent) agent.state.messages.push(m as any);
+      saveAgentTranscript(agent.state.messages);
+      broadcast("transcript_compacted", {
+        ts: new Date().toISOString(),
+        archived_count: toCompact.length,
+        kept: recent.length + 1,
+        archive_path: archivePath,
+        initiator: opts.initiator,
+      });
+      logDecision({
+        project: "_master",
+        action: "transcript_compacted",
+        rationale: `compacted ${toCompact.length} msgs, kept last ${recent.length} (initiator=${opts.initiator})`,
+      });
+      return {
+        ok: true,
+        archived_count: toCompact.length,
+        kept_msgs: recent.length + 1,
+        archive_path: archivePath,
+      };
+    } catch (err) {
+      return { ok: false, error: (err as Error).message };
+    }
+  }
+
+  /**
+   * Build a util-snapshot for the dashboard banner / /transcript/util route.
+   * Pure read — does NOT compact.
+   */
+  async function buildUtilSnapshot(): Promise<{
+    current_tokens: number;
+    transcript_tokens: number;
+    overhead_tokens: number;
+    loaded_ctx: number | null;
+    util_pct: number | null;
+    warn_at: number | null;
+    compact_at: number | null;
+    target_tokens: number;
+    config_mode: "absolute" | "threshold_pct" | "none";
+    decision: CompactDecision;
+  }> {
+    const cfg = loadCompactConfig(COMPACT_CFG_PATH);
+    const transcriptTokens = estimateTranscriptTokens(
+      agent.state.messages as Array<{ content?: unknown }>,
+    );
+    const current = transcriptTokens + FIXED_PROMPT_OVERHEAD_TOKENS;
+    const loadedCtx = await getSupervisorLoadedCtx();
+    const decision = decideCompactAction(current, loadedCtx ?? 0, cfg);
+    const hasAbs =
+      typeof cfg.warn_tokens === "number" &&
+      typeof cfg.compact_tokens === "number" &&
+      cfg.warn_tokens > 0 &&
+      cfg.compact_tokens > 0 &&
+      cfg.compact_tokens > cfg.warn_tokens;
+    const mode: "absolute" | "threshold_pct" | "none" = hasAbs
+      ? "absolute"
+      : loadedCtx
+      ? "threshold_pct"
+      : "none";
+    return {
+      current_tokens: current,
+      transcript_tokens: transcriptTokens,
+      overhead_tokens: FIXED_PROMPT_OVERHEAD_TOKENS,
+      loaded_ctx: loadedCtx,
+      util_pct: loadedCtx ? Math.round((current / loadedCtx) * 100) : null,
+      warn_at: hasAbs ? cfg.warn_tokens : null,
+      compact_at: hasAbs ? cfg.compact_tokens : null,
+      target_tokens: cfg.target_tokens,
+      config_mode: mode,
+      decision,
+    };
+  }
+
+  /**
+   * Just-in-time compact gate. Run at the TOP of processOnePrompt before
+   * composeSystemPrompt() and before agent.prompt() — so the supervisor
+   * never sees a prompt window past `compact_tokens`. Synchronous
+   * compaction; on warn, emits an SSE event (dashboard turns the banner
+   * yellow) and proceeds.
+   */
+  async function runJitCompactCheck(): Promise<void> {
+    let cfg: CompactConfig;
+    try {
+      cfg = loadCompactConfig(COMPACT_CFG_PATH);
+    } catch {
+      return;
+    }
+    if (!cfg.auto_compact) return;
+    const transcriptTokens = estimateTranscriptTokens(
+      agent.state.messages as Array<{ content?: unknown }>,
+    );
+    const current = transcriptTokens + FIXED_PROMPT_OVERHEAD_TOKENS;
+    const loadedCtx = await getSupervisorLoadedCtx();
+    const decision = decideCompactAction(current, loadedCtx ?? 0, cfg);
+    if (decision.action === "ok") return;
+    if (decision.action === "warn") {
+      console.error(`[master] compact-warn (jit): ${decision.reason}`);
+      broadcast("compact_warning", {
+        ts: new Date().toISOString(),
+        stage: "warn",
+        initiator: "jit",
+        current_tokens: decision.current_tokens,
+        warn_at: cfg.warn_tokens || null,
+        compact_at: cfg.compact_tokens || null,
+        threshold_used: decision.threshold_used,
+        reason: decision.reason,
+      });
+      return;
+    }
+    // decision.action === "compact"
+    console.error(
+      `[master] just-in-time compact: ${decision.reason} — compacting toward ${cfg.target_tokens.toLocaleString()} tok`,
+    );
+    broadcast("compact_warning", {
+      ts: new Date().toISOString(),
+      stage: "compacting",
+      initiator: "jit",
+      current_tokens: decision.current_tokens,
+      warn_at: cfg.warn_tokens || null,
+      compact_at: cfg.compact_tokens || null,
+      threshold_used: decision.threshold_used,
+      reason: decision.reason,
+    });
+    const result = compactTranscriptInline({
+      target_tokens: cfg.target_tokens,
+      keep_recent: cfg.keep_recent,
+      initiator: "jit",
+    });
+    if (!result.ok) {
+      console.error(`[master] just-in-time compact failed: ${result.error}`);
+    } else if (result.noop) {
+      console.error(`[master] just-in-time compact noop: ${result.message}`);
+    } else {
+      console.error(
+        `[master] just-in-time compact ok — archived ${result.archived_count}, kept ${result.kept_msgs}`,
+      );
+    }
+  }
+
   async function processOnePrompt(p: PendingPrompt): Promise<{ ok: boolean; error?: string }> {
     try {
+      // ── v2.7.3 just-in-time compact gate ───────────────────────────────
+      // The supervisor must never see a prompt window past compact_tokens.
+      // Run this BEFORE composeSystemPrompt() (so the recomposed prompt
+      // reflects the post-compact transcript) and BEFORE agent.prompt()
+      // (so the new user text doesn't sneak in over-budget). The 5-min
+      // ticker below is a safety net; this is the primary gate.
+      await runJitCompactCheck();
+
       // Refresh the system prompt with current tier-1 memory before every
       // prompt. Both memory.md and user.md are re-read fresh — operator
       // edits via the dashboard Memory tab AND master's own memory_*
@@ -1146,123 +1415,44 @@ async function main() {
       // summary as the new transcript. Body accepts:
       //   target_tokens?: number  — try to compact down to this many
       //                              estimated transcript tokens
-      //                              (default 50000, matches Jason's 73K
-      //                              loaded ctx with 23K headroom)
+      //                              (default 30000 per v2.7.3 policy;
+      //                              50000 historical default kept as fallback
+      //                              when caller passes nothing AND the
+      //                              compact config also lacks target_tokens)
       //   keep_recent?: number    — minimum recent turns to preserve
       //                              (default 6)
       // Algorithm: start with keep_recent, then expand the "compact" set
       // backwards until estimated remaining tokens fits target_tokens.
+      //
+      // v2.7.3: delegated to compactTranscriptInline() which is the same
+      // function the just-in-time gate and the 5min safety-net ticker both
+      // call. Keeps one source of truth.
       if (url.pathname === "/transcript/compact" && req.method === "POST") {
         if (promptInFlight) {
           return Response.json({ ok: false, error: "agent busy — try again in a moment" }, { status: 409 });
         }
         let body: { target_tokens?: number; keep_recent?: number } = {};
         try { body = await req.json(); } catch { /* empty body is fine */ }
-        const TARGET_TOKENS = Math.max(2000, Math.min(200_000, body.target_tokens ?? 50_000));
-        const KEEP_RECENT = Math.max(2, Math.min(40, body.keep_recent ?? 6));
-        try {
-          const messages = agent.state.messages as Array<Record<string, unknown>>;
-          if (messages.length < KEEP_RECENT + 2) {
-            // Not an error — nothing to do. Return ok:true with a noop flag
-            // so the UI can show a friendly "no compaction needed" notice
-            // instead of a red error.
-            return Response.json({
-              ok: true,
-              noop: true,
-              message: `Nothing to compact — transcript only has ${messages.length} messages (last ${KEEP_RECENT} are always kept). Compaction kicks in automatically when the transcript grows past about ${KEEP_RECENT + 2} turns.`,
-              transcript_msgs: messages.length,
-            });
-          }
-          // Token estimator: chars/4 — same heuristic as /context.
-          const tokenize = (m: Record<string, unknown>): number => {
-            const content = (m.content as Array<Record<string, unknown>>) ?? [];
-            let chars = 0;
-            for (const b of content) {
-              if (typeof b.text === "string") chars += b.text.length;
-              if (typeof b.thinking === "string") chars += (b.thinking as string).length;
-              if (typeof b.arguments === "object") chars += JSON.stringify(b.arguments).length;
-            }
-            return Math.ceil(chars / 4);
-          };
-          // Expand the compact set backwards from KEEP_RECENT until we fit.
-          let keepN = KEEP_RECENT;
-          let recent = messages.slice(-keepN);
-          let recentTokens = recent.reduce((acc, m) => acc + tokenize(m), 0);
-          while (recentTokens > TARGET_TOKENS && keepN > 2) {
-            keepN--;
-            recent = messages.slice(-keepN);
-            recentTokens = recent.reduce((acc, m) => acc + tokenize(m), 0);
-          }
-          const toCompact = messages.slice(0, -keepN);
-
-          // Naive deterministic compaction: extract just user texts +
-          // last assistant text in each older turn, plus any tool names
-          // called. No LLM round-trip required, which means the compact
-          // works even when the model is broken / unreachable.
-          const userTexts: string[] = [];
-          const lastAssistantText: string[] = [];
-          const toolsCalled: Set<string> = new Set();
-          for (const m of toCompact) {
-            const role = m.role as string;
-            const content = (m.content as Array<Record<string, unknown>>) ?? [];
-            if (role === "user") {
-              const txt = content.filter((b) => b.type === "text").map((b) => b.text).join(" ").trim();
-              if (txt && !txt.startsWith("[watchdog]") && !txt.startsWith("[team-report]")) userTexts.push(txt.slice(0, 240));
-            } else if (role === "assistant") {
-              const txt = content.filter((b) => b.type === "text").map((b) => b.text).join(" ").trim();
-              if (txt) lastAssistantText.push(txt.slice(0, 240));
-              for (const b of content) {
-                if (b.type === "toolCall" && b.name) toolsCalled.add(b.name as string);
-              }
-            }
-          }
-
-          const summary =
-            `[transcript compaction · ${toCompact.length} prior messages compacted into this summary on ${new Date().toISOString()}]\n\n` +
-            `User said:\n` + userTexts.slice(-12).map((t) => "  · " + t).join("\n") + "\n\n" +
-            `You replied (highlights):\n` + lastAssistantText.slice(-8).map((t) => "  · " + t).join("\n") + "\n\n" +
-            `Tools you used during this period: ${Array.from(toolsCalled).join(", ") || "(none)"}\n\n` +
-            `(Original messages archived to disk; resume the conversation from here.)`;
-
-          // Archive the original transcript with a timestamp suffix
-          const ts = new Date().toISOString().replace(/[:.]/g, "-");
-          const archivePath = AGENT_STATE_PATH.replace(/\.json$/, `.archive-compact-${ts}.json`);
-          if (existsSync(AGENT_STATE_PATH)) {
-            const { copyFileSync } = require("node:fs") as typeof import("node:fs");
-            copyFileSync(AGENT_STATE_PATH, archivePath);
-          }
-
-          // Replace agent.state.messages in place: a single user message
-          // carrying the summary, then the last KEEP_RECENT turns intact.
-          agent.state.messages.length = 0;
-          agent.state.messages.push({
-            role: "user",
-            content: [{ type: "text", text: summary }],
-            timestamp: Date.now(),
-          } as any);
-          for (const m of recent) agent.state.messages.push(m as any);
-          // Persist
-          saveAgentTranscript(agent.state.messages);
-          broadcast("transcript_compacted", {
-            ts: new Date().toISOString(),
-            archived_count: toCompact.length,
-            kept: recent.length + 1,
-            archive_path: archivePath,
-          });
-          logDecision({
-            project: "_master",
-            action: "transcript_compacted",
-            rationale: `compacted ${toCompact.length} msgs, kept last ${recent.length}`,
-          });
-          return Response.json({
-            ok: true,
-            archived_count: toCompact.length,
-            kept_msgs: recent.length + 1,
-            archive_path: archivePath,
-          });
-        } catch (err) {
-          return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+        const cfg = loadCompactConfig(COMPACT_CFG_PATH);
+        const result = compactTranscriptInline({
+          target_tokens: body.target_tokens ?? cfg.target_tokens ?? 50_000,
+          keep_recent: body.keep_recent ?? cfg.keep_recent ?? 6,
+          initiator: "operator",
+        });
+        if (!result.ok) {
+          return Response.json(result, { status: 500 });
         }
+        return Response.json(result);
+      }
+
+      // /transcript/util — current transcript utilization + active thresholds
+      // for the dashboard banner. Pure read — does NOT trigger compaction.
+      // Added in v2.7.3 so the banner can render the four-state model
+      // (ok / warn / compacting / overflow) using server-side policy
+      // decisions rather than recomputing util thresholds in the browser.
+      if (url.pathname === "/transcript/util" && req.method === "GET") {
+        const snap = await buildUtilSnapshot();
+        return Response.json({ ok: true, ...snap });
       }
 
       // /transcript/clear — archive the transcript and start fresh.
@@ -1973,69 +2163,54 @@ async function main() {
   const followupTicker = setInterval(() => void runFollowupTick(), 60_000);
   console.error(`[master] scheduled-followup ticker armed — every 60s`);
 
-  // ── auto-compact watchdog ──────────────────────────────────────────────
-  // The supervisor model has a finite loaded context window in LM Studio.
-  // Once the transcript+system+tools exceeds ~90% of that window the model
-  // starts truncating silently and hallucinates "Standing by" non-answers.
-  // Every 5min, query the supervisor's loaded context, compute estimated
-  // total tokens, and auto-compact if we're past the threshold. Compact
-  // target is configurable via ~/.config/subctl/master/compact.json:
-  //   { "auto_compact": true, "threshold_pct": 90, "target_tokens": 50000, "keep_recent": 6 }
+  // ── auto-compact watchdog (v2.7.3: SAFETY NET) ─────────────────────────
+  // v2.7.3 demoted this ticker from the primary gate to a safety net. The
+  // primary gate is runJitCompactCheck() inside processOnePrompt — it runs
+  // BEFORE every prompt is composed, so the supervisor never sees an
+  // over-budget window during normal operation. The ticker remains because:
+  //   1. Large tool outputs can land AFTER prompt composition and inflate
+  //      the transcript before the next prompt arrives.
+  //   2. Long idle periods could be ended by a Telegram burst — running
+  //      the ticker every 5min keeps the transcript trimmed proactively.
+  //
+  // Uses the SAME decideCompactAction algorithm as the JIT gate so the two
+  // paths can never disagree.
   let autoCompactInFlight = false;
   async function runAutoCompactTick() {
     if (stopped || autoCompactInFlight || promptInFlight) return;
-    let cfg = { auto_compact: true, threshold_pct: 90, target_tokens: 50_000, keep_recent: 6 };
+    let cfg: CompactConfig;
     try {
-      const cfgPath = join(MASTER_STATE_DIR, "compact.json");
-      if (existsSync(cfgPath)) {
-        cfg = { ...cfg, ...JSON.parse(readFileSync(cfgPath, "utf8")) };
-      }
-    } catch { /* use defaults */ }
-    if (!cfg.auto_compact) return;
-    // Fetch loaded context length from LM Studio
-    let loadedContext: number | null = null;
-    try {
-      const host = (supervisorCfg.host ?? "http://localhost:1234/v1").replace(/\/v1\/?$/, "");
-      const r = await fetch(`${host}/api/v0/models`, { signal: AbortSignal.timeout(2000) });
-      if (r.ok) {
-        const j = (await r.json()) as { data?: Array<{ id: string; loaded_context_length?: number }> };
-        const found = (j.data ?? []).find((m) => m.id === supervisorCfg.model);
-        if (found?.loaded_context_length) loadedContext = found.loaded_context_length;
-      }
-    } catch { /* skip — local-only check */ }
-    if (!loadedContext) return; // can't decide without it (cloud supervisors)
-    // Estimate current transcript tokens
-    let chars = 0;
-    for (const m of agent.state.messages as Array<Record<string, unknown>>) {
-      const content = (m.content as Array<Record<string, unknown>>) ?? [];
-      for (const b of content) {
-        if (typeof b.text === "string") chars += b.text.length;
-        if (typeof b.thinking === "string") chars += (b.thinking as string).length;
-        if (typeof b.arguments === "object") chars += JSON.stringify(b.arguments).length;
-      }
+      cfg = loadCompactConfig(COMPACT_CFG_PATH);
+    } catch {
+      return;
     }
-    const estTotal = Math.ceil(chars / 4) + 2500; // 2500 fixed overhead for SKILL + tool schemas
-    const utilPct = Math.round((estTotal / loadedContext) * 100);
-    if (utilPct < cfg.threshold_pct) return; // below threshold, do nothing
+    if (!cfg.auto_compact) return;
+    const transcriptTokens = estimateTranscriptTokens(
+      agent.state.messages as Array<{ content?: unknown }>,
+    );
+    const current = transcriptTokens + FIXED_PROMPT_OVERHEAD_TOKENS;
+    const loadedCtx = await getSupervisorLoadedCtx(2000);
+    const decision = decideCompactAction(current, loadedCtx ?? 0, cfg);
+    if (decision.action !== "compact") return; // ticker only acts on hard compact
     autoCompactInFlight = true;
     try {
-      console.error(`[master] auto-compact: util=${utilPct}% (>= ${cfg.threshold_pct}%) — compacting toward ${cfg.target_tokens.toLocaleString()} tokens`);
-      // Reuse the same compaction logic as /transcript/compact via a fetch
-      // back to ourselves (clean separation; avoids duplicate code paths).
-      const r = await fetch(`http://${masterHost}:${masterPort}/transcript/compact`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ target_tokens: cfg.target_tokens, keep_recent: cfg.keep_recent }),
-        signal: AbortSignal.timeout(10_000),
+      console.error(
+        `[master] safety-net compact (ticker): ${decision.reason} — compacting toward ${cfg.target_tokens.toLocaleString()} tok`,
+      );
+      const result = compactTranscriptInline({
+        target_tokens: cfg.target_tokens,
+        keep_recent: cfg.keep_recent,
+        initiator: "ticker",
       });
-      const j = await r.json().catch(() => ({}));
-      if (j.ok) {
-        console.error(`[master] auto-compact ok — archived ${j.archived_count}, kept ${j.kept_msgs}`);
+      if (result.ok && !result.noop) {
+        console.error(`[master] safety-net compact ok — archived ${result.archived_count}, kept ${result.kept_msgs}`);
+      } else if (result.noop) {
+        console.error(`[master] safety-net compact noop — ${result.message}`);
       } else {
-        console.error(`[master] auto-compact failed: ${j.error ?? "unknown"}`);
+        console.error(`[master] safety-net compact failed: ${result.error ?? "unknown"}`);
       }
     } catch (err) {
-      console.error(`[master] auto-compact error: ${(err as Error).message}`);
+      console.error(`[master] safety-net compact error: ${(err as Error).message}`);
     } finally {
       autoCompactInFlight = false;
     }
@@ -2044,7 +2219,7 @@ async function main() {
   // Also run shortly after boot so a freshly-restarted daemon catches an
   // already-bloated transcript without waiting 5 minutes.
   setTimeout(() => void runAutoCompactTick(), 30_000);
-  console.error("[master] auto-compact watchdog armed — every 5min, fires when transcript exceeds 90% of loaded ctx (configurable via compact.json)");
+  console.error("[master] auto-compact safety-net ticker armed — every 5min (PRIMARY gate is just-in-time, see runJitCompactCheck())");
 
   // ── verifier denial-cluster ticker (PR 6.5, HANDOFF_DIGEST D8) ─────────
   // Scans each team's recent audit entries every 30s. If a Gated worker is

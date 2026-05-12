@@ -3187,37 +3187,107 @@
     }
 
     // Context window meter — poll every 5s while the chat tab is visible.
+    // v2.7.3: read both /context (for the meter pill) and /transcript/util
+    // (for the four-state banner). The banner now reflects the SAME policy
+    // the master daemon enforces just-in-time — so we never disagree about
+    // when to fire.
     async function refreshContext() {
       try {
-        const r = await fetch("/api/master/context");
-        const j = await r.json();
-        if (!j.ok || !ctxFill || !ctxLabel) return;
-        const pct = j.utilization_pct;
-        if (typeof pct === "number") {
-          ctxFill.style.width = Math.min(100, pct) + "%";
-          ctxFill.classList.toggle("warn", pct >= 60 && pct < 85);
-          ctxFill.classList.toggle("crit", pct >= 85);
-        }
-        const total = j.estimated_total_tokens;
-        const cap = j.loaded_context_length;
-        ctxLabel.textContent = cap
-          ? `ctx ${total.toLocaleString()} / ${cap.toLocaleString()} tok (${pct ?? "?"}%)`
-          : `ctx ~${total.toLocaleString()} tok`;
-        // Show the overflow banner once we're past 100% — the supervisor
-        // is silently truncating from this point on, so flag it loudly.
-        const banner = $("ctx-overflow-banner");
-        if (banner) {
-          if (typeof pct === "number" && pct > 100) {
-            banner.hidden = false;
-            const capEl = $("ctx-overflow-cap");
-            const nowEl = $("ctx-overflow-now");
-            if (capEl) capEl.textContent = (cap || 0).toLocaleString();
-            if (nowEl) nowEl.textContent = (total || 0).toLocaleString();
-          } else {
-            banner.hidden = true;
+        const [ctxR, utilR] = await Promise.all([
+          fetch("/api/master/context").then((r) => r.json()).catch(() => null),
+          fetch("/api/master/transcript/util").then((r) => r.json()).catch(() => null),
+        ]);
+        if (ctxR && ctxR.ok && ctxFill && ctxLabel) {
+          const pct = ctxR.utilization_pct;
+          if (typeof pct === "number") {
+            ctxFill.style.width = Math.min(100, pct) + "%";
+            ctxFill.classList.toggle("warn", pct >= 60 && pct < 85);
+            ctxFill.classList.toggle("crit", pct >= 85);
           }
+          const total = ctxR.estimated_total_tokens;
+          const cap = ctxR.loaded_context_length;
+          ctxLabel.textContent = cap
+            ? `ctx ${total.toLocaleString()} / ${cap.toLocaleString()} tok (${pct ?? "?"}%)`
+            : `ctx ~${total.toLocaleString()} tok`;
         }
+        // ── 4-state banner (v2.7.3) ────────────────────────────────────
+        // OK              → banner hidden
+        // YELLOW WARN     → between warn_tokens and compact_tokens
+        // BLUE COMPACTING → compact event in flight (transient; cleared by SSE)
+        // RED OVERFLOW    → past loaded_ctx (should be impossible if JIT
+        //                   gate is healthy — kept as fail-safe)
+        const banner = $("ctx-overflow-banner");
+        if (!banner) return;
+        // Don't fight an in-flight compacting state set by the SSE handler.
+        if (banner.dataset.state === "compacting") return;
+        if (!utilR || !utilR.ok) {
+          banner.hidden = true;
+          return;
+        }
+        const decision = utilR.decision || {};
+        const action = decision.action;
+        const current = utilR.current_tokens || 0;
+        const compactAt = utilR.compact_at;
+        const warnAt = utilR.warn_at;
+        const cap = utilR.loaded_ctx;
+        const pct = utilR.util_pct;
+
+        // Real overflow — past loaded_ctx. Should be impossible with JIT
+        // working, but if it ever happens we shout the loudest.
+        if (cap && typeof pct === "number" && pct >= 100) {
+          banner.hidden = false;
+          banner.dataset.state = "overflow";
+          banner.innerHTML =
+            '<strong>Context overflow</strong> — current ~<span>' + current.toLocaleString() + '</span> tok ' +
+            'vs loaded ctx <span>' + cap.toLocaleString() + '</span> tok (' + pct + '%). ' +
+            'JIT compact gate should have prevented this. <strong>Compact now.</strong>' +
+            '<div class="ctx-overflow-actions">' +
+            '  <button type="button" class="ctx-overflow-fix-1" id="ctx-overflow-compact">compact transcript now</button>' +
+            '</div>';
+          rewireBannerButton();
+          return;
+        }
+        if (action === "compact") {
+          // Master is about to fire compact (or did, between poll and read).
+          banner.hidden = false;
+          banner.dataset.state = "warn-compact";
+          banner.innerHTML =
+            '<strong>Auto-compact firing</strong> — current ~<span>' + current.toLocaleString() + '</span> tok ' +
+            'crossed compact threshold <span>' + (compactAt || 0).toLocaleString() + '</span>. ' +
+            'The supervisor will compact before the next prompt.';
+          return;
+        }
+        if (action === "warn") {
+          banner.hidden = false;
+          banner.dataset.state = "warn";
+          const compactText = compactAt
+            ? compactAt.toLocaleString() + " tok"
+            : (cap ? (cap + " tok loaded ctx") : "the compact threshold");
+          banner.innerHTML =
+            '<strong>Transcript approaching compact threshold</strong> — current ~<span>' + current.toLocaleString() + '</span> tok' +
+            (warnAt ? ' (warn at <span>' + warnAt.toLocaleString() + '</span>, ' : ' (') +
+            'auto-compact at <span>' + compactText + '</span>). ' +
+            'Compact now to keep the supervisor responsive.' +
+            '<div class="ctx-overflow-actions">' +
+            '  <button type="button" class="ctx-overflow-fix-1" id="ctx-overflow-compact">compact transcript now</button>' +
+            '</div>';
+          rewireBannerButton();
+          return;
+        }
+        // action === "ok"
+        banner.hidden = true;
+        banner.dataset.state = "ok";
       } catch { /* silent */ }
+    }
+    // The compact button inside the banner is rewritten on each render
+    // (innerHTML), so the original event binding made at boot is lost when
+    // the banner repaints. Rebind it after every render.
+    function rewireBannerButton() {
+      const btn = $("ctx-overflow-compact");
+      if (btn && !btn.dataset.boundCompact) {
+        btn.addEventListener("click", () => runCompact("banner"));
+        btn.dataset.boundCompact = "1";
+      }
     }
     refreshContext();
     setInterval(() => {
@@ -3430,6 +3500,49 @@
         backoffMs = Math.min(backoffMs * 2, 15000);
       });
       es.addEventListener("connected", () => setConnState("connected"));
+      // v2.7.3: compact_warning carries the just-in-time decision. When
+      // stage="compacting" we paint the transient BLUE banner immediately
+      // (before the operator's poll comes around). transcript_compacted
+      // clears it. The repaint is best-effort: refreshContext re-renders
+      // the banner from /transcript/util anyway.
+      es.addEventListener("compact_warning", (e) => {
+        try {
+          const d = JSON.parse(e.data);
+          const banner = $("ctx-overflow-banner");
+          if (!banner) return;
+          if (d.stage === "compacting") {
+            banner.hidden = false;
+            banner.dataset.state = "compacting";
+            banner.innerHTML =
+              '<strong>Compacting transcript…</strong> just-in-time gate fired ' +
+              '(current ~<span>' + (d.current_tokens || 0).toLocaleString() + '</span> tok ≥ ' +
+              '<span>' + (d.compact_at || 0).toLocaleString() + '</span>). ' +
+              'Banner will clear when compact finishes.';
+          } else if (d.stage === "warn") {
+            banner.hidden = false;
+            banner.dataset.state = "warn";
+            banner.innerHTML =
+              '<strong>Transcript approaching compact threshold</strong> — current ~<span>' +
+              (d.current_tokens || 0).toLocaleString() + '</span> tok ≥ warn ' +
+              '<span>' + (d.warn_at || 0).toLocaleString() + '</span> ' +
+              '(auto-compact at <span>' + (d.compact_at || 0).toLocaleString() + '</span>). ' +
+              'Compact now to keep the supervisor responsive.' +
+              '<div class="ctx-overflow-actions">' +
+              '  <button type="button" class="ctx-overflow-fix-1" id="ctx-overflow-compact">compact transcript now</button>' +
+              '</div>';
+            rewireBannerButton();
+          }
+        } catch {}
+      });
+      es.addEventListener("transcript_compacted", () => {
+        const banner = $("ctx-overflow-banner");
+        if (banner) {
+          banner.hidden = true;
+          banner.dataset.state = "ok";
+        }
+        // The compact mutates the transcript; pull a fresh meter reading.
+        try { refreshContext(); } catch {}
+      });
       es.addEventListener("inbound", (e) => {
         try {
           const d = JSON.parse(e.data);
