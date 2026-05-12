@@ -4,6 +4,42 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.7.1] — 2026-05-11
+
+### Self-diagnostic tools — the agent asked, the capability shipped
+
+Hours after v2.7.0 tagged, the M3's master daemon hit a watchdog bug firing on a stale tmux session. After the issue was resolved, the M3 agent reflected on what would have caught the bug and proposed seven self-diagnostic tools via Telegram. The operator accepted plus added an eighth (version awareness). All eight ship in v2.7.1. This is the persistent-supervisor loop working as designed: agent hits a failure mode, asks for capability, capability ships.
+
+### What's new
+
+A new master tool family at `components/master/tools/diag.ts` registers eight read-only introspection tools under the `system_*` namespace:
+
+- **`system_watchdog_self`** — surfaces watchdog state: which teams it's tracking, when it last ticked, when it last fired and why, and (critically) which tracked tmux sessions no longer exist on the host. Would have caught today's stale-session bug at first invocation.
+- **`system_port_check`** — wraps `lsof` to report which TCP ports are bound and by whom. Defaults to subctl's own ports (8787 dashboard, 8788 master, 1234 LM Studio). Catches the orphaned-bun-vs-launchd class of conflict.
+- **`system_lmstudio_health`** — independent LM Studio reachability probe: hits `/v1/models` and a tiny `/v1/chat/completions` ping, reports both latencies + last error. Distinct signal from `system_lmstudio_models` (which only lists known models without proving the API responds).
+- **`system_log_tail`** — tail the master, dashboard, lmstudio, or tmux log (1–500 lines). Closes the gap the agent named explicitly: "I can only point to the log path, not read it."
+- **`system_rate_limit_status`** — per-account 5h / 7d utilization summary read from subctl's local usage cache (no remote call). Lighter than `subctl_orch_state` for spawn-decision use; returns `healthiest_alias` directly.
+- **`system_git_status`** — one-level walk over `~/code` (capped at 50 repos) reporting branch, ahead/behind origin, dirty flag, last fetch time per repo. Catches drift before spawning a team that would push to a divergent branch.
+- **`system_network_health`** — LAN gateway ping + tailscale status + DNS resolution for github.com / api.anthropic.com + external TCP reach (1.1.1.1:443).
+- **`system_version_status`** *(operator-added)* — current VERSION + commit + recent tags + count of commits behind `origin/main`. Mirrors the safe-fetch pattern from `lib/update.sh`. The agent should know its own version.
+
+### Implementation notes
+
+- All eight tools are read-only — none mutate subctl state.
+- Watchdog state is exposed via the same late-binder pattern used by `bindToolRegistry` (no circular import; `startMaster()` calls `bindWatchdogState(getter)` at boot).
+- Side-effecting calls (`shell`, `fetch`, file IO) are routed through an injectable `Deps` object so the test suite swaps in canned responses without touching the host.
+- Server.ts diff is ~25 lines: one import, one registration block, three lines of watchdog-state tracking inside `runWatchdogTick()`, and the binder call.
+- `docs/master.md` Phase 3o.1 records the M3-agent-requested origin.
+
+### Test coverage
+
+`components/master/tools/__tests__/diag.test.ts` ships with happy-path + degraded-path coverage per tool. The suite is hermetic — no network, no real `lsof`, no real `git`.
+
+### Canonical references
+
+- `components/master/tools/diag.ts` — the tool family.
+- `docs/master.md` Phase 3o.1 — the story behind v2.7.1.
+
 ## [2.7.0] — 2026-05-11
 
 ### Trusted / Gated / Sealed — the policy engine

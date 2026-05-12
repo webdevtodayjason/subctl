@@ -841,6 +841,21 @@ additive, never replacement.
 
 Tracking: 15-PR sequence in `.orchestration/HANDOFF_DIGEST.md`.
 
+### Phase 3o.1 — Self-diagnostic tools (v2.7.1 polish)
+
+After v2.7.0 shipped, the M3's master daemon hit a watchdog bug
+firing on a stale tmux session. The agent reflected, identified
+what would have caught the bug, and proposed 7 self-diagnostic
+tools via Telegram. The operator added an 8th (version status).
+All 8 ship in v2.7.1 at `components/master/tools/diag.ts`:
+
+- `system_watchdog_self`, `system_port_check`, `system_lmstudio_health`,
+  `system_log_tail`, `system_rate_limit_status`, `system_git_status`,
+  `system_network_health`, `system_version_status`
+
+This is the persistent-supervisor loop working as designed:
+agent hits a failure mode, asks for capability, capability ships.
+
 ### Phase 3r — Bake the operator's Claude config baseline into the repo
 
 Operator request 2026-05-10 during the FOOTHOLD dogfood: a chunk

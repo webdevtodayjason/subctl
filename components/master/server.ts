@@ -64,6 +64,7 @@ import { schedulerTools, popDueFollowups } from "./tools/scheduler";
 import { attachmentsTools } from "./tools/attachments";
 import { vaultLinkTools } from "./tools/vault-link";
 import { policyTools } from "./tools/policy";
+import { diagTools, bindWatchdogState } from "./tools/diag";
 import {
   saveAttachment,
   listAttachments,
@@ -353,6 +354,11 @@ export const toolRegistry: Record<string, InternalTool> = {
       `policy_${k}`,
       v as unknown as InternalTool,
     ]),
+  ),
+  // diag family: keys are already fully-qualified `system_*` (matches what
+  // the M3 agent asked for via Telegram on 2026-05-11). v2.7.1.
+  ...Object.fromEntries(
+    Object.entries(diagTools).map(([k, v]) => [k, v as unknown as InternalTool]),
   ),
 };
 
@@ -1860,8 +1866,28 @@ async function main() {
     }
   }
 
+  // Diag-tool observability: system_watchdog_self surfaces these so the
+  // master can answer "when did you last tick?" / "why did you last fire?"
+  // without re-reading the JSONL decision log. Updated each tick below.
+  let watchdogLastTickMs = 0;
+  let watchdogLastFireMs = 0;
+  let watchdogLastFireReason = "";
+  bindWatchdogState(() => ({
+    watching: [...teamLastActivity.entries()].map(([team, v]) => ({
+      team_id: team,
+      tmux_session_id: team,
+      last_seen_ms: v.ts,
+    })),
+    last_tick_at_ms: watchdogLastTickMs,
+    last_fire_at_ms: watchdogLastFireMs,
+    last_fire_reason: watchdogLastFireReason,
+    interval_minutes: watchdogIntervalMin,
+    staleness_threshold_minutes: stalenessThresholdMin,
+  }));
+
   async function runWatchdogTick() {
     if (stopped || promptInFlight) return;
+    watchdogLastTickMs = Date.now();
     // Refresh from tmux first — workers may be productive without
     // writing to the inbox; window_activity captures keystrokes and
     // pane output regardless of whether the lead self-reported.
@@ -1892,6 +1918,8 @@ async function main() {
       .map((s) => `${s.team} (${s.lastSeenMin}min ago${s.lastEventType ? `, last=${s.lastEventType}` : ""})`)
       .join(", ");
     const synthPrompt = `[watchdog] ${stale.length} dev team(s) appear stale: ${summary}. Decide whether to ping the lead via subctl_orch_msg, escalate to Jason via telegram_send, or take corrective action.`;
+    watchdogLastFireMs = Date.now();
+    watchdogLastFireReason = summary;
     broadcast("watchdog_fire", { ts: new Date().toISOString(), stale, prompt: synthPrompt });
     await dispatchToAgent(synthPrompt, "watchdog");
   }
