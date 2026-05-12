@@ -84,6 +84,7 @@ import {
   stopMasterNotifyListener,
   masterNotifyListenerStatus,
 } from "./master-notify-listener";
+import { startClusterTicker } from "./tools/policy/verifier-cluster";
 
 const HOME = homedir();
 const COMPONENT_DIR = import.meta.dir;
@@ -2003,6 +2004,14 @@ async function main() {
   setTimeout(() => void runAutoCompactTick(), 30_000);
   console.error("[master] auto-compact watchdog armed — every 5min, fires when transcript exceeds 90% of loaded ctx (configurable via compact.json)");
 
+  // ── verifier denial-cluster ticker (PR 6.5, HANDOFF_DIGEST D8) ─────────
+  // Scans each team's recent audit entries every 30s. If a Gated worker is
+  // hitting policy denials in clusters (>5 in 60s OR >3 of the same
+  // rule_path in 5min), fire a synthetic [verifier] correction prompt at
+  // the worker. See components/master/tools/policy/verifier-cluster.ts.
+  const clusterTicker = startClusterTicker();
+  console.error("[master] verifier denial-cluster ticker armed — interval=30s, burst=>5/60s, stuck=>3/5min");
+
   // ── graceful shutdown ───────────────────────────────────────────────────
   const shutdown = (signal: string) => {
     if (stopped) return;
@@ -2012,6 +2021,7 @@ async function main() {
     clearInterval(followupTicker);
     clearInterval(autoCompactInterval);
     clearInterval(inboxPoll);
+    clusterTicker.stop();
     if (inboxWatcher) try { inboxWatcher.close(); } catch { /* ignore */ }
     try { stopMasterNotifyListener(); } catch { /* ignore */ }
     httpServer.stop(true);
