@@ -135,6 +135,13 @@ Usage:
   subctl plugins remove <id>          Uninstall
   subctl plugins status               Validate all installed plugin manifests
 
+  subctl policy <verb> [args]         Inspect / manage the policy engine for
+                                      spawned coding agents (modes, allowlists,
+                                      audit). Verbs: check, list, validate,
+                                      explain, audit, snapshot. 'check' is the
+                                      hot-path gate called by hooks; the others
+                                      are operator-facing. See docs/policy.md.
+
   subctl update                       Pull origin/main, rebuild, restart daemons,
                                       doctor on the way out (no manual ssh+rsync)
   subctl uninstall                    Remove subctl
@@ -595,6 +602,11 @@ case "$cmd" in
   master)
     . "$SUBCTL_REPO_ROOT/lib/master.sh"
     subctl_master "$@"
+    ;;
+
+  policy)
+    . "$SUBCTL_REPO_ROOT/lib/policy.sh"
+    _subctl_policy "$@"
     ;;
 
   update)
