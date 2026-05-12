@@ -29,7 +29,7 @@ A persistent conversational orchestrator that runs on your hardware, talks to yo
                                      └─────────────────────────┘
 ```
 
-> **v2.6.0 shipping.** Full per-release history in [CHANGELOG.md](./CHANGELOG.md). The 1.x series was the multi-account dispatch substrate; the 2.x series is the agentic harness layered on top.
+> **v2.7.0 shipping.** Full per-release history in [CHANGELOG.md](./CHANGELOG.md). The 1.x series was the multi-account dispatch substrate; the 2.x series is the agentic harness layered on top.
 
 > 🚀 **First time on a new Mac?** Open a fresh Claude Code session and paste [`START-HERE.md`](./START-HERE.md). It walks you clone → install → account auth → master daemon enable, asking before any irreversible step.
 
@@ -61,6 +61,77 @@ A persistent conversational orchestrator that runs on your hardware, talks to yo
 - **Dashboard** — live ops view at `http://<host>:8787` with 12 sidebar tabs (Chat, Orchestration, Dashboard, Projects, Teams, Claude Sessions, Models, Providers, Memory, Vault, Skills, Live Logs, Settings).
 
 - **Multi-channel I/O** — dashboard chat (SSE), Telegram (bidirectional with auto-relay), CLI prompt, scheduled self-prompts, inbox events from workers.
+
+---
+
+## Defaults
+
+[#defaults](#defaults)
+
+Subctl spawns workers in **Gated** mode by default. Every other harness defaults to **Trusted**.
+
+This is the single difference that matters most.
+
+Every coding agent CLI in the field today — Claude Code, Codex, PI, OpenCode, Cursor, Cline — ships with the bash tool effectively trusted. The model decides whether a command is safe. As model capability scales, that trust model breaks: agents persistent enough to recover from "command not allowed" by writing inline code, by writing a custom npm script, by piping curl into sh. We have already seen this fail mode in production.
+
+Subctl is positioned to fix it because subctl is the **spawn point** for every worker it launches. The master daemon already controls the per-account isolated config directory, the tmux session, and the working directory. Adding a policy layer there means every spawned worker inherits the policy automatically — no per-project hook setup, no per-CLI configuration.
+
+### The three modes
+
+| Mode | Trust gate | When |
+|------|-----------|------|
+| **Trusted** | The model itself | Throwaway sandboxes. Opt-in. Subctl warns at spawn. |
+| **Gated** | Policy allowlist (subctl-managed) | **Default.** All real work. |
+| **Sealed** | No shell at all; explicit tools only | Production-adjacent. Long-running unattended tasks. |
+
+Mode is chosen at spawn time:
+
+```bash
+subctl teams claude                          # Gated (default), preset auto-detected
+subctl teams claude --mode=sealed            # No shell. Explicit tools only.
+subctl teams claude --mode=trusted           # Raw. Warning printed.
+```
+
+Per-project policy lives in `<project>/.subctl/policy.toml`. Shipped presets cover Node, Python, and a restrictive generic baseline. See `docs/policy.md` for the full schema.
+
+### What Gated mode prevents
+
+- `rm -rf` and its variants, including indirect forms
+- `curl ... | sh` and `wget ... | sh` drive-by execution
+- `python -c '...'` and `node -e '...'` inline code execution (the universal escape hatch — denied across every interpreter)
+- `npm run <undeclared-script>` (closes the package.json-rewrite attack)
+- Writing to shell init files (`.bashrc`, `.zshrc`, etc.)
+- Fork bombs, `dd` to block devices, `chmod -R 777`, `chown -R`
+
+### What Gated mode does *not* prevent
+
+- A worker overwriting a file with bad content (reversible via git, which is why we accept it)
+- A worker doing legitimate damage with a legitimate command (no allowlist can fix this)
+- Prompt injection that convinces the master to spawn a worker in Trusted mode (separate concern — see roadmap)
+
+### Audit
+
+Every check writes a line to `~/.local/state/subctl/audit/<team>.jsonl`. The dashboard's Live Logs tab has a Policy filter. Denials are surfaced in real time. The master's runtime verifier watches for denial clusters and steers the worker away from fighting the gate.
+
+### Override per team
+
+```bash
+# Opt out for a specific spawn
+subctl teams claude --mode=trusted
+
+# Or persist the default in user config:
+echo 'default_mode = "trusted"' >> ~/.config/subctl/config.toml
+
+# Or persist per project:
+cat > ~/code/sandbox/.subctl/policy.toml <<EOF
+preset = "node"
+default_mode = "trusted"
+EOF
+```
+
+### Full reference
+
+[`docs/policy.md`](docs/policy.md) — schema, presets, escape hatches, threat model.
 
 ---
 

@@ -4,6 +4,52 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.7.0] — 2026-05-11
+
+### Trusted / Gated / Sealed — the policy engine
+
+Subctl now spawns workers in **Gated** mode by default. Every other coding-agent harness in the field ships with bash effectively trusted; the model is the gate. As model capability scales, that trust model breaks — agents persistent enough to recover from a refusal by writing inline code, a custom npm script, or piping curl into sh. v2.7.0 moves the trust decision to subctl, the spawn point, where every worker inherits a TOML allowlist enforced by a `PreToolUse` hook against a deterministic Go-backed checker. The defang (`bypassPermissions` + `--dangerously-skip-permissions` + `CLAUDE_AUTONOMY=full`) stays in all three modes; the hook is additive, never replacement.
+
+### What's new
+
+- **Three execution modes per worker, decided at spawn time.**
+  - **Trusted** — unrestricted bash. Opt-in via `--mode=trusted`; subctl prints a non-suppressible warning at spawn.
+  - **Gated** — every `Bash` call routes through `subctl-policy-check` against a TOML allowlist. Allowed commands run silently; denials return a stderr error the agent self-corrects from. **Default for `subctl teams claude`.**
+  - **Sealed** — no bash at all. `permissions.deny: ["Bash"]` + MCP-only tool set for production-adjacent work.
+- **Three shipped ecosystem presets** at `config/policy/presets/` — `node.toml`, `python.toml`, `generic.toml`. Auto-detected via marker files (`package.json` → node, `pyproject.toml`/`requirements.txt` → python, fallback → generic). Per-project override at `<project>/.subctl/policy.toml`.
+- **`subctl policy` CLI subcommand family** — `list`, `validate`, `explain <cmd>`, `audit <team>`, `snapshot <team>`. `explain` renders the deny/allow trace; `validate` checks TOML against the JSON schema with helpful errors; `audit` tails the JSONL log per team.
+- **New master tool family** (`policy_check`, `policy_list`, `policy_audit_tail`) so the master daemon can introspect policy decisions and surface them through the chat surface.
+- **Verifier denial-cluster detection** — when a worker hits ≥N denials of the same root command in a rolling window, the runtime claim verifier fires a `[verifier]` correction prompt steering the agent away from fighting the gate, and posts a one-time notification to the dashboard chat panel. Prevents the "agent rewrites the script three times trying to find a workaround" loop.
+- **JSONL audit log** at `~/.local/state/subctl/audit/<team_id>.jsonl` — every check writes one line (allow or deny) with decision, reason, command tokens, allowlist SHA. 50 MiB rotation, 3 generations kept, concurrent-write-safe.
+- **Dashboard Live Logs → Policy filter chip** + dedicated **Policy sidebar tab** showing per-team mode, preset, allowlist SHA, and a live SSE stream of denials. "Suggest allowlist addition" modal generates valid TOML from a denial trace.
+- **Go binary `subctl-policy-check`** — compiled from `bin/subctl-policy-check/` for darwin/linux × amd64/arm64. Cold-start <50ms. Shares the test-vector corpus with the TS impl; CI fails on any divergence. Installed by `bash install.sh` alongside the `subctl` binary.
+- **pi-coding-agent as a first-class provider** — `providers/pi-coding-agent/` ships with auth + teams scaffolding parallel to the Claude provider, plus dashboard HTTP spawn dispatch refactor so the endpoint is no longer hardcoded to `subctl teams claude`. Ungated for v2.7.0; policy hook lands in a follow-up.
+- **`--no-telegram` flag for `subctl master enable`** — skip the BotFather walkthrough on hosts where Telegram isn't wanted. Same flag honored by `install.sh`.
+- **Dashboard "M3 Ultra" hardcoded host label removed** — the host badge now reads from `/api/host` (hostname-driven) so dashboards on every machine show the right name without per-host patching.
+
+### Breaking changes
+
+- **`subctl teams claude` now defaults to Gated mode.** Existing workflows that depended on raw bash access need either `--mode=trusted` per spawn (with the non-suppressible warning) or a persisted `default_mode = "trusted"` in `~/.config/subctl/config.toml` or `<project>/.subctl/policy.toml`. The first time a worker hits a denial, the master daemon posts a one-time notification to the dashboard chat panel so the operator knows the new default is active.
+
+### Migration notes
+
+- Existing teams continue to work — the new default only applies to spawns AFTER v2.7.0. Already-running tmux sessions are unaffected.
+- Run `bash install.sh` to compile and place the new Go binary (`subctl-policy-check`). Without it, Gated mode falls back to deny-all (intentional fail-closed).
+- Per-project policy is opt-in. The shipped presets are the floor; project `.subctl/policy.toml` extends or relaxes.
+- Audit log path: `~/.local/state/subctl/audit/<team_id>.jsonl`. Rotation is automatic at 50 MiB, 3 generations.
+
+### Beyond the policy engine
+
+- **`--no-telegram`** on `subctl master enable` and `install.sh` for headless installs that don't want the BotFather walkthrough.
+- **Dashboard host label** now hostname-driven via `/api/host` instead of the hardcoded "M3 Ultra" string.
+- **pi-coding-agent provider scaffolding** in `providers/pi-coding-agent/` — auth + teams.sh parallel to the Claude provider. Ungated for v2.7.0 (policy hook follows in a later release).
+
+### Canonical references
+
+- `docs/policy.md` — the policy spec (modes, schema, ecosystem detection, audit format, threat model).
+- `docs/policy-schema.md` — TOML schema with examples and merging semantics.
+- `docs/master.md` §4 — Phase 3o marked complete.
+
 ## [2.6.2] — 2026-05-10
 
 Patch — `subctl update` survives local-only branches.

@@ -825,7 +825,7 @@ documents. This viewer is that place. Attachments become
 first-class notes in the master's vault when the operator wants
 them durable.
 
-### Phase 3o — Policy engine (Trusted/Gated/Sealed) (in progress)
+### Phase 3o — Policy engine (Trusted/Gated/Sealed) (complete — v2.7.0 2026-05-11)
 
 v2.7.0 ships the per-worker policy engine with three execution modes
 decided at spawn time: **Trusted** (unrestricted bash, opt-in),
