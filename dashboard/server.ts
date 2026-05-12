@@ -2385,18 +2385,51 @@ const server = Bun.serve({
     }
 
     // ── /api/models — LM Studio model catalog (native API, richer than /v1) ──
+    // Error shape (when ok:false):
+    //   kind:    "missing_token" | "invalid_token" | "unreachable" | "http_error"
+    //   error:   short label (back-compat — UI may still read this)
+    //   message: human-language sentence the dashboard renders directly
+    //   hint:    one-line "what to do" pointer
+    //   host:    LM Studio base URL we tried
     if (url.pathname === "/api/models") {
       const host = process.env.SUBCTL_LMSTUDIO_HOST ?? "http://localhost:1234";
+      const token = resolveSecret("lmstudio_api_token");
       try {
         const r = await fetch(`${host}/api/v0/models`, {
           headers: { ...lmstudioAuthHeader() },
           signal: AbortSignal.timeout(2500),
         });
+        if (r.status === 401) {
+          // LM Studio is requiring an API token. Either we sent nothing
+          // (missing) or we sent something that LM Studio rejected (invalid).
+          if (!token) {
+            return Response.json({
+              ok: false,
+              kind: "missing_token",
+              error: "missing token",
+              message: "LM Studio is requiring an API token, but subctl doesn't have one configured.",
+              hint: "Either paste the current token into Settings → API Tokens, or turn off \"Require API Token\" in LM Studio (Developer → Server settings).",
+              host,
+            }, { status: 401 });
+          }
+          return Response.json({
+            ok: false,
+            kind: "invalid_token",
+            error: "token rejected",
+            message: "LM Studio rejected the saved API token. It's likely stale — the token in LM Studio was rotated or cleared.",
+            hint: "Rotate the token in LM Studio (Developer → Server settings), then paste the new value into Settings → API Tokens. Or turn off \"Require API Token\" if you don't need it.",
+            host,
+          }, { status: 401 });
+        }
         if (!r.ok) {
-          return Response.json(
-            { ok: false, error: `LM Studio HTTP ${r.status}`, host },
-            { status: 502 },
-          );
+          return Response.json({
+            ok: false,
+            kind: "http_error",
+            error: `HTTP ${r.status}`,
+            message: `LM Studio returned HTTP ${r.status} from /api/v0/models.`,
+            hint: "Check the LM Studio app's server logs for the underlying error.",
+            host,
+          }, { status: 502 });
         }
         const j = (await r.json()) as { data?: Array<Record<string, unknown>> };
         const models = j.data ?? [];
@@ -2409,10 +2442,16 @@ const server = Bun.serve({
           models,
         });
       } catch (err) {
-        return Response.json(
-          { ok: false, error: (err as Error).message, host },
-          { status: 502 },
-        );
+        // fetch threw — almost always a network/connection issue
+        // (LM Studio not running, host unreachable, port closed, DNS).
+        return Response.json({
+          ok: false,
+          kind: "unreachable",
+          error: (err as Error).message,
+          message: `LM Studio at ${host} didn't respond.`,
+          hint: "Make sure the LM Studio app is running and the server is started (Developer → Start Server). If you bound it to 127.0.0.1, confirm subctl is on the same host.",
+          host,
+        }, { status: 502 });
       }
     }
 

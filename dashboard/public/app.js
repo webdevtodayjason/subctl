@@ -2631,8 +2631,38 @@
         const r = await fetch("/api/models");
         const j = await r.json();
         if (!j.ok) {
-          if (status) { status.textContent = "unreachable"; status.dataset.state = "err"; }
-          body.replaceChildren(emptyRow(9, j.error || "LM Studio API unreachable"));
+          // v2.7.7 — surface kind-specific human-language errors.
+          // /api/models now returns: kind, message, hint, host (see dashboard/server.ts).
+          const statusByKind = {
+            missing_token: "no token",
+            invalid_token: "token rejected",
+            unreachable: "unreachable",
+            http_error: "lm studio error",
+          };
+          const statusText = statusByKind[j.kind] || "unreachable";
+          if (status) { status.textContent = statusText; status.dataset.state = "err"; }
+          const tr = document.createElement("tr");
+          const td = document.createElement("td");
+          td.colSpan = 9;
+          td.className = "empty lmstudio-err";
+          td.dataset.kind = j.kind || "unknown";
+          if (j.message) {
+            const line = document.createElement("div");
+            line.className = "lmstudio-err-msg";
+            line.textContent = j.message;
+            td.appendChild(line);
+          }
+          if (j.hint) {
+            const hint = document.createElement("div");
+            hint.className = "lmstudio-err-hint";
+            hint.textContent = j.hint;
+            td.appendChild(hint);
+          }
+          if (!j.message && !j.hint) {
+            td.textContent = j.error || "LM Studio API unreachable";
+          }
+          tr.appendChild(td);
+          body.replaceChildren(tr);
           if (summary) summary.textContent = "";
           return;
         }
