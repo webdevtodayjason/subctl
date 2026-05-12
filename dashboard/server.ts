@@ -4729,28 +4729,65 @@ const server = Bun.serve({
         return new Response(JSON.stringify({ ok: false, error: `project dir not found: ${project}` }),
           { status: 404, headers: { "Content-Type": "application/json" } });
       }
-      // Build subctl teams claude args. Spawn-only mode (no attach).
-      const args: string[] = ["teams", "claude", "-a", account, "--no-attach"];
-      if (body.orchestrator) args.push("-o");
-      if (body.skip_perms) args.push("-y");
-      if (body.continue) args.push("-c");
-      if (typeof body.resume === "string" && body.resume) {
-        args.push("--resume", String(body.resume));
+
+      // PR 11.5: dispatch by account provider instead of hardcoded "claude".
+      // Pre-existing tech debt — multi-provider work needed it regardless of
+      // pi-coding-agent. Look up the account's provider; refuse spawn if
+      // unknown so we fail loud instead of routing to the wrong CLI.
+      const { accounts: spawnAccs } = parseAccountsConf();
+      const acct = spawnAccs.find(a => a.alias === account);
+      if (!acct) {
+        return new Response(JSON.stringify({
+          ok: false, error: `unknown account: ${account} (not in accounts.conf)`,
+        }), { status: 404, headers: { "Content-Type": "application/json" } });
+      }
+      const provider = acct.provider;
+      // Allowlist providers that have a teams.sh implementation. Keeping
+      // this explicit prevents `subctl teams gemini` etc. from being
+      // dispatched here just because some operator typed `gemini` into the
+      // accounts.conf provider column. Mirror the bin/subctl dispatcher.
+      const TEAMS_SUPPORTED = new Set(["claude", "pi-coding-agent"]);
+      if (!TEAMS_SUPPORTED.has(provider)) {
+        return new Response(JSON.stringify({
+          ok: false,
+          error: `provider "${provider}" does not support teams spawn (alias=${account})`,
+        }), { status: 400, headers: { "Content-Type": "application/json" } });
+      }
+
+      // Build provider-specific argv. claude supports the rich flag set
+      // shipped with PR 10 (orchestrator/skip_perms/continue/resume/template).
+      // pi-coding-agent (UNGATED in v2.7.0) supports a smaller flag set —
+      // any unsupported field in `body` is silently ignored to keep the HTTP
+      // contract permissive. Prompt + project apply to both providers.
+      const args: string[] = ["teams", provider, "-a", account, "--no-attach"];
+      if (provider === "claude") {
+        if (body.orchestrator) args.push("-o");
+        if (body.skip_perms) args.push("-y");
+        if (body.continue) args.push("-c");
+        if (typeof body.resume === "string" && body.resume) {
+          args.push("--resume", String(body.resume));
+        }
+        if (typeof body.template === "string" && body.template) {
+          args.push("--template", body.template);
+        }
+      } else if (provider === "pi-coding-agent") {
+        // Pi takes a model override via -m; nothing else from the claude
+        // grab-bag applies yet (no orchestrator, no resume, no template).
+        if (typeof body.model === "string" && body.model) {
+          args.push("-m", String(body.model));
+        }
       }
       if (typeof body.prompt === "string" && body.prompt) {
         args.push("-p", body.prompt);
       }
-      if (typeof body.template === "string" && body.template) {
-        args.push("--template", body.template);
-      }
+
       const subctlBin = join(REPO_ROOT, "bin", "subctl");
       // PR 8.5: routed through execCommand. EXEC_SURFACE §4b flags the
       // downstream tmux paste-buffer (inside teams.sh) as the highest-risk
       // user-input path because operator-supplied `prompt` ends up pasted
-      // into a Claude Code TUI session with unrestricted Bash. Gating
-      // happens further down (PR 10 inserts the PreToolUse hook for the
-      // resulting Claude worker); at this layer we just normalize the spawn
-      // of the subctl CLI. Ungated.
+      // into the worker TUI with unrestricted Bash. Gating for claude
+      // happens further down (PR 10's PreToolUse hook). pi-coding-agent is
+      // UNGATED in v2.7.0; its gate lands in v2.7.1+.
       const r = await execCommand(subctlBin, args, {
         cwd: project,
         // 30s is plenty — teams.sh now backgrounds the prompt-paste, so the
@@ -4765,8 +4802,13 @@ const server = Bun.serve({
           error: (r.stderr || r.stdout || (r.timedOut ? "timed out" : "spawn failed")).slice(0, 800),
         }), { status: 500, headers: { "Content-Type": "application/json" } });
       }
-      // Compute session name the same way claude-teams does (basename + sanitize).
-      const sessionName = "claude-" + project.split("/").pop()!.replace(/[.: ]/g, "_");
+      // Session name mirrors each provider's teams.sh prefix:
+      //   claude          → claude-<basename>
+      //   pi-coding-agent → pi-<basename>
+      // Keep these in lockstep with the SESSION_NAME computation in each
+      // provider's teams.sh.
+      const sessionPrefix = provider === "pi-coding-agent" ? "pi" : "claude";
+      const sessionName = `${sessionPrefix}-` + project.split("/").pop()!.replace(/[.: ]/g, "_");
       const tmuxSessions = listTmuxSessions();
       const live = tmuxSessions.find(s => s.name === sessionName);
       // Push fresh state to dashboard observers.
@@ -4777,6 +4819,7 @@ const server = Bun.serve({
       return new Response(JSON.stringify({
         ok: true,
         session_name: sessionName,
+        provider,
         spawned: !!live,
         attached: live?.attached ?? false,
         cwd: project,
