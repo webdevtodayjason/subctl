@@ -4,6 +4,60 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.7.8] — 2026-05-12
+
+### `fix(policy): floor preset to "generic" — kills the "Bureaucrat Agent" regression`
+
+**The bug.** Spawning a team into a project with no `.subctl/policy.toml`
+(and no user-level `~/.config/subctl/policy.toml` either) produced a
+policy snapshot containing ONLY `defaults.toml` — no merged preset. The
+spawn banner correctly announced `(preset: generic)` because the bash
+side's `_subctl_claude_detect_ecosystem` ran, but the detection result
+was never threaded through to the TS bridge that writes the snapshot.
+With `loadResolvedPolicy()` finding `preset` undefined in every layer,
+the preset chain was skipped entirely.
+
+Net effect: every team spawned into a fresh project ran in gated mode
+with **zero allowlist**. Every single `ls`, `cat`, `find`, `pwd`,
+`git status` required explicit permission. Operator described it as
+"Bureaucrat Agent" behavior — workers stuck in permission loops,
+"ask permission to ask permission."
+
+**The fix.** `config/policy/defaults.toml` now declares
+`preset = "generic"` at the top. Since the resolution chain is
+`projectDoc.preset ?? userDoc.preset ?? defaultsDoc.preset`, this makes
+"generic" the floor — any project that doesn't explicitly override
+the preset (or set `preset = "none"`) gets the generic allowlist
+(28 commands + git/gh/curl patterns) merged into its snapshot.
+
+Properly threading the bash-detected ecosystem (node / python /
+generic) through the bridge so node projects get the node preset
+is a follow-up (v2.7.9). The floor fix unblocks the operator-observed
+regression immediately for every fresh project regardless of
+ecosystem.
+
+### `fix(claude/policy): probe well-known install paths for bun`
+
+`_subctl_claude_bun_bin` previously relied on `command -v bun`, which
+respects the caller's PATH. When master / dashboard launchd plists
+don't include `~/.bun/bin/` in their EnvironmentVariables.PATH, the
+bun lookup fails and `subctl_orch_spawn` 500s with "bun not found
+— policy snapshot bridge requires bun." Now probes `$HOME/.bun/bin/bun`,
+`/opt/homebrew/bin/bun`, and `/usr/local/bin/bun` as fallbacks after
+PATH lookup. Operator can still override with `SUBCTL_BUN_BIN=...` in
+the plist.
+
+### `fix(dashboard): 200ms breath between paste-buffer and Enter on /msg`
+
+`/api/orchestration/<name>/msg` issues three tmux subprocesses
+back-to-back: `set-buffer`, `paste-buffer`, `send-keys Enter`. Claude
+Code's TUI sometimes hadn't ingested the paste before Enter arrived,
+leaving the message sitting in the input box and never submitted.
+Operator-visible: master had to send "EXECUTE NOW." or re-invoke
+`subctl_orch_msg` multiple times to actually trigger the worker.
+Added a 200ms `setTimeout` between paste and Enter — well below
+human noticeability, well above paste-event latency in profiling.
+
 ## [2.7.7] — 2026-05-12
 
 ### `feat(knowledge): system_subctl_knowledge tool — TOON breakdown for master self-introspection (v2.7.7)`

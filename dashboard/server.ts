@@ -5053,6 +5053,15 @@ const server = Bun.serve({
         // Use a tmux buffer so multi-line text injects safely (avoids escape chaos)
         const r1 = spawnSync(TMUX_BIN, ["set-buffer", "-b", "subctl-msg", text], { encoding: "utf8" });
         const r2 = spawnSync(TMUX_BIN, ["paste-buffer", "-t", name, "-b", "subctl-msg"], { encoding: "utf8" });
+        // v2.7.8 — give Claude Code's TUI a beat to register the pasted text
+        // before sending Enter. Without this delay, the three subprocesses
+        // fire so fast that the TUI's input event loop sometimes hasn't
+        // ingested the paste when Enter arrives — net result: text sits in
+        // the input box, never submitted. Operator-observed: master had to
+        // re-send messages multiple times to actually trigger execution.
+        // 200ms is well below human noticeability and well above paste-event
+        // latency in our profiling.
+        await new Promise((resolve) => setTimeout(resolve, 200));
         const r3 = spawnSync(TMUX_BIN, ["send-keys", "-t", name, "Enter"], { encoding: "utf8" });
         const ok = !r1.error && !r2.error && !r3.error;
         return new Response(JSON.stringify({ ok }), {

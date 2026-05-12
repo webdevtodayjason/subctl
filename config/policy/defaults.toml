@@ -9,6 +9,15 @@
 
 default_mode = "gated"
 
+# v2.7.8 — floor preset. When a project doesn't ship its own
+# `.subctl/policy.toml` with an explicit preset, AND the operator's
+# `~/.config/subctl/policy.toml` doesn't set one either, this is the
+# preset that gets merged. Before this floor existed, fresh projects
+# (no markers detected) booted into gated mode with NO allowlist,
+# making the worker ask permission for every `ls` / `cat` / `find`.
+# Operator-observed regression vs pre-v2.7 — "Bureaucrat Agent" feel.
+preset = "generic"
+
 [mode.gated]
 
 [mode.gated.deny_always]

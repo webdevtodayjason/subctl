@@ -158,7 +158,23 @@ _subctl_claude_bun_bin() {
   if [[ -n "${SUBCTL_BUN_BIN:-}" ]] && [[ -x "$SUBCTL_BUN_BIN" ]]; then
     printf '%s\n' "$SUBCTL_BUN_BIN"; return 0
   fi
-  command -v bun
+  # v2.7.8 — PATH may be the minimal launchd PATH (no ~/.bun/bin), which
+  # left fresh installs unable to spawn teams. Probe well-known install
+  # locations after PATH as a fallback. Operator can still override with
+  # SUBCTL_BUN_BIN. Order: PATH → ~/.bun/bin (official curl install) →
+  # /opt/homebrew/bin (Apple Silicon Homebrew) → /usr/local/bin (Intel
+  # Homebrew + manual installs).
+  if command -v bun >/dev/null 2>&1; then
+    command -v bun
+    return 0
+  fi
+  for candidate in "$HOME/.bun/bin/bun" "/opt/homebrew/bin/bun" "/usr/local/bin/bun"; do
+    if [[ -x "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
 }
 
 # Invoke `_write_snapshot.ts` to (1) write the per-team
