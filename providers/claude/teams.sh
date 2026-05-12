@@ -7,6 +7,7 @@ _SUBCTL_CLAUDE_TEAMS_LOADED=1
 
 . "$(dirname "${BASH_SOURCE[0]}")/../../lib/core.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/../../lib/settings.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/policy.sh"
 
 # Apply a team template: load JSON, copy referenced skills into the
 # worker's CLAUDE_CONFIG_DIR/.claude/skills/, and stash persona +
@@ -104,6 +105,10 @@ provider_claude_teams() {
   local ACCOUNT="" SKIP_PERMS=false CONTINUE=false ORCHESTRATOR=false DRY_RUN=false
   local INITIAL_PROMPT="" PROMPT_FILE="" RESUME_SID=""
   local TEMPLATE_NAME=""
+  # Policy-gate inputs (v2.7.0 / PR 10). All optional; defaults resolve via
+  # _subctl_claude_resolve_mode (pack 01 §2). Defang stays orthogonal — these
+  # flags ONLY adjust the additive hook layer.
+  local POLICY_MODE_CLI="" POLICY_PRESET_OVERRIDE="" POLICY_NO_WARN_TRUSTED=false
   # --no-attach is for HTTP-spawned sessions (dashboard's POST /api/orchestration/spawn).
   # Skips the final tmux attach/switch-client so the caller process exits cleanly.
   local NO_ATTACH="${SUBCTL_NO_ATTACH:-}"
@@ -120,6 +125,11 @@ provider_claude_teams() {
       --resume)          RESUME_SID="$2"; shift 2 ;;
       --no-attach)       NO_ATTACH=1; shift ;;
       --dry-run)         DRY_RUN=true; shift ;;
+      --mode)            POLICY_MODE_CLI="$2"; shift 2 ;;
+      --mode=*)          POLICY_MODE_CLI="${1#--mode=}"; shift ;;
+      --policy-preset)   POLICY_PRESET_OVERRIDE="$2"; shift 2 ;;
+      --policy-preset=*) POLICY_PRESET_OVERRIDE="${1#--policy-preset=}"; shift ;;
+      --no-warn-trusted) POLICY_NO_WARN_TRUSTED=true; shift ;;
       *) subctl_die "unknown teams option: $1" ;;
     esac
   done
@@ -170,6 +180,52 @@ provider_claude_teams() {
   # env (configured via the launchd plist or a shell rc that launchd
   # inherits — set it in Settings → API keys then restart launchd).
   _provider_claude_drop_mcp_config "$cfg_dir"
+
+  # ── policy gate (v2.7.0 / PR 10) ──────────────────────────────────────────
+  # Resolve the spawn's policy mode, write the immutable snapshot + audit
+  # header, and stage the per-team settings.local.json carrying the
+  # PreToolUse hook. Defang STAYS — these steps are purely additive (pack
+  # 01 §2.3, pack 08 §2, HANDOFF_DIGEST §3.1 D9).
+  #
+  # team_id == tmux SESSION_NAME, matching the existing per-cwd convention.
+  # Computed here (not later) so policy artifacts can be written before the
+  # tmux session launches.
+  local SESSION_NAME
+  SESSION_NAME="claude-$(basename "$PWD" | tr '.: ' '___')"
+
+  # Allow tests + advanced operators to skip the policy work entirely (e.g.
+  # legacy harnesses that haven't installed the Go gate binary yet). Off by
+  # default — the whole point of v2.7.0 is to make the gate engage.
+  local SUBCTL_POLICY_SNAPSHOT_PATH="" SUBCTL_POLICY_ALLOWLIST_SHA=""
+  local SUBCTL_POLICY_SOURCE_PATHS_JSON="" SUBCTL_POLICY_SPAWNED_AT=""
+  local RESOLVED_MODE="" DETECTED_PRESET=""
+  if [[ "${SUBCTL_DISABLE_POLICY_GATE:-}" != "1" ]]; then
+    RESOLVED_MODE=$(_subctl_claude_resolve_mode "$POLICY_MODE_CLI" "$PWD") \
+      || subctl_die "policy: failed to resolve mode (cli='$POLICY_MODE_CLI')"
+    if [[ -n "$POLICY_PRESET_OVERRIDE" ]]; then
+      DETECTED_PRESET="$POLICY_PRESET_OVERRIDE"
+    else
+      DETECTED_PRESET=$(_subctl_claude_detect_ecosystem "$PWD")
+    fi
+
+    # Write snapshot + audit header. Sets SUBCTL_POLICY_* vars in our scope.
+    _subctl_claude_write_snapshot "$SESSION_NAME" "$PWD" "$RESOLVED_MODE" \
+      || subctl_die "policy: failed to write snapshot for team $SESSION_NAME"
+
+    # Stage the hook into the per-account settings.local.json. Merges
+    # with any existing operator-authored content; subctl-owned keys
+    # (subctl-policy-check matchers + subctl-sealed-tools MCP server) get
+    # refreshed.
+    _subctl_claude_write_settings_local "$cfg_dir" "$RESOLVED_MODE" \
+      "$SESSION_NAME" "$PWD" \
+      || subctl_die "policy: failed to write $cfg_dir/settings.local.json"
+
+    # Stash for the post-tmux banner. Variables echoed inside the banner
+    # were set by _subctl_claude_write_snapshot above.
+    _subctl_claude_emit_spawn_banner \
+      "$SESSION_NAME" "$RESOLVED_MODE" "$DETECTED_PRESET" "$POLICY_NO_WARN_TRUSTED"
+  fi
+  # ── /policy gate ─────────────────────────────────────────────────────────
 
   # If a template was requested, load its persona + boot_prompt and copy
   # its referenced skills into the worker's CLAUDE_CONFIG_DIR/.claude/skills/
@@ -229,15 +285,18 @@ When given a task, first outline your agent plan before proceeding."
     INITIAL_PROMPT="$(cat "$PROMPT_FILE")"
   fi
 
-  # Sanitize tmux session name
-  local SESSION_NAME
-  SESSION_NAME="claude-$(basename "$PWD" | tr '.: ' '___')"
+  # SESSION_NAME was computed above (it doubles as the team_id for the
+  # policy snapshot). It must match the team_id baked into the hook
+  # command in settings.local.json — keep these two derivations identical.
 
   echo "🚀 Starting Claude Teams in tmux session: $SESSION_NAME"
   echo "   Directory: $PWD"
   echo "   Account:   $resolved  ($email)"
   echo "   Config:    $cfg_dir"
   echo "   Command:   $CLAUDE_CMD"
+  if [[ -n "$RESOLVED_MODE" ]]; then
+    echo "   Mode:      $RESOLVED_MODE (preset: $DETECTED_PRESET)"
+  fi
   if [[ -n "$INITIAL_PROMPT" ]]; then
     local SHORT_PROMPT
     SHORT_PROMPT="$(echo "$INITIAL_PROMPT" | head -c 80)"
