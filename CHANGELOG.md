@@ -4,6 +4,115 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.7.7] — 2026-05-12
+
+### `feat(knowledge): system_subctl_knowledge tool — TOON breakdown for master self-introspection (v2.7.7)`
+
+The master daemon now ships a canonical, TOON-formatted breakdown of
+the entire subctl system at
+`components/master/knowledge/subctl.toon` (~40 KB, 19 sections), and a
+new master tool `system_subctl_knowledge({ section? })` that reads
+from it. The operator already uses TOON heavily in Argent and asked
+for the same pattern here: token-efficient, LLM-friendly, single
+source of truth for "how does X work in subctl?" instead of either
+hallucinating from training data or doing a sub-agent file crawl on
+every question.
+
+### What's new
+
+- **`components/master/knowledge/subctl.toon`** — the breakdown. 19
+  top-level sections: `overview`, `architecture`, `components`,
+  `providers`, `tools`, `http_routes`, `config`, `policy`,
+  `cli_surface`, `update_workflow`, `secrets`, `supervisor`,
+  `telegram`, `orchestration`, `claude_mem`, `compact_policy`,
+  `diagnostic_tools`, `version_history`, `phase_3s_preview`,
+  `file_index`. Tools, routes, files, and version history use
+  TOON's tabular array form (`items[N]{f1,f2}:` + one row per line)
+  for token efficiency.
+- **`components/master/tools/knowledge.ts`** — new tool family with
+  one entry, `system_subctl_knowledge`. No-section call returns the
+  sections list with one-line summaries (extracted from each
+  section's leading `#` comment). With a section arg, returns the
+  full TOON content verbatim. Unknown section returns
+  `ok:false` + `available_sections` populated.
+- **`components/master/server.ts`** — `knowledgeTools` imported and
+  spread into `toolRegistry` after the linear family (the convention
+  is "append in feature-wave order"; this is the v2.7.7 addition so
+  it lands at the bottom).
+- **`components/skills/master/SKILL.md`** — added one-line guidance
+  pointing the master at `system_subctl_knowledge` when the operator
+  asks how a subctl component works.
+
+### Operator-visible benefit
+
+- Asking "how does the policy engine work?" / "what's in secrets.json?"
+  / "what tools do you have?" now triggers a single tool call that
+  pulls verified info from a file shipped with the daemon, instead of
+  the model recalling from possibly-stale training data.
+- The TOON file is part of every `subctl update` so the breakdown
+  always matches the deployed version. Module-load caching means the
+  daemon reads the file exactly once per restart.
+
+### Test coverage
+
+`components/master/__tests__/knowledge.test.ts` — **8 tests / 21
+assertions** (~15 ms):
+
+- Default call returns ≥10 sections with summaries; names unique.
+- `section="policy"` content contains the canonical mode names
+  (Trusted/Gated/Sealed); `section="tools"` includes a known tool
+  family prefix.
+- Unknown section returns `ok:false` with `available_sections`
+  populated and the rejected name echoed in the error.
+- The `.toon` file exists at the resolved path AND parses (regex
+  sanity check for ≥10 top-level section headers).
+- Caching: across five invocations (default, known section, unknown
+  section, another known section, default again) the file is read
+  from disk **exactly once** via an exported read-counter test seam.
+
+Full master suite: **388 pass / 0 fail / 2 pre-existing skips** (the
+two `find / -name foo -delete` v2.8 known-gap vectors).
+
+### Canonical references
+
+- `components/master/knowledge/subctl.toon` — the breakdown itself.
+- `components/master/tools/knowledge.ts` — tool + parser + cache +
+  test seam.
+- `components/master/__tests__/knowledge.test.ts` — 8 tests.
+- `docs/master.md` §5.4 — operator-facing description of the new
+  tool with example questions it answers.
+
+### Also in v2.7.7
+
+#### `fix(master): default baseUrl for local providers`
+
+When `providers.json` omitted the optional `host` field on
+`supervisor` (or `router`/`embeddings`/`reviewer`), `buildModel()`
+fell back to `baseUrl: ""` and pi-ai's OpenAI client defaulted to
+`api.openai.com`. The master then sent the local LM Studio token to
+real OpenAI, which returned `401 Incorrect API key provided` —
+correctly! The error message even included the "find your API key at
+platform.openai.com" template, which made the bug look auth-side
+when it was actually a misrouting bug.
+
+`components/master/server.ts` now defaults `baseUrl` to
+`http://localhost:1234/v1` whenever `cfg.provider` is in
+`LOCAL_PROVIDERS` (`mlx`, `ollama`, `lmstudio`, `vllm`). Cloud
+providers still get `""` and pull their real URL from the SDK.
+
+#### `feat(dashboard): use marketing-site logo in topbar + favicon`
+
+The dashboard topbar used to render a placeholder mark (a gradient
+square with a green status dot via `.brand::before` + `::after`).
+Swapped to the canonical logo from subctl.com — same file the
+marketing site uses (`SubCTLlogo.png`, copied to
+`dashboard/public/logo.png`). The pulse-style status dot was
+redundant with the existing `.pulse-dot` in the topbar-right and
+was removed.
+
+Also wires `<link rel="icon">` to the same file so the browser
+tab gets the brand mark too.
+
 ## [2.7.6] — 2026-05-12
 
 ### `subctl update` — argent-style polish

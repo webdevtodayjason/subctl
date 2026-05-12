@@ -67,6 +67,7 @@ import { policyTools } from "./tools/policy";
 import { diagTools, bindWatchdogState } from "./tools/diag";
 import { webTools } from "./tools/web";
 import { linearTools } from "./tools/linear";
+import { knowledgeTools } from "./tools/knowledge";
 import {
   saveAttachment,
   listAttachments,
@@ -382,6 +383,13 @@ export const toolRegistry: Record<string, InternalTool> = {
   ...Object.fromEntries(
     Object.entries(linearTools).map(([k, v]) => [k, v as unknown as InternalTool]),
   ),
+  // knowledge family: key already fully-qualified `system_subctl_knowledge`.
+  // Self-introspection over a TOON-formatted breakdown of the entire subctl
+  // system at components/master/knowledge/subctl.toon. Operator uses TOON
+  // heavily in Argent and asked for the same pattern here. v2.7.7.
+  ...Object.fromEntries(
+    Object.entries(knowledgeTools).map(([k, v]) => [k, v as unknown as InternalTool]),
+  ),
 };
 
 // system_my_tools needs to introspect the live registry. Bind it here so
@@ -455,7 +463,11 @@ function buildModel(cfg: {
     name: cfg.model,
     api,
     provider: cfg.provider,
-    baseUrl: cfg.host ?? "",
+    // Default base URL for local OpenAI-compatible runtimes when providers.json
+    // omits `host`. Without this, pi-ai's OpenAI client falls back to
+    // api.openai.com and sends the local-runtime token to real OpenAI,
+    // which 401s. Fixed in v2.7.7 after a long debug.
+    baseUrl: cfg.host ?? (LOCAL_PROVIDERS.has(cfg.provider) ? "http://localhost:1234/v1" : ""),
     reasoning: false,
     input: ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },

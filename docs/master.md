@@ -1527,7 +1527,56 @@ Or restart master via `subctl update` / `launchctl unload+load`.
 - Auto-compact at 90% utilization is the second line of defense once
   the working transcript fills the window
 
-### 5.4 Adding a new account
+### 5.4 Master self-introspection — `system_subctl_knowledge` (v2.7.7+)
+
+The master daemon ships a canonical, TOON-formatted breakdown of
+itself at `components/master/knowledge/subctl.toon` and exposes it via
+the `system_subctl_knowledge` tool. Use it before answering "how does
+X work?" / "what's in Y?" / "what are subctl's modes?" — the file is
+the source of truth for the version you're running.
+
+```jsonc
+// no args → list all sections with one-line summaries
+system_subctl_knowledge({})
+// → { ok: true, sections: [
+//      { name: "overview", summary: "what subctl is, design philosophy, who it serves." },
+//      { name: "architecture", summary: "daemons, comms patterns, data flow, launchd plists." },
+//      ...
+//    ], note: "call again with { section: '<name>' } for full content" }
+
+// with a section → full TOON content for that section
+system_subctl_knowledge({ section: "policy" })
+// → { ok: true, section: "policy", summary: "...", content: "<TOON>" }
+```
+
+**Section keys** (v2.7.7): `overview`, `architecture`, `components`,
+`providers`, `tools`, `http_routes`, `config`, `policy`,
+`cli_surface`, `update_workflow`, `secrets`, `supervisor`, `telegram`,
+`orchestration`, `claude_mem`, `compact_policy`,
+`diagnostic_tools`, `version_history`, `phase_3s_preview`,
+`file_index`.
+
+**Example operator questions this tool answers correctly:**
+
+- "How does the Gated / Sealed policy mode differ from Trusted?" →
+  `section: "policy"`.
+- "What keys does the secrets file accept and what env vars override
+  them?" → `section: "secrets"`.
+- "Which HTTP routes does the dashboard expose?" → `section:
+  "http_routes"`.
+- "What did v2.7.3 change about compaction?" → `section:
+  "compact_policy"` or `section: "version_history"`.
+- "What's the channel mapping for `subctl update`?" → `section:
+  "update_workflow"`.
+- "What tool families does the master have?" → `section: "tools"`
+  (or `system_my_tools` for the live runtime registry; the two are
+  expected to agree at any released version).
+
+The TOON file is part of every `subctl update` so the breakdown
+always matches the deployed version. Module-load caching means the
+daemon reads the file exactly once per restart.
+
+### 5.5 Adding a new account
 
 ```bash
 # Edit accounts.conf manually OR use the dashboard's Providers tab
@@ -1540,7 +1589,7 @@ subctl auth openai <alias>             # device-code flow if SSH'd in
                                        # (auto-detected via SSH_CONNECTION)
 ```
 
-### 5.5 Spawning a dev team manually (pre Phase 3c)
+### 5.6 Spawning a dev team manually (pre Phase 3c)
 
 ```bash
 subctl orch spawn --account claude-jason \

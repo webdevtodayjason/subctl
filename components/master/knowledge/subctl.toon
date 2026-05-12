@@ -1,0 +1,542 @@
+# subctl self-introspection knowledge base — v2.7.7
+# Format: TOON (https://github.com/toon-format/toon) for token efficiency.
+# Comments start with "#" and are extracted as section summaries by
+# components/master/tools/knowledge.ts. Top-level keys = sections.
+# This describes subctl AS OF v2.7.7. Phase-3 work marked "planned".
+
+overview:
+  # what subctl is, design philosophy, who it serves.
+  name: subctl
+  tagline: An agentic harness for the AI subscriptions you already pay for.
+  one_liner: A persistent conversational orchestrator that runs on operator hardware, talks via dashboard chat + Telegram, spawns dev-team tmux sessions on demand, watches them for staleness, gates its own claims with a runtime verifier, and pushes projects forward.
+  major_series:
+    "1.x": Multi-account subscription dispatch substrate (claude / openai / gemini / zai / minimax).
+    "2.x": Agentic harness layered on the 1.x substrate — master daemon, dashboard, dev teams, memory, policy.
+  current_version: 2.7.7
+  primary_operator: Jason Brashear (MSP owner, 30+ years IT, Cisco CCIE / RHCE).
+  serves:
+    operator: One human in the loop via dashboard chat or Telegram.
+    master: Persistent daemon coordinating coding agents across multiple subscriptions.
+    dev_teams: Claude Code (and other harness) workers spawned in tmux on per-account auth contexts.
+  design_philosophy:
+    - Local-first. Runs on operator hardware (M3 Ultra, M5). No subctl SaaS.
+    - Conversational. Master is a peer, not a workflow engine. Jason talks to it, it talks back.
+    - Honest. Anti-hallucination verifier blocks unverified claims at turn end.
+    - Trust as a configurable spectrum (Trusted / Gated / Sealed) — not a binary.
+    - The defang stays. Workers spawn with --dangerously-skip-permissions in ALL modes; the policy gate is additive.
+    - Ship fast. Operator preference: small, frequent PRs over big bangs.
+  non_goals:
+    - Not a SaaS. No cloud, no signup, no telemetry.
+    - Not a model. Brings its own (LM Studio local + cloud routed).
+    - Not a code-editor replacement. Drives Claude Code / pi-coding-agent; doesn't replace them.
+
+architecture:
+  # daemons, comms patterns, data flow, launchd plists.
+  daemons[2]{name,port,host,plist,log,role}:
+    master,8788,127.0.0.1,com.subctl.master.plist (planned — currently launched ad-hoc),~/Library/Logs/subctl/master.log,Conversational orchestrator + tool registry + verifier + watchdog.
+    dashboard,8787,127.0.0.1 (configurable for LAN/Tailscale),~/Library/LaunchAgents/com.subctl.dashboard.plist,~/Library/Logs/subctl/dashboard.{out,err}.log,SPA + REST + WebSocket front door. Proxies /api/master/* to the master daemon.
+  comms_patterns:
+    inbound[3]{channel,how}:
+      dashboard_chat,POST /api/master/chat → proxied to master :8788/chat → enqueues prompt with source="chat".
+      telegram,Master long-polls Bot API via master-notify-listener.ts → enqueues prompt with source="telegram".
+      watchdog,Self-fires synthetic prompts every review_interval_minutes (default 30; per-team stall threshold default 15) with source="watchdog".
+    outbound[3]{channel,how}:
+      sse,GET /events streams agent events (token deltas, tool calls, decisions). Dashboard + listeners subscribe.
+      telegram_reply,Master tool telegram_send pushes to operator's chat_id via Bot API.
+      notify_dashboard,Master tool publishes curated events to the right-column NOTIFICATIONS feed.
+  data_flow:
+    operator_to_master: dashboard chat OR telegram → POST → master prompt queue → agent loop → tool calls → text reply → SSE broadcast.
+    master_to_dev_team: master tool subctl_orch_spawn → tmux new-session w/ per-account CLAUDE_CONFIG_DIR → worker boots with its own SKILL + tool catalog.
+    dev_team_to_master: worker writes status events into ~/.config/subctl/master/inbox/<team>.jsonl → master tails dir (2s poll + fs.watch) → auto-prompts on blocked/error.
+  persistent_state[5]{path,purpose}:
+    ~/.config/subctl/master/agent-state.json,Persisted transcript — restart-survivable.
+    ~/.config/subctl/master/decisions.jsonl,Append-only decision log (one JSON per event).
+    ~/.config/subctl/master/inbox/<team>.jsonl,Per-team lead→master event stream.
+    ~/.config/subctl/master/policy.json,Per-project autonomy + watchdog config.
+    ~/.config/subctl/master/providers.json,Model routing per role (router/supervisor/reviewer/etc).
+  launchd:
+    confirmed[1]{label,path}:
+      com.subctl.dashboard,~/Library/LaunchAgents/com.subctl.dashboard.plist
+    notes: master launchd plist referenced throughout docs but only the dashboard plist was found in ~/Library/LaunchAgents at v2.7.7. Master daemon is currently expected at com.subctl.master.plist per docs/master.md §5.1.
+
+components:
+  # the components/ subtree breakdown.
+  dirs[8]{path,purpose}:
+    components/master,The master daemon — server.ts entry + tools/* registry + verifier + policy engine + compact-policy + secrets + personality.
+    components/dashboard (dashboard/),The web SPA + REST + WebSocket. Bun.serve on :8787. Proxies /api/master/* to :8788.
+    components/mcp,MCP integration scaffold (package.json + README only at v2.7.7). Future MCP server bridge.
+    components/orch,orch.sh — bash helpers for the subctl orchestration verbs (spawn / list / kill).
+    components/notify,notify.sh — bash helpers wrapping notify-dashboard outbound calls.
+    components/teams,teams.sh — bash helper invoked by spawn flows; wires the policy gate into worker boot.
+    components/team,team.sh — lead-side helper for posting status events into the master inbox.
+    components/claude-config,settings-autonomy.patch.json — Claude Code settings template patched into per-account cfg_dirs.
+    components/skills,Skill catalogs — autonomy/, master/, orchestrator-mode/, subctl/, plus skills.sh helper.
+  master_subtree[7]{path,purpose}:
+    components/master/server.ts,Entry. Wires pi-agent-core + tool registry + HTTP routes + watchdog + verifier loop.
+    components/master/tools/*.ts,One file per tool family. Each exports an object of {description,schema,invoke}.
+    components/master/verifier.ts,Post-turn anti-hallucination gate. Scans assistant text for claim triggers + requires matching tool call.
+    components/master/compact-policy.ts,Pure decision module — JIT compaction at prompt composition time (v2.7.3+).
+    components/master/secrets.ts,Local secrets layer at ~/.config/subctl/secrets.json (v2.7.4+).
+    components/master/personality.ts,Voice preset loader (straight-shooter / witty / sarcastic / robotic / arnold / elon / hilarious).
+    components/master/policy/,Trusted/Gated/Sealed policy engine — TS reference implementation alongside the Go hot path.
+
+providers:
+  # provider abstractions for coding-agent harnesses (NOT model providers).
+  # subctl spawns dev teams INTO these harnesses; the harness handles model routing internally.
+  shipped[2]{slug,role,gated,notes}:
+    claude,Anthropic Claude Code (claude-code CLI),true,Full provider — auth.sh, teams.sh, signals.sh, statusline.sh, dispatch-check.sh, policy.sh, commands/, hooks/. Gated by the v2.7.0 policy engine.
+    pi-coding-agent,Earendil pi-coding-agent CLI,false,Lighter provider — auth.sh, teams.sh, signals.sh, statusline.sh. Ungated at v2.7.7 (policy engine not wired in yet).
+  also_present_in_providers_dir[4]{slug,status}:
+    gemini,Planned harness wrapper (directory present, not yet wired).
+    openai,Planned harness wrapper (directory present, not yet wired).
+    zai,Planned harness wrapper.
+    minimax,Planned harness wrapper.
+  planned_v2_8_0:
+    - providers/_common/ — shared cross-provider primitives. Phase 3s capability bridge work.
+    - Symmetrical Gated mode for pi-coding-agent.
+
+tools:
+  # the ~70 master tools the agent can call. Family + brief.
+  # Names below match the live registry in components/master/server.ts.
+  families[18]{family,count,prefix,source_file,summary}:
+    subctl_orch,8,subctl_orch_,components/master/tools/subctl-orch.ts,Dev-team tmux lifecycle: list / status / spawn / spawn_template / msg / kill / state / inbox.
+    gh,4,gh_,components/master/tools/gh.ts,GitHub via gh CLI: pr_list / pr_view / pr_checks / issue_list.
+    coderabbit,3,coderabbit_,components/master/tools/coderabbit.ts,AI code review: review_local / preview_prompts / stats.
+    telegram,2,telegram_,components/master/tools/telegram.ts,Operator-bound Telegram bot: send / send_digest.
+    system,9,system_,components/master/tools/system.ts,Host introspection: hardware / load / disk / lmstudio_models / tmux_sessions / process_top / projects_dir / daemon_self / my_tools.
+    project,2,project_/vault_,components/master/tools/project.ts,project_create + vault_append (sandboxed Obsidian markdown writes).
+    memory,4,memory_,components/master/tools/memory.ts,claude-mem worker queries: search / timeline / observations / health.
+    context7,3,context7_,components/master/tools/context7.ts,Up-to-date library docs: resolve / docs / health.
+    tier1_memory,4,memory_,components/master/tools/tier1-memory.ts,Always-in-context memory curators: show / remember / forget / user_update.
+    skill_author,4,skill_,components/master/tools/skill-author.ts,Master-source skill authoring: create / revise / remove / list_master.
+    notify,1,notify_,components/master/tools/notify.ts,Publish curated events to dashboard notifications feed.
+    specforge,1,specforge,components/master/tools/specforge.ts,5-stage greenfield/brownfield intake state machine.
+    scheduler,3,schedule_/list_/cancel_,components/master/tools/scheduler.ts,Schedule arbitrary follow-up prompts at a future time.
+    attachments,2,read_/list_,components/master/tools/attachments.ts,Read + list operator-uploaded attachments (text/JSON/YAML/TOML/scripts).
+    vault_link,1,vault_,components/master/tools/vault-link.ts,Generate Obsidian vault deep-links.
+    policy,3,policy_,components/master/tools/policy/index.ts,Policy introspection: check / list / audit_tail.
+    diag,9,system_,components/master/tools/diag.ts,Self-diagnostics (v2.7.1): watchdog_self / port_check / lmstudio_health / log_tail / rate_limit_status / git_status / network_health / version_status / supervisor_info.
+    web,2,web_,components/master/tools/web.ts,Web tools (v2.7.2): web_search (Brave) + web_fetch (Firecrawl).
+  pending_v2_7_7:
+    - system_subctl_knowledge — this very tool. Master self-introspection over the TOON breakdown.
+  registry_introspection:
+    - Call system_my_tools to enumerate the LIVE bound tool registry — that's the source of truth, not this file.
+    - Late-binder pattern in tools/system.ts (bindToolRegistry) avoids a circular import with server.ts.
+
+http_routes:
+  # master + dashboard endpoints.
+  master[16]{method,path,purpose}:
+    GET,/health,Liveness probe + uptime + tool count.
+    GET,/transcript,Full agent transcript (paginated).
+    GET,/context,System prompt + tier-1 memory blocks as composed for the next turn.
+    POST,/transcript/compact,Force a compaction now.
+    GET,/transcript/util,Estimated transcript token utilization vs loaded_ctx.
+    POST,/transcript/clear,Wipe the transcript (operator action).
+    POST,/reload-supervisor,Re-pin the supervisor model + context window in LM Studio.
+    GET,/teams,List tracked dev teams (per policy.json).
+    GET,/diag,Aggregated daemon diagnostic snapshot.
+    GET,/personality,Active personality preset + catalog with previews.
+    POST,/personality,Swap preset (hot-swap; no restart).
+    POST,/chat,Enqueue a prompt with source field. Returns prompt id.
+    POST,/attachments,Upload an attachment (returns id).
+    GET,/attachments,List recent attachments.
+    GET,/attachments/<id>,Fetch a specific attachment.
+    GET,/events,SSE stream of agent events + decision log entries + notifications.
+  dashboard_api[35]{method,path,purpose}:
+    GET,/api/live,SSE stream of dashboard live events.
+    GET,/api/state,Current high-level cockpit state snapshot.
+    GET,/api/host,Host info (proxied from master system_hardware).
+    GET,/api/models,LM Studio model catalog.
+    GET,/api/projects,Project portfolio from policy.json.
+    GET,/api/logs/sources,Log source list (master / dashboard / lmstudio / tmux).
+    GET,/api/logs/<source>(/stream),Tail or stream a specific log source.
+    GET,/api/audit/aggregate,Policy-audit aggregate (counts + latest events).
+    GET,/api/policy/teams,Per-team policy snapshots.
+    GET,/api/policy/list,Resolved policy view (operator-facing).
+    GET,/api/audit/<team>(/stream),Per-team audit events tail or stream.
+    GET,/api/teams/tools,Available tool families for team templates.
+    GET,/api/teams,List team templates.
+    POST,/api/teams,Upsert a team template.
+    GET,/api/teams/<name>,Get / delete a specific template.
+    GET,/api/skills,Skill catalog (imported + master + autonomy).
+    GET,/api/skills/sources,Skill import sources.
+    POST,/api/skills/import,Import skills from a GitHub repo.
+    GET,/api/settings/install-checks,System health install-check matrix.
+    GET,/api/settings/obsidian,Obsidian vault root config.
+    POST,/api/settings/obsidian,Update Obsidian vault root.
+    GET,/api/settings/keys,API-key presence status (names only).
+    GET,/api/settings/secrets,Per-key isSet + envOverride + lastModified.
+    POST,/api/settings/secrets/<key>,Set / clear a secret (writes ~/.config/subctl/secrets.json).
+    GET,/api/settings/oauth,OAuth account profile status.
+    POST,/api/settings/telegram,Set Telegram bot token + chat_id.
+    POST,/api/settings/telegram/test,Send a test message to the configured chat.
+    GET,/api/settings/config/<name>,Raw config file viewer.
+    POST,/api/projects/create,Create a new project (clone/init + vault subtree + policy entry).
+    GET,/api/projects/<name>,Project detail (PRs / issues / CI / decisions / chat).
+    GET,/api/memory/tier1,Tier-1 memory.md + user.md current contents.
+    POST,/api/memory/tier1,Update tier-1 memory.
+    GET,/api/vault/roots,Configured vault roots.
+    GET,/api/vault/<root>/tree,Vault file tree.
+    GET,/api/vault/<root>/note,Render a markdown note.
+  dashboard_api_continued[15]{method,path,purpose}:
+    GET,/api/vault/<root>/asset,Vault asset (image / file) passthrough.
+    GET,/api/memory,Aggregated claude-mem stats.
+    GET,/api/version,subctl version + git sha.
+    GET,/api/providers,Provider profiles.
+    POST,/api/providers/profiles,Upsert provider profile.
+    DELETE,/api/providers/profiles,Remove provider profile.
+    POST,/api/master/supervisor,Switch supervisor model (re-pins context window).
+    "*",/api/master/*,Generic proxy to master :8788.
+    GET,/api/refresh,Force-refresh aggregate dashboard state.
+    GET,/api/sessions/preview,Per-account Claude session preview.
+    POST,/api/sessions/spawn,Spawn a fresh Claude session in tmux.
+    GET,/api/notify/inbox,Operator notification inbox (ask-yesno etc).
+    POST,/api/notify/inbox/<id>/ack,Ack an operator-notify item.
+    GET,/api/sessions/list,All Claude sessions across accounts (searchable).
+    POST,/api/orchestration/spawn,Dashboard-driven orchestrator spawn (dev team).
+
+config:
+  # ~/.config/subctl/* layout + launchd plists. What each file does.
+  config_dir: ~/.config/subctl (override via $SUBCTL_CONFIG_DIR).
+  files[14]{path,purpose}:
+    ~/.config/subctl/accounts.conf,Pipe-delimited alias|provider|email|config_dir|description per OAuth profile.
+    ~/.config/subctl/master/policy.json,Per-project autonomy + watchdog config + escalation rules.
+    ~/.config/subctl/master/providers.json,Model routing per role: router / supervisor / reviewer / embeddings / escalate / fallback.
+    ~/.config/subctl/master/compact.json,JIT compaction config: warn_tokens (25k) / compact_tokens (40k) / target_tokens (30k) / keep_recent (6).
+    ~/.config/subctl/master/personality.json,Single key: preset — active personality (default straight-shooter).
+    ~/.config/subctl/master/obsidian.json,Operator's Obsidian vault root.
+    ~/.config/subctl/master/agent-state.json,Persisted transcript (survives restart).
+    ~/.config/subctl/master/decisions.jsonl,Append-only decision log.
+    ~/.config/subctl/master/memory.md,Tier-1 always-in-context learned facts (~3500 char budget).
+    ~/.config/subctl/master/user.md,Tier-1 always-in-context operator profile.
+    ~/.config/subctl/master/inbox/<team>.jsonl,Per-team lead→master event stream.
+    ~/.config/subctl/master-notify.json,Telegram bot token + chat_id (legacy path; v2.7.4+ prefers secrets.json).
+    ~/.config/subctl/secrets.json,Atomic chmod-600 secrets store (v2.7.4+). 5 known keys.
+    ~/.config/subctl/config.toml,Operator config including [update].channel (v2.7.6+).
+  launchd_agents[2]{label,path,purpose}:
+    com.subctl.master,~/Library/LaunchAgents/com.subctl.master.plist,Boots the master daemon. KeepAlive on SuccessfulExit=false. Restart via launchctl unload/load.
+    com.subctl.dashboard,~/Library/LaunchAgents/com.subctl.dashboard.plist,Boots dashboard on :8787. KeepAlive + NetworkState gate.
+  state_dirs:
+    - ~/Library/Logs/subctl/ — master.log, dashboard.{out,err}.log.
+    - ~/.config/subctl/master/attachments/<date>/ — operator-uploaded files (v2.4.0+).
+
+policy:
+  # Trusted/Gated/Sealed modes. Snapshot semantics. Defang behavior. Go vs TS hot-path.
+  modes[3]{name,description,gating}:
+    Trusted,No additional permission gate. Workers operate exactly as they would standalone. The historical default before v2.7.0.,No policy check; defang only.
+    Gated,The v2.7.0 default. Every command runs through a PreToolUse hook that consults a TOML allowlist enforced by the Go subctl-policy-check binary.,Allowlist via policy snapshot; misses are denied + audit-logged.
+    Sealed,Maximum restriction. Only explicitly approved commands run; everything else hard-blocks.,Strict allowlist; audit-logged.
+  defang_lock_d9:
+    rule: The defang (--dangerously-skip-permissions + bypassPermissions + CLAUDE_AUTONOMY=full) stays applied in ALL THREE modes. The policy hook is ADDITIVE, never replacement.
+    why: A persistent agent that hits a Claude Code refusal will route around it (inline script, custom npm, curl|sh). Removing the defang reintroduces brittle refusal recovery without actually adding safety. The hook is the real gate.
+  snapshot_semantics:
+    location: ~/.config/subctl/policy-snapshots/<team>/snapshot.toml
+    contents: Resolved allowlist (per-ecosystem + per-team additions). Frozen at spawn time.
+    rationale: Mid-run policy edits never change what an already-running worker can do — predictable enforcement, no surprise refusals.
+  hot_path:
+    binary: bin/subctl-policy-check (Go).
+    rationale: Called by Claude Code PreToolUse hook on EVERY tool invocation. Latency budget — Go gets sub-50ms cold, sub-10ms warm.
+    parity: TS reference at components/master/tools/policy/ exercised by the same 76 test vectors; never the hot path.
+  bash_dispatcher: lib/policy.sh — six verbs (check delegates to Go; list / validate / explain / audit / snapshot via bun TS).
+
+cli_surface:
+  # bin/subctl, bin/subctl-policy-check, bin/policy/* subcommands.
+  primary_binary: bin/subctl (top-level dispatcher; with no args launches the TUI).
+  verbs[15]{verb,family,one_line}:
+    accounts,1.x,List + add + remove + edit OAuth account profiles.
+    auth,1.x,OAuth into a specific provider+alias config dir; or "auth all".
+    teams,1.x,tmux launcher (provider-aware: claude / pi-coding-agent).
+    dash,2.x,Open the dashboard (or start it if not running).
+    deck,2.x,Operator orchestration deck.
+    radar,2.x,Rate-limit + account dispatch radar.
+    resume,2.x,Resume a previously-spawned Claude session.
+    kill,2.x,Kill a tmux session by alias.
+    master,2.x,Master daemon controls (start/stop/status).
+    notify,2.x,Operator-notify outbound (ask-yesno etc).
+    orch,2.x,Orchestration verbs (spawn / list / msg / kill via components/orch/).
+    policy,2.7.0,Trusted/Gated/Sealed policy controls (delegates to lib/policy.sh).
+    setup,2.x,First-time setup wizard.
+    templates,2.x,Team-template CRUD (alias for dashboard Teams tab).
+    update,2.x,subctl update — pull origin + restart services + run doctor.
+  policy_subcommands[6]{subcommand,binary,purpose}:
+    check,bin/subctl-policy-check (Go),Hot-path: enforce allowlist on every Claude tool call. <50ms cold / <10ms warm.
+    list,bin/policy/list.ts,Operator-facing resolved-policy view.
+    validate,bin/policy/validate.ts,Schema + invariants check on policy files.
+    explain,bin/policy/explain.ts,Allow/deny trace + suggested fix for a specific command.
+    audit,bin/policy/audit.ts,JSONL audit log reader with filters.
+    snapshot,bin/policy/snapshot.ts,Per-team snapshot --show / --verify.
+  other_bins[5]{binary,purpose}:
+    bin/claude-dash,Convenience wrapper to open the dashboard's Claude tab.
+    bin/claude-deck,Operator deck launcher.
+    bin/claude-kill,Quick kill for a Claude tmux session.
+    bin/claude-radar,Rate-limit radar shortcut.
+    bin/subctl-deck,Aliases to bin/subctl deck.
+
+update_workflow:
+  # lib/update.sh, channels, version bumping, lockfile auto-stash.
+  entrypoint: subctl update
+  helper: lib/update.sh (loaded via . lib/core.sh).
+  subcommands[2]{subcommand,since,purpose}:
+    update,v2.x,Pull origin/<branch> + apply (fast-forward only) + bun install if needed + restart services + run subctl doctor.
+    update status,v2.7.6,Read-only version + channel + remote-state probe. Works even with a dirty tree.
+  flags[6]{flag,since,purpose}:
+    --channel stable|beta|dev,v2.7.6,Persists to [update].channel in ~/.config/subctl/config.toml. Mapping: stable→main / beta→beta / dev→dev.
+    --json,v2.7.6,Single JSON document at end of run. Errors get {ok:false,error,stage}.
+    --yes,v2.7.6,Auto-confirm interactive prompts (currently only downgrade gate). Distinct from --force.
+    --force,v2.x,Stash ANY dirty file and proceed.
+    --timeout <secs>,v2.7.6,Per-step timeout wrapping fetch / merge / bun install. Default 1200s.
+    --branch <name>,v2.x,One-off branch override (wins over --channel).
+  channels[3]{channel,branch,audience}:
+    stable,main,Production. Default channel.
+    beta,beta,Operator-fleet preview before stable.
+    dev,dev,Bleeding-edge integration branch.
+  version_state_block_v2_7_5:
+    rendered_before_dirty_tree_gate: true
+    lines: current version+sha / branch / remote version+sha + commits-ahead-or-behind / last update ISO timestamp.
+    modes: same-as-remote (fast-exit 0) / N commits ahead (proceed) / local-ahead (no-op succeed) / diverged (ff-only fails cleanly).
+  lockfile_auto_stash_v2_7_5:
+    rationale: bun.lock rewrites itself with platform-specific hashes on every bun install — repeatedly requiring --force across machines was friction.
+    allowed_lockfiles[5]: bun.lock, bun.lockb, package-lock.json, yarn.lock, pnpm-lock.yaml.
+    not_carved_out[3]: Cargo.lock, Gemfile.lock, poetry.lock — these projects expect deterministic lockfiles; dirty drift is signal.
+    narrow_rule: ONLY auto-stashes when EVERY dirty file is in the allowed list. Mixed dirt still needs --force.
+  bumping:
+    canonical_source: VERSION at repo root.
+    derived_by: lib/core.sh + bin/subctl + dashboard + master daemon.
+    procedure: Edit VERSION → append CHANGELOG entry → commit → push → subctl update on every host pulls automatically.
+
+secrets:
+  # ~/.config/subctl/secrets.json layout, env-var priority chain, supported keys.
+  path: ~/.config/subctl/secrets.json (override via $SUBCTL_CONFIG_DIR).
+  permissions: chmod 600 — owner-only read/write. Re-applied on every write.
+  write_mode: Atomic tmp-file + rename. Partial writes impossible.
+  cache_ttl_ms: 5000 (invalidated on mtime change).
+  malformed_behavior: Logs a single console.error and returns empty map. Never crashes the daemon.
+  security_contract:
+    - Values NEVER appear in HTTP response bodies or log messages from secrets.ts.
+    - listSecrets() returns presence flags only (isSet / envOverride / lastModified ISO) — safe to surface in dashboard.
+    - Adding a new secret = one-line append to SECRET_KEYS in components/master/secrets.ts.
+  priority_chain_v2_7_4[3]{rank,source,when_used}:
+    1,process.env.<UPPER_NAME>,Power users / CI / launchd-managed env. Always wins if non-empty.
+    2,~/.config/subctl/secrets.json field,Dashboard-driven operator workflow. Fallback when env unset.
+    3,Absent,Callers degrade gracefully (e.g. lmstudioAuthHeader() returns empty headers map).
+  known_keys[5]{key,env_var,used_by}:
+    lmstudio_api_token,LMSTUDIO_API_TOKEN,LM Studio HTTP calls (v2.7.4 — when "Require API Token" is enabled).
+    brave_api_key,BRAVE_API_KEY,web_search tool.
+    firecrawl_api_key,FIRECRAWL_API_KEY,web_fetch tool.
+    linear_api_key,LINEAR_API_KEY,linear_* tool family.
+    context7_api_key,CONTEXT7_API_KEY,context7_* tool family.
+  resolver: resolveSecret(key) in components/master/secrets.ts — applies the priority chain.
+
+supervisor:
+  # LM Studio integration, model pinning, JIT defense, ports.
+  host: http://localhost:1234 (override via $SUBCTL_LMSTUDIO_HOST).
+  api_versions:
+    openai_compat: /v1/* (chat completions, models list).
+    native: /api/v0/models (richer state — loaded/quantization/capabilities), /api/v1/models/load (pin model + context_length).
+  jit_defense_v_phase_3c_3:
+    problem: LM Studio quietly evicts a model under memory pressure and reloads at default 4K context — silent truncation + "Standing by" hallucinations.
+    fix: Master calls POST /api/v1/models/load with explicit context_length from providers.json at boot, on supervisor switch, and via POST /reload-supervisor.
+    rationale: Pin once at boot; re-pin on every supervisor change; expose a manual re-pin endpoint for operator recovery.
+  api_token_support_v2_7_4:
+    trigger: LM Studio added an optional "Require API Token" server toggle.
+    behavior: When enabled, every HTTP call (including diag probes) carries Authorization: Bearer <token>. Token resolved via the v2.7.4 priority chain.
+    back_compat: When toggle disabled (default), no Authorization header sent — existing deploys unchanged.
+  provider_roles[6]{role,purpose}:
+    router,Cheap fast model deciding which other role to invoke.
+    supervisor,Primary local model handling most master conversation.
+    reviewer,Code-review-specific model (often a larger LM Studio quant).
+    embeddings,Semantic memory / search.
+    escalate,Cloud-routed (gpt-5.2 / claude-sonnet-4-6) for hard problems. Cost-gated.
+    fallback,Used when supervisor is unreachable or under load.
+  port: 1234 (LM Studio default).
+
+telegram:
+  # bot setup, listener, digest format, @Subctl_bot.
+  bot_handle: "@Subctl_bot"
+  bot_token_source:
+    primary: ~/.config/subctl/master-notify.json (bot_token or telegram_bot_token field).
+    new_path: ~/.config/subctl/secrets.json (planned migration — secrets.ts pattern).
+  setup_path: bash install.sh --botfather (also via subctl setup --botfather). Walks operator through BotFather → token → chat_id capture.
+  separation_of_concerns:
+    note: subctl master uses a DIFFERENT bot than other Argent-family agents (e.g. aos-telegram via TELEGRAM_BOT_TOKEN). Two different bots; two different chats.
+  listener: components/master/master-notify-listener.ts long-polls Bot API. Inbound messages → enqueued as prompts with source="telegram".
+  outbound_tool: telegram_send (text) + telegram_send_digest (multi-event summary).
+  digest_format[5]{field,purpose}:
+    title,One-line summary.
+    sections,Headed bullet groups for grouped events (spawns / milestones / blocks / escalations).
+    receipts,PR numbers / commit SHAs / file paths.
+    timestamp,ISO 8601.
+    actions,Optional inline command suggestions.
+
+orchestration:
+  # team agents, TeamCreate + Agent dispatch, panes, ORCHESTRATION.md.
+  invocation_phrases[3]:
+    - "/team"
+    - "/orchestrator-mode"
+    - "use team agents" / "put each agent in its own pane" / "delegate across workers"
+  activation_skill: components/skills/orchestrator-mode/SKILL.md.
+  guard: SUBCTL_AGENT_ROLE=worker env-var prevents workers from self-loading the orchestrator role (resolved the 2026-05-09 master/lead-deadlock incident).
+  rules_when_active:
+    - Orchestrator NEVER writes source code. Only plans / dispatches / verifies / updates ORCHESTRATION.md.
+    - Every worker dispatch MUST use TeamCreate + Agent with team_name + name params. Plain sub-agents are forbidden (invisible to operator).
+    - Present a plan (GOAL / UNKNOWNS / WORK BREAKDOWN / SERIALIZATION / DONE WHEN) and WAIT for approval before dispatch.
+    - Verify every worker deliverable with a tool call before marking it complete.
+  panes_layout:
+    orchestrator: left pane — plans, verifies, updates ORCHESTRATION.md.
+    workers: stacked right panes — execute. Visible. Operator can attach to any pane and read live.
+  state_file: ORCHESTRATION.md in repo root — current wave plan, worker assignments, deliverable status.
+  deactivation: Only on explicit operator request ("exit orchestrator mode", "back to normal").
+
+claude_mem:
+  # memory system, observation chain, claude-mem MCP, 51st-date workflow.
+  what_it_solves: 51st-date syndrome — agents forget every session. claude-mem captures observations across sessions and surfaces them on demand.
+  worker_port: localhost:37701 (claude-mem MCP worker).
+  capture: Claude Code SessionStart hook auto-captures observations as the session runs.
+  query_tools[4]{tool,purpose}:
+    memory_search,Semantic search across past observations.
+    memory_timeline,Recent + filterable timeline view.
+    memory_observations,Raw paginated observation list.
+    memory_health,Worker reachable + observation count.
+  three_layer_workflow:
+    - search — semantic for "have we hit this before?"
+    - timeline — chronological for recent context.
+    - get_observations — full details only after filtering down.
+  master_skill_directive:
+    proactively_call_when:
+      - Operator references a past project / decision / incident.
+      - About to assert a fact only loosely remembered.
+      - Spawning a dev team into a project worked on before — brief the lead from past observations.
+      - Transcript was just auto-compacted (rebuild short-term context).
+  tier_boundary:
+    tier_1: ~/.config/subctl/master/memory.md + user.md — OPERATOR-facing notes. Always in context.
+    tier_2: claude-mem — project/incident history. On-demand.
+    tier_3: Obsidian vault — long-form decision history via vault_append.
+
+compact_policy:
+  # JIT compaction at prompt composition, two-stage 25k/40k/30k thresholds.
+  module: components/master/compact-policy.ts (pure decision module — no side effects).
+  trigger_point: At prompt composition time (NOT a periodic ticker for the primary check).
+  rationale_v2_7_3:
+    problem: Supervisor has a finite loaded context window. Once prompt overflows it, model silently truncates + hallucinates "Standing by" non-answers.
+    old_design: 5-minute auto-compact ticker — too coarse. By tick time supervisor could already be past 100% util on NEXT prompt.
+    new_design: JIT check at composition + ticker retained as safety net for tool outputs generated AFTER composition.
+  two_stage_thresholds:
+    warn_tokens: 25000 — YELLOW warning (banner + log + SSE event); operator can graceful-close.
+    compact_tokens: 40000 — AUTO-COMPACT synchronously before composing the next prompt.
+    target_tokens: 30000 — post-compact estimated transcript size.
+    keep_recent: 6 turns preserved intact.
+  decision_actions[3]: ok (proceed) / warn (banner + proceed) / compact (compact first, then proceed).
+  back_compat: If compact.json still uses v2.7.2 threshold_pct, falls back to percentage mode (compact at threshold_pct of loaded_ctx, warn 10pp below).
+  config_path: ~/.config/subctl/master/compact.json.
+
+diagnostic_tools:
+  # the v2.7.1 self-diagnostic family. Origin: M3 agent reflected on a watchdog stale-tmux bug and proposed 7 tools via Telegram; operator added an 8th. v2.7.7 has 9.
+  origin: 2026-05-11. M3 watchdog hit a stale-tmux bug. Agent proposed 7 tools via Telegram. Operator accepted + added an 8th (version_status). Persistent supervisor loop working as designed.
+  all_read_only: true — none mutate subctl state. They answer "is the host healthy?" with first-hand evidence rather than LLM guess.
+  source_file: components/master/tools/diag.ts.
+  tools[9]{name,purpose,key_data}:
+    system_watchdog_self,What the watchdog is currently watching + last tick/fire timestamps,Per-team watched sessions + interval + staleness threshold.
+    system_port_check,Which TCP ports are bound by whom,8788 (master) / 8787 (dashboard) / 1234 (LM Studio) / 37701 (claude-mem) / others on request.
+    system_lmstudio_health,LM Studio HTTP endpoint reachability + auth state,GET /v1/models latency + status + Bearer header behavior.
+    system_log_tail,Tail master/dashboard/lmstudio/tmux logs,Configurable lines (1-500; default 50).
+    system_rate_limit_status,Per-account 5h / 7d Claude utilization summary,Reads rate-limit log written by providers/claude/hooks/log-rate-limits.sh.
+    system_git_status,Repo drift across ~/code (1-level walk),Per-repo branch + dirty status + ahead/behind.
+    system_network_health,LAN gateway / tailscale / DNS / external,ping gateway + tailscale up? + DNS resolution + external HTTP.
+    system_version_status,VERSION + commit + tags + behind-origin,Current version / sha / tag / how many commits behind origin/main.
+    system_supervisor_info,LM Studio loaded supervisor info (v2.7.1),Loaded model id / quantization / context length / capabilities.
+
+version_history:
+  # 2.x major milestones — operator-visible feature deltas, terse.
+  releases[18]{version,date,title}:
+    2.7.7,2026-05-12,system_subctl_knowledge tool — TOON breakdown for master self-introspection.
+    2.7.6,2026-05-12,subctl update — argent-style polish (status / --channel / --json / --yes / --timeout / friendly --help).
+    2.7.5,2026-05-12,subctl update UX — version state up front + lockfile drift auto-stashes.
+    2.7.4,2026-05-12,LM Studio token support + dashboard-managed secrets layer (secrets.json + priority chain).
+    2.7.3,2026-05-12,Compact correctness — JIT at prompt composition + two-stage thresholds (25k/40k/30k).
+    2.7.2,2026-05-12,Web + self-introspection + Linear — web_search/fetch + linear_* + bumped my_tools accuracy.
+    2.7.1,2026-05-11,Self-diagnostic tools — eight (now nine) system_* diag tools; the agent asked, capability shipped.
+    2.7.0,2026-05-11,Trusted / Gated / Sealed — the policy engine. Go hot-path + TOML allowlist + audit log.
+    2.6.x,2026-05-10,Personality dashboard tile + Personal Skills System + Vault editor (Phase 3p/3q designs).
+    2.5.x,2026-05-10,Vault sidebar tab + Markdown rendering (Marked.js) + Obsidian deep-links.
+    2.4.0,2026-05-10,Attachment storage layer + /chat attachments + master HTTP endpoints.
+    2.3.0,2026-05-10,NVR-style grid of every active dev team's tmux pane (Orchestration tab).
+    2.2.0,2026-05-10,Seven built-in voice presets — personality system with hot-swap.
+    2.1.0,2026-05-10,orchestrator-mode SKILL + /team slash command + worker role guard.
+    2.0.5,2026-05-10,Polish + bug-fix patches across the 2.0 cluster.
+    2.0.0,2026-05-10,Master daemon + 44 tools + three-tier memory + persistent agent — the agentic harness lands.
+    1.0.0,2026-05-05,Multi-account subscription dispatch — the 1.x substrate.
+    0.x,2026-05-04,Pre-1.0 spike — accounts / auth / teams (tmux launcher) scaffolding.
+
+phase_3s_preview:
+  # planned for v2.8.0 — capability bridge, agent view integration, routines, completion-goal.
+  status: PLANNED — not shipped at v2.7.7.
+  themes[4]{theme,one_line}:
+    capability_bridge,providers/_common/ — shared cross-provider primitives so a new harness slug ships without duplicating auth/teams/signals.
+    agent_view_integration,Surface live worker state directly in the agent view (currently dashboard-only).
+    routines,Cron-scheduled remote agents — recurring tasks defined once.
+    completion_goal,Worker-level "done when X" assertion that the lead verifies before reporting milestone.
+  pi_coding_agent_gating:
+    note: Symmetrical Gated mode for pi-coding-agent (currently ungated at v2.7.7) lands as part of the capability bridge work.
+
+file_index:
+  # canonical list of important files with one-line purpose each.
+  entry_points[4]{path,purpose}:
+    bin/subctl,Top-level CLI dispatcher.
+    components/master/server.ts,Master daemon entry — Bun.serve on :8788.
+    dashboard/server.ts,Dashboard entry — Bun.serve on :8787.
+    install.sh,One-shot installer (clone + bun install + launchd plist install + optional botfather walk).
+  master_core[10]{path,purpose}:
+    components/master/server.ts,Daemon entry — wires pi-agent-core + tool registry + HTTP + watchdog + verifier.
+    components/master/verifier.ts,Post-turn anti-hallucination gate.
+    components/master/compact-policy.ts,JIT compaction decision module (v2.7.3+).
+    components/master/secrets.ts,Local secrets layer (v2.7.4+).
+    components/master/personality.ts,Voice preset loader.
+    components/master/policy.json.example,Per-project policy template.
+    components/master/providers.json.example,Model routing template.
+    components/master/master-notify-listener.ts,Telegram long-poll listener.
+    components/master/attachments.ts,Attachment storage layer (v2.4.0+).
+    components/master/knowledge/subctl.toon,THIS FILE — self-introspection TOON breakdown (v2.7.7+).
+  tool_files[18]{path,purpose}:
+    components/master/tools/subctl-orch.ts,Dev-team tmux lifecycle.
+    components/master/tools/gh.ts,GitHub via gh CLI.
+    components/master/tools/coderabbit.ts,AI code review.
+    components/master/tools/telegram.ts,Operator Telegram outbound.
+    components/master/tools/system.ts,Host introspection (9 tools).
+    components/master/tools/project.ts,project_create + vault_append.
+    components/master/tools/memory.ts,claude-mem worker queries.
+    components/master/tools/context7.ts,Up-to-date library docs.
+    components/master/tools/tier1-memory.ts,Always-in-context memory curators.
+    components/master/tools/skill-author.ts,Master-source skill authoring.
+    components/master/tools/notify.ts,Curated dashboard notifications.
+    components/master/tools/specforge.ts,5-stage greenfield/brownfield intake.
+    components/master/tools/scheduler.ts,Follow-up scheduling.
+    components/master/tools/attachments.ts,Read/list operator-uploaded files.
+    components/master/tools/vault-link.ts,Obsidian deep-link generator.
+    components/master/tools/policy/index.ts,Policy introspection (check/list/audit_tail).
+    components/master/tools/diag.ts,Self-diagnostics (9 system_* tools).
+    components/master/tools/web.ts,Brave search + Firecrawl fetch.
+  policy_engine[6]{path,purpose}:
+    bin/subctl-policy-check,Go binary — hot-path policy check (PreToolUse hook target).
+    bin/policy/list.ts,Resolved-policy view CLI.
+    bin/policy/validate.ts,Schema + invariants validator CLI.
+    bin/policy/explain.ts,Allow/deny trace + suggested fix CLI.
+    bin/policy/audit.ts,Audit log JSONL reader CLI.
+    bin/policy/snapshot.ts,Per-team snapshot inspect CLI.
+  lib_bash[5]{path,purpose}:
+    lib/core.sh,Common bash helpers — version load / config dir / logging.
+    lib/policy.sh,subctl policy dispatcher (six verbs).
+    lib/update.sh,subctl update + status + channel persistence + lockfile auto-stash.
+    lib/master.sh,Master daemon controls (start/stop/status from CLI).
+    lib/setup.sh,First-time setup wizard.
+  skills_and_providers[6]{path,purpose}:
+    components/skills/master/SKILL.md,Master system prompt — persona / tool catalog / anti-hallucination rules.
+    components/skills/orchestrator-mode/SKILL.md,/team mode protocol.
+    components/skills/autonomy/,Worker-side autonomy skill catalog.
+    providers/claude/teams.sh,Claude Code dev-team spawn with policy gate wired in.
+    providers/claude/policy.sh,Per-team Claude policy snapshot writer.
+    providers/pi-coding-agent/teams.sh,pi-coding-agent dev-team spawn (ungated at v2.7.7).
+  docs[4]{path,purpose}:
+    README.md,Project overview + install + quickstart.
+    CHANGELOG.md,Per-release history. Canonical version notes.
+    VERSION,Single-line semver — canonical source of truth.
+    docs/master.md,Master daemon architecture / memory / roadmap / operational reference.
