@@ -801,6 +801,190 @@ const system_version_status = {
   },
 };
 
+// ─── tool 9: system_supervisor_info ────────────────────────────────────────
+//
+// Added 2026-05-12 (v2.7.2). The M3 agent asked, mid-conversation, how
+// much context budget it had left and which model it was actually
+// running on — the supervisor model id and its loaded context window.
+// Operator pulled the trigger same morning along with the web tools.
+//
+// Reads three sources:
+//   1. ~/.config/subctl/master/providers.json — configured supervisor
+//      role (provider, model, host).
+//   2. LM Studio's /api/v0/models — loaded state of THAT specific
+//      model (state, loaded_context_length, max_context_length,
+//      quantization, arch). This is the LM-Studio-specific extension
+//      to OpenAI's /v1/models; the v2.7.1 auto-compact tick already
+//      uses it.
+//   3. ~/.config/subctl/master/compact.json — auto-compact policy
+//      (threshold_pct, target_tokens, keep_recent). Missing file
+//      falls back to the daemon's documented defaults — that's
+//      treated as a healthy state, not an error.
+//
+// Read-only. No transcript snooping (the daemon-side msg/util numbers
+// aren't bound through here yet — keep this PR additive).
+
+const MASTER_STATE_DIR_FOR_INFO = join(SUBCTL_CONFIG_DIR, "master");
+
+interface ProvidersJson {
+  models?: {
+    supervisor?: {
+      provider?: string;
+      model?: string;
+      host?: string;
+      context_length?: number;
+    };
+  };
+}
+
+interface CompactJson {
+  auto_compact?: boolean;
+  threshold_pct?: number;
+  target_tokens?: number;
+  keep_recent?: number;
+}
+
+interface LMStudioModelRow {
+  id: string;
+  type?: string;
+  state?: string;
+  loaded_context_length?: number;
+  max_context_length?: number;
+  quantization?: string;
+  arch?: string;
+  publisher?: string;
+}
+
+const COMPACT_DEFAULTS: Required<CompactJson> = {
+  auto_compact: true,
+  threshold_pct: 90,
+  target_tokens: 50_000,
+  keep_recent: 6,
+};
+
+const system_supervisor_info = {
+  description:
+    "Introspection about the agent's own runtime: which supervisor model is configured (from providers.json), its loaded + max context length from LM Studio, and the auto-compact policy (from compact.json, with daemon defaults if missing). The agent uses this to reason about its own context budget — 'do I have room for a 30K-token tool result?' and similar. Read-only.",
+  schema: { type: "object", properties: {}, required: [] },
+  invoke: async () => {
+    // 1. Configured supervisor from providers.json.
+    const providersPath = join(MASTER_STATE_DIR_FOR_INFO, "providers.json");
+    if (!deps.fileExists(providersPath)) {
+      return {
+        ok: false,
+        error: `providers.json missing at ${providersPath}. Master daemon hasn't been initialized — run \`subctl master enable\` to seed it from providers.json.example.`,
+        providers_path: providersPath,
+      };
+    }
+    let providers: ProvidersJson;
+    try {
+      providers = JSON.parse(deps.readFile(providersPath)) as ProvidersJson;
+    } catch (err) {
+      return {
+        ok: false,
+        error: `providers.json unreadable: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+        providers_path: providersPath,
+      };
+    }
+    const sup = providers.models?.supervisor;
+    if (!sup || !sup.model || !sup.provider) {
+      return {
+        ok: false,
+        error:
+          "providers.json missing models.supervisor.provider or models.supervisor.model — agent cannot self-introspect without a configured supervisor.",
+        providers_path: providersPath,
+      };
+    }
+    // 2. Auto-compact policy (always returns something — defaults are healthy).
+    const compactPath = join(MASTER_STATE_DIR_FOR_INFO, "compact.json");
+    let compact: Required<CompactJson> = { ...COMPACT_DEFAULTS };
+    let compact_source: "file" | "defaults" = "defaults";
+    if (deps.fileExists(compactPath)) {
+      try {
+        const raw = JSON.parse(deps.readFile(compactPath)) as CompactJson;
+        compact = { ...COMPACT_DEFAULTS, ...raw };
+        compact_source = "file";
+      } catch {
+        // Malformed compact.json → fall back to defaults silently. The
+        // auto-compact ticker in server.ts uses the same try/catch
+        // pattern; mirror that behavior here for consistency.
+        compact_source = "defaults";
+      }
+    }
+    // 3. Loaded model info from LM Studio's /api/v0/models — the
+    // OpenAI-compatible /v1/models endpoint does NOT include
+    // loaded_context_length / state, so use LM Studio's extension.
+    // Strip a trailing /v1 from the host since /api/v0 is on the root.
+    const supHost = (sup.host ?? `${LMSTUDIO_HOST}/v1`).replace(/\/v1\/?$/, "");
+    const modelsR = await deps.fetchText(`${supHost}/api/v0/models`, {
+      timeoutMs: 2500,
+    });
+    if (!modelsR.ok) {
+      return {
+        ok: false,
+        error: `LM Studio /api/v0/models unreachable at ${supHost}: ${
+          modelsR.error ?? `http ${modelsR.status}`
+        }. Loaded model state unavailable.`,
+        supervisor: {
+          provider: sup.provider,
+          model_id: sup.model,
+          host: supHost,
+          configured_context_length: sup.context_length ?? null,
+        },
+        auto_compact: compact,
+        auto_compact_source: compact_source,
+      };
+    }
+    let modelsJson: { data?: LMStudioModelRow[] };
+    try {
+      modelsJson = JSON.parse(modelsR.text) as { data?: LMStudioModelRow[] };
+    } catch (err) {
+      return {
+        ok: false,
+        error: `LM Studio /api/v0/models returned invalid JSON: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      };
+    }
+    const row = (modelsJson.data ?? []).find((m) => m.id === sup.model) ?? null;
+    return {
+      ok: true,
+      supervisor: {
+        provider: sup.provider,
+        model_id: sup.model,
+        host: supHost,
+        configured_context_length: sup.context_length ?? null,
+      },
+      loaded: row
+        ? {
+            is_loaded: row.state === "loaded",
+            state: row.state ?? null,
+            loaded_context_length: row.loaded_context_length ?? null,
+            max_context_length: row.max_context_length ?? null,
+            type: row.type ?? null,
+            quantization: row.quantization ?? null,
+            arch: row.arch ?? null,
+            publisher: row.publisher ?? null,
+          }
+        : {
+            is_loaded: false,
+            state: null,
+            loaded_context_length: null,
+            max_context_length: null,
+            type: null,
+            quantization: null,
+            arch: null,
+            publisher: null,
+            note: `supervisor model id '${sup.model}' not found in LM Studio model list — model not installed, or id drift between providers.json and LM Studio's catalog.`,
+          },
+      auto_compact: compact,
+      auto_compact_source: compact_source,
+    };
+  },
+};
+
 // ─── family export ──────────────────────────────────────────────────────────
 
 export const diagTools = {
@@ -812,4 +996,5 @@ export const diagTools = {
   system_git_status,
   system_network_health,
   system_version_status,
+  system_supervisor_info,
 };

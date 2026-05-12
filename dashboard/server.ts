@@ -3249,6 +3249,9 @@ const server = Bun.serve({
         { name: "OPENROUTER_API_KEY",   purpose: "OpenRouter (200+ models via one key)" },
         { name: "GITHUB_TOKEN",         purpose: "gh CLI fallback (usually authed via gh auth login)" },
         { name: "CONTEXT7_API_KEY",     purpose: "Context7 — up-to-date library docs (master tool + MCP for dev-team Claude leads)" },
+        { name: "BRAVE_API_KEY",        purpose: "Brave AI Search (web_search master tool — v2.7.2)" },
+        { name: "FIRECRAWL_API_KEY",    purpose: "Firecrawl scraping (web_fetch master tool — v2.7.2)" },
+        { name: "LINEAR_API_KEY",       purpose: "Linear API (linear_list_issues, linear_search, linear_create_issue, linear_update_issue master tools — v2.7.2)" },
       ];
       // Read from process.env on the dashboard process. NOTE: env vars set
       // in shell profiles for the user's interactive shell are NOT

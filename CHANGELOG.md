@@ -4,6 +4,57 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.7.2] — 2026-05-12
+
+### Web + self-introspection + Linear — three capability gaps, one PR
+
+Operator and agent went back and forth over Telegram the morning of 2026-05-12. v2.7.1's self-diagnostic family had landed the night before. Over the course of an hour the agent named three live capability gaps: it couldn't search the web for current docs, it didn't know its own model + context budget, and it couldn't see (let alone update) the Linear board the operator was driving subctl development from. The operator funded all three on the spot — Brave AI Search + Firecrawl for the web side, LM Studio's existing `/api/v0/models` for the introspection side, Linear API for the issue side — and they all land in v2.7.2 as **seven new master tools** across two new files and one extension to the diag family.
+
+### What's new
+
+**Web family** at `components/master/tools/web.ts` (read-only):
+
+- **`web_search`** — Brave AI Search. Query → top results (title + URL + snippet). Useful for current docs, news, API references, or verifying claims that may have changed since the model was trained. Defaults to 10 results, capped at 20. `GET https://api.search.brave.com/res/v1/web/search` with `X-Subscription-Token` auth.
+- **`web_fetch`** — Firecrawl scrape. URL → clean markdown. Use when you need to read a specific page's content (docs, articles, GitHub READMEs). Strips nav/footer/sidebar by default. `POST https://api.firecrawl.dev/v0/scrape` with `Authorization: Bearer` auth.
+
+**Self-introspection** added to `components/master/tools/diag.ts`:
+
+- **`system_supervisor_info`** — reads `~/.config/subctl/master/providers.json` for the configured supervisor (provider + model_id + host), queries LM Studio's `/api/v0/models` for that model's `state` / `loaded_context_length` / `max_context_length` / `quantization` / `arch`, and surfaces the auto-compact policy from `~/.config/subctl/master/compact.json` (with documented daemon defaults if the file is missing). The agent uses this to reason about its own context budget — "do I have room for a 30K-token tool result?" — without having to ask the operator.
+
+**Linear family** at `components/master/tools/linear.ts` — Linear's GraphQL at `https://api.linear.app/graphql`, authed with the raw `LINEAR_API_KEY` (no "Bearer" prefix — Linear's convention):
+
+- **`linear_list_issues`** *(read)* — filter by `team_key` (e.g. `ENG`), state name, assignee email. Returns normalized `{identifier, title, state, assignee, priority, url}` shape.
+- **`linear_search`** *(read)* — text search across issue titles + descriptions via `searchIssues`.
+- **`linear_create_issue`** *(WRITE)* — resolves `team_key` → team UUID via a `teams(filter: { key: { eq } })` query, then `issueCreate` mutation. Supports markdown description + Linear priority 0–4.
+- **`linear_update_issue`** *(WRITE)* — accepts an `issue_id` as either identifier (`ENG-123`) or UUID. Optional `state` (human-readable name like "In Progress" / "Done"; tool resolves it to `stateId` via `workflowStates`) and/or `comment` (markdown body via `commentCreate`). Either or both can be passed per call.
+
+### Implementation notes
+
+- All seven new tools are routed through an injectable `Deps.fetchHttp` so the test suites never reach Brave, Firecrawl, Linear, or LM Studio for real — hermetic.
+- API keys live in the master daemon process environment (`BRAVE_API_KEY`, `FIRECRAWL_API_KEY`, `LINEAR_API_KEY`). Missing keys return a structured `{ ok: false, error: "..." }` with an actionable plist + `launchctl kickstart` hint — never throws.
+- HTTP failure modes (network, 4xx, 5xx, 429 with `retry-after`, timeout) all surface as structured errors. The 429 branch carries `retry_after` for intelligent back-off.
+- Timeouts: 30s for `web_search`, 60s for `web_fetch`, 20s for Linear reads, 30s for Linear mutations.
+- The two **write** tools (`linear_create_issue`, `linear_update_issue`) are documented as mutating in their tool descriptions so the agent uses them deliberately.
+- Dashboard `/api/settings/keys` gains `BRAVE_API_KEY` + `FIRECRAWL_API_KEY` + `LINEAR_API_KEY` rows so the operator can see at a glance whether the master can use the new tools.
+- `system_supervisor_info` uses the same `_setDepsForTesting` pattern as the rest of the diag family; no change to existing tools.
+
+### Test coverage
+
+- `components/master/tools/__tests__/web.test.ts` — 18 tests / 78 assertions (Brave + Firecrawl happy paths, missing keys, invalid URLs, network / timeout / 429 / 4xx / 5xx / malformed JSON / `success=false`).
+- `components/master/tools/__tests__/diag.test.ts` — extended with 5 new `system_supervisor_info` tests (happy path, LM Studio unreachable, providers.json missing, compact.json defaults fallback, model not in catalog) on top of the existing 22.
+- `components/master/tools/__tests__/linear.test.ts` — 14 tests / 89 assertions covering all four tools' happy paths plus missing key / 4xx / 429 / unknown team / unknown state / no-op update.
+
+### Deploy step
+
+After pulling v2.7.2, paste the three keys into `~/Library/LaunchAgents/com.subctl.master.plist` `EnvironmentVariables`, then `launchctl kickstart -k gui/$UID/com.subctl.master`. Master log will show **`tools=69`** (up from 62 in v2.7.1) once the three new tool registrations land.
+
+### Canonical references
+
+- `components/master/tools/web.ts` — Brave + Firecrawl.
+- `components/master/tools/linear.ts` — Linear GraphQL family.
+- `components/master/tools/diag.ts` — `system_supervisor_info` joins the v2.7.1 diag family.
+- `docs/master.md` Phase 3o.2 — the story behind v2.7.2.
+
 ## [2.7.1] — 2026-05-11
 
 ### Self-diagnostic tools — the agent asked, the capability shipped

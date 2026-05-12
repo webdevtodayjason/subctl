@@ -65,6 +65,8 @@ import { attachmentsTools } from "./tools/attachments";
 import { vaultLinkTools } from "./tools/vault-link";
 import { policyTools } from "./tools/policy";
 import { diagTools, bindWatchdogState } from "./tools/diag";
+import { webTools } from "./tools/web";
+import { linearTools } from "./tools/linear";
 import {
   saveAttachment,
   listAttachments,
@@ -359,6 +361,18 @@ export const toolRegistry: Record<string, InternalTool> = {
   // the M3 agent asked for via Telegram on 2026-05-11). v2.7.1.
   ...Object.fromEntries(
     Object.entries(diagTools).map(([k, v]) => [k, v as unknown as InternalTool]),
+  ),
+  // web family: keys are already fully-qualified `web_*` (web_search +
+  // web_fetch). Operator-funded Brave + Firecrawl, agent-requested via
+  // Telegram on 2026-05-12. v2.7.2.
+  ...Object.fromEntries(
+    Object.entries(webTools).map(([k, v]) => [k, v as unknown as InternalTool]),
+  ),
+  // linear family: keys are already fully-qualified `linear_*` (list, search,
+  // create_issue, update_issue). Operator-funded Linear API access in the
+  // same 2026-05-12 morning Telegram exchange as the web tools. v2.7.2.
+  ...Object.fromEntries(
+    Object.entries(linearTools).map(([k, v]) => [k, v as unknown as InternalTool]),
   ),
 };
 

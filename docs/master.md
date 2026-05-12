@@ -856,6 +856,43 @@ All 8 ship in v2.7.1 at `components/master/tools/diag.ts`:
 This is the persistent-supervisor loop working as designed:
 agent hits a failure mode, asks for capability, capability ships.
 
+### Phase 3o.2 — Web + self-introspection + Linear (v2.7.2)
+
+Hours after v2.7.1 shipped, the M3 agent surfaced three live
+capability gaps over Telegram: it couldn't search the web, it didn't
+know its own model + context budget, and it couldn't see (let alone
+update) the Linear board the operator runs subctl development from.
+The operator funded all three on the spot. **Seven new master tools**
+land in v2.7.2 across two new files and one extension to the diag
+family:
+
+**Web** (`components/master/tools/web.ts`, read-only):
+
+- `web_search` — Brave AI Search (query → results). `BRAVE_API_KEY`.
+- `web_fetch` — Firecrawl scrape (URL → markdown). `FIRECRAWL_API_KEY`.
+
+**Self-introspection** (added to `components/master/tools/diag.ts`):
+
+- `system_supervisor_info` — reads `providers.json` (supervisor role),
+  hits LM Studio's `/api/v0/models` for `loaded_context_length` /
+  `max_context_length` / `state` / `quantization` / `arch`, and
+  surfaces the auto-compact policy from `compact.json` (defaults if
+  absent). The agent uses this to reason about its own context budget.
+
+**Linear** (`components/master/tools/linear.ts`, GraphQL):
+
+- `linear_list_issues`, `linear_search` — read paths (filter / search).
+- `linear_create_issue`, `linear_update_issue` — **write** paths
+  (issue creation; state change + comment posting). `LINEAR_API_KEY`,
+  raw token (no "Bearer" prefix — Linear's convention).
+
+All keys live in the master daemon plist's `EnvironmentVariables`.
+Missing keys return structured errors with `launchctl kickstart`
+hints; HTTP failures (4xx/5xx/429/timeout) all surface structured
+errors with `retry_after` on rate limits — tools never throw.
+Dashboard `/api/settings/keys` gains matching presence rows for
+each. Master tool count: 62 → **69**.
+
 ### Phase 3r — Bake the operator's Claude config baseline into the repo
 
 Operator request 2026-05-10 during the FOOTHOLD dogfood: a chunk

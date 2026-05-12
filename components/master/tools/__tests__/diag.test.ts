@@ -504,7 +504,7 @@ describe("system_version_status", () => {
 // ---------------------------------------------------------------------------
 
 describe("diagTools family export", () => {
-  test("exports exactly the 8 v2.7.1 tools with the expected names", () => {
+  test("exports the v2.7.1 tools + the v2.7.2 supervisor-info tool", () => {
     expect(Object.keys(diagTools).sort()).toEqual([
       "system_git_status",
       "system_lmstudio_health",
@@ -512,6 +512,7 @@ describe("diagTools family export", () => {
       "system_network_health",
       "system_port_check",
       "system_rate_limit_status",
+      "system_supervisor_info",
       "system_version_status",
       "system_watchdog_self",
     ]);
@@ -524,5 +525,186 @@ describe("diagTools family export", () => {
       expect(typeof t.schema, name).toBe("object");
       expect(typeof t.invoke, name).toBe("function");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9. system_supervisor_info (v2.7.2)
+// ---------------------------------------------------------------------------
+
+describe("system_supervisor_info", () => {
+  test("happy path — surfaces supervisor + loaded model + compact policy", async () => {
+    const providers = JSON.stringify({
+      models: {
+        supervisor: {
+          provider: "lmstudio",
+          model: "qwen/qwen3.6-35b-a3b",
+          host: "http://localhost:1234/v1",
+          context_length: 65536,
+        },
+      },
+    });
+    const compact = JSON.stringify({
+      auto_compact: true,
+      threshold_pct: 85,
+      target_tokens: 40_000,
+      keep_recent: 8,
+    });
+    _setDepsForTesting({
+      fileExists: (p) => p.endsWith("providers.json") || p.endsWith("compact.json"),
+      readFile: (p) => (p.endsWith("providers.json") ? providers : compact),
+      fetchText: async (url) => {
+        if (url.endsWith("/api/v0/models")) {
+          return {
+            ok: true,
+            status: 200,
+            latencyMs: 22,
+            text: JSON.stringify({
+              data: [
+                {
+                  id: "qwen/qwen3.6-35b-a3b",
+                  type: "llm",
+                  state: "loaded",
+                  loaded_context_length: 65536,
+                  max_context_length: 131072,
+                  quantization: "Q4_K_M",
+                  arch: "qwen2",
+                  publisher: "Qwen",
+                },
+                { id: "other-model", state: "not-loaded" },
+              ],
+            }),
+          };
+        }
+        return { ok: false, status: 404, text: "", latencyMs: 1 };
+      },
+    });
+    const r = await callTool<{
+      ok: boolean;
+      supervisor: { provider: string; model_id: string; host: string; configured_context_length: number | null };
+      loaded: { is_loaded: boolean; loaded_context_length: number | null; max_context_length: number | null; quantization: string | null; arch: string | null };
+      auto_compact: { threshold_pct: number; target_tokens: number; keep_recent: number; auto_compact: boolean };
+      auto_compact_source: string;
+    }>(diagTools.system_supervisor_info);
+    expect(r.ok).toBe(true);
+    expect(r.supervisor.provider).toBe("lmstudio");
+    expect(r.supervisor.model_id).toBe("qwen/qwen3.6-35b-a3b");
+    // host stripped of trailing /v1 because /api/v0 lives on the root
+    expect(r.supervisor.host).toBe("http://localhost:1234");
+    expect(r.supervisor.configured_context_length).toBe(65536);
+    expect(r.loaded.is_loaded).toBe(true);
+    expect(r.loaded.loaded_context_length).toBe(65536);
+    expect(r.loaded.max_context_length).toBe(131072);
+    expect(r.loaded.quantization).toBe("Q4_K_M");
+    expect(r.auto_compact.threshold_pct).toBe(85);
+    expect(r.auto_compact.target_tokens).toBe(40_000);
+    expect(r.auto_compact.keep_recent).toBe(8);
+    expect(r.auto_compact_source).toBe("file");
+  });
+
+  test("LM Studio unreachable returns structured error but still surfaces supervisor + compact", async () => {
+    _setDepsForTesting({
+      fileExists: (p) => p.endsWith("providers.json"), // no compact.json → defaults
+      readFile: () =>
+        JSON.stringify({
+          models: {
+            supervisor: { provider: "lmstudio", model: "qwen3.6", host: "http://localhost:1234/v1" },
+          },
+        }),
+      fetchText: async () => ({
+        ok: false,
+        status: 0,
+        text: "",
+        latencyMs: 2500,
+        error: "fetch failed: connection refused",
+      }),
+    });
+    const r = await callTool<{
+      ok: boolean;
+      error: string;
+      supervisor: { provider: string; model_id: string };
+      auto_compact: { threshold_pct: number };
+      auto_compact_source: string;
+    }>(diagTools.system_supervisor_info);
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain("LM Studio");
+    expect(r.error).toContain("connection refused");
+    // Still useful — supervisor + compact policy come back even when LM Studio is down.
+    expect(r.supervisor.model_id).toBe("qwen3.6");
+    expect(r.auto_compact_source).toBe("defaults");
+    expect(r.auto_compact.threshold_pct).toBe(90); // documented default
+  });
+
+  test("providers.json missing returns structured error", async () => {
+    _setDepsForTesting({
+      fileExists: () => false,
+      fetchText: async () => {
+        throw new Error("must not be called when providers.json is missing");
+      },
+    });
+    const r = await callTool<{ ok: boolean; error: string; providers_path: string }>(
+      diagTools.system_supervisor_info,
+    );
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain("providers.json missing");
+    expect(r.error).toContain("subctl master enable");
+    expect(r.providers_path).toContain("providers.json");
+  });
+
+  test("compact.json missing falls back to defaults (still ok=true)", async () => {
+    _setDepsForTesting({
+      fileExists: (p) => p.endsWith("providers.json"), // no compact.json
+      readFile: () =>
+        JSON.stringify({
+          models: {
+            supervisor: { provider: "lmstudio", model: "qwen3.6", host: "http://localhost:1234/v1" },
+          },
+        }),
+      fetchText: async () => ({
+        ok: true,
+        status: 200,
+        latencyMs: 1,
+        text: JSON.stringify({
+          data: [{ id: "qwen3.6", state: "loaded", loaded_context_length: 32768, max_context_length: 65536 }],
+        }),
+      }),
+    });
+    const r = await callTool<{
+      ok: boolean;
+      auto_compact: { auto_compact: boolean; threshold_pct: number; target_tokens: number; keep_recent: number };
+      auto_compact_source: string;
+    }>(diagTools.system_supervisor_info);
+    expect(r.ok).toBe(true);
+    expect(r.auto_compact_source).toBe("defaults");
+    expect(r.auto_compact.auto_compact).toBe(true);
+    expect(r.auto_compact.threshold_pct).toBe(90);
+    expect(r.auto_compact.target_tokens).toBe(50_000);
+    expect(r.auto_compact.keep_recent).toBe(6);
+  });
+
+  test("supervisor model not present in LM Studio catalog returns ok=true with note", async () => {
+    _setDepsForTesting({
+      fileExists: (p) => p.endsWith("providers.json"),
+      readFile: () =>
+        JSON.stringify({
+          models: {
+            supervisor: { provider: "lmstudio", model: "ghost-model-not-installed" },
+          },
+        }),
+      fetchText: async () => ({
+        ok: true,
+        status: 200,
+        latencyMs: 1,
+        text: JSON.stringify({ data: [{ id: "different-model", state: "loaded" }] }),
+      }),
+    });
+    const r = await callTool<{
+      ok: boolean;
+      loaded: { is_loaded: boolean; loaded_context_length: number | null; note?: string };
+    }>(diagTools.system_supervisor_info);
+    expect(r.ok).toBe(true);
+    expect(r.loaded.is_loaded).toBe(false);
+    expect(r.loaded.loaded_context_length).toBeNull();
+    expect(r.loaded.note).toContain("not found");
   });
 });
