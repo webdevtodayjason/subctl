@@ -438,3 +438,331 @@ describe("subctl_update — --force still works", () => {
     expect(r.stdout).not.toContain("stash restored");
   });
 });
+
+// ─── v2.7.6 — argent-style additions ─────────────────────────────────────────
+//
+// Each test that touches `~/.config/subctl/config.toml` overrides
+// SUBCTL_CONFIG_DIR via mkdtemp so real operator state is never poked.
+
+function mkConfigDir(): { dir: string; cleanup: () => void } {
+  const dir = mkdtempSync(join(tmpdir(), "subctl-update-cfg-"));
+  return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+// Like runUpdate, but allows overriding extra env (e.g. SUBCTL_CONFIG_DIR).
+function runUpdateWithEnv(
+  localRepo: string,
+  args: string[],
+  extraEnv: Record<string, string>,
+): RunResult {
+  const argString = args.map((a) => `"${a}"`).join(" ");
+  return bashRun(
+    `source "${UPDATE_SH}"; subctl_update --no-restart ${argString}`,
+    { SUBCTL_REPO_ROOT: localRepo, ...extraEnv },
+  );
+}
+
+// Run `subctl update status` (no --no-restart needed — status never restarts).
+function runStatus(localRepo: string, args: string[], extraEnv: Record<string, string> = {}): RunResult {
+  const argString = args.map((a) => `"${a}"`).join(" ");
+  return bashRun(
+    `source "${UPDATE_SH}"; subctl_update status ${argString}`,
+    { SUBCTL_REPO_ROOT: localRepo, ...extraEnv },
+  );
+}
+
+describe("subctl update status — read-only", () => {
+  let pair: RepoPair;
+  let cfg: ReturnType<typeof mkConfigDir>;
+  beforeEach(() => {
+    pair = setupRepoPair("2.7.4");
+    // Always isolate config so last_update reads aren't contaminated by
+    // the operator's real ~/.config/subctl/config.toml.
+    cfg = mkConfigDir();
+  });
+  afterEach(() => { pair.cleanup(); cfg.cleanup(); });
+
+  test("clean repo: prints version + channel + remote state, exits 0", () => {
+    const r = runStatus(pair.localRepo, [], { SUBCTL_CONFIG_DIR: cfg.dir });
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain("subctl 2.7.4");
+    expect(r.stdout).toContain("branch:   main");
+    expect(r.stdout).toContain("channel:  stable (default)");
+    expect(r.stdout).toContain("up to date");
+    // Status MUST NOT advance to the update flow — no merge/stash log lines.
+    expect(r.stdout).not.toContain("updated ");
+    expect(r.stdout).not.toContain("auto-stashing");
+  });
+
+  test("dirty repo: still exits 0 (status doesn't enforce cleanliness)", () => {
+    writeFileSync(join(pair.localRepo, "README.md"), "tampered\n");
+    const r = runStatus(pair.localRepo, [], { SUBCTL_CONFIG_DIR: cfg.dir });
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain("subctl 2.7.4");
+    // README drift is still on disk — status didn't touch it.
+    expect(execSync(`cat "${join(pair.localRepo, "README.md")}"`, { encoding: "utf8" }))
+      .toContain("tampered");
+  });
+
+  test("--json: returns parseable JSON with the expected fields", () => {
+    const r = runStatus(pair.localRepo, ["--json"], { SUBCTL_CONFIG_DIR: cfg.dir });
+    expect(r.code).toBe(0);
+    const doc = JSON.parse(r.stdout.trim());
+    expect(doc.ok).toBe(true);
+    expect(doc.version).toBe("2.7.4");
+    expect(doc.channel).toBe("stable");
+    expect(doc.branch).toBe("main");
+    expect(doc.remote.state).toBe("up-to-date");
+    expect(doc.last_update).toBeNull();
+  });
+
+  test("behind remote: status surfaces 'commits ahead'", () => {
+    pushRemoteBump(pair.bareRepo, "2.7.5");
+    const r = runStatus(pair.localRepo, [], { SUBCTL_CONFIG_DIR: cfg.dir });
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain("1 commits ahead");
+  });
+});
+
+describe("subctl_update --channel", () => {
+  let pair: RepoPair;
+  let cfg: ReturnType<typeof mkConfigDir>;
+  beforeEach(() => {
+    pair = setupRepoPair("2.7.4");
+    cfg = mkConfigDir();
+  });
+  afterEach(() => { pair.cleanup(); cfg.cleanup(); });
+
+  test("--channel beta persists to config.toml under [update]", () => {
+    // No `beta` branch on origin — but persistence happens BEFORE the
+    // branch-existence check, so the config write still lands. The
+    // fallback-to-main behavior is exercised separately.
+    const r = runUpdateWithEnv(pair.localRepo, ["--channel", "beta"], { SUBCTL_CONFIG_DIR: cfg.dir });
+    // Whatever the run exit code, the persistence MUST have happened.
+    const conf = execSync(`cat "${join(cfg.dir, "config.toml")}"`, { encoding: "utf8" });
+    expect(conf).toContain("[update]");
+    expect(conf).toContain('channel = "beta"');
+    // The persistence log line goes to stdout when not in --json mode.
+    expect(r.stdout).toContain("channel set to 'beta'");
+  });
+
+  test("--channel invalid → exits 1 with a clear error", () => {
+    const r = runUpdateWithEnv(pair.localRepo, ["--channel", "preview"], { SUBCTL_CONFIG_DIR: cfg.dir });
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("unknown channel 'preview'");
+    expect(r.stderr).toContain("stable, beta, dev");
+  });
+
+  test("config.toml channel value is the default when --channel is omitted", () => {
+    // Pre-seed config.toml with channel = "beta".
+    writeFileSync(join(cfg.dir, "config.toml"), '[update]\nchannel = "beta"\n');
+    const r = runUpdateWithEnv(pair.localRepo, [], { SUBCTL_CONFIG_DIR: cfg.dir });
+    // beta branch doesn't exist on origin → fall back to main with a warning,
+    // and the version block reflects that fallback.
+    expect(r.stdout).toContain("branch 'beta' doesn't exist on origin");
+    expect(r.stdout).toContain("channel: beta");
+  });
+});
+
+describe("subctl_update --json (full update flow)", () => {
+  let pair: RepoPair;
+  beforeEach(() => { pair = setupRepoPair("2.7.4"); });
+  afterEach(() => pair.cleanup());
+
+  test("happy path: --json on up-to-date repo emits parseable success doc", () => {
+    const r = runUpdate(pair.localRepo, ["--json"]);
+    expect(r.code).toBe(0);
+    const doc = JSON.parse(r.stdout.trim());
+    expect(doc.ok).toBe(true);
+    expect(doc.from.version).toBe("2.7.4");
+    expect(doc.to.version).toBe("2.7.4");
+    expect(doc.channel).toBe("stable");
+    expect(doc.commits_applied).toBe(0);
+    expect(doc.lockfile_stashed).toBe(false);
+    expect(doc.services_restarted).toEqual([]);
+  });
+
+  test("update path: --json reports from→to + commits_applied", () => {
+    pushRemoteBump(pair.bareRepo, "2.7.5");
+    const r = runUpdate(pair.localRepo, ["--json"]);
+    expect(r.code).toBe(0);
+    const doc = JSON.parse(r.stdout.trim());
+    expect(doc.ok).toBe(true);
+    expect(doc.from.version).toBe("2.7.4");
+    expect(doc.to.version).toBe("2.7.5");
+    expect(doc.commits_applied).toBe(1);
+    expect(doc.lockfile_stashed).toBe(false);
+  });
+
+  test("error path: --json on dirty repo emits {ok:false,error,stage}", () => {
+    pushRemoteBump(pair.bareRepo, "2.7.5");
+    writeFileSync(join(pair.localRepo, "README.md"), "tampered\n");
+
+    const r = runUpdate(pair.localRepo, ["--json"]);
+    expect(r.code).toBe(1);
+    const doc = JSON.parse(r.stdout.trim());
+    expect(doc.ok).toBe(false);
+    expect(doc.error).toContain("uncommitted changes");
+    // Dirty-tree gate fires after the fetch stage label is set.
+    expect(["preflight", "fetch"]).toContain(doc.stage);
+  });
+
+  test("--json suppresses all human output to stdout/stderr", () => {
+    const r = runUpdate(pair.localRepo, ["--json"]);
+    expect(r.code).toBe(0);
+    // The stdout MUST be one line (the JSON doc) and parse cleanly.
+    const lines = r.stdout.trim().split("\n");
+    expect(lines.length).toBe(1);
+    // No human log markers should leak.
+    expect(r.stdout).not.toContain("==>");
+    expect(r.stdout).not.toContain("version state");
+    expect(r.stderr).toBe("");
+  });
+
+  test("lockfile auto-stash is reflected in JSON as lockfile_stashed:true", () => {
+    pushRemoteBump(pair.bareRepo, "2.7.5");
+    writeFileSync(join(pair.localRepo, "bun.lock"),
+      'lockfileVersion = 1\nseed = "v0"\nplatform = "darwin-arm64"\n');
+
+    const r = runUpdate(pair.localRepo, ["--json"]);
+    expect(r.code).toBe(0);
+    const doc = JSON.parse(r.stdout.trim());
+    expect(doc.ok).toBe(true);
+    expect(doc.lockfile_stashed).toBe(true);
+  });
+});
+
+describe("subctl_update --yes (downgrade confirmation)", () => {
+  let pair: RepoPair;
+  // Seed the LOCAL repo at v2.7.5 so that origin/main (at v2.7.4) is a downgrade.
+  beforeEach(() => {
+    pair = setupRepoPair("2.7.4");
+    // Bump the local-only version past origin, but DON'T push — origin
+    // still has 2.7.4. Adding a commit also makes the local repo strictly
+    // ahead, which would normally make ff-only a no-op; reset origin
+    // forward with a different commit first so the merge has work to do.
+    // Simpler path: push a downgrade commit by rewriting origin's VERSION
+    // backwards relative to local. We do that by bumping local first.
+    writeFileSync(join(pair.localRepo, "VERSION"), "2.7.6\n");
+    git(pair.localRepo, "add", "VERSION");
+    git(pair.localRepo, "commit", "-q", "-m", "local bump to 2.7.6");
+    // Now push origin to a DIFFERENT commit that drops VERSION back to 2.7.5
+    // — diverged, so we need --force on the merge too, BUT the downgrade
+    // path runs BEFORE the cleanliness gate so we still hit it.
+    pushRemoteBump(pair.bareRepo, "2.7.5");
+  });
+  afterEach(() => pair.cleanup());
+
+  test("downgrade detected + --yes set + non-interactive → proceeds (or fails later, not at the prompt)", () => {
+    const r = runUpdate(pair.localRepo, ["--yes", "--force"]);
+    // Whatever happens at the merge stage (the test repos diverge so
+    // ff-only may fail), the downgrade was auto-confirmed — we MUST NOT
+    // see the non-interactive refusal.
+    expect(r.stderr).not.toContain("refusing to downgrade");
+    expect(r.stdout).toContain("auto-confirming downgrade");
+  });
+
+  test("downgrade detected + no --yes + non-interactive → refuses with stage=preflight-ish", () => {
+    const r = runUpdate(pair.localRepo, ["--force"]);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("refusing to downgrade");
+  });
+});
+
+describe("subctl_update --timeout", () => {
+  let pair: RepoPair;
+  beforeEach(() => { pair = setupRepoPair("2.7.4"); });
+  afterEach(() => pair.cleanup());
+
+  test("--timeout 1 with a sleeping git-fetch wrapper → fetch stage times out", () => {
+    // Plant a fake `git` in a temp dir that delegates to real git for
+    // everything EXCEPT `git fetch`, which sleeps. We prepend it to PATH
+    // so subctl_update's preflight (rev-parse, remote, ls-remote) still
+    // works — only the timed `git fetch` step trips the alarm.
+    const realGit = execSync(`which git`, { encoding: "utf8" }).trim();
+    const fakeBin = mkdtempSync(join(tmpdir(), "subctl-update-fakebin-"));
+    try {
+      writeFileSync(
+        join(fakeBin, "git"),
+        `#!/usr/bin/env bash
+if [[ "$1" == "fetch" ]]; then
+  sleep 30
+  exit 0
+fi
+exec "${realGit}" "$@"
+`,
+      );
+      execSync(`chmod +x "${join(fakeBin, "git")}"`);
+
+      const r = bashRun(
+        `source "${UPDATE_SH}"; subctl_update --no-restart --timeout 1`,
+        {
+          SUBCTL_REPO_ROOT: pair.localRepo,
+          PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+        },
+      );
+      // Timeout-wrapped fetch must fail (exit 2) and the error must
+      // name the failed step ("fetch").
+      expect(r.code).toBe(2);
+      expect(r.stderr).toContain("timed out after 1s");
+      expect(r.stderr).toContain("fetch");
+    } finally {
+      rmSync(fakeBin, { recursive: true, force: true });
+    }
+  });
+
+  test("--timeout requires a non-negative integer", () => {
+    const r = runUpdate(pair.localRepo, ["--timeout", "abc"]);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("--timeout requires");
+  });
+
+  test("--timeout 1200 (default-ish) on up-to-date repo still succeeds", () => {
+    // Sanity: a generous timeout doesn't break the happy path.
+    const r = runUpdate(pair.localRepo, ["--timeout", "1200"]);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain("already up to date");
+  });
+});
+
+describe("subctl_update --help (v2.7.6 polish)", () => {
+  test("--help includes the Notes section", () => {
+    const r = bashRun(`source "${UPDATE_SH}"; subctl_update --help`);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain("Notes:");
+    expect(r.stdout).toContain("Back-compat");
+    expect(r.stdout).toContain("Downgrades");
+  });
+
+  test("--help includes the Examples section", () => {
+    const r = bashRun(`source "${UPDATE_SH}"; subctl_update --help`);
+    expect(r.stdout).toContain("Examples:");
+    expect(r.stdout).toContain("subctl update status");
+    expect(r.stdout).toContain("subctl update --channel beta");
+    expect(r.stdout).toContain("subctl update --json");
+  });
+
+  test("--help includes the Docs URL footer", () => {
+    const r = bashRun(`source "${UPDATE_SH}"; subctl_update --help`);
+    expect(r.stdout).toContain("Docs: https://subctl.com/docs/update");
+  });
+});
+
+describe("subctl_update — back-compat (sacred)", () => {
+  let pair: RepoPair;
+  beforeEach(() => { pair = setupRepoPair("2.7.4"); });
+  afterEach(() => pair.cleanup());
+
+  test("no flags: behavior matches v2.7.5 (version block, ff-merge, no JSON)", () => {
+    pushRemoteBump(pair.bareRepo, "2.7.5");
+    const r = runUpdate(pair.localRepo);
+    expect(r.code).toBe(0);
+    // The v2.7.5 markers still appear.
+    expect(r.stdout).toContain("subctl update — version state");
+    expect(r.stdout).toContain("v2.7.4 → v2.7.5");
+    // No JSON in stdout.
+    expect(r.stdout).not.toMatch(/^\{"ok":/m);
+    // No channel-persistence log when --channel wasn't passed.
+    expect(r.stdout).not.toContain("channel set to");
+  });
+});

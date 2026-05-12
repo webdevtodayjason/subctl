@@ -4,6 +4,147 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.7.6] — 2026-05-12
+
+### `subctl update` — argent-style polish
+
+Operator review of `argent update --help` set the bar: a polished update
+flow has a read-only status probe, a persisted channel concept, a JSON
+output mode for automation, distinct knobs for "auto-confirm" vs
+"auto-stash", per-step timeouts, and a `--help` that reads like docs
+instead of a flag dump. v2.7.6 adds all of those to `subctl update`
+without disturbing the v2.7.5 version-state block or lockfile auto-stash.
+
+### What's new
+
+**`subctl update status`** — read-only subcommand. Runs the same
+fetch + version-block logic as `update`, prints the operator's current
+version / channel / branch / remote state, then exits without touching
+the working tree. Works even with a dirty tree (where `update` would
+abort), so it's the right first move when you're not sure what state
+you're in.
+
+```
+$ subctl update status
+subctl 2.7.5 (ff262d0c)
+  branch:   main
+  channel:  stable (default)
+  remote:   v2.7.5 (ff262d0c) — up to date
+  last update: 2026-05-12T17:37:23Z
+```
+
+**`--channel stable|beta|dev`** — persists the operator's channel
+preference under `[update].channel` in `~/.config/subctl/config.toml`
+(grep/awk-based TOML parsing; no extra dependency). Mapping is the
+boring obvious one: `stable → main`, `beta → beta`, `dev → dev`.
+Passing `--channel` both persists the value AND uses it for the
+current run; subsequent runs without the flag pick it up from disk.
+Unknown values fail fast with `unknown channel 'X' — pick one of:
+stable, beta, dev` (exit 1). `-b/--branch` still wins for one-off
+branch tests.
+
+**`--json`** — emits a single document at end-of-run, suppresses every
+human log line to /dev/null:
+
+```json
+{
+  "ok": true,
+  "from": {"version": "2.7.4", "sha": "74ae7ae7"},
+  "to":   {"version": "2.7.5", "sha": "ff262d0c"},
+  "channel": "stable",
+  "commits_applied": 1,
+  "lockfile_stashed": false,
+  "services_restarted": ["com.subctl.master", "com.subctl.dashboard"],
+  "doctor_warnings": 0
+}
+```
+
+On error: `{"ok":false,"error":"…","stage":"preflight|fetch|merge|deps|restart|doctor"}`.
+The stage string tells CI exactly where the run stopped, so log
+collection can scope itself.
+
+**`--yes`** (independent of `--force`). Auto-confirms interactive
+prompts; today the only prompt is the downgrade gate (introduced in
+v2.7.6 — `remote_version < current_version` asks "proceed with
+downgrade? [y/N]"). Non-interactive shells without `--yes` now refuse
+downgrades rather than silently regressing. `--force` keeps its v2.7.5
+meaning: stash anything dirty that isn't lockfile-only.
+
+**`--timeout <secs>`** (default 1200). Wraps `git fetch`, `git merge`,
+and `bun install` with a portable timer (real `timeout` / `gtimeout`
+when present, else a perl-based SIGALRM fallback). Timeouts return
+the GNU-conventional 124 internally; user-facing message names the
+step that timed out (e.g., `git fetch timed out after 60s`) so the
+operator doesn't have to guess. Default of 1200s matches the slowest
+historical `bun install` we've seen on a cold cache.
+
+**Friendly `--help`**. Restructured along argent's pattern:
+Usage → Options → What this does → Switch channels → Non-interactive
+→ Examples (6 lines) → Notes (4 bullets) → Exit codes → Docs URL
+footer (`Docs: https://subctl.com/docs/update`). Operators who want
+the answer to "what does `--yes` do vs `--force`?" find it in the
+Notes block without reading the full `Options` list.
+
+**`update wizard` stub** — reserved for the future interactive setup
+flow. Today it prints a one-liner pointing at `status` + `--channel`
+and exits 0. Wiring it in now means we don't have to bump the major
+version when the wizard ships.
+
+### Back-compat (sacred)
+
+`subctl update` with **no flags** behaves identically to v2.7.5: same
+version-state block, same lockfile auto-stash, same `--force` gate,
+same exit codes. The new flow paths are strictly additive — none of
+them fires unless the operator opts in via flag.
+
+### Test coverage
+
+`lib/__tests__/update.test.ts` — **57 tests / 157 assertions** in
+~14 s (up from 36 / 79 in v2.7.5). The v2.7.5 tests are intact; the
+new ones cover:
+
+- **`update status` (4 tests)**: clean repo prints version+channel+state
+  and exits 0; dirty repo still exits 0 (status doesn't enforce
+  cleanliness); `--json` returns parseable JSON; behind-remote
+  surfaces `<N> commits ahead`.
+- **`--channel` (3 tests)**: `--channel beta` persists to
+  `config.toml` under `[update]`; invalid channel fails with a clear
+  error; pre-seeded `config.toml` is honored when `--channel` is
+  omitted.
+- **`--json` (5 tests)**: happy path emits success doc; update path
+  reports from→to + `commits_applied`; error path emits
+  `{ok:false,error,stage}`; suppresses ALL human stdout/stderr (single
+  parseable line); lockfile auto-stash surfaces as
+  `lockfile_stashed: true`.
+- **`--yes` downgrade (2 tests)**: with `--yes`, non-interactive
+  downgrade proceeds (no refusal); without `--yes`, non-interactive
+  downgrade refuses with a clear message.
+- **`--timeout` (3 tests)**: `--timeout 1` against a `sleep 30` fake
+  git wrapper trips the timeout and the error names the `fetch`
+  stage; non-integer values fail fast; default-ish 1200s on an
+  up-to-date repo still no-ops cleanly.
+- **`--help` (3 tests)**: presence of Notes section, Examples
+  section, and Docs URL footer.
+- **Back-compat (1 test)**: `subctl update` with no flags still shows
+  the v2.7.5 markers, no JSON leakage, no channel-persistence log.
+
+All new tests isolate `SUBCTL_CONFIG_DIR` per-test via `mkdtempSync`
+so config writes never touch the operator's real
+`~/.config/subctl/config.toml`. The `--timeout` test plants a fake
+`git` in a temp dir that delegates to real git for everything except
+`git fetch`, so preflight rev-parse/remote/ls-remote still work and
+only the bounded step trips the alarm.
+
+### Canonical references
+
+- `lib/update.sh` — subcommand dispatch + new flag parsing + JSON
+  redirect dance at the top; `_subctl_update_status`,
+  `_subctl_update_with_timeout`, `_subctl_update_load_channel`,
+  `_subctl_update_persist_channel`, `_subctl_update_version_cmp`,
+  `_subctl_update_emit_json` helpers below the v2.7.5 originals.
+- `lib/__tests__/update.test.ts` — 57 tests / 157 assertions.
+- `docs/master.md` Phase 3o.6 — the story.
+
 ## [2.7.5] — 2026-05-12
 
 ### `subctl update` UX — version state up front, lockfile drift auto-stashes

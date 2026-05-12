@@ -1091,6 +1091,65 @@ Canonical: `lib/update.sh` (helpers + new flow in `subctl_update`),
 the pure helpers + integration against hermetic temp git
 origin/clone pairs).
 
+### Phase 3o.6 — `subctl update` argent-style polish (v2.7.6)
+
+Operator review of `argent update --help` set the bar: a polished
+update flow has a read-only status probe, a persisted channel
+concept, a JSON output mode for automation, distinct knobs for
+"auto-confirm" vs "auto-stash", per-step timeouts, and a `--help`
+that reads like docs instead of a flag dump. v2.7.6 adds all of
+those to `subctl update` without disturbing the v2.7.5 version-state
+block or lockfile auto-stash.
+
+**Six additions, all to `lib/update.sh`:**
+
+1. **`subctl update status`** — read-only subcommand. Runs the same
+   fetch + version-block logic but never advances to merge/stash.
+   Works on dirty trees (where `update` would abort), so it's the
+   right first move when the operator isn't sure what state the
+   host is in.
+
+2. **`--channel stable|beta|dev`** — persists under
+   `[update].channel` in `~/.config/subctl/config.toml` via a
+   small awk-based TOML rewriter. Mapping: `stable→main`,
+   `beta→beta`, `dev→dev`. `-b/--branch` still wins for one-off
+   branch tests.
+
+3. **`--json`** — single-document end-of-run output, all human log
+   lines suppressed. Success doc carries
+   `from/to/channel/commits_applied/lockfile_stashed/services_restarted/doctor_warnings`;
+   error doc carries `error/stage` where stage is one of
+   `preflight|fetch|merge|deps|restart|doctor`.
+
+4. **`--yes`** (independent of `--force`) — auto-confirms the new
+   downgrade prompt (`remote_version < current_version` asks
+   "proceed with downgrade? [y/N]"). Non-interactive shells without
+   `--yes` refuse downgrades instead of silently regressing.
+
+5. **`--timeout <secs>`** (default 1200) — wraps fetch / merge /
+   install with a portable timer (`timeout`/`gtimeout` when
+   present, else perl `alarm`+`exec`). Returns 124 internally;
+   user-facing message names the failed step.
+
+6. **Friendly `--help`** — restructured along argent's pattern:
+   Usage → Options → What this does → Switch channels →
+   Non-interactive → Examples → Notes → Exit codes → Docs URL
+   (`https://subctl.com/docs/update`).
+
+**Back-compat is sacred.** `subctl update` with no flags behaves
+identically to v2.7.5: same version-state block, same lockfile
+auto-stash, same `--force` gate, same exit codes.
+
+**Subtle correctness note** that bit us during implementation:
+`if ! cmd; then rc=$?` captures the negation's exit code (0), not
+`cmd`'s real exit. The three timed steps (fetch / merge / install)
+all use the explicit `cmd; local rc=$?; if [[ $rc -ne 0 ]]; then`
+pattern instead, so the timeout sentinel (124) actually reaches
+the error branch.
+
+Canonical: `lib/update.sh` (557 → ~750 LOC), `lib/__tests__/update.test.ts`
+(36 → 57 tests / 79 → 157 assertions).
+
 ### Phase 3r — Bake the operator's Claude config baseline into the repo
 
 Operator request 2026-05-10 during the FOOTHOLD dogfood: a chunk
