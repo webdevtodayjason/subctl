@@ -82,7 +82,7 @@ describe("subctl --version / --help", () => {
   test("`subctl version` prints VERSION file content", () => {
     const r = run(["version"]);
     expect(r.code).toBe(0);
-    expect(r.stdout).toContain("2.7.28");
+    expect(r.stdout).toContain("2.7.36");
   });
 
   test("`subctl --version` and `-V` are accepted", () => {
@@ -90,19 +90,28 @@ describe("subctl --version / --help", () => {
     const b = run(["-V"]);
     expect(a.code).toBe(0);
     expect(b.code).toBe(0);
-    expect(a.stdout).toContain("2.7.28");
-    expect(b.stdout).toContain("2.7.28");
+    expect(a.stdout).toContain("2.7.36");
+    expect(b.stdout).toContain("2.7.36");
   });
 
-  test("`subctl --help` lists v2.7.28 subcommands", () => {
+  test("`subctl --help` lists v2.7.28 + v2.7.36 subcommands", () => {
     const r = run(["--help"]);
     expect(r.code).toBe(0);
-    // The five new verbs all appear in the help block.
+    // The five v2.7.28 verbs.
     expect(r.stdout).toContain("subctl status");
     expect(r.stdout).toContain("subctl logs");
     expect(r.stdout).toContain("subctl deploy");
     expect(r.stdout).toContain("subctl notif");
     expect(r.stdout).toContain("subctl memory");
+    // v2.7.36 expansion: team mgmt, config, profile.
+    expect(r.stdout).toContain("subctl team list");
+    expect(r.stdout).toContain("subctl team kill");
+    expect(r.stdout).toContain("subctl team exec");
+    expect(r.stdout).toContain("subctl team logs");
+    expect(r.stdout).toContain("subctl config show");
+    expect(r.stdout).toContain("subctl config validate");
+    expect(r.stdout).toContain("subctl profile show");
+    expect(r.stdout).toContain("subctl profile switch");
   });
 });
 
@@ -168,7 +177,7 @@ describe("subctl status", () => {
       expect(r.code).toBe(0);
       const doc = JSON.parse(r.stdout);
       expect(doc.ok).toBe(true);
-      expect(doc.cli_version).toBe("2.7.28");
+      expect(doc.cli_version).toBe("2.7.36");
       expect(doc.master.version).toBe("2.7.28");
       expect(doc.dashboard.version).toBe("2.7.28");
     } finally {
@@ -479,5 +488,355 @@ describe("subctl memory", () => {
     const r = run(["memory", "remember"]);
     expect(r.code).toBe(1);
     expect(r.stderr).toMatch(/body text/);
+  });
+});
+
+// ── v2.7.36 — team ──────────────────────────────────────────────────────────
+describe("subctl team (v2.7.36)", () => {
+  test("--help lists list/kill/exec/logs verbs", () => {
+    const r = run(["team", "--help"]);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain("list");
+    expect(r.stdout).toContain("kill");
+    expect(r.stdout).toContain("exec");
+    expect(r.stdout).toContain("logs");
+  });
+
+  test("list renders rows from /api/orchestration", async () => {
+    const dash = spawnFake({
+      "/api/orchestration": () =>
+        Response.json({
+          orchestrations: [
+            {
+              name: "v2.7.36-cli",
+              path: "/Users/op/code/subctl",
+              attached: true,
+              windows: 2,
+              claude_account_dir: "/Users/op/.claude-dev",
+              is_orchestrator: true,
+              last_activity_seconds_ago: 12,
+              last_event_type: "progress",
+              last_event_text: "branch created",
+            },
+            {
+              name: "v2.7.36-stuck",
+              path: "/Users/op/code/subctl",
+              attached: false,
+              windows: 1,
+              claude_account_dir: "/Users/op/.claude-dev",
+              is_orchestrator: true,
+              last_activity_seconds_ago: 3600,
+              last_event_type: "blocked",
+              last_event_text: "lint failing on foo.ts",
+            },
+          ],
+        }),
+    });
+    try {
+      const r = run(["team", "list"], { SUBCTL_SERVICE_PORT: String(dash.port) });
+      expect(r.code).toBe(0);
+      expect(r.stdout).toContain("v2.7.36-cli");
+      expect(r.stdout).toContain("v2.7.36-stuck");
+      expect(r.stdout).toContain("progress");
+      expect(r.stdout).toContain("blocked");
+      expect(r.stdout).toContain("branch created");
+    } finally {
+      dash.stop();
+    }
+  });
+
+  test("list with zero orchestrations prints empty marker", async () => {
+    const dash = spawnFake({
+      "/api/orchestration": () => Response.json({ orchestrations: [] }),
+    });
+    try {
+      const r = run(["team", "list"], { SUBCTL_SERVICE_PORT: String(dash.port) });
+      expect(r.code).toBe(0);
+      expect(r.stdout).toMatch(/no active orchestrator sessions/);
+    } finally {
+      dash.stop();
+    }
+  });
+
+  test("kill POSTs /kill + archives inbox", async () => {
+    let posted = false;
+    const dash = spawnFake({
+      "POST /api/orchestration/v2.7.36-cli/kill": () => {
+        posted = true;
+        return Response.json({ ok: true });
+      },
+    });
+    const inboxDir = mkdtempSync(join(tmpdir(), "subctl-team-kill-"));
+    writeFileSync(
+      join(inboxDir, "v2.7.36-cli.jsonl"),
+      JSON.stringify({ ts: "2026-05-13T11:00:00Z", type: "done", text: "ready" }) + "\n",
+    );
+    try {
+      const r = run(["team", "kill", "v2.7.36-cli"], {
+        SUBCTL_SERVICE_PORT: String(dash.port),
+        SUBCTL_MASTER_INBOX: inboxDir,
+      });
+      expect(r.code).toBe(0);
+      expect(posted).toBe(true);
+      expect(r.stdout + r.stderr).toMatch(/killed team/);
+      // Original inbox file should be gone…
+      const fs = require("node:fs");
+      expect(fs.existsSync(join(inboxDir, "v2.7.36-cli.jsonl"))).toBe(false);
+      // …and a .killed/ archive should exist with at least one file.
+      expect(fs.existsSync(join(inboxDir, ".killed"))).toBe(true);
+      const archived = fs.readdirSync(join(inboxDir, ".killed"));
+      expect(archived.some((f: string) => f.startsWith("v2.7.36-cli."))).toBe(true);
+    } finally {
+      dash.stop();
+      rmSync(inboxDir, { recursive: true, force: true });
+    }
+  });
+
+  test("exec POSTs text to /msg", async () => {
+    let body: unknown = null;
+    const dash = spawnFake({
+      "POST /api/orchestration/v2.7.36-cli/msg": async (req) => {
+        body = await req.json();
+        return Response.json({ ok: true });
+      },
+    });
+    try {
+      const r = run(["team", "exec", "v2.7.36-cli", "report", "progress"], {
+        SUBCTL_SERVICE_PORT: String(dash.port),
+      });
+      expect(r.code).toBe(0);
+      expect(body).toEqual({ text: "report progress" });
+    } finally {
+      dash.stop();
+    }
+  });
+
+  test("exec without text → exit 1", () => {
+    const r = run(["team", "exec", "v2.7.36-cli"]);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/usage: subctl team exec/);
+  });
+
+  test("logs tails an inbox JSONL", () => {
+    const inboxDir = mkdtempSync(join(tmpdir(), "subctl-team-logs-"));
+    writeFileSync(
+      join(inboxDir, "v2.7.36-cli.jsonl"),
+      [
+        JSON.stringify({ ts: "2026-05-13T11:00:00Z", type: "progress", text: "branch up" }),
+        JSON.stringify({ ts: "2026-05-13T11:05:00Z", type: "done", text: "PR open" }),
+      ].join("\n") + "\n",
+    );
+    try {
+      const r = run(["team", "logs", "v2.7.36-cli"], {
+        SUBCTL_MASTER_INBOX: inboxDir,
+      });
+      expect(r.code).toBe(0);
+      expect(r.stdout).toContain("PR open");
+      expect(r.stdout).toContain("PROGRESS");
+      expect(r.stdout).toContain("DONE");
+    } finally {
+      rmSync(inboxDir, { recursive: true, force: true });
+    }
+  });
+
+  test("logs for missing inbox → exit 1", () => {
+    const inboxDir = mkdtempSync(join(tmpdir(), "subctl-team-logs-empty-"));
+    try {
+      const r = run(["team", "logs", "nonexistent"], { SUBCTL_MASTER_INBOX: inboxDir });
+      expect(r.code).toBe(1);
+      expect(r.stderr).toMatch(/no inbox/);
+    } finally {
+      rmSync(inboxDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── v2.7.36 — config ────────────────────────────────────────────────────────
+describe("subctl config (v2.7.36)", () => {
+  let cfgDir: string;
+
+  beforeAll(() => {
+    cfgDir = mkdtempSync(join(tmpdir(), "subctl-cfg-"));
+    // accounts.conf
+    writeFileSync(
+      join(cfgDir, "accounts.conf"),
+      "# example\npersonal | claude | me@x.com | ~/.claude-personal | personal\n",
+    );
+    // notify.json contains a real-looking Telegram bot token; must be redacted.
+    writeFileSync(
+      join(cfgDir, "notify.json"),
+      JSON.stringify(
+        {
+          telegram_bot_token: "8775281030:AAGwu98BrijXNl-A3IuKfGr7PCOjg3tbWvE",
+          telegram_chat_id: "8693117634",
+        },
+        null,
+        2,
+      ),
+    );
+    // master/providers.json — exercise key-based redaction (api_key field).
+    mkdirSync(join(cfgDir, "master"), { recursive: true });
+    writeFileSync(
+      join(cfgDir, "master", "providers.json"),
+      JSON.stringify(
+        {
+          models: { supervisor: { model: "gpt-4o", host: "https://api.openai.com/v1" } },
+          api_key: "sk-abcdefghijklmnopqrstuvwx",
+          secrets: { anthropic_token: "sk-ant-abc1234567890" },
+        },
+        null,
+        2,
+      ),
+    );
+    // config.toml — well-formed
+    writeFileSync(join(cfgDir, "config.toml"), "[update]\nlast_run = \"now\"\n");
+  });
+
+  afterAll(() => {
+    rmSync(cfgDir, { recursive: true, force: true });
+  });
+
+  test("--help lists show/edit/validate verbs", () => {
+    const r = run(["config", "--help"]);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain("show");
+    expect(r.stdout).toContain("edit");
+    expect(r.stdout).toContain("validate");
+  });
+
+  test("show <section> redacts JSON values whose key matches secret pattern", () => {
+    const r = run(["config", "show", "providers"], { SUBCTL_CONFIG_DIR: cfgDir });
+    expect(r.code).toBe(0);
+    // Non-secret fields are kept.
+    expect(r.stdout).toContain("gpt-4o");
+    // sk-* values are stripped (both directly and via key-based redaction).
+    expect(r.stdout).not.toContain("sk-abcdefghijklmnopqrstuvwx");
+    expect(r.stdout).not.toContain("sk-ant-abc1234567890");
+    // The "api_key" + "anthropic_token" keys must have been redacted via key-walk.
+    expect(r.stdout).toMatch(/redacted/);
+  });
+
+  test("show notify redacts telegram bot token (textual)", () => {
+    const r = run(["config", "show", "notify"], { SUBCTL_CONFIG_DIR: cfgDir });
+    expect(r.code).toBe(0);
+    expect(r.stdout).not.toContain("8775281030:AAGwu98BrijXNl-A3IuKfGr7PCOjg3tbWvE");
+  });
+
+  test("show with no section iterates all known files", () => {
+    const r = run(["config", "show"], { SUBCTL_CONFIG_DIR: cfgDir });
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain("accounts");
+    expect(r.stdout).toContain("notify");
+    expect(r.stdout).toContain("providers");
+  });
+
+  test("show <unknown> → exit 1", () => {
+    const r = run(["config", "show", "nonsense"], { SUBCTL_CONFIG_DIR: cfgDir });
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/unknown section/);
+  });
+
+  test("validate passes on well-formed JSON + text + toml", () => {
+    const r = run(["config", "validate"], { SUBCTL_CONFIG_DIR: cfgDir });
+    expect(r.code).toBe(0);
+    expect(r.stdout).toMatch(/valid JSON/);
+    expect(r.stdout).toMatch(/text\/pipe-form/);
+    expect(r.stdout).toMatch(/toml-shaped/);
+  });
+
+  test("validate fails on malformed JSON", () => {
+    const broken = mkdtempSync(join(tmpdir(), "subctl-cfg-bad-"));
+    writeFileSync(join(broken, "notify.json"), "{ this is not json");
+    writeFileSync(join(broken, "accounts.conf"), "");
+    try {
+      const r = run(["config", "validate"], { SUBCTL_CONFIG_DIR: broken });
+      expect(r.code).toBe(1);
+      expect(r.stdout + r.stderr).toMatch(/invalid JSON/);
+    } finally {
+      rmSync(broken, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── v2.7.36 — profile ──────────────────────────────────────────────────────
+describe("subctl profile (v2.7.36)", () => {
+  test("--help lists show/switch/list verbs", () => {
+    const r = run(["profile", "--help"]);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain("show");
+    expect(r.stdout).toContain("switch");
+    expect(r.stdout).toContain("list");
+  });
+
+  test("show renders active profile + supervisor", async () => {
+    const dash = spawnFake({
+      "/api/profile": () =>
+        Response.json({
+          ok: true,
+          active: "chat",
+          profiles: ["chat", "heavy"],
+          detail: {
+            chat: { supervisor: "google/gemma-4-31b", host: "http://localhost:1234/v1" },
+            heavy: { supervisor: "qwen/qwen3.6-35b-a3b", host: "http://localhost:1234/v1" },
+          },
+        }),
+    });
+    try {
+      const r = run(["profile", "show"], { SUBCTL_SERVICE_PORT: String(dash.port) });
+      expect(r.code).toBe(0);
+      expect(r.stdout).toMatch(/active.*chat/);
+      expect(r.stdout).toContain("google/gemma-4-31b");
+      expect(r.stdout).toContain("http://localhost:1234/v1");
+    } finally {
+      dash.stop();
+    }
+  });
+
+  test("list renders both profiles with active marker", async () => {
+    const dash = spawnFake({
+      "/api/profile": () =>
+        Response.json({
+          ok: true,
+          active: "heavy",
+          profiles: ["chat", "heavy"],
+          detail: {
+            chat: { supervisor: "google/gemma-4-31b", host: "http://localhost:1234/v1" },
+            heavy: { supervisor: "qwen/qwen3.6-35b-a3b", host: "http://localhost:1234/v1" },
+          },
+        }),
+    });
+    try {
+      const r = run(["profile", "list"], { SUBCTL_SERVICE_PORT: String(dash.port) });
+      expect(r.code).toBe(0);
+      expect(r.stdout).toMatch(/\* heavy/);
+      expect(r.stdout).toMatch(/  chat/);
+      expect(r.stdout).toContain("qwen/qwen3.6-35b-a3b");
+    } finally {
+      dash.stop();
+    }
+  });
+
+  test("switch POSTs profile name and reports new active", async () => {
+    let body: unknown = null;
+    const dash = spawnFake({
+      "POST /api/profile": async (req) => {
+        body = await req.json();
+        return Response.json({ ok: true, active: "heavy", note: "takes effect on next prompt" });
+      },
+    });
+    try {
+      const r = run(["profile", "switch", "heavy"], { SUBCTL_SERVICE_PORT: String(dash.port) });
+      expect(r.code).toBe(0);
+      expect(body).toEqual({ profile: "heavy" });
+      expect(r.stdout).toMatch(/active profile.*heavy/);
+    } finally {
+      dash.stop();
+    }
+  });
+
+  test("switch without arg → exit 1", () => {
+    const r = run(["profile", "switch"]);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/usage: subctl profile switch/);
   });
 });

@@ -1,3 +1,42 @@
+## [2.7.36] — 2026-05-13
+
+### `feat(cli): v2.7.36 CLI expansion — team mgmt + config + profile`
+
+v2.7.28 shipped the foundational `bin/subctl` operator-from-anywhere surface (`status`, `logs`, `deploy`, `notif`, `memory`). v2.7.36 extends that with three new subcommand families: managing live orchestrator sessions, inspecting the on-disk config directory, and switching the master's active supervisor profile — all over the same localhost HTTP plane, all with the same text-by-default ergonomics.
+
+**`subctl team` — live orchestrator session management.** Four new verbs sitting on top of the dashboard's `/api/orchestration/*` surface so operators can manage running dev-team sessions from any terminal on the host without needing a tmux attach:
+
+- `subctl team list` — calls `GET /api/orchestration`, renders one row per active orchestrator session (name, attached?, windows, last-event age, last-event type/text). Falls back to listing `~/.config/subctl/master/inbox/*.jsonl` if the dashboard is unreachable, so the operator gets *something* useful even with the daemons off.
+- `subctl team kill <name>` — POSTs `/api/orchestration/<name>/kill` (which terminates the tmux session via `subctl session-kill`) AND moves `~/.config/subctl/master/inbox/<name>.jsonl` into `inbox/.killed/<name>.<ts>.jsonl`. The on-disk archive means a future team spawned under the same name doesn't inherit stale events. Both halves are reported in the success line.
+- `subctl team exec <name> <command...>` — POSTs `/api/orchestration/<name>/msg` with `{text: ...}`. The dashboard wraps the payload in the master's HMAC trust marker (ADR 0011 L1) before the tmux paste, so workers refuse it unless their spawn-time secret on disk matches. This is the one-off equivalent of `subctl orch msg`.
+- `subctl team logs <name> [--tail N] [--follow]` — tails `~/.config/subctl/master/inbox/<name>.jsonl` directly, rendering each line as `ts  TYPE  text` via jq. `--follow` keeps the stream open (`tail -F`) for file-rotation safety. `--tail` defaults to 20.
+
+The legacy dev-team-lead verbs (`subctl team report`, `subctl team inbox`) still work — the new dispatcher in `lib/cli.sh` forwards them to `components/team/team.sh` for back-compat. `subctl team logs <name>` is the new operator-facing alias of `subctl team inbox <name>`.
+
+**`subctl config` — inspect / edit / validate.** Replaces the old `subctl config edit` shim (which only edited `accounts.conf`) with a real config-management surface covering 10 known files (`accounts.conf`, `projects.conf`, `config.toml`, `notify.json`, `master-notify.json`, `profiles.json`, `master/providers.json`, `master/secrets.json`, `secrets-backends.json`, `master/policy.json`):
+
+- `subctl config show [section]` — pretty-print one or all known files with **two-pass secret redaction**. The structural pass walks JSON documents and replaces any value whose key matches `token|secret|password|credential|bearer|apikey|api_?key|access_?token|refresh_?token|private_?key|client_?secret|hmac` with `"***redacted***"`. The textual pass (every format) strips `sk-*`, `sk-ant-*`, `Bearer …`, `OP_*=…`, Telegram bot tokens (`\d{8,12}:[A-Za-z0-9_-]{30,}`), JWTs, and 64-hex blobs. Over-redaction is the design choice — the goal is "never print a usable token to stdout."
+- `subctl config edit [section|path]` — opens `$EDITOR` (default `vim`) on the resolved file. Section names map through the known-file table; absolute or `/`-containing arguments are used as paths directly. Parent directory is `mkdir -p`'d so editing a brand-new `providers.json` works.
+- `subctl config validate` — shape-checks every known file: JSON files run through `jq -e .`, TOML files pass an awk shape check (every line is blank/comment/`[section]`/`key = value`), text files (`accounts.conf`, `projects.conf`) require at least two `|` separators per non-comment line. Reports `✓` / `✗` per file with a summary tally; exits 1 if any present file failed.
+
+**`subctl profile` — supervisor profile switching.** Surfaces the v2.7.18 profile system (chat / heavy supervisor models) as a first-class CLI:
+
+- `subctl profile show` — `GET /api/profile`, renders `active: <name>` plus the resolved supervisor model + host for the active profile.
+- `subctl profile switch <chat|heavy>` — `POST /api/profile {profile: ...}`. The master's `fs.watch` on `profiles.json` fires the swap, which takes effect at the start of the next prompt (no daemon restart). The `note` field in the response is surfaced verbatim.
+- `subctl profile list` — same `/api/profile` source, renders both profiles as a table with an `*` marker on the active one. Falls back to reading `~/.config/subctl/profiles.json` directly when the dashboard is unreachable, so the operator can inspect the on-disk config even with the daemon off.
+
+**Tests.** `lib/__tests__/cli.test.ts` grows from 25 → 45 tests, all in the same `Bun.serve`-on-ephemeral-ports style as the v2.7.28 suite — `mkdtempSync`-scoped `$SUBCTL_CONFIG_DIR` and `$SUBCTL_MASTER_INBOX` fixtures so the suite never touches the operator's real config. One happy-path test per new subcommand plus negative-path coverage on bad arguments / missing files. Suite runs green without a live master or dashboard.
+
+**Files:**
+
+- Modified: `bin/subctl` — `team` and `config` dispatchers now route through `lib/cli.sh`; new `profile` dispatcher; help block expanded with the v2.7.36 verbs.
+- Modified: `lib/cli.sh` — `subctl_cli_team`, `subctl_cli_config`, `subctl_cli_profile` (+ helpers `_subctl_cli_redact_text`, `_subctl_cli_redact_json`, `_subctl_cli_config_files`, `_subctl_cli_urlencode`).
+- Modified: `lib/__tests__/cli.test.ts` — +20 tests covering the three new families and their negative paths.
+- Modified: `docs/cli.md` — full reference sections for `team`, `config`, `profile`; quick-reference grid extended.
+- Modified: `VERSION` → `2.7.36`.
+
+**Constraints honored:** `claude_code` outside `providers/claude/` = 0 hits. No API keys printed in `config show` output (verified by the telegram-bot-token redaction test + sk-* redaction test). `bun test lib/__tests__/cli.test.ts` → 45/45 green. `bash -n bin/subctl lib/cli.sh` → clean.
+
 ## [2.7.31] — 2026-05-13
 
 ### `feat(master): v2.7.31 1Password Service Accounts (multi-backend secret resolution)`

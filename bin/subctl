@@ -111,12 +111,35 @@ Usage:
   subctl orch msg <name> <text>       Inject text into a session's pane
   subctl orch kill <name>             Kill a session
 
+  subctl team list                    List active orchestrator sessions
+                                      (calls /api/orchestration). Falls back
+                                      to inbox file listing if dashboard down.
+  subctl team kill <name>             Kill team's tmux session + archive its
+                                      inbox JSONL to inbox/.killed/
+  subctl team exec <name> <cmd...>    Inject a one-off HMAC-signed message
+                                      into team's lead pane (subctl_orch_msg)
+  subctl team logs <name> [--tail N]  Tail the team's inbox JSONL
   subctl team report --team <t> --type <kind> --text "..."
                                       Append a status event to a dev-team
                                       inbox so the master sees it (used by
                                       team leads in dev-team tmux sessions)
   subctl team inbox <team> [--tail N] Show recent events for a team
-  subctl team list                    List teams with an inbox
+                                      (alias of 'logs')
+
+  subctl config show [section]        Print one or all config files. Secrets
+                                      are redacted (sk-*, Bearer, OP_*, etc).
+                                      Sections: accounts, projects, config,
+                                      notify, profiles, providers, secrets, ...
+  subctl config edit [file]           Open \$EDITOR on a config file
+                                      (default: accounts.conf)
+  subctl config validate              Schema-shape check of every known
+                                      config file (JSON parse / TOML shape /
+                                      pipe-form for *.conf)
+
+  subctl profile show                 Current profile + supervisor model
+  subctl profile switch <chat|heavy>  POST /api/profile (takes effect on
+                                      next prompt — no restart)
+  subctl profile list                 List defined profiles (with active marker)
 
   subctl skills import <repo>         Import a skills repo (e.g. mattpocock/skills)
                                       into the local catalog at
@@ -415,14 +438,8 @@ case "$cmd" in
     ;;
 
   config)
-    . "$SUBCTL_REPO_ROOT/lib/accounts.sh"
-    sub="${1:-show}"
-    case "$sub" in
-      edit)        subctl_accounts_edit ;;
-      show|"")     [[ -f "$SUBCTL_ACCOUNTS_CONF" ]] && cat "$SUBCTL_ACCOUNTS_CONF" || subctl_warn "no $SUBCTL_ACCOUNTS_CONF" ;;
-      path)        echo "$SUBCTL_ACCOUNTS_CONF" ;;
-      *) subctl_die "usage: subctl config [show|edit|path]" ;;
-    esac
+    . "$SUBCTL_REPO_ROOT/lib/cli.sh"
+    subctl_cli_config "$@"
     ;;
 
   doctor)
@@ -614,8 +631,16 @@ case "$cmd" in
     ;;
 
   team)
-    . "$SUBCTL_REPO_ROOT/components/team/team.sh"
-    subctl_team "$@"
+    # v2.7.36: subctl_cli_team is the new dispatcher (list/kill/exec/logs);
+    # it forwards report/inbox to the legacy dev-team-lead helpers in
+    # components/team/team.sh so existing automation keeps working.
+    . "$SUBCTL_REPO_ROOT/lib/cli.sh"
+    subctl_cli_team "$@"
+    ;;
+
+  profile|profiles)
+    . "$SUBCTL_REPO_ROOT/lib/cli.sh"
+    subctl_cli_profile "$@"
     ;;
 
   skills)
