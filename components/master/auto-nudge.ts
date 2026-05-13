@@ -47,7 +47,8 @@ export type SweepActionKind =
   | "fresh"      // team is not stale; clear any prior nudge state
   | "first-nudge"// stale, never nudged: send nudge + info notification
   | "hold"       // stale + nudged within retry window: do nothing
-  | "escalate";  // stale + nudged > retry window ago: alert + renudge
+  | "escalate"   // stale + nudged > retry window ago: alert + renudge
+  | "vanished";  // team registry dir is gone — one-time alert + caller removes from tracker
 
 export interface SweepAction {
   team_id: string;
@@ -120,6 +121,21 @@ export interface SweepCallbacks {
   /** Emit an operator notification. Implementation calls emitNotification from notifications.ts. */
   emitInfo: (team_id: string, title: string, body: string) => void;
   emitAlert: (team_id: string, title: string, body: string) => void;
+  /**
+   * v2.7.32 — Emit a `kind:"team-vanished"` alert. Fires when the team's
+   * registry dir has been removed/archived (e.g. moved to teams/.killed/)
+   * but the watchdog was still tracking it via teamLastActivity. Caller is
+   * expected to also drop the team from its in-memory trackers so the
+   * alert is one-shot — see SweepAction.action="vanished" handling.
+   */
+  emitVanished?: (team_id: string, title: string, body: string) => void;
+  /**
+   * v2.7.32 — Optional reconciliation predicate. When provided, the sweep
+   * checks each team before deciding nudge/alert; if the predicate returns
+   * false the team is treated as vanished. When omitted the sweep behaves
+   * exactly as it did in v2.7.22–v2.7.31 (no reconciliation).
+   */
+  teamRegistryExists?: (team_id: string) => boolean;
   /** Optional decision log hook (server.ts wires this to logDecision). */
   logDecision?: (team_id: string, action: string, rationale: string) => void;
 }
@@ -141,6 +157,46 @@ export async function runStaleTeamSweep(opts: {
 }): Promise<SweepAction[]> {
   const actions: SweepAction[] = [];
   for (const team of opts.teams) {
+    // v2.7.32 — reconcile against the on-disk registry BEFORE deciding
+    // nudge/alert. The team-staleness tracker is seeded from tmux session
+    // signals and the inbox; if an operator archives a team's registry
+    // (e.g. mv ~/.local/state/subctl/teams/<id> ~/.local/state/subctl/teams/.killed/),
+    // the in-memory tracker would keep nudging/alerting on a team that no
+    // longer exists. Predicate is opt-in via callbacks.teamRegistryExists;
+    // omitting it preserves pre-v2.7.32 behavior for any test fixture that
+    // doesn't care about reconciliation.
+    if (
+      opts.callbacks.teamRegistryExists &&
+      !opts.callbacks.teamRegistryExists(team.team_id)
+    ) {
+      const age_min = (opts.cfg.now_ms - team.last_activity_ms) / 60_000;
+      actions.push({
+        team_id: team.team_id,
+        action: "vanished",
+        age_min,
+        last_event_type: team.last_event_type,
+      });
+      opts.state.delete(team.team_id);
+      const title = `team ${team.team_id} vanished from registry`;
+      const body =
+        `The team-staleness watchdog was tracking ${team.team_id} but its ` +
+        `registry directory (~/.local/state/subctl/teams/${team.team_id}/) ` +
+        `is no longer on disk — it was likely archived to teams/.killed/ or ` +
+        `removed by the operator. Dropping from the staleness tracker; no ` +
+        `further alerts will fire for this team unless it's re-spawned.`;
+      if (opts.callbacks.emitVanished) {
+        opts.callbacks.emitVanished(team.team_id, title, body);
+      }
+      if (opts.callbacks.logDecision) {
+        opts.callbacks.logDecision(
+          team.team_id,
+          "team_vanished",
+          `team registry dir absent; removed from staleness tracker (age=${Math.round(age_min)}min)`,
+        );
+      }
+      continue;
+    }
+
     const prior = opts.state.get(team.team_id);
     const decision = decideTeamAction(team, prior, opts.cfg);
     actions.push(decision);

@@ -16,12 +16,17 @@
 //     kickstart command without executing it.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const REPO_ROOT = resolve(import.meta.dir, "..", "..");
 const SUBCTL = join(REPO_ROOT, "bin", "subctl");
+
+// v2.7.32 — read the canonical VERSION on every test run so this suite
+// doesn't break on the next bump. Prior versions hardcoded "2.7.28";
+// the operator hit it as soon as v2.7.32 landed.
+const CURRENT_VERSION = readFileSync(join(REPO_ROOT, "VERSION"), "utf8").trim();
 
 interface RunResult {
   code: number;
@@ -82,7 +87,7 @@ describe("subctl --version / --help", () => {
   test("`subctl version` prints VERSION file content", () => {
     const r = run(["version"]);
     expect(r.code).toBe(0);
-    expect(r.stdout).toContain("2.7.28");
+    expect(r.stdout).toContain(CURRENT_VERSION);
   });
 
   test("`subctl --version` and `-V` are accepted", () => {
@@ -90,8 +95,8 @@ describe("subctl --version / --help", () => {
     const b = run(["-V"]);
     expect(a.code).toBe(0);
     expect(b.code).toBe(0);
-    expect(a.stdout).toContain("2.7.28");
-    expect(b.stdout).toContain("2.7.28");
+    expect(a.stdout).toContain(CURRENT_VERSION);
+    expect(b.stdout).toContain(CURRENT_VERSION);
   });
 
   test("`subctl --help` lists v2.7.28 subcommands", () => {
@@ -168,7 +173,11 @@ describe("subctl status", () => {
       expect(r.code).toBe(0);
       const doc = JSON.parse(r.stdout);
       expect(doc.ok).toBe(true);
-      expect(doc.cli_version).toBe("2.7.28");
+      expect(doc.cli_version).toBe(CURRENT_VERSION);
+      // Master + dashboard versions still hardcoded — they're the
+      // FAKE daemon's response in this test fixture, not the CLI's
+      // self-report. Pinned to 2.7.28 because that's what the fake
+      // emits above.
       expect(doc.master.version).toBe("2.7.28");
       expect(doc.dashboard.version).toBe("2.7.28");
     } finally {

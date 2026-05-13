@@ -215,6 +215,155 @@ describe("runStaleTeamSweep — dedup hold window", () => {
   });
 });
 
+describe("runStaleTeamSweep — vanished team reconciliation (v2.7.32)", () => {
+  test("stale team whose registry dir is absent → vanished alert + state cleared + no nudge", async () => {
+    const now = 100 * T_MIN;
+    // Team had been nudged before; registry dir is now gone.
+    const state = new Map<string, TeamNudgeState>([
+      ["claude-osint-cve-monitor", { last_nudge_at_ms: now - 31 * T_MIN }],
+    ]);
+    const nudges: Array<{ team_id: string; body: string }> = [];
+    const alerts: Array<{ team_id: string; title: string; body: string }> = [];
+    const infos: Array<{ team_id: string; title: string; body: string }> = [];
+    const vanished: Array<{ team_id: string; title: string; body: string }> = [];
+    const decisions: Array<{ team_id: string; action: string; rationale: string }> = [];
+
+    const actions = await runStaleTeamSweep({
+      teams: [
+        {
+          team_id: "claude-osint-cve-monitor",
+          last_activity_ms: now - 60 * T_MIN,
+          last_event_type: "report",
+        },
+      ],
+      state,
+      cfg: { staleness_threshold_ms: STALENESS, nudge_retry_ms: RETRY, now_ms: now },
+      staleness_threshold_min: 15,
+      callbacks: {
+        sendNudge: async (team_id, body) => {
+          nudges.push({ team_id, body });
+          return { ok: true as const };
+        },
+        emitInfo: (team_id, title, body) => infos.push({ team_id, title, body }),
+        emitAlert: (team_id, title, body) => alerts.push({ team_id, title, body }),
+        emitVanished: (team_id, title, body) => vanished.push({ team_id, title, body }),
+        teamRegistryExists: () => false, // dir vanished
+        logDecision: (team_id, action, rationale) =>
+          decisions.push({ team_id, action, rationale }),
+      },
+    });
+
+    expect(actions.length).toBe(1);
+    expect(actions[0]?.action).toBe("vanished");
+    expect(vanished.length).toBe(1);
+    expect(vanished[0]?.team_id).toBe("claude-osint-cve-monitor");
+    expect(vanished[0]?.title).toContain("vanished");
+    expect(vanished[0]?.body).toContain("teams/.killed/");
+    // No nudge/info/regular-alert when the team is vanished
+    expect(nudges.length).toBe(0);
+    expect(infos.length).toBe(0);
+    expect(alerts.length).toBe(0);
+    // State entry cleared so subsequent sweeps don't re-process
+    expect(state.has("claude-osint-cve-monitor")).toBe(false);
+    expect(decisions.length).toBe(1);
+    expect(decisions[0]?.action).toBe("team_vanished");
+  });
+
+  test("second sweep with same vanished team produces no second vanished alert (caller drops it)", async () => {
+    // Simulates server.ts behavior: after the first vanished action, the
+    // caller drops the team from teamLastActivity. The second sweep
+    // receives no teams entry for that id, so nothing fires.
+    const now = 100 * T_MIN;
+    const state = new Map<string, TeamNudgeState>();
+    const vanished: Array<{ team_id: string; title: string; body: string }> = [];
+
+    // First sweep — team is in the list, dir is gone, vanished fires.
+    const liveTeams: Array<{ team_id: string; last_activity_ms: number }> = [
+      { team_id: "claude-gone", last_activity_ms: now - 60 * T_MIN },
+    ];
+    const actions1 = await runStaleTeamSweep({
+      teams: liveTeams,
+      state,
+      cfg: { staleness_threshold_ms: STALENESS, nudge_retry_ms: RETRY, now_ms: now },
+      staleness_threshold_min: 15,
+      callbacks: {
+        sendNudge: async () => ({ ok: true as const }),
+        emitInfo: () => {},
+        emitAlert: () => {},
+        emitVanished: (team_id, title, body) => vanished.push({ team_id, title, body }),
+        teamRegistryExists: () => false,
+      },
+    });
+    expect(actions1[0]?.action).toBe("vanished");
+    expect(vanished.length).toBe(1);
+
+    // Caller's responsibility: remove the team from its tracker. Simulate.
+    const idx = liveTeams.findIndex((t) => t.team_id === "claude-gone");
+    if (idx >= 0) liveTeams.splice(idx, 1);
+
+    // Second sweep — team is no longer in the list. Nothing should fire.
+    const actions2 = await runStaleTeamSweep({
+      teams: liveTeams,
+      state,
+      cfg: { staleness_threshold_ms: STALENESS, nudge_retry_ms: RETRY, now_ms: now + 5 * T_MIN },
+      staleness_threshold_min: 15,
+      callbacks: {
+        sendNudge: async () => ({ ok: true as const }),
+        emitInfo: () => {},
+        emitAlert: () => {},
+        emitVanished: (team_id, title, body) => vanished.push({ team_id, title, body }),
+        teamRegistryExists: () => false,
+      },
+    });
+    expect(actions2.length).toBe(0);
+    // Still exactly one vanished alert across both sweeps — no spam.
+    expect(vanished.length).toBe(1);
+  });
+
+  test("teamRegistryExists omitted → behavior unchanged (pre-v2.7.32 path)", async () => {
+    const now = 100 * T_MIN;
+    const state = new Map<string, TeamNudgeState>();
+    const c = makeCallbacks();
+    await runStaleTeamSweep({
+      teams: [
+        { team_id: "claude-x", last_activity_ms: now - 20 * T_MIN, last_event_type: "report" },
+      ],
+      state,
+      cfg: { staleness_threshold_ms: STALENESS, nudge_retry_ms: RETRY, now_ms: now },
+      staleness_threshold_min: 15,
+      callbacks: c.callbacks, // no teamRegistryExists, no emitVanished
+    });
+    expect(c.nudges.length).toBe(1); // first-nudge fires as before
+  });
+
+  test("teamRegistryExists returns true → normal sweep path", async () => {
+    const now = 100 * T_MIN;
+    const state = new Map<string, TeamNudgeState>();
+    const c = makeCallbacks();
+    let predicateCalls = 0;
+    await runStaleTeamSweep({
+      teams: [
+        { team_id: "claude-alive", last_activity_ms: now - 20 * T_MIN },
+      ],
+      state,
+      cfg: { staleness_threshold_ms: STALENESS, nudge_retry_ms: RETRY, now_ms: now },
+      staleness_threshold_min: 15,
+      callbacks: {
+        ...c.callbacks,
+        teamRegistryExists: () => {
+          predicateCalls++;
+          return true;
+        },
+        emitVanished: () => {
+          throw new Error("emitVanished should not be called when dir exists");
+        },
+      },
+    });
+    expect(predicateCalls).toBe(1);
+    expect(c.nudges.length).toBe(1); // normal first-nudge still fires
+  });
+});
+
 describe("runStaleTeamSweep — send failure recorded but state advances", () => {
   test("failed delivery still sets last_nudge_at and emits an info notification", async () => {
     const now = 100 * T_MIN;

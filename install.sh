@@ -458,18 +458,24 @@ component_install() {
   fi
 
   # symlink shims
+  #
+  # v2.7.32 — Fallback target changed from $HOME/bin to $HOME/.local/bin (XDG
+  # standard). `~/.local/bin` is auto-added to PATH by recent macOS / zsh /
+  # GNOME shells; `~/bin` only worked if the operator's dotfiles already
+  # exported it. After install we also emit a PATH-status line so the
+  # operator can tell at a glance whether the target dir is reachable from
+  # their current shell.
   subctl_info "linking subctl CLI + shorthand shims"
   local shims=(subctl claude-teams claude-radar claude-dash claude-deck claude-kill claude-resume)
   local sys_bin="/usr/local/bin"
-  local user_bin="$HOME/bin"
+  local user_bin="$HOME/.local/bin"
   local target_bin
   if [[ -w "$sys_bin" ]]; then
     target_bin="$sys_bin"
   else
     run mkdir -p "$user_bin"
     target_bin="$user_bin"
-    subctl_warn "$sys_bin not writable — linking into $user_bin"
-    subctl_warn "  add to PATH: export PATH=\"\$HOME/bin:\$PATH\""
+    subctl_warn "$sys_bin not writable (would require sudo) — linking into $user_bin instead"
   fi
   local shim src dst backup
   for shim in "${shims[@]}"; do
@@ -484,6 +490,25 @@ component_install() {
     subctl_ok "$shim → $dst"
   done
   run ln -sfn "$REPO_ROOT" "$HOME/.subctl"
+
+  # PATH probe — only matters when we fell back to $HOME/.local/bin. We use
+  # `case` against $PATH because `command -v subctl` would pick up the
+  # symlink we just wrote even if PATH doesn't include the target dir
+  # (subprocess PATH inheritance vs current shell's PATH lookup), giving a
+  # false-OK signal.
+  if [[ "$target_bin" == "$user_bin" ]]; then
+    case ":$PATH:" in
+      *":$user_bin:"*)
+        subctl_ok "$user_bin is already on PATH"
+        ;;
+      *)
+        subctl_warn "$user_bin is NOT on PATH — subctl won't be found in this shell."
+        subctl_warn "  Add to ~/.zshrc (zsh) or ~/.bashrc (bash):"
+        subctl_warn "    export PATH=\"\$HOME/.local/bin:\$PATH\""
+        subctl_warn "  Then: source ~/.zshrc (or open a new shell)"
+        ;;
+    esac
+  fi
 
   # claude wiring
   subctl_info "wiring Claude statusline + hook + slash command"

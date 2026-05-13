@@ -141,6 +141,11 @@ import {
   type TeamSnapshot,
 } from "./auto-nudge";
 import {
+  runStartupTeamGC,
+  DEFAULT_AUDIT_MAX_AGE_DAYS,
+  DEFAULT_SNAPSHOT_MAX_AGE_DAYS,
+} from "./team-gc";
+import {
   recordEntry as recordMemoryEntry,
   recallEntries as recallMemoryEntries,
   deleteEntry as deleteMemoryEntry,
@@ -161,6 +166,34 @@ const SUBCTL_CONFIG_DIR =
   process.env.SUBCTL_CONFIG_DIR ?? join(HOME, ".config", "subctl");
 const MASTER_STATE_DIR = join(SUBCTL_CONFIG_DIR, "master");
 const MASTER_LOG = join(HOME, "Library", "Logs", "subctl", "master.log");
+
+/**
+ * v2.7.32 — Resolve `tmux` to an absolute path.
+ *
+ * Operator hit `tmux: command not found` over SSH because non-login shells
+ * don't source `~/.zshrc`, so Homebrew's `/opt/homebrew/bin` wasn't on PATH
+ * when the master daemon (or a CLI invocation routed through SSH) tried to
+ * shell out. We follow the same probe-then-fallback pattern dashboard/
+ * server.ts uses for the same binary: walk well-known Apple-Silicon-first
+ * paths, then PATH lookup, then surrender to bare `"tmux"` (so the original
+ * "not found" error still surfaces verbatim if every candidate misses).
+ *
+ * Overridable via SUBCTL_TMUX_BIN for tests / unusual installs (matches the
+ * env var dashboard/terminal.ts already consumes).
+ */
+const TMUX_BIN: string = (() => {
+  if (process.env.SUBCTL_TMUX_BIN) return process.env.SUBCTL_TMUX_BIN;
+  const candidates = [
+    "/opt/homebrew/bin/tmux",
+    "/usr/local/bin/tmux",
+    "/usr/bin/tmux",
+    "/bin/tmux",
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) return p;
+  }
+  return "tmux";
+})();
 
 // Single source of truth: VERSION file at repo root. lib/core.sh reads the
 // same file so bash + dashboard + master daemon all agree on the version.
@@ -1768,6 +1801,14 @@ async function main() {
       const url = new URL(req.url);
 
       if (url.pathname === "/health") {
+        // v2.7.32 — surface the resolved supervisor model id alongside
+        // `active_profile`. Prior to v2.7.18 the /health response carried
+        // `supervisor_model: <id>`; v2.7.18 replaced it with `active_profile`
+        // (a name like "chat" / "heavy") and dropped the model id, which
+        // made the operator's "which model is actually running right now?"
+        // question require a second /profile fetch. Putting both back here
+        // keeps /health one-stop. supervisorCfg is reassigned by the
+        // pendingProfileSwap path, so this is always live, never stale.
         return Response.json({
           ok: true,
           version: SUBCTL_VERSION,
@@ -1778,6 +1819,8 @@ async function main() {
           teams_tracked: teamLastActivity.size,
           telegram_listener: masterNotifyListenerStatus(),
           active_profile: activeProfile,
+          supervisor_model: supervisorCfg.model,
+          supervisor_provider: supervisorCfg.provider,
         });
       }
 
@@ -2405,7 +2448,7 @@ async function main() {
           // 5. tmux installed (needed to spawn dev teams)
           (async () => {
             try {
-              const proc = Bun.spawnSync(["tmux", "-V"], { stdout: "pipe", stderr: "pipe" });
+              const proc = Bun.spawnSync([TMUX_BIN, "-V"], { stdout: "pipe", stderr: "pipe" });
               if (proc.exitCode === 0) {
                 return { name: "tmux", ok: true, detail: proc.stdout.toString().trim() };
               }
@@ -2784,6 +2827,45 @@ async function main() {
     }
   });
 
+  // ── startup team-dir GC (v2.7.32) ─────────────────────────────────────
+  // Walk ~/.local/state/subctl/teams/ once at boot, archive any team dir
+  // whose policy.snapshot.toml mtime > 14 days AND whose audit log has
+  // been quiet for > 7 days. Archived dirs go to teams/.killed/ — they're
+  // not deleted, just moved out of the watchdog's scanning surface. Runs
+  // synchronously before the watchdog ticker is armed so we never race
+  // against a freshly-started scan.
+  {
+    const gcStateDir =
+      process.env.SUBCTL_STATE_DIR ?? join(HOME, ".local", "state", "subctl");
+    const gcDecisions = runStartupTeamGC(
+      {
+        teams_dir: join(gcStateDir, "teams"),
+        audit_dir: join(gcStateDir, "audit"),
+        snapshot_max_age_ms: DEFAULT_SNAPSHOT_MAX_AGE_DAYS * 86_400_000,
+        audit_max_age_ms: DEFAULT_AUDIT_MAX_AGE_DAYS * 86_400_000,
+        now_ms: Date.now(),
+      },
+      {
+        emitNotification: (input) =>
+          emitNotification({
+            kind: "team-gc'd",
+            severity: "info",
+            title: input.title,
+            body: input.body,
+            team_id: input.team_id,
+          }),
+        logDecision: (team_id, action, rationale) =>
+          logDecision({ project: team_id, action, rationale }),
+      },
+    );
+    const archived = gcDecisions.filter((d) => d.action === "archived").length;
+    if (archived > 0) {
+      console.error(
+        `[master] startup team-gc: archived ${archived}/${gcDecisions.length} team dir(s) to .killed/`,
+      );
+    }
+  }
+
   // ── watchdog ticker ────────────────────────────────────────────────────
   // Master's KPI is "keep projects moving forward". Periodically scan open
   // dev teams + tracked projects; if anything looks stuck (no lead report
@@ -2822,7 +2904,7 @@ async function main() {
     try {
       // 1. Enumerate sessions whose names start with "claude-" (the
       //    subctl spawn naming convention).
-      const ls = Bun.spawnSync(["tmux", "list-sessions", "-F", "#{session_name}"], {
+      const ls = Bun.spawnSync([TMUX_BIN, "list-sessions", "-F", "#{session_name}"], {
         stdout: "pipe", stderr: "pipe",
       });
       if (ls.exitCode !== 0) return;
@@ -2832,7 +2914,7 @@ async function main() {
       const now = Date.now();
       for (const session of sessions) {
         const cap = Bun.spawnSync(
-          ["tmux", "capture-pane", "-p", "-t", `${session}:0`, "-S", "-50"],
+          [TMUX_BIN, "capture-pane", "-p", "-t", `${session}:0`, "-S", "-50"],
           { stdout: "pipe", stderr: "pipe" },
         );
         if (cap.exitCode !== 0) continue;
@@ -2986,6 +3068,18 @@ async function main() {
       });
     }
 
+    // v2.7.32 — reconcile against the on-disk team registry. Resolves the
+    // 2026-05-13 spam case where claude-osint-cve-monitor was archived to
+    // teams/.killed/ but the in-memory teamLastActivity kept the entry
+    // (tmux session pruning only fires when the session itself is dead;
+    // a session can outlive its registry archive). Predicate is mirrored
+    // from trust-marker.ts' resolveStateDir() convention so SUBCTL_STATE_DIR
+    // override is respected in dev/test environments.
+    const teamsStateDir =
+      process.env.SUBCTL_STATE_DIR ?? join(HOME, ".local", "state", "subctl");
+    const teamRegistryExists = (teamId: string): boolean =>
+      existsSync(join(teamsStateDir, "teams", teamId));
+
     const actions = await runStaleTeamSweep({
       teams,
       state: teamNudgeState,
@@ -3001,10 +3095,25 @@ async function main() {
           emitNotification({ kind: "team-nudge-sent", severity: "info", title, body, team_id }),
         emitAlert: (team_id, title, body) =>
           emitNotification({ kind: "team-unresponsive", severity: "alert", title, body, team_id }),
+        emitVanished: (team_id, title, body) =>
+          emitNotification({ kind: "team-vanished", severity: "alert", title, body, team_id }),
+        teamRegistryExists,
         logDecision: (team_id, action, rationale) =>
           logDecision({ project: team_id, action, rationale }),
       },
     });
+
+    // v2.7.32 — drop vanished teams from the in-memory trackers so the
+    // alert is one-shot. runStaleTeamSweep already cleared teamNudgeState
+    // (it owns that map); these in-server maps are not visible to the
+    // sweep, so we mop them up here.
+    const vanishedIds = actions
+      .filter((a) => a.action === "vanished")
+      .map((a) => a.team_id);
+    for (const id of vanishedIds) {
+      teamLastActivity.delete(id);
+      teamPaneHash.delete(id);
+    }
 
     const stale = actions.filter((a) => a.action !== "fresh");
     if (stale.length === 0) {

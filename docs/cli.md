@@ -1,10 +1,10 @@
 # subctl CLI reference (v2.7.28+)
 
 `bin/subctl` is the bash dispatcher shipped at `/usr/local/bin/subctl` (or
-`~/bin/subctl` if `/usr/local/bin` isn't writable). It's how the operator
-drives the master + dashboard daemons from any terminal. The TUI you get
-by running `subctl` with no arguments is the same dispatcher with a
-different default branch.
+`~/.local/bin/subctl` if `/usr/local/bin` isn't writable). It's how the
+operator drives the master + dashboard daemons from any terminal. The TUI
+you get by running `subctl` with no arguments is the same dispatcher with
+a different default branch.
 
 This doc covers the **five v2.7.28 commands** that talk to the localhost
 HTTP surface: `status`, `logs`, `deploy`, `notif`, `memory`. For
@@ -158,8 +158,31 @@ CLI talks to the proxy as a peer.
 
 `install.sh` symlinks `bin/subctl` into:
 
-1. `/usr/local/bin/subctl` if writable, else
-2. `$HOME/bin/subctl` (and prints a `export PATH=…` reminder).
+1. `/usr/local/bin/subctl` if writable (no sudo prompt), else
+2. `$HOME/.local/bin/subctl` (XDG-standard user bin). The installer
+   creates the dir if missing and probes the current shell's `$PATH`
+   for it; if absent it prints the exact `export` line to add to
+   `~/.zshrc` (or `~/.bashrc`).
+
+> **v2.7.32:** the fallback target moved from `$HOME/bin` to
+> `$HOME/.local/bin` so that recent zsh/bash/macOS setups (where
+> `~/.local/bin` is auto-included) work out of the box. Operators
+> upgrading from a pre-v2.7.32 install should remove the stale
+> `$HOME/bin/subctl` symlink — `subctl deploy` will pick the new
+> path on the next run.
+
+### PATH requirement
+
+If you fell back to `$HOME/.local/bin/`, the dispatcher won't be found
+until that directory is on `$PATH`. Add to your shell rc:
+
+```bash
+# ~/.zshrc (zsh) or ~/.bashrc (bash)
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Then `source ~/.zshrc` (or open a new shell) and verify with
+`command -v subctl` — it should print the symlinked target.
 
 The same install path covers the shorthand shims (`claude-teams`,
 `claude-dash`, `claude-radar`, etc). `subctl install --migrate`

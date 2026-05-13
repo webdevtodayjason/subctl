@@ -2096,6 +2096,90 @@ ssh argent-m3-ultra-dev subctl update
 `coderabbit`. Optional: `obsidian`, `lms`. Settings → System health
 shows install commands; click any line to copy.
 
+#### 5.2.0 `/health` fields (v2.7.32 cleanup)
+
+`GET http://127.0.0.1:8788/health` returns the master's liveness + identity snapshot:
+
+```json
+{
+  "ok": true,
+  "version": "2.7.32",
+  "uptime_s": 12345,
+  "transcript_msgs": 137,
+  "subscribers": 3,
+  "prompt_in_flight": false,
+  "teams_tracked": 2,
+  "telegram_listener": { "running": true, ... },
+  "active_profile": "chat",
+  "supervisor_model": "qwen/qwen3.6-35b-a3b",
+  "supervisor_provider": "lmstudio"
+}
+```
+
+- **`active_profile`** — profile name from `~/.config/subctl/master/profiles.json` (`active` field).
+- **`supervisor_model` + `supervisor_provider`** (restored v2.7.32) — the resolved model id + provider currently driving Evy. Reassigned on profile swap; always live, never stale. Prior to v2.7.18 the field was present; v2.7.18 dropped it in favor of `active_profile` only, which made "what model is actually running?" require a second `/profile` fetch. Now both are surfaced at `/health` for one-stop debugging.
+
+### 5.2.1 Startup team-dir GC (v2.7.32)
+
+`subctl orch spawn` leaves a per-team registry dir at
+`~/.local/state/subctl/teams/<team_id>/` — the HMAC secret + policy snapshot
+that re-spawns reuse. The dir is intentionally NOT cleaned up when the
+tmux session dies (re-spawn reuses the same HMAC).
+
+On every master boot, `runStartupTeamGC` walks the teams dir and archives
+any entry that satisfies BOTH:
+
+| Predicate | Threshold |
+|-----------|-----------|
+| `policy.snapshot.toml` mtime older than | 14 days |
+| `audit/<team_id>.jsonl` mtime older than (or file absent) | 7 days |
+
+Matching dirs are moved to `teams/.killed/<team_id>/` (archived, not
+deleted — the operator can still recover the HMAC secret for forensic
+re-spawn). A `severity:info, kind:"team-gc'd"` notification fires for
+each archive. The GC sweep runs synchronously before the team-staleness
+watchdog ticker is armed, so the watchdog never starts tracking a dir
+that's about to vanish.
+
+Tunable via `SUBCTL_STATE_DIR` (same convention as the rest of the
+state-dir tooling) — point it at a tmpdir to test locally.
+
+### 5.2.2 tmux PATH over SSH (v2.7.32)
+
+Symptom: `tmux: command not found` when running `ssh host subctl …` or any
+non-interactive SSH command, even though `tmux` works fine after `ssh host`
+followed by `tmux ls`.
+
+Why: SSH non-interactive shells (`ssh host <cmd>`) source `~/.zshenv` but
+NOT `~/.zshrc` / `~/.zprofile` / `~/.bash_profile`. If the Homebrew PATH
+export lives in `.zshrc` (the default for a fresh interactive setup) it
+won't apply.
+
+Fix — apply both:
+
+1. **Daemon side (already shipped in v2.7.32).** `components/master/server.ts`
+   now resolves `tmux` to an absolute path at boot — `/opt/homebrew/bin/tmux`
+   on Apple Silicon, falling back to `/usr/local/bin/tmux`, `/usr/bin/tmux`,
+   `/bin/tmux`, then PATH. Override with `SUBCTL_TMUX_BIN=/path/to/tmux`
+   for unusual layouts. No operator action needed for the master itself.
+
+2. **Operator shell side (one-time).** Add this line to `~/.zshenv` (NOT
+   `~/.zshrc`) so every SSH invocation — interactive or non-interactive —
+   sees the Homebrew bin dir:
+
+   ```bash
+   # ~/.zshenv — sourced by EVERY zsh invocation (login, interactive, non-interactive)
+   export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+   ```
+
+   Verify: `ssh argent-m3-ultra-dev which tmux` should print the absolute
+   path. Until this is in place, `ssh host subctl status` works (the
+   daemon resolves tmux internally) but `ssh host tmux ls` does not.
+
+The daemon-side fix is the primary mitigation — operators who only ever
+drive subctl through the SSH'd `subctl` CLI get correct behavior without
+editing dotfiles.
+
 ### 5.3 LM Studio configuration
 
 **Master auto-pins the supervisor's context window on boot.** The
