@@ -145,6 +145,12 @@ Usage:
 
   subctl update                       Pull origin/main, rebuild, restart daemons,
                                       doctor on the way out (no manual ssh+rsync)
+  subctl upstream <check|update|history|update --enable|--disable>
+                                      pi-ai + pi-agent-core auto-update control.
+                                      Check polls npm; update does a worktree-
+                                      based bun install/test/build/typecheck +
+                                      push to chore/upstream-<pkg>-<ts>; history
+                                      lists recent audit entries (v2.7.37).
   subctl deploy [--no-pull] [--dry-run]
                                       Fast-path deploy — git pull + launchctl
                                       kickstart -k for master + dashboard. See
@@ -646,6 +652,128 @@ case "$cmd" in
   update)
     . "$SUBCTL_REPO_ROOT/lib/update.sh"
     subctl_update "$@"
+    ;;
+
+  upstream|upstreams)
+    # v2.7.37 — upstream tracker control plane. Shells out to the
+    # running master daemon over loopback HTTP (the master owns the
+    # watchdog state + audit log). The TS module behind this lives at
+    # components/master/upstream-check.ts.
+    . "$SUBCTL_REPO_ROOT/lib/master.sh"
+    port="${SUBCTL_MASTER_PORT:-8788}"
+    base="http://127.0.0.1:$port"
+    sub="${1:-check}"; [[ $# -gt 0 ]] && shift
+    case "$sub" in
+      check)
+        # POST /upstreams/check — manual tick of the 6h watchdog.
+        if ! command -v jq >/dev/null 2>&1; then
+          subctl_die "jq required for 'subctl upstream' (install: brew install jq)"
+        fi
+        resp=$(curl -s --max-time 30 -X POST "$base/upstreams/check" 2>/dev/null) \
+          || subctl_die "master not reachable at $base — is 'subctl master status' running?"
+        [[ -z "$resp" ]] && subctl_die "empty response from master"
+        if ! printf '%s' "$resp" | jq -e '.ok' >/dev/null 2>&1; then
+          err=$(printf '%s' "$resp" | jq -r '.error // "unknown error"')
+          subctl_die "upstream check failed: $err"
+        fi
+        printf '%s' "$resp" | jq -r '
+          "checked_at: " + (.checked_at // "never") + "\n" +
+          "auto-update: " + (if .auto_update_enabled then "ON ("+.auto_update_flag_path+")" else "OFF" end) + "\n\n" +
+          (.results | map(
+            "  " + .package + "  " +
+            (if .error then "ERROR: " + .error
+             elif .has_update then .pinned + " → " + .latest + "  [" + .bump_kind + "]"
+             else .pinned + "  (latest)" end)
+          ) | join("\n"))'
+        ;;
+      update)
+        # POST /upstreams/update — manual auto-update (bypasses 24h throttle).
+        # Optional positional arg = package name (defaults: every tracked
+        # upstream with a newer version).
+        # Optional --enable / --disable flips the gate flag and exits.
+        if [[ "${1:-}" == "--enable" || "${1:-}" == "--enabled" ]]; then
+          curl -s -X POST -H 'Content-Type: application/json' \
+            -d '{"enabled":true}' \
+            "$base/upstreams/auto-update/toggle" 2>/dev/null \
+            | jq -r '. | "auto-update: " + (if .enabled then "ON" else "OFF" end)' \
+            || subctl_die "toggle failed"
+          exit 0
+        fi
+        if [[ "${1:-}" == "--disable" || "${1:-}" == "--disabled" ]]; then
+          curl -s -X POST -H 'Content-Type: application/json' \
+            -d '{"enabled":false}' \
+            "$base/upstreams/auto-update/toggle" 2>/dev/null \
+            | jq -r '. | "auto-update: " + (if .enabled then "ON" else "OFF" end)' \
+            || subctl_die "toggle failed"
+          exit 0
+        fi
+        pkg="${1:-}"
+        if [[ -n "$pkg" ]]; then
+          payload=$(jq -nc --arg p "$pkg" '{package: $p}')
+        else
+          payload='{}'
+        fi
+        subctl_info "running manual upstream update (this can take several minutes — bun install + tests + build + typecheck + push)…"
+        resp=$(curl -s --max-time 900 -X POST -H 'Content-Type: application/json' \
+          -d "$payload" "$base/upstreams/update" 2>/dev/null) \
+          || subctl_die "master not reachable at $base — is 'subctl master status' running?"
+        if ! printf '%s' "$resp" | jq -e '.ok' >/dev/null 2>&1; then
+          err=$(printf '%s' "$resp" | jq -r '.error // "unknown error"')
+          subctl_die "upstream update failed: $err"
+        fi
+        printf '%s' "$resp" | jq -r '
+          .summary.auto_update // [] | map(
+            "  " + .package + "  " + .from + " → " + .to + "\n" +
+            "    " + (if .outcome.ok then "✓ OK" else "✗ FAILED" end) +
+            (if .outcome.branch then "  branch=" + .outcome.branch else "" end) + "\n" +
+            "    detail: " + (.outcome.detail | tostring)
+          ) | join("\n\n")'
+        ;;
+      history|log)
+        # GET /upstreams/history — recent audit log entries.
+        limit="${1:-20}"
+        if ! [[ "$limit" =~ ^[0-9]+$ ]]; then
+          limit=20
+        fi
+        resp=$(curl -s --max-time 10 "$base/upstreams/history?limit=$limit" 2>/dev/null) \
+          || subctl_die "master not reachable at $base"
+        if ! printf '%s' "$resp" | jq -e '.ok' >/dev/null 2>&1; then
+          err=$(printf '%s' "$resp" | jq -r '.error // "unknown error"')
+          subctl_die "upstream history failed: $err"
+        fi
+        printf '%s' "$resp" | jq -r '
+          .entries // [] | map(
+            .ts + "  " + (.event // "?") +
+            "  " + (.package // "?") +
+            "  " + (.from // "?") + " → " + (.to // "?") +
+            (if .branch then "  branch=" + .branch else "" end) +
+            (if .trigger then "  trigger=" + .trigger else "" end) +
+            (if .detail then "\n  " + .detail else "" end)
+          ) | join("\n\n")'
+        ;;
+      help|--help|-h|"")
+        cat <<EOF
+subctl upstream — pi-ai + pi-agent-core auto-update control
+
+Usage:
+  subctl upstream check                Manual tick of the 6h watchdog
+                                       (same as the dashboard "Check now" button)
+  subctl upstream update [<pkg>]       Manual auto-update — bypasses the 24h
+                                       throttle. Creates a worktree under /tmp,
+                                       runs bun install + test + build + typecheck,
+                                       commits, pushes a 'chore/upstream-<pkg>-<ts>'
+                                       branch. Does NOT merge.
+  subctl upstream update --enable      Flip on \$HOME/.config/subctl/auto-update-upstreams.enabled
+                                       so the 6h watchdog attempts updates itself.
+  subctl upstream update --disable     Remove the flag (back to notification-only mode).
+  subctl upstream history [N]          Show the last N audit entries (default 20).
+
+The master daemon ('subctl master status') owns the watchdog + audit log;
+this CLI is a thin shell over its HTTP endpoints on localhost:8788.
+EOF
+        ;;
+      *) subctl_die "unknown upstream subcommand: $sub (try: subctl upstream help)" ;;
+    esac
     ;;
 
   status)

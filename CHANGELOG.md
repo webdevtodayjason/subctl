@@ -1,3 +1,67 @@
+## [2.7.37] — 2026-05-13
+
+### `feat(master): v2.7.37 upstream auto-update automation (worktree + push, never merge)`
+
+v2.7.25 shipped the upstream-tracking watchdog half: every 6h, master polls npm for `@earendil-works/pi-ai` + `@earendil-works/pi-agent-core`, compares against the floor-pinned versions in `components/master/package.json`, and emits a `severity:"info"` (patch/minor) or `severity:"warn"` (major) notification when a newer version is available. The auto-update half was gated behind `~/.config/subctl/auto-update-upstreams.enabled` but only did an in-place `bun install + bun test` against the live working copy — useful for development, but not safe to enable on the daemon a paying operator depends on (a broken upstream would have left the working tree dirty). This release lands the production-grade auto-update path on top of that gate.
+
+**Worktree-based runner.** `components/master/upstream-check.ts` now ships `worktreeAutoUpdateRunner()` as the default for `startUpstreamWatchdog`. When the gate flag is set and a newer version is detected, the runner:
+
+1. Calls `git rev-parse --show-toplevel` from `components/master/` to resolve the repo root (worktree-safe).
+2. `git worktree add -b chore/upstream-<package>-<ts> /tmp/subctl-upstream-update-<ts>/ HEAD` — a fresh worktree off the current branch's HEAD, not main.
+3. In the worktree's `components/master/`: `bun install <package>@latest` (explicit `@latest` so bun re-resolves even if the lockfile is happy).
+4. `bun test` — full suite must pass.
+5. `bun run --if-present build` — best-effort; tolerates missing scripts.
+6. `bun x tsc --noEmit` — typecheck; same missing-config tolerance.
+7. All green → `git add package.json bun.lock bun.lockb`, `git commit -m "chore(deps): auto-update <package> X.Y.Z → A.B.C"`, `git push -u origin chore/upstream-<package>-<ts>:<same>`.
+8. Emit `severity:"info"` notification `"<pkg> auto-updated X.Y.Z → A.B.C; PR-ready branch pushed"`. The worktree is left behind for operator inspection.
+
+**Failure handling.** Any non-zero step before the push triggers `git worktree remove --force` + `git branch -D` cleanup. The first 1KB of stderr is captured + sent through the alert notification (`upstream-update-failed`) and audit log so the operator can diagnose without grep'ing logs. If the push itself fails, the worktree is preserved (the commit landed locally) and the notification points the operator at the worktree path.
+
+**Hard guardrails (per the spec).** The runner SHELLS OUT to git + bun and is paranoid about side effects: every step has a 5-minute timeout (kills the process on overrun), `GIT_TERMINAL_PROMPT=0` is set in the spawned env (so a credential prompt fails fast instead of hanging the daemon), and the code path NEVER pushes to `main`, NEVER uses `--force`, NEVER tags, NEVER deletes any branch that isn't the chore branch it just created. Pushing the branch is the highest level of automation — the operator's eyeball on the diff remains the explicit merge gate.
+
+**Throttle.** At most one auto-update attempt per package per 24h. State lives at `~/.local/state/subctl/upstream-throttle.json` (survives daemon restart). When a tick is throttled, the watchdog records a `throttled` event in the audit log so the operator can see why nothing happened. Manual triggers (CLI or dashboard) bypass the throttle for the current invocation only.
+
+**Audit log.** Every attempt — success, failure, or throttled — appends one JSONL line to `~/.local/state/subctl/audit/upstream-updates.jsonl` carrying `{ts, event, package, from, to, bump_kind, branch?, worktree_path?, reverted?, detail?, stderr_excerpt?, trigger}`. The trigger field is `"watchdog"` for the 6h tick, `"manual"` for operator-driven runs.
+
+**CLI.** `bin/subctl` learns a new top-level verb:
+
+- `subctl upstream check` — manual tick of the watchdog (same as the dashboard "Check now" button)
+- `subctl upstream update [<pkg>]` — manual auto-update; bypasses the throttle, optional positional arg picks one package
+- `subctl upstream update --enable` / `--disable` — flip the gate flag file
+- `subctl upstream history [N]` — show the last N audit entries (default 20)
+
+The CLI is a thin shell over the master daemon's HTTP endpoints; it deliberately doesn't carry its own auto-update logic so there's one canonical code path.
+
+**Master HTTP surface.** Three new endpoints on the master daemon (all live under `/upstreams`, all proxied through the dashboard at `/api/upstreams`):
+
+- `POST /upstreams/update` — manual auto-update trigger (bypasses throttle). Body `{package?: string}`.
+- `GET  /upstreams/history?limit=N` — recent audit-log entries, newest first.
+- `POST /upstreams/auto-update/toggle` — body `{enabled: boolean}`, flips the gate flag.
+
+The existing `GET /upstreams` state shape gains four fields: `throttle_ms`, `throttle_state` (per-package last-attempt epochs), `audit_log_path`, and `recent_updates` (last 10 audit entries — the disclosure widget in the dashboard lazy-loads more from `/upstreams/history`).
+
+**Dashboard.** The Upstreams card in the Memory tab (added v2.7.25) gains an "Update now" button, an "Auto-update" toggle (touches/removes the flag file via the new HTTP endpoint), and a collapsible "Update history" disclosure widget showing the last 20 audit entries. The dashboard proxy in `dashboard/server.ts` is widened from the two literal paths it used to match to a `startsWith("/api/upstreams/")` prefix so every new sub-path forwards correctly.
+
+**Tests.** `components/master/__tests__/upstream-check.test.ts` gains 11 new pins across four blocks:
+
+- Throttle: second tick inside the 24h window does NOT re-invoke the runner; the throttled event lands in the audit log; manual trigger bypasses the throttle; `readLastAttempt` + `writeLastAttempt` round-trip cleanly.
+- Audit log: `appendAuditEntry` + `readUpdateHistory` return newest-first; tolerates a missing file; honors limit.
+- Flag toggle: `setAutoUpdateEnabled` writes/removes the file idempotently.
+- Worktree runner end-to-end with a mocked `Bun.spawn` that verifies the command order is worktree-add → bun install → bun test → bun build → tsc → git add → git commit → git push, that the branch name carries the package + timestamp, and crucially that the push command never carries `--force` or `main`/`main:main`. The failure-path test mocks `bun test` to exit 1 and asserts the worktree cleanup commands ran and that no push happened.
+
+**Files:**
+
+- Modified: `components/master/upstream-check.ts` — `worktreeAutoUpdateRunner`, `runManualUpdate`, `readUpdateHistory`, `appendAuditEntry`, `read/writeLastAttempt`, `setAutoUpdateEnabled` / `isAutoUpdateEnabled`, throttle gate inside `runUpstreamCheck`, audit log writes on every outcome, extended `describeUpstreamState`. The legacy `defaultAutoUpdateRunner` stays exported for back-compat but the watchdog default is now the worktree runner.
+- Modified: `components/master/server.ts` — three new HTTP routes under `/upstreams`, plus the new imports.
+- Modified: `components/master/__tests__/upstream-check.test.ts` — 11 new test cases across four describe blocks.
+- Modified: `dashboard/server.ts` — widened the `/api/upstreams` proxy match to a prefix.
+- Modified: `dashboard/public/index.html` — Update-now button, Auto-update toggle, history disclosure widget.
+- Modified: `dashboard/public/app.js` — `initUpstreamsCard()` extended with toggle + manual update + history rendering.
+- Modified: `dashboard/public/style.css` — toggle + history grid styles.
+- Modified: `bin/subctl` — new `upstream` subcommand + usage line.
+- Modified: `docs/master.md` — `3.5c` extended with v2.7.37 auto-update mechanics.
+- Modified: `VERSION` → `2.7.37`.
+
 ## [2.7.31] — 2026-05-13
 
 ### `feat(master): v2.7.31 1Password Service Accounts (multi-backend secret resolution)`

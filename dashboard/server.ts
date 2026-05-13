@@ -4817,14 +4817,20 @@ const server = Bun.serve({
       }
     }
 
-    // ── /api/upstreams — proxy to master's upstream-check (v2.7.25 C) ───
+    // ── /api/upstreams — proxy to master's upstream-check ────────────────
     // ADR 0015 always-latest policy. The master owns the watchdog state;
     // this proxy lets the dashboard's Memory tab "Upstreams" card read it
-    // without knowing the master's port. Routes:
+    // without knowing the master's port. Routes (v2.7.25 + v2.7.37):
     //
-    //   GET  /api/upstreams        → master /upstreams
-    //   POST /api/upstreams/check  → master /upstreams/check (manual tick)
-    if (url.pathname === "/api/upstreams" || url.pathname === "/api/upstreams/check") {
+    //   GET  /api/upstreams                     → master /upstreams
+    //   POST /api/upstreams/check               → master /upstreams/check (manual tick)
+    //   POST /api/upstreams/update              → master /upstreams/update (manual auto-update)
+    //   GET  /api/upstreams/history             → master /upstreams/history
+    //   POST /api/upstreams/auto-update/toggle  → flip the gate flag
+    if (
+      url.pathname === "/api/upstreams" ||
+      url.pathname.startsWith("/api/upstreams/")
+    ) {
       const masterPort = process.env.SUBCTL_MASTER_PORT ?? "8788";
       const masterUrl = `http://127.0.0.1:${masterPort}${url.pathname.replace(/^\/api\/upstreams/, "/upstreams")}${url.search}`;
       try {

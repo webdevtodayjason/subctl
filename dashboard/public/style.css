@@ -4616,3 +4616,56 @@ tr.team-stale-red td           { background: rgba(214, 108, 108, 0.06); }
   color: var(--fg-mute);
   font-family: var(--mono);
 }
+/* v2.7.37 — auto-update toggle + history */
+.upstreams-card .upstreams-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--fg-mute);
+  cursor: pointer;
+  user-select: none;
+}
+.upstreams-card .upstreams-toggle input {
+  margin: 0;
+  cursor: pointer;
+}
+.upstreams-card .upstreams-history {
+  margin-top: 10px;
+  font-size: 11px;
+}
+.upstreams-card .upstreams-history summary {
+  cursor: pointer;
+  color: var(--fg-mute);
+  font-family: var(--mono);
+}
+.upstreams-card .upstreams-history summary:hover {
+  color: var(--fg);
+}
+.upstreams-card .upstreams-history-list {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+.upstreams-card .upstream-history-row {
+  display: grid;
+  grid-template-columns: 18px 1fr auto;
+  grid-auto-rows: auto;
+  gap: 4px 8px;
+  padding: 4px 6px;
+  border: 1px solid var(--surface-border, rgba(255, 255, 255, 0.06));
+  border-radius: 4px;
+}
+.upstreams-card .upstream-history-icon { grid-column: 1; grid-row: 1; }
+.upstreams-card .upstream-history-pkg { grid-column: 2; grid-row: 1; font-family: var(--mono); }
+.upstreams-card .upstream-history-ver { grid-column: 2; grid-row: 2; font-family: var(--mono); color: var(--fg-mute); }
+.upstreams-card .upstream-history-ts { grid-column: 3; grid-row: 1; }
+.upstreams-card .upstream-history-detail {
+  grid-column: 2 / span 2;
+  grid-row: 3;
+  font-family: var(--mono);
+  white-space: pre-wrap;
+}
