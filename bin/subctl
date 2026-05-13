@@ -172,6 +172,11 @@ Usage:
                                       renders + plays a canned line; render
                                       returns audio URL; on/off toggles
                                       voice.json#enabled (hot-reload).
+  subctl prefs [show|get|set|edit|reset]
+                                      Operator preferences (v2.8.1, bilateral
+                                      maintenance). show lists all; get reads
+                                      one; set writes one; edit opens the TOML
+                                      in \$EDITOR; reset restores defaults.
 
   subctl uninstall                    Remove subctl
   subctl version                      Print version
@@ -686,6 +691,12 @@ case "$cmd" in
   voice)
     . "$SUBCTL_REPO_ROOT/lib/cli.sh"
     subctl_cli_voice "$@"
+    ;;
+
+  prefs|preferences)
+    # v2.8.1 — operator preferences (bilateral maintenance).
+    . "$SUBCTL_REPO_ROOT/lib/cli.sh"
+    subctl_cli_prefs "$@"
     ;;
 
   uninstall)

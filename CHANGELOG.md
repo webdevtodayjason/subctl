@@ -1,3 +1,63 @@
+## [2.8.1] — 2026-05-13
+
+> **Note:** v2.8.1 is a batched release. The operator may bundle additional items before tagging; this entry covers what's landed on the branch so far.
+
+### `feat(master): v2.8.1 operator preferences (bilateral maintenance, TOML store)`
+
+Operator-raised on 2026-05-13:
+
+> We need to have an operator preferences section that both me and the agent can maintain. Examples would be: I prefer audio over Telegram versus text, I prefer this coding style, I prefer this type of report, et cetera.
+
+The load-bearing requirement is bilateral authorship — both the operator AND Evy write to the same file. Evy writes when she learns a preference from conversation; the operator writes via dashboard, CLI, Telegram, or direct edit. The next turn's system prompt reflects the new value either way.
+
+**Storage.** `~/.config/subctl/preferences.toml` (chmod 600, parent dir chmod 700 — same posture as `profiles.json`). TOML over JSON for three reasons (ADR 0018): comments survive (the seed file ships with inline guidance the operator sees in `$EDITOR`), matches v2.8.0 team-templates precedent for operator-facing config, and `smol-toml` is already a dependency. A sidecar `preferences.meta.json` records `{by: "operator" | "evy" | "default", at, reason?}` for each write so the audit trail says who decided what. Schema is intentionally loose — categories and keys are free-form strings matching `^[A-Za-z_][A-Za-z0-9_-]*$`. Seeded categories: `[communication]`, `[coding]`, `[reports]`, `[agent_behavior]`. Operator can add categories at runtime.
+
+**Comment-preserving writes.** `smol-toml`'s `stringify()` drops comments, so `setPreference()` uses a regex-aware merge: locate the `[category]` header, locate the `key = ` line, replace just the value portion. Inline comments and the surrounding section survive untouched. New keys insert at the end of the section; new categories append at the end of the file. Multi-line strings / arrays / nested tables aren't part of the preferences contract and the merger leaves them alone.
+
+**Master tools.** Three new tools (zone marker `// ── v2.8.1 operator preferences ──` in `server.ts`):
+
+- `evy_get_preferences({category?})` — full preferences bag or one category
+- `evy_set_preference({category, key, value, reason?})` — Evy's write surface. `by="evy"` and `reason` get stamped in the meta sidecar. Called when the operator says "actually, keep responses shorter from now on" — Evy persists the standing preference instead of trusting memory retrieval to surface it next time.
+- `evy_get_preference_value({category, key})` — quick single-key lookup
+
+**Prompt injection.** `composeSystemPrompt()` now appends `renderPreferencesForPrompt()` between SKILL.md and the persona fragment. The block is clearly labeled ("Your operator's preferences") so the model knows these are operator knobs, not persona / safety rules. Reads fresh from disk on every dispatched turn — operator-side and Evy-side writes both take effect immediately. `watchPreferences()` broadcasts a `preferences` SSE event so the dashboard tab refreshes live.
+
+**Master HTTP.** `GET /preferences`, `GET /preferences/:category`, `POST /preferences/:category/:key` (body `{value, by?, reason?}`), `DELETE /preferences/:category/:key`, `POST /preferences/reset` (gated on `{confirm: true}`). The dashboard proxies under `/api/preferences/*`.
+
+**Dashboard.** New Preferences tab in the sidebar nav. Categories render as collapsible cards; each row is `key + edit-in-place input + "set by …" badge + save/delete buttons`. "+ Add new preference" affordance per category, "+ Add category" toolbar button. Reset-all button confirms before clearing operator-added categories and reseeding defaults. Optimistic UI with rollback toast on error.
+
+**Telegram.** New `/prefs` family:
+- `/prefs` — list every category, terse
+- `/prefs <category>` — list one
+- `/prefs get <cat>.<key>` — single value
+- `/prefs set <cat>.<key> <value>` — write (by=operator)
+- `/prefs reset confirm` — two-step reset
+
+All replies pass through `redactForEgress` so a misplaced `sk-*` / HMAC mark in `preferences.toml` can't leak through chat.
+
+**CLI.** `subctl prefs show|get|set|edit|reset`:
+- `show [--category <cat>]` — dump all or one
+- `get <cat>.<key>` — single value
+- `set <cat>.<key> <value>` — write
+- `edit` — open `$EDITOR` directly on `preferences.toml`; master's fs.watch picks up the save
+- `reset` — confirm-then-restore-defaults
+
+**Tests.** `preferences.test.ts` (24 tests, all pass): seed-on-missing + chmod 600, comment preamble survives seed, unparseable file recovers by reseeding, get/set/list round-trip, comment + sibling-key preservation on merge-write, value coercion (`"false"` → `false`, `"10"` → `10`), new-key + new-category insertion, name validation, sidecar `by` / `reason` metadata, delete-line-without-disturbing-neighbors, reset-restores-defaults, fs.watch debounce + close, render-as-markdown output shape.
+
+**Files:**
+
+- New: `components/master/preferences.ts` — TOML store + merge-write + sidecar meta + watcher + `renderPreferencesForPrompt()`
+- New: `components/master/tools/preferences.ts` — three Evy-facing tools
+- New: `components/master/__tests__/preferences.test.ts` — 24 tests
+- New: `docs/adr/0018-operator-preferences-bilateral-maintenance.md`
+- Modified: `components/master/server.ts` — tool registry, prompt injection, HTTP routes, watcher boot + shutdown
+- Modified: `components/master/master-notify-listener.ts` — `/prefs` handler + help
+- Modified: `dashboard/server.ts` — `/api/preferences/*` proxy
+- Modified: `dashboard/public/index.html`, `app.js`, `style.css` — Preferences tab
+- Modified: `bin/subctl`, `lib/cli.sh` — `subctl prefs` subcommand + help
+- Modified: `docs/adr/README.md` — ADR 0018 index entry
+- Modified: `VERSION` → `2.8.1`
+
 ## [2.8.0] — 2026-05-13
 
 ### `feat(voice): v2.8.0 voice layer for Evy — self-hosted TTS, opt-in, redacted (ADR 0017)`

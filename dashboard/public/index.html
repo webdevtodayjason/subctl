@@ -196,6 +196,9 @@
         <button type="button" class="nav-btn" data-tab="policy">
           <span class="nav-icon">⛒</span><span class="nav-label">Policy</span>
         </button>
+        <button type="button" class="nav-btn" data-tab="preferences">
+          <span class="nav-icon">☑</span><span class="nav-label">Preferences</span>
+        </button>
         <button type="button" class="nav-btn" data-tab="settings">
           <span class="nav-icon">⚒</span><span class="nav-label">Settings</span>
         </button>
@@ -1349,6 +1352,29 @@
           <div class="dim small" style="padding:24px">select a skill to preview its SKILL.md</div>
         </section>
       </div>
+    </section>
+
+    <!-- ── Preferences tab (v2.8.1) ───────────────────────────────────
+         Bilateral-maintenance config the operator AND Evy both write.
+         Categories are collapsible cards; each preference is a row
+         with edit-in-place + a "Set by: operator/evy/default" badge.
+         Edits POST /api/preferences/:cat/:key with optimistic UI. -->
+    <section class="preferences-screen" data-tab="preferences">
+      <header class="screen-header">
+        <h2>Preferences <span class="screen-sub">operator + Evy maintain together · live-reloaded into Evy's prompt</span></h2>
+        <div class="prefs-toolbar">
+          <button type="button" class="secondary-btn" id="prefs-refresh-btn">refresh</button>
+          <button type="button" class="secondary-btn" id="prefs-add-cat-btn">+ add category</button>
+          <button type="button" class="secondary-btn prefs-reset-btn" id="prefs-reset-btn" title="Reset all preferences to seeded defaults">reset all</button>
+        </div>
+      </header>
+      <p class="dim small prefs-intro">
+        These tune Evy's behavior — communication, coding style, report shape, agent autonomy.
+        Evy reads them at the start of every turn. The operator can edit any value here;
+        Evy can also set values when she learns one from conversation (e.g. "keep responses shorter").
+        File on disk: <code>~/.config/subctl/preferences.toml</code> (chmod 600).
+      </p>
+      <div class="prefs-list" id="prefs-list">loading…</div>
     </section>
 
     <!-- ── Settings tab ────────────────────────────────────────────── -->

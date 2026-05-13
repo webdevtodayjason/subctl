@@ -267,6 +267,81 @@ The queue endpoints (proxied by the dashboard under `/api/plan-approvals/*`):
 | `~/.config/subctl/master/obsidian.json` | Configured Obsidian vault root |
 | `~/.config/subctl/master/agent-state.json` | Persisted transcript |
 | `~/.config/subctl/master/decisions.jsonl` | Append-only decision log |
+| `~/.config/subctl/preferences.toml` | **Operator preferences (v2.8.1).** Bilateral-maintenance config the operator AND Evy both write. See §2.7 below. |
+| `~/.config/subctl/preferences.meta.json` | Sidecar audit trail: `{by, at, reason?}` per preference. |
+
+### 2.7 Operator preferences (v2.8.1)
+
+**One-line summary:** structured, bilateral-maintenance config knobs that
+both the operator and Evy keep up to date, injected into Evy's system
+prompt every turn.
+
+The file lives at `~/.config/subctl/preferences.toml` (chmod 600,
+parent dir chmod 700). Seeded categories on first read:
+
+```toml
+[communication]
+preferred_channel = "telegram"        # telegram | dashboard | both
+audio_preferred = true                # voice notes for routine status, text otherwise
+report_length = "terse"               # terse | normal | verbose
+status_update_cadence_minutes = 5
+
+[coding]
+style_guide = ""                      # operator can paste a URL or short text
+test_first = "preferred"              # required | preferred | optional
+preferred_test_runner = "bun test"
+comment_density = "low"
+
+[reports]
+default_format = "markdown_terse"
+include_metrics = true
+include_open_questions = true
+end_with_next_action = true
+
+[agent_behavior]
+ask_before_destructive = true
+dispatch_parallel_by_default = true
+shutdown_idle_workers = true
+loud_when_dry = true
+```
+
+The operator can add categories at runtime (`/prefs set
+project_specific.deploy_window after_5pm_central`). Schema is
+intentionally loose — see ADR 0018 for the rationale.
+
+**Bilateral writes.** Two paths land in the same file:
+
+- **Operator** — direct edit (`subctl prefs edit`), CLI (`subctl prefs
+  set …`), Telegram (`/prefs set …`), or dashboard's Preferences tab.
+- **Evy** — `evy_set_preference({category, key, value, reason})` master
+  tool, invoked when she learns a preference in conversation. The
+  next turn's system prompt reflects the new value.
+
+The sidecar `preferences.meta.json` records `{by, at, reason?}` for
+every write so the audit trail says who decided what. Last-write-wins
+on conflicts; the dashboard surfaces "set by: operator / evy /
+default" badges per row.
+
+**Prompt injection.** Every dispatched turn rebuilds the system
+prompt and includes `renderPreferencesForPrompt()` between SKILL.md
+and the personality fragment. The block is clearly labeled ("Your
+operator's preferences") so the model treats it as operator-set
+knobs rather than safety rules. Safety rules live in SKILL.md and
+the persona; preferences cannot relax them.
+
+**Operator surfaces:**
+
+```bash
+subctl prefs                   # show all
+subctl prefs --category coding # show one
+subctl prefs get communication.preferred_channel
+subctl prefs set communication.report_length verbose
+subctl prefs edit              # $EDITOR on the TOML file
+subctl prefs reset             # restore seeded defaults (with confirm)
+```
+
+Telegram mirrors the same vocabulary: `/prefs`, `/prefs <category>`,
+`/prefs get …`, `/prefs set …`, `/prefs reset confirm`.
 
 ---
 
