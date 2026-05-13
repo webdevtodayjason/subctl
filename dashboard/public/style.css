@@ -337,6 +337,31 @@ main {
   border-color: rgba(229, 72, 77, 0.25);
 }
 
+/* ── v2.8.1 accounts data fix ── */
+/* "no data" override — applied alongside verdict-yellow when the usage
+   payload is missing (per-account) or the upstream fetch failed (global).
+   Distinct from the normal yellow caution pill: dashed border + neutral
+   tint so the operator instantly sees "data hole" instead of "real
+   caution signal". */
+.verdict-pill.verdict-nodata {
+  background: rgba(160, 160, 160, 0.10);
+  color: var(--fg-dim);
+  border: 1px dashed rgba(160, 160, 160, 0.45);
+}
+
+/* Banner above the Accounts table when usage_fetch.ok === false. */
+.warning.usage-fetch-warning {
+  display: block;
+  margin: 0 0 8px 0;
+  padding: 8px 10px;
+  background: rgba(245, 166, 35, 0.08);
+  border: 1px solid rgba(245, 166, 35, 0.30);
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--amber, #d39a2a);
+  font-family: var(--mono);
+}
+
 /* Per-account usage cells */
 .usage-cell.green  { color: var(--green); }
 .usage-cell.yellow { color: var(--yellow); }
