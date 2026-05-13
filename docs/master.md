@@ -271,6 +271,35 @@ Hermes separates `MemoryProvider` (tier 2) from `ContextEngine` (tier 3 compacti
 
 For now: claude-mem is hardcoded as the tier-2 provider. No pluggability needed yet.
 
+### 3.5b Pi-mono upstreams + provider catalog (v2.7.24+)
+
+Subctl depends on the [mitsuhiko/pi-mono](https://github.com/mitsuhiko/pi-mono) monorepo via two npm packages, both first-class upstreams (ADR 0015):
+
+| pi-mono dir | npm package | role |
+|---|---|---|
+| `packages/agent` | `@earendil-works/pi-agent-core` | **agent runtime** — drives master's `Agent` loop, tool registry, streaming, attachment handling |
+| `packages/ai` | `@earendil-works/pi-ai` | **provider catalog** — what LLM providers exist, factory shapes, generated per-provider model lists |
+
+Both are pinned with `^` in `components/master/package.json` so `bun install` resolves to the latest published `0.x.y` on every deploy. **Always-latest policy:** subctl's release process must update both to their most-recent versions on every minor/patch release. v2.7.25 will add an auto-tracker watchdog that surfaces upstream bumps as `severity:"info"` notifications.
+
+**How the provider catalog is populated.** The dashboard's Providers tab used to ship a hand-curated dropdown (`claude / openai / gemini / zai / minimax`, three flagged `(future)`). Starting in v2.7.24 the list is dynamic, sourced from `@earendil-works/pi-ai` via the catalog adapter at `components/master/pi-ai-catalog.ts`:
+
+- `listCatalogProviders()` calls pi-ai's `getProviders()` (~31 providers today: anthropic, openai, openai-codex, azure-openai-responses, google, google-vertex, amazon-bedrock, mistral, groq, cerebras, xai, openrouter, vercel-ai-gateway, deepseek, fireworks, cloudflare-workers-ai, cloudflare-ai-gateway, minimax + minimax-cn, moonshotai + moonshotai-cn, kimi-coding, zai, huggingface, opencode + opencode-go, xiaomi variants, github-copilot, …).
+- Each entry is annotated with a human display name + auth-method hint (`api-key` / `oauth`) from the local `PROVIDER_META` table inside the adapter. Anything pi-ai adds upstream that we haven't met yet shows up with a Title-Case fallback name + `api-key` default until we add an override entry.
+- `GET /api/providers` walks the catalog, attaches matching `accounts.conf` profiles (resolving legacy ids via `SUBCTL_TO_PI_AI`), and returns the merged shape: `{id, display, kind, auth_method, model_count, profiles, legacy_alias, note}`.
+
+**How to add a profile for a new provider.**
+
+1. Open the dashboard → Providers tab → **+ New Profile**.
+2. The dropdown lists every pi-ai provider, sorted with providers-that-already-have-profiles first. OAuth providers are tagged `(OAuth)`.
+3. Pick the provider, fill in alias + email + config dir, save. The dashboard validates against the pi-ai catalog (rejects typos with a 400).
+4. For API-key providers, set the corresponding env var (e.g. `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `XAI_API_KEY`) or paste the key via the Settings panel. The master daemon resolves keys via `components/master/secrets.ts`.
+5. For OAuth providers (Anthropic / OpenAI Codex today), run `subctl auth claude <alias>` or `subctl auth openai <alias>` after creating the profile. Other OAuth providers (GitHub Copilot, xAI) are queued for a follow-up — operators can still use API-key auth for them in v2.7.24.
+
+**Backwards compat: the alias table.** Subctl's historical names (`claude`, `gemini`, `pi-coding-agent`) predate pi-ai. The adapter maps them: `claude → anthropic`, `gemini → google`, `pi-coding-agent → anthropic`. Both the legacy and canonical forms are accepted on POST. The form field stores the legacy alias when one exists so `accounts.conf` stays human-readable.
+
+**What stays the same.** Pi-agent-core's role as the agent runtime is unchanged in v2.7.24 — the master daemon still imports `Agent` and drives the agent loop exactly as before. The integration glue under `providers/<name>/` (tmux launchers, OAuth helpers) is unchanged. The v2.7.24 change formalises both pi-mono packages as tracked upstreams + finally consumes pi-ai's catalog from the dashboard.
+
 ### 3.6 Personal skills authoring (Phase 3d, planned)
 
 Hermes lets the agent **add its own skills** under `optional-skills/<category>/<name>/SKILL.md`. We adopt the same with constraints:

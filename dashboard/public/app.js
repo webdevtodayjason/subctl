@@ -889,20 +889,75 @@
     if (!list) return;
 
     let editingMode = "add"; // or "edit"
+    // v2.7.24 — cached provider catalog from /api/providers. Populated
+    // lazily when openModal() runs the first time, then refreshed each
+    // open so newly-added pi-ai upstream providers light up without
+    // a page reload.
+    let cachedCatalog = null;
 
-    function openModal(mode, prefill) {
+    async function populateProviderDropdown(preferredId) {
+      const hint = document.getElementById("profile-provider-hint");
+      try {
+        const r = await fetch("/api/providers");
+        const j = await r.json();
+        if (!j.ok || !Array.isArray(j.providers)) {
+          if (hint) hint.textContent = "could not load catalog";
+          return;
+        }
+        cachedCatalog = j.providers.filter((p) => p.kind === "cloud");
+        // Sort: providers with at least one profile first, then alpha
+        // by display. Keeps the operator's day-to-day at the top while
+        // exposing the long tail.
+        cachedCatalog.sort((a, b) => {
+          const aHas = (a.profiles || []).length > 0;
+          const bHas = (b.profiles || []).length > 0;
+          if (aHas !== bHas) return aHas ? -1 : 1;
+          return String(a.display || a.id).localeCompare(String(b.display || b.id));
+        });
+        fProvider.replaceChildren(...cachedCatalog.map((p) => {
+          const opt = document.createElement("option");
+          // Use the legacy alias (claude, gemini) as the form value
+          // when one exists, so accounts.conf rows stay readable for
+          // operators that grep by hand. The POST handler resolves
+          // either form via SUBCTL_TO_PI_AI.
+          const formValue = p.legacy_alias || p.id;
+          opt.value = formValue;
+          const oauthBadge = p.auth_method === "oauth" ? " (OAuth)" : "";
+          const profileBadge = (p.profiles || []).length > 0 ? ` · ${p.profiles.length} profile(s)` : "";
+          opt.textContent = `${p.display || p.id}${oauthBadge}${profileBadge}`;
+          fProvider.appendChild(opt);
+          return opt;
+        }));
+        if (preferredId) {
+          // Try both forms (legacy + canonical) so edit-prefill works.
+          const match = cachedCatalog.find((p) => p.id === preferredId || p.legacy_alias === preferredId);
+          if (match) fProvider.value = match.legacy_alias || match.id;
+        }
+        if (hint) hint.textContent = `${cachedCatalog.length} providers in catalog · pi-ai upstream`;
+      } catch (err) {
+        if (hint) hint.textContent = "catalog fetch failed: " + String(err);
+      }
+    }
+
+    async function openModal(mode, prefill) {
       editingMode = mode;
       if (titleEl) titleEl.textContent = mode === "edit" ? `Edit profile: ${prefill?.alias || ""}` : "New profile";
+      // Always refresh the dropdown so a freshly-added upstream provider
+      // is visible without a page reload.
+      await populateProviderDropdown(prefill?.provider);
       if (prefill) {
         fAlias.value = prefill.alias || "";
         fAlias.disabled = mode === "edit"; // alias is the key; can't rename mid-edit
-        fProvider.value = prefill.provider || "claude";
         fEmail.value = prefill.email || "";
         fConfigDir.value = prefill.config_dir || "";
         fDescription.value = prefill.description || "";
       } else {
-        form.reset();
+        // Don't form.reset() — that wipes the dropdown we just populated.
+        fAlias.value = "";
         fAlias.disabled = false;
+        fEmail.value = "";
+        fConfigDir.value = "";
+        fDescription.value = "";
       }
       result.hidden = true;
       submit.disabled = false;

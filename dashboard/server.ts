@@ -102,6 +102,19 @@ import {
 // fails LOUD (refuses to send) — falling back to an unauthenticated
 // marker would teach workers to ignore the auth field.
 import { buildDirectiveMarker } from "../components/master/trust-marker.ts";
+// v2.7.24: pi-ai provider catalog — replaces the hand-curated dropdown
+// at /api/providers with the full pi-ai enumeration so new providers
+// (groq, cerebras, openrouter, bedrock, xai, ...) light up automatically.
+// `@earendil-works/pi-agent-core` remains the agent runtime — pi-ai is
+// strictly the catalog layer (see ADR 0015).
+import {
+  listCatalogProviders,
+  resolveProviderId,
+  isCatalogProvider,
+  legacyAliasFor,
+  SUBCTL_TO_PI_AI,
+  type CatalogProvider,
+} from "../components/master/pi-ai-catalog.ts";
 // v2.7.21 (ADR 0011 Layer 2): web terminal escape hatch. Routes are gated
 // by a flag file at ~/.config/subctl/terminal.enabled; absent = OFF (the
 // default). When enabled, the dashboard upgrades a WebSocket to a node
@@ -4420,50 +4433,58 @@ const server = Bun.serve({
         }
       } catch { /* ignore */ }
 
-      // Curated cloud-provider catalog. Each entry maps to a default model
-      // suggestion, mostly so the chat dropdown has something to populate.
-      // `wired` indicates whether pi-ai actually has an api factory for the
-      // provider. Unwired providers stay listed (for visibility) but the
-      // chat-model-selector renders them disabled — selecting one would
-      // produce empty assistant content because pi-ai falls through.
-      const CLOUD = [
-        { id: "anthropic",    display: "Anthropic Claude",       kind: "cloud", default_model: "claude-sonnet-4-6", wired: true },
-        { id: "openai-codex", display: "OpenAI Codex (ChatGPT)", kind: "cloud", default_model: "gpt-5.2",            wired: false, wired_note: "ChatGPT OAuth provider planned for v1.1 (see providers/openai/README.md)" },
-        // Future: gemini, zai, minimax — add when accounts.conf has profiles for them
-      ];
-      // claude profiles in accounts.conf land under provider="claude"; the
-      // ANTHROPIC API surface uses provider="anthropic". For our purposes,
-      // any authed claude profile makes Anthropic "available" since Claude
-      // Code OAuth doubles for the master's Anthropic-API call path.
-      for (const cp of CLOUD) {
-        const profileKey = cp.id === "anthropic" ? "claude" : (cp.id === "openai-codex" ? "openai" : cp.id);
-        const profiles = profilesByProvider[profileKey] ?? [];
-        const anyAuthed = profiles.some((p) => p.authed);
+      // v2.7.24 — pi-ai catalog drives the cloud-provider list. Anything
+      // pi-ai exports is surfaced. The hand-curated `(future)` tags are
+      // gone: every catalog entry is available; operators that don't have
+      // an account yet just have an empty `profiles` list. Backwards
+      // compat: legacy subctl ids (`claude`, `gemini`) in accounts.conf
+      // are routed to their pi-ai canonicals (`anthropic`, `google`)
+      // via SUBCTL_TO_PI_AI so existing profiles still attach.
+      const catalog: CatalogProvider[] = listCatalogProviders();
+
+      // Build a profiles-by-pi-ai-id index that respects the alias map.
+      const profilesByPiId: Record<string, Array<Record<string, unknown>>> = {};
+      for (const [legacyOrCanonical, profiles] of Object.entries(profilesByProvider)) {
+        const canonical = resolveProviderId(legacyOrCanonical);
+        (profilesByPiId[canonical] ??= []).push(...profiles);
+      }
+
+      for (const entry of catalog) {
+        const profiles = profilesByPiId[entry.id] ?? [];
+        const anyAuthed = profiles.some((p) => (p as { authed?: boolean }).authed);
         providers.push({
-          id: cp.id,
-          display: cp.display,
-          kind: cp.kind,
-          default_model: cp.default_model,
-          available: anyAuthed,
-          wired: cp.wired,
-          wired_note: cp.wired_note,
+          id: entry.id,
+          display: entry.display_name,
+          kind: entry.kind,
+          auth_method: entry.auth_method,
+          model_count: entry.model_count,
+          available: entry.available,
+          // Surface a legacy alias when one exists so the UI can render
+          // `subctl auth <legacy> <alias>` correctly without having to
+          // know the alias table.
+          legacy_alias: legacyAliasFor(entry.id) === entry.id ? null : legacyAliasFor(entry.id),
           profiles,
-          note: anyAuthed ? `${profiles.filter((p) => p.authed).length} authed profile(s)` : "no authed profile yet — run subctl auth on a profile first",
+          note: entry.notes ?? (anyAuthed
+            ? `${profiles.filter((p) => (p as { authed?: boolean }).authed).length} authed profile(s)`
+            : "no profile yet — add one via + New Profile"),
         });
       }
 
-      // Also surface any provider-scoped profile group the user has but
-      // we don't have a curated cloud entry for (so they're visible at all).
-      const known = new Set(["claude", "openai"]);
-      for (const [provider, profiles] of Object.entries(profilesByProvider)) {
-        if (known.has(provider)) continue;
+      // Catch-all: surface any accounts.conf provider that pi-ai doesn't
+      // know about. Should be empty in practice (the alias table covers
+      // every historical name), but a stale entry shouldn't disappear
+      // from the dashboard — the operator needs to see it to clean it up.
+      const knownPiIds = new Set(catalog.map((c) => c.id));
+      for (const [provider, profiles] of Object.entries(profilesByPiId)) {
+        if (knownPiIds.has(provider)) continue;
         providers.push({
           id: provider,
           display: provider,
           kind: "cloud",
-          available: profiles.some((p) => p.authed),
+          auth_method: "api-key",
+          available: false,
           profiles,
-          note: "no curated config in dashboard yet",
+          note: "unknown provider — not in pi-ai catalog; remove or rename",
         });
       }
 
@@ -4483,6 +4504,18 @@ const server = Bun.serve({
       }
       if (!/^[a-zA-Z0-9._-]+$/.test(alias)) {
         return Response.json({ ok: false, error: "alias must be alphanumerics + . - _" }, { status: 400 });
+      }
+      // v2.7.24 — validate provider against the pi-ai catalog (after
+      // alias resolution). Rejecting unknown providers at write time
+      // keeps accounts.conf clean — without this, a typo lands a row
+      // that the /api/providers handler can't link to a catalog entry.
+      if (!isCatalogProvider(provider)) {
+        const hint = Object.keys(SUBCTL_TO_PI_AI).join(", ");
+        return Response.json({
+          ok: false,
+          error: `provider "${provider}" is not in the pi-ai catalog`,
+          hint: `known legacy aliases: ${hint}. Otherwise pass a pi-ai canonical id (see /api/providers).`,
+        }, { status: 400 });
       }
       const accountsPath = join(SUBCTL_CONFIG_DIR, "accounts.conf");
       let lines: string[] = [];

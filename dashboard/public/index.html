@@ -764,13 +764,10 @@
           <form class="modal-body" id="provider-profile-form">
             <div class="form-row">
               <label>Provider</label>
-              <select id="profile-provider">
-                <option value="claude">claude (Anthropic Claude Code)</option>
-                <option value="openai">openai (Codex CLI / ChatGPT subscription)</option>
-                <option value="gemini">gemini (future)</option>
-                <option value="zai">zai (future)</option>
-                <option value="minimax">minimax (future)</option>
-              </select>
+              <!-- v2.7.24 — populated dynamically from /api/providers
+                   (pi-ai catalog). Empty until openModal() runs. -->
+              <select id="profile-provider"></select>
+              <div class="form-hint" id="profile-provider-hint">Loading provider catalog…</div>
             </div>
             <div class="form-row">
               <label>Alias <span class="required">*</span></label>
