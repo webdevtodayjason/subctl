@@ -21,7 +21,7 @@ Adopt a five-tier memory model. Each tier has a distinct job, substrate, and wri
 |---|---|---|---|
 | 1 | Operator profile + learned facts | `MEMORY.md` | Shipped |
 | 2 | Operator-curated long-term notes | Obsidian vault | Existing, read-only from Evy |
-| 3 | Conversational memory (auto-captured, auto-recalled) | Memori BYODB sqlite | Ships v2.7.13 |
+| 3 | Conversational memory (auto-captured, auto-recalled) | Evy Memory (subctl/Evy-aware TS port over `bun:sqlite`) | Ships v2.7.23 |
 | 4 | Cross-session observation corpus | claude-mem | Shipped, role clarified |
 | 5 | Per-team project artifacts | `<project>/.subctl/docs/` | Tools ship v2.7.10 |
 
@@ -38,7 +38,7 @@ Filing convention: when Evy names a filing destination, she names the tier. "Fil
 
 - **Different jobs deserve different substrates.** Conflating "facts I always need" (tier 1) with "things I want to look up sometimes" (tier 4) means either over-loading the system prompt or under-using the lookup corpus.
 - **Operator owns tier 2.** The vault is where the operator does their own thinking. Letting Evy write there silently would erode that boundary. Tier 2 being read-only from Evy keeps it as the operator's clean workspace.
-- **Conversational memory needs proactive recall, not on-demand search.** Tier 3's auto-injection at turn start is the difference between "agent that COULD remember" and "agent that DOES remember." This is the gap memU/Memori solve. See [ADR 0006](0006-memori-byodb-sqlite-for-tier-3.md).
+- **Conversational memory needs proactive recall, not on-demand search.** Tier 3's auto-injection at turn start is the difference between "agent that COULD remember" and "agent that DOES remember." This is the gap Evy Memory (Tier 3) solves at turn boundaries. See [ADR 0014](0014-evy-memory-ts-port-of-memori.md) for the current implementation, and [ADR 0006](0006-memori-byodb-sqlite-for-tier-3.md) for the superseded Memori-SDK decision.
 - **Project artifacts need to be `cat`-able by workers.** Tier 5 lives in the project root specifically so workers can read it via `cat .subctl/docs/SPEC.md` without TCC issues or path translation.
 - **The tier model is for Evy to reason with.** It's not just architecture documentation. The persona prompt teaches Evy the tiers so she can route writes correctly and surface "filed in tier X" provenance to the operator.
 
@@ -87,7 +87,8 @@ Rejected because: memU is Python-only (operational cost on M3), requires Postgre
 ## References
 
 - [memory-architecture.md](../memory-architecture.md) — full tier reference
-- [ADR 0006](0006-memori-byodb-sqlite-for-tier-3.md) — Memori choice
+- [ADR 0014](0014-evy-memory-ts-port-of-memori.md) — Evy Memory (the tier 3 implementation that shipped)
+- [ADR 0006](0006-memori-byodb-sqlite-for-tier-3.md) — superseded Memori-SDK substrate decision
 - [ADR 0009](0009-self-hosted-only-no-cloud-memory.md) — privacy floor
 - [ADR 0010](0010-claude-mem-stays-parallel.md) — tier 4 role
 - [ADR 0003](0003-subctl-docs-folder-convention.md) — tier 5 path

@@ -1938,6 +1938,99 @@ body.terminal-disabled #terminal-modal { display: none !important; }
   .memory-grid { grid-template-columns: 1fr; }
 }
 
+/* v2.7.23 — Evy Memory (Tier 3) card styling. Lives inside the memory grid;
+   inherits .memory-card framing and only overrides the inner list/controls.  */
+.evy-mem-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.evy-mem-controls input[type="search"] {
+  flex: 1;
+  min-width: 200px;
+  background: #0a0a0a;
+  border: 1px solid #2a2a2a;
+  color: #c4c4c4;
+  padding: 6px 10px;
+  border-radius: 3px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+}
+.evy-mem-controls input[type="search"]:focus { outline: none; border-color: #5fd7ff; }
+.evy-mem-controls select {
+  background: #0a0a0a;
+  border: 1px solid #2a2a2a;
+  color: #c4c4c4;
+  padding: 6px 10px;
+  border-radius: 3px;
+  font-size: 12px;
+}
+.evy-mem-list {
+  max-height: 480px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid #181818;
+  border-radius: 3px;
+  padding: 6px;
+  background: #070707;
+}
+.evy-mem-item {
+  border: 1px solid #1a1a1a;
+  border-radius: 3px;
+  padding: 6px 10px;
+  background: #0a0a0a;
+}
+.evy-mem-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 10.5px;
+  color: #777;
+  margin-bottom: 4px;
+}
+.evy-mem-when { color: #888; }
+.evy-mem-role {
+  padding: 1px 6px;
+  border-radius: 2px;
+  background: #161616;
+  color: #b6b6b6;
+  text-transform: lowercase;
+}
+.evy-mem-kind {
+  padding: 1px 6px;
+  border-radius: 2px;
+  background: #1a2030;
+  color: #8bb6e6;
+  text-transform: lowercase;
+}
+.evy-mem-team {
+  padding: 1px 6px;
+  border-radius: 2px;
+  background: #201820;
+  color: #c98bd1;
+}
+.evy-mem-del {
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  color: #555;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0 4px;
+}
+.evy-mem-del:hover { color: #d66c6c; }
+.evy-mem-body {
+  color: #c4c4c4;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* Per-team card actions in the orchestration cockpit */
 .orch-team-card .actions {
   display: flex;

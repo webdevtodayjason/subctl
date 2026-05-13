@@ -4,6 +4,58 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.7.23] — 2026-05-13
+
+### `feat(master): v2.7.23 Evy Memory (Tier 3) — Memori-substrate TS implementation`
+
+Lands the Tier 3 conversational memory layer described in ADR 0005. When Evy has a conversation tonight and master is restarted tomorrow, she now remembers what was discussed — the things that would be expensive to re-derive: who's working on what, what was just shipped, what's stuck, what operator preferences emerged in chat. This is the fix for what the operator has been calling "51st date syndrome."
+
+**Substrate choice (ADR 0014).** ADR 0006 named Memori as the substrate, but Memori is a Python framework (MemoriLabs/Memori) — there is no maintained TypeScript SDK on npm. Subctl is Bun/TS. The integration would have required a Python sidecar service, and Memori's value-add (auto-injecting captured memory into LiteLLM prompts) is moot for subctl because pi-ai is our LLM call path, not LiteLLM. We picked Option B from the spec: a native TypeScript port using `bun:sqlite` with FTS5 full-text search. Memori's `memori_conversation_message` table shape inspired the schema; the entity-fact knowledge-graph layer was dropped (it requires LLM-driven extraction, which we'd add as a v2 enhancement). The result wraps as **Evy Memory** — a subctl/Evy-aware module rather than vanilla Memori. ADR 0014 supersedes ADR 0006. ADR 0010 (claude-mem stays parallel as Tier 4) is preserved; the new code reads zero claude-mem state.
+
+**Storage.** `~/.local/state/subctl/memory/evy.db` (chmod 600, directory chmod 700). Single SQLite file. Schema: `entries(id, ts, team_id, role, kind, content, metadata_json)` + an FTS5 virtual table with triggers keeping it in sync. WAL journal, synchronous=NORMAL. Sub-millisecond inserts on the M3. FTS5 availability is detected at boot; if a future Bun build strips it, the retrieval path falls back to LIKE matching automatically.
+
+**Capture surfaces (turn boundaries).** The master daemon hooks Evy Memory at every recorded turn:
+
+- User message arrives (`chat` / `telegram` / `cli`) → `role: "user", kind: "message"`.
+- Synthetic prompt (verifier / watchdog / scheduled / team-report) → `role: "event", kind: "synthetic-prompt"` so search-by-role can filter out daemon noise.
+- Assistant response settles → `role: "assistant", kind: "message"` (skipped for synthetic re-entries).
+- Tool call dispatched → `role: "tool", kind: "tool-call"`, content = `tool_name(short_args)` (top-level fields only, truncated to 320 chars total so a single noisy call can't dominate FTS).
+- Notification emitted (info/warn/alert) → `role: "event", kind: "notification"`, metadata carries severity + the original notification id.
+
+Failures are swallowed and logged to stderr — memory must never break a tool call or block an operator reply.
+
+**Recall surfaces.**
+
+- **Evy's tools.** `evy_recall(query?, team_id?, kind?, since_days?, limit?)` and `evy_remember(content, kind?, team_id?)` — the explicit save surface. The tool descriptions name the Tier 3 vs Tier 4 distinction so Evy routes between Evy Memory (operator-Evy chat) and `memory_search` (claude-mem cross-session observation corpus).
+- **Dashboard /api/memory/\*** proxy (subpath-only to leave `/api/memory` mapped to the existing Obsidian status endpoint):
+  - `GET /api/memory/search?query=&team_id=&kind=&since=&limit=` — FTS5 search
+  - `GET /api/memory/recent?limit=` — last N entries
+  - `GET /api/memory/stats` — count + bytes + FTS5 flag
+  - `POST /api/memory/entries` — record an operator-note
+  - `DELETE /api/memory/entries/:id` — operator-only forget
+- **Memory tab UI.** New "Evy Memory" card in the Memory tab (the existing tier-1 / Obsidian cards stay). Search input + kind dropdown + recent button + per-entry forget action.
+- **Telegram.** `/memory <query>` returns the top 3 matches; `/memory recent` returns the last 5; `/remember <text>` saves a kind="operator-note" entry. `/help` updated.
+
+**Privacy posture (ADR 0009 preserved).** The DB never egresses without the operator's action. All bytes that leave master via Telegram or the dashboard pass through `redactEntryForEgress`, which masks `sk-*` / `pk-*` API keys, `Bearer …` tokens, 64-char hex blobs (HMAC marks per the v2.7.20 trust-marker shape), `hmac:<team>:<hex>` structured marks, and other 40+ uppercase-hex secret-ish strings. Storage-side is unredacted because the file is chmod 600 and only the operator's user account can read it; this leaves operator search across raw content possible while still defending the egress surfaces.
+
+**Files:**
+
+- New: `components/master/memory.ts` — the storage primitive. `recordEntry` / `recallEntries` / `recentEntries` / `purgeBefore` / `deleteEntry` / `memoryStats` / `redactForEgress` / `redactEntryForEgress`. Path resolution mirrors `trust-marker.ts` (SUBCTL_STATE_DIR override for tests). Includes `_setStateDirForTesting` and `_closeForTesting` helpers.
+- New: `components/master/tools/evy-memory.ts` — `evy_recall` + `evy_remember` master tools. Descriptions explicitly draw the Tier 3 vs Tier 4 line so Evy routes correctly.
+- New: `components/master/__tests__/memory.test.ts` — 18 tests: record/recall round-trip, team_id + kind + since filters, FTS5 (verified available in Bun 1.2.17) + LIKE fallback path, recentEntries ordering, purgeBefore with FTS-trigger sync, deleteEntry, chmod 600/700 on the DB file + parent dir, memoryStats reflects live state, redactForEgress masks sk-*/Bearer/64-hex/hmac:* on egress without mutating input.
+- `components/master/server.ts` — imports the memory module + tools; records user/assistant/tool/event entries at turn boundaries (with synthetic-prompt detection); subscribes to notifications and writes each one through to memory; adds `/memory/*` HTTP routes with egress redaction; adds `summarizeArgs` helper for short tool-call signatures.
+- `components/master/master-notify-listener.ts` — `/memory` + `/remember` Telegram commands; redacted on output; help text updated.
+- `dashboard/server.ts` — `/api/memory/*` proxy to master, gated on subpath presence so the existing `/api/memory` (Obsidian status) route is untouched.
+- `dashboard/public/index.html` — Memory tab subheader rewritten to name all five tiers; Evy Memory card appended to the memory grid (search input + kind filter + recent button + list region).
+- `dashboard/public/app.js` — `wireEvyMemoryCard` (called from `wireMemoryTab`): loads recent on mount, runs search via `/api/memory/search`, per-entry forget action, periodic refresh while the tab is visible.
+- `dashboard/public/style.css` — `.evy-mem-*` classes for the new card (controls, list, item, body, redaction-friendly truncation).
+- New: `docs/adr/0014-evy-memory-ts-port-of-memori.md` — the ADR.
+- `docs/adr/0006-memori-byodb-sqlite-for-tier-3.md` — Superseded by 0014 (status header updated, reasoning preserved verbatim for history).
+- `docs/adr/0005-five-tier-memory-architecture.md` — Tier 3 row + reasoning + references point at 0014.
+- `docs/adr/README.md` — index updated.
+- `docs/master.md` — new "Evy Memory (Tier 3) — v2.7.23+" section.
+- `VERSION` → `2.7.23`.
+
 ## [2.7.22] — 2026-05-13
 
 ### `feat(master): v2.7.22 notification channel + watchdog auto-nudge + auto-compact fix`

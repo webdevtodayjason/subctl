@@ -134,6 +134,15 @@ import {
   type TeamNudgeState,
   type TeamSnapshot,
 } from "./auto-nudge";
+import {
+  recordEntry as recordMemoryEntry,
+  recallEntries as recallMemoryEntries,
+  deleteEntry as deleteMemoryEntry,
+  memoryStats,
+  redactEntryForEgress,
+  type MemoryEntry,
+} from "./memory";
+import { evyMemoryTools } from "./tools/evy-memory";
 
 const HOME = homedir();
 const COMPONENT_DIR = import.meta.dir;
@@ -455,6 +464,14 @@ export const toolRegistry: Record<string, InternalTool> = {
   ...Object.fromEntries(
     Object.entries(watchdogTools).map(([k, v]) => [k, v as unknown as InternalTool]),
   ),
+  // evy-memory family (v2.7.23): Tier 3 conversational memory. evy_recall
+  // reads the operator-Evy chat history + decisions + shipped events that
+  // master captures at turn boundaries; evy_remember is the explicit save
+  // surface. Distinct from memory_search (claude-mem, Tier 4). Keys are
+  // fully-qualified (evy_recall, evy_remember).
+  ...Object.fromEntries(
+    Object.entries(evyMemoryTools).map(([k, v]) => [k, v as unknown as InternalTool]),
+  ),
 };
 
 // system_my_tools needs to introspect the live registry. Bind it here so
@@ -467,6 +484,36 @@ bindSystemToolRegistry(toolRegistry as Record<string, { description?: string }>)
 // The agent loop validates args with Value.Convert + a TypeBox/JsonSchema
 // fallback validator, so passing a plain JSON Schema as `parameters` is safe;
 // the Anthropic provider just reads `schema.properties` + `schema.required`.
+
+// v2.7.23 — compact tool-call args summary for memory recording. We don't
+// want full payloads in the memory log (a single large tool-call could
+// dominate the FTS index), but we DO want the load-bearing field values
+// the operator might later search ("what did Evy ask gh about?"). Strategy:
+// keep top-level string/number values, truncate strings >120 chars, drop
+// nested objects/arrays as "<obj>" / "<arr>".
+function summarizeArgs(params: unknown): string {
+  if (params == null) return "";
+  if (typeof params !== "object") return String(params).slice(0, 120);
+  const out: string[] = [];
+  for (const [k, v] of Object.entries(params as Record<string, unknown>)) {
+    if (v == null) continue;
+    if (typeof v === "string") {
+      const s = v.length > 120 ? v.slice(0, 117) + "…" : v;
+      out.push(`${k}=${JSON.stringify(s)}`);
+    } else if (typeof v === "number" || typeof v === "boolean") {
+      out.push(`${k}=${v}`);
+    } else if (Array.isArray(v)) {
+      out.push(`${k}=<arr:${v.length}>`);
+    } else {
+      out.push(`${k}=<obj>`);
+    }
+    if (out.join(", ").length > 320) {
+      out.push("…");
+      break;
+    }
+  }
+  return out.join(", ");
+}
 
 function adaptTool(name: string, tool: InternalTool): AgentTool {
   return {
@@ -494,6 +541,24 @@ function adaptTool(name: string, tool: InternalTool): AgentTool {
           content: [{ type: "text", text: JSON.stringify(refusal, null, 2) }],
           details: refusal,
         };
+      }
+      // v2.7.23 — record the tool call into Evy Memory (Tier 3). We log
+      // only the call (not the result) because results can be huge and
+      // most of the value is "did Evy call X, with roughly what args?"
+      // Names are short, args are stringified short-form. Failures are
+      // swallowed — memory must never break a tool call.
+      try {
+        const shortArgs = summarizeArgs(params);
+        recordMemoryEntry({
+          role: "tool",
+          kind: "tool-call",
+          content: `${name}(${shortArgs})`,
+          metadata: { tool_name: name },
+        });
+      } catch (err) {
+        console.error(
+          `[memory] tool-call record failed: ${(err as Error).message ?? err}`,
+        );
       }
       const result = await tool.invoke(params as Record<string, unknown>);
       // Inspect the result and update breaker state. Never throws; on
@@ -1474,6 +1539,28 @@ async function main() {
         (agent.state as any).systemPrompt = composeSystemPrompt();
       } catch { /* if pi-agent-core ever locks state.systemPrompt, we'll see it loud */ }
       broadcast("inbound", { source: p.source, text: p.text, ts: new Date().toISOString() });
+      // v2.7.23 — record the inbound on Tier 3 (Evy Memory). User-facing
+      // chat (chat / telegram / cli) lands as role="user" kind="message";
+      // synthetic prompts (verifier / watchdog / scheduled / team-report)
+      // land as role="event" so search-by-role filters out daemon noise.
+      try {
+        const isSynth =
+          p.source === "watchdog" &&
+          (p.text.startsWith("[verifier]") ||
+            p.text.startsWith("[watchdog]") ||
+            p.text.startsWith("[scheduled]") ||
+            p.text.startsWith("[team-report]"));
+        recordMemoryEntry({
+          role: isSynth ? "event" : "user",
+          kind: isSynth ? "synthetic-prompt" : "message",
+          content: p.text,
+          metadata: { source: p.source },
+        });
+      } catch (err) {
+        console.error(
+          `[memory] inbound record failed: ${(err as Error).message ?? err}`,
+        );
+      }
       await agent.prompt(p.text);
       let { stop, err } = lastStopReason();
       if (stop === "error" && isTransient(err) && !stopped) {
@@ -1551,6 +1638,35 @@ async function main() {
               rationale: `iter cap reached; unmet: ${gaps.map((g) => g.rule.id).join(",")}`,
             });
           }
+        }
+      }
+
+      // ── Evy Memory record (v2.7.23) ────────────────────────────────────
+      // Capture the assistant's final text turn into Tier 3. We use
+      // extractLastTurn (same helper the claim-verifier uses) so we get the
+      // post-stream consolidated text rather than the streaming deltas.
+      // Skip for internal synth prompts — verifier/watchdog/scheduled
+      // re-entries already echo the operator's intent and would create
+      // redundant entries. Failures swallowed; memory must not block the
+      // operator-reply path.
+      if (!isInternalSynthPrompt && !stopped) {
+        try {
+          const turn = extractLastTurn(
+            agent.state.messages as ReadonlyArray<{ role?: string; content?: unknown }>,
+          );
+          const text = (turn.text || "").trim();
+          if (text) {
+            recordMemoryEntry({
+              role: "assistant",
+              kind: "message",
+              content: text,
+              metadata: { source: p.source },
+            });
+          }
+        } catch (err) {
+          console.error(
+            `[memory] assistant record failed: ${(err as Error).message ?? err}`,
+          );
         }
       }
 
@@ -1819,6 +1935,120 @@ async function main() {
             "Connection": "keep-alive",
           },
         });
+      }
+
+      // ── /memory/* — Evy Memory (Tier 3) operator surface (v2.7.23) ──────
+      // The dashboard proxies these under /api/memory/*. Subpath
+      // namespacing keeps the dashboard's existing /api/memory (Obsidian
+      // vault status) untouched — that route only matches the bare path,
+      // ours all live under /memory/<subpath>.
+      //
+      //   GET    /memory/search?query=...&team_id=...&kind=...&since=...&limit=N
+      //   GET    /memory/recent?limit=N
+      //   GET    /memory/stats
+      //   POST   /memory/entries           body { content, kind?, team_id? }
+      //   DELETE /memory/entries/:id
+      //
+      // All response bodies pass entries through redactEntryForEgress
+      // before serialization. The on-disk DB is chmod 600, but the
+      // dashboard endpoint is a real egress surface (anyone on the LAN
+      // who reaches the dashboard host gets these), so we redact obvious
+      // secrets (HMAC marks, sk-*, bearer tokens) on the way out.
+      if (url.pathname === "/memory/search" && req.method === "GET") {
+        const queryParam = url.searchParams.get("query") ?? undefined;
+        const teamParam = url.searchParams.get("team_id");
+        const kindParam = url.searchParams.get("kind") ?? undefined;
+        const sinceParam = url.searchParams.get("since") ?? undefined;
+        const limitRaw = url.searchParams.get("limit");
+        const limit = limitRaw
+          ? Math.max(1, Math.min(200, Number(limitRaw)))
+          : 50;
+        // team_id="" → null (operator can search the unscoped tier)
+        // team_id absent → undefined (all teams)
+        const team_id =
+          teamParam === null
+            ? undefined
+            : teamParam === ""
+              ? null
+              : teamParam;
+        const entries = recallMemoryEntries({
+          query: queryParam,
+          team_id,
+          kind: kindParam,
+          since: sinceParam,
+          limit,
+        });
+        return Response.json({
+          ok: true,
+          count: entries.length,
+          entries: entries.map(redactEntryForEgress),
+        });
+      }
+      if (url.pathname === "/memory/recent" && req.method === "GET") {
+        const limitRaw = url.searchParams.get("limit");
+        const limit = limitRaw
+          ? Math.max(1, Math.min(200, Number(limitRaw)))
+          : 25;
+        const entries = recallMemoryEntries({ limit });
+        return Response.json({
+          ok: true,
+          count: entries.length,
+          entries: entries.map(redactEntryForEgress),
+        });
+      }
+      if (url.pathname === "/memory/stats" && req.method === "GET") {
+        return Response.json({ ok: true, stats: memoryStats() });
+      }
+      if (url.pathname === "/memory/entries" && req.method === "POST") {
+        let body: {
+          content?: unknown;
+          kind?: unknown;
+          team_id?: unknown;
+        };
+        try {
+          body = await req.json();
+        } catch {
+          return Response.json(
+            { ok: false, error: "invalid JSON body" },
+            { status: 400 },
+          );
+        }
+        const content =
+          typeof body.content === "string" ? body.content.trim() : "";
+        if (!content) {
+          return Response.json(
+            { ok: false, error: "content is required" },
+            { status: 400 },
+          );
+        }
+        const kind =
+          typeof body.kind === "string" && body.kind.trim()
+            ? body.kind.trim()
+            : "operator-note";
+        const team_id =
+          typeof body.team_id === "string" && body.team_id.trim()
+            ? body.team_id.trim()
+            : null;
+        const entry = recordMemoryEntry({
+          role: "user",
+          kind,
+          content,
+          team_id,
+        });
+        return Response.json(
+          { ok: true, entry: redactEntryForEgress(entry) },
+          { status: 201 },
+        );
+      }
+      {
+        const m = url.pathname.match(/^\/memory\/entries\/([A-Za-z0-9-]+)$/);
+        if (m && req.method === "DELETE") {
+          const found = deleteMemoryEntry(m[1]!);
+          return Response.json(
+            { ok: true, found },
+            { status: found ? 200 : 404 },
+          );
+        }
       }
 
       // /transcript — return the persisted transcript so the dashboard can
@@ -2439,6 +2669,33 @@ async function main() {
         `[master] notification telegram push failed (${n.id}): ${(err as Error).message}`,
       );
     });
+  });
+
+  // v2.7.23 — record every notification (info/warn/alert) into Evy Memory.
+  // Tomorrow when Evy boots, recallEntries({ kind: "notification" }) lets
+  // her see what fired overnight without re-tailing the in-memory ring
+  // buffer (which doesn't survive restart — that's by design for the
+  // dashboard tray, but the memory store is exactly where surviving
+  // signal belongs).
+  subscribeNotifications((n: Notification) => {
+    try {
+      recordMemoryEntry({
+        role: "event",
+        kind: "notification",
+        content: n.title,
+        team_id: n.team_id ?? null,
+        metadata: {
+          notification_id: n.id,
+          severity: n.severity,
+          notification_kind: n.kind,
+          body: n.body,
+        },
+      });
+    } catch (err) {
+      console.error(
+        `[memory] notification record failed (${n.id}): ${(err as Error).message ?? err}`,
+      );
+    }
   });
 
   // ── watchdog ticker ────────────────────────────────────────────────────

@@ -673,7 +673,7 @@
     <!-- ── Memory tab ──────────────────────────────────────────────── -->
     <section class="memory-screen" data-tab="memory">
       <header class="screen-header">
-        <h2>Memory <span class="screen-sub">tier 1: always-in-context (memory.md + user.md) · tier 2: claude-mem (semantic recall) · tier 3: Obsidian vault (operator-curated)</span></h2>
+        <h2>Memory <span class="screen-sub">tier 1 MEMORY.md · tier 2 Obsidian · tier 3 Evy Memory (sqlite) · tier 4 claude-mem · tier 5 project artifacts</span></h2>
       </header>
 
       <div class="memory-grid">
@@ -709,10 +709,40 @@
 
         <section class="memory-card memory-card-wide">
           <div class="memory-card-head">
-            <h3>Obsidian vault <span class="dim small">tier 3 — long-form operator notes</span></h3>
+            <h3>Obsidian vault <span class="dim small">tier 2 — long-form operator notes</span></h3>
             <span class="memory-status" id="memory-status">checking…</span>
           </div>
           <div class="memory-card-body" id="memory-content">loading…</div>
+        </section>
+
+        <!-- v2.7.23 — Tier 3 Evy Memory panel.
+             Conversational memory: operator-Evy chat + decisions + shipped
+             events + captured notifications. Distinct from Tier 4 claude-mem.
+             Sources: GET /api/memory/search, /api/memory/recent, /api/memory/stats. -->
+        <section class="memory-card memory-card-wide" id="evy-memory-card">
+          <div class="memory-card-head">
+            <h3>Evy Memory <span class="dim small">tier 3 — operator-Evy conversational memory (sqlite)</span></h3>
+            <span class="memory-card-meta" id="evy-mem-meta">— entries</span>
+          </div>
+          <div class="memory-card-body">
+            <p class="memory-card-doc">Persistent record of what was said, decided, and shipped between you and Evy. Captured automatically at every turn boundary; queryable here, via <code>/memory</code> on Telegram, or via <code>evy_recall</code> from Evy herself. The file lives at <code>~/.local/state/subctl/memory/evy.db</code> (chmod 600).</p>
+            <div class="evy-mem-controls">
+              <input type="search" id="evy-mem-search" placeholder="search memory (FTS5)…" />
+              <select id="evy-mem-kind">
+                <option value="">all kinds</option>
+                <option value="message">message</option>
+                <option value="tool-call">tool-call</option>
+                <option value="notification">notification</option>
+                <option value="shipped">shipped</option>
+                <option value="evy-note">evy-note</option>
+                <option value="operator-note">operator-note</option>
+                <option value="synthetic-prompt">synthetic-prompt</option>
+              </select>
+              <button type="button" class="primary-btn" id="evy-mem-search-btn">search</button>
+              <button type="button" class="secondary-btn" id="evy-mem-refresh-btn">recent</button>
+            </div>
+            <div class="evy-mem-list" id="evy-mem-list">loading…</div>
+          </div>
         </section>
       </div>
     </section>

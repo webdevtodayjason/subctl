@@ -1,9 +1,11 @@
 # 0006: Memori (BYODB sqlite) for Tier 3 conversational memory
 
-- **Status:** Accepted (ships v2.7.13)
+- **Status:** Superseded by [ADR 0014](0014-evy-memory-ts-port-of-memori.md) — 2026-05-13
 - **Date:** 2026-05-12
 - **Decided by:** Jason Brashear (operator)
-- **Implemented in:** v2.7.13 (queued)
+- **Implemented in:** _never_ (queued for v2.7.13, then superseded before implementation)
+
+> **Note (2026-05-13):** This decision was overturned when v2.7.23 implementation began. The `@memorilabs/memori` npm TypeScript SDK referenced below does not exist as a maintained surface — Memori is Python-only (`MemoriLabs/Memori`). The substitute path (TS port using `bun:sqlite`) ships as **Evy Memory** in v2.7.23. See [ADR 0014](0014-evy-memory-ts-port-of-memori.md). The reasoning below is preserved verbatim so the original logic remains auditable.
 
 ## Context
 
