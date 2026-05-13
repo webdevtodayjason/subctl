@@ -572,8 +572,9 @@ describe("tinyfish_fetch", () => {
 // ---------------------------------------------------------------------------
 
 describe("tinyfishTools family export", () => {
-  test("exports exactly tinyfish_search + tinyfish_fetch with the expected shape", () => {
+  test("exports search + fetch + agent (v2.7.27) with the expected shape", () => {
     expect(Object.keys(tinyfishTools).sort()).toEqual([
+      "tinyfish_agent",
       "tinyfish_fetch",
       "tinyfish_search",
     ]);

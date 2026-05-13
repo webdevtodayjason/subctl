@@ -3408,7 +3408,7 @@ const server = Bun.serve({
         { name: "CONTEXT7_API_KEY",     purpose: "Context7 — up-to-date library docs (master tool + MCP for dev-team Claude leads)", secret_key: "context7_api_key" },
         { name: "BRAVE_API_KEY",        purpose: "Brave AI Search (web_search master tool — v2.7.2)", secret_key: "brave_api_key" },
         { name: "FIRECRAWL_API_KEY",    purpose: "Firecrawl scraping (web_fetch master tool — v2.7.2)", secret_key: "firecrawl_api_key" },
-        { name: "TINYFISH_API_KEY",     purpose: "TinyFish search + fetch (tinyfish_search, tinyfish_fetch master tools — v2.7.16, free tier)", secret_key: "tinyfish_api_key" },
+        { name: "TINYFISH_API_KEY",     purpose: "TinyFish search + fetch + agent (tinyfish_search, tinyfish_fetch — v2.7.16 free tier; tinyfish_agent — v2.7.27 paid, browser-automation, consumes credits)", secret_key: "tinyfish_api_key" },
         { name: "LINEAR_API_KEY",       purpose: "Linear API (linear_list_issues, linear_search, linear_create_issue, linear_update_issue master tools — v2.7.2)", secret_key: "linear_api_key" },
         { name: "LMSTUDIO_API_TOKEN",   purpose: "LM Studio API auth (when 'Require API Token' is enabled in LM Studio server settings — v2.7.4)", secret_key: "lmstudio_api_token" },
       ];
