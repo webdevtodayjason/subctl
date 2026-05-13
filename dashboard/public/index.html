@@ -844,8 +844,21 @@
             </div>
             <div class="upstreams-actions">
               <button type="button" class="primary-btn" id="upstreams-check-btn">Check now</button>
+              <button type="button" class="primary-btn" id="upstreams-update-btn" title="Manual auto-update — bypasses the 24h throttle. Pushes a chore/upstream-* branch.">Update now</button>
+              <label class="upstreams-toggle">
+                <input type="checkbox" id="upstreams-auto-toggle" />
+                <span>Auto-update</span>
+              </label>
               <span class="upstreams-last-checked" id="upstreams-status">—</span>
             </div>
+            <!-- v2.7.37 — Update history (collapsed by default). Shows the
+                 last 20 audit entries from upstream-updates.jsonl. -->
+            <details class="upstreams-history" id="upstreams-history-details">
+              <summary>Update history</summary>
+              <div class="upstreams-history-list" id="upstreams-history-list">
+                <div class="dim small">no history yet</div>
+              </div>
+            </details>
           </div>
         </section>
       </div>

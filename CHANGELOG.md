@@ -1,62 +1,66 @@
-## [2.7.35] — 2026-05-13
+## [2.7.37] — 2026-05-13
 
-### `feat(dashboard,master): v2.7.35 — watchdog dashboard surface (full /diag integration)`
+### `feat(master): v2.7.37 upstream auto-update automation (worktree + push, never merge)`
 
-v2.7.19 shipped watchdog kill controls + a basic dashboard table. v2.7.22 added the dedicated notification channel. v2.7.35 wires the **full per-watchdog diagnostic surface** into the Orchestration tab: status badges, tick-history sparklines, recent notifications, last-error blocks, and a Restart button that re-arms a killed watchdog without bouncing the master daemon. Telegram operators get the same depth via `/watchdogs details` and `/watchdogs <id> details`.
+v2.7.25 shipped the upstream-tracking watchdog half: every 6h, master polls npm for `@earendil-works/pi-ai` + `@earendil-works/pi-agent-core`, compares against the floor-pinned versions in `components/master/package.json`, and emits a `severity:"info"` (patch/minor) or `severity:"warn"` (major) notification when a newer version is available. The auto-update half was gated behind `~/.config/subctl/auto-update-upstreams.enabled` but only did an in-place `bun install + bun test` against the live working copy — useful for development, but not safe to enable on the daemon a paying operator depends on (a broken upstream would have left the working tree dirty). This release lands the production-grade auto-update path on top of that gate.
 
-**Architecture.** A sibling module — `components/master/watchdog-diag.ts` — sits next to the v2.7.19 registry (`watchdogs.ts`) without mutating it. The registry's contract is shared with the notification-UX worker and the kill-controls path; modifying it would risk drift. Instead, watchdog-diag layers four passive surfaces on top:
+**Worktree-based runner.** `components/master/upstream-check.ts` now ships `worktreeAutoUpdateRunner()` as the default for `startUpstreamWatchdog`. When the gate flag is set and a newer version is detected, the runner:
 
-1. **Tick-history observer** — a 500ms `setInterval` polls `listWatchdogs()`, writes a `TickRecord { ts, delta_ms }` whenever `last_tick_at` advances. Faster than the fastest real watchdog (inbox-poll @ 2s) so no ticks are missed. Per-id ring caps at 20.
-2. **Notification correlator** — subscribes to `notifications.ts` `subscribeNotifications` and routes each event to its source watchdog by kind regex (`team-stale*` → `team-staleness`, `auto-compact-error` → `auto-compact`, `upstream-*` → `upstream-check`). Backfills from the existing ring on start so first-load isn't empty.
-3. **Status classifier** — server-side `classifyStatus(snap)` returns `healthy / degraded / dead / unknown` per the spec thresholds (2×, 5×, 10× expected interval). The expected interval per kind comes from a static `EXPECTED_INTERVAL_SECONDS` table sourced from each watchdog's actual `setInterval` value. Long-poll kinds (`telegram-listener`) report `healthy` whenever registered.
-4. **Restart factory registry** — opt-in. Each watchdog arming site in `server.ts` was wrapped in a `let interval = setInterval(...)` + `function armX()` factory pair, then registered via `registerRestartFactory(id, armX)`. The HTTP endpoint `POST /watchdogs/:id/restart` calls `killWatchdog(id)` (if still live) then runs the factory. Kinds that can't be hot-restarted (`telegram-listener`, `cli-prompt-poll`, `inbox-poll` — tightly coupled to closure state) skip the factory; the Restart button is grayed-out in the UI for them.
+1. Calls `git rev-parse --show-toplevel` from `components/master/` to resolve the repo root (worktree-safe).
+2. `git worktree add -b chore/upstream-<package>-<ts> /tmp/subctl-upstream-update-<ts>/ HEAD` — a fresh worktree off the current branch's HEAD, not main.
+3. In the worktree's `components/master/`: `bun install <package>@latest` (explicit `@latest` so bun re-resolves even if the lockfile is happy).
+4. `bun test` — full suite must pass.
+5. `bun run --if-present build` — best-effort; tolerates missing scripts.
+6. `bun x tsc --noEmit` — typecheck; same missing-config tolerance.
+7. All green → `git add package.json bun.lock bun.lockb`, `git commit -m "chore(deps): auto-update <package> X.Y.Z → A.B.C"`, `git push -u origin chore/upstream-<package>-<ts>:<same>`.
+8. Emit `severity:"info"` notification `"<pkg> auto-updated X.Y.Z → A.B.C; PR-ready branch pushed"`. The worktree is left behind for operator inspection.
 
-**Errors.** `recordWatchdogError(id, err)` lets opt-in tick sites attribute a captured `try/catch` to a watchdog id. The auto-compact tick uses it — operator can now see `last_error.message + stack` per watchdog without `grep`'ing master.log.
+**Failure handling.** Any non-zero step before the push triggers `git worktree remove --force` + `git branch -D` cleanup. The first 1KB of stderr is captured + sent through the alert notification (`upstream-update-failed`) and audit log so the operator can diagnose without grep'ing logs. If the push itself fails, the worktree is preserved (the commit landed locally) and the notification points the operator at the worktree path.
 
-**HTTP surface.**
+**Hard guardrails (per the spec).** The runner SHELLS OUT to git + bun and is paranoid about side effects: every step has a 5-minute timeout (kills the process on overrun), `GIT_TERMINAL_PROMPT=0` is set in the spawned env (so a credential prompt fails fast instead of hanging the daemon), and the code path NEVER pushes to `main`, NEVER uses `--force`, NEVER tags, NEVER deletes any branch that isn't the chore branch it just created. Pushing the branch is the highest level of automation — the operator's eyeball on the diff remains the explicit merge gate.
 
-- `GET /watchdogs` — unchanged (bare list, v2.7.19)
-- `GET /watchdogs/diag` — every watchdog with rich shape (status, tick_history, recent_notifications, last_error, can_restart, expected_interval_seconds, last_tick_ago_seconds, memory_bytes)
-- `GET /watchdogs/:id/diag` — single-row deep dive
-- `POST /watchdogs/:id/restart` — bounces a watchdog via its registered factory. Returns 404 with a human-readable message when no factory is registered.
+**Throttle.** At most one auto-update attempt per package per 24h. State lives at `~/.local/state/subctl/upstream-throttle.json` (survives daemon restart). When a tick is throttled, the watchdog records a `throttled` event in the audit log so the operator can see why nothing happened. Manual triggers (CLI or dashboard) bypass the throttle for the current invocation only.
 
-Dashboard proxies all of these via `/api/watchdogs/*` (same path scheme as v2.7.19 to keep the rename surface small).
+**Audit log.** Every attempt — success, failure, or throttled — appends one JSONL line to `~/.local/state/subctl/audit/upstream-updates.jsonl` carrying `{ts, event, package, from, to, bump_kind, branch?, worktree_path?, reverted?, detail?, stderr_excerpt?, trigger}`. The trigger field is `"watchdog"` for the 6h tick, `"manual"` for operator-driven runs.
 
-**Dashboard UI.** The Orchestration tab's existing Watchdogs `<details>` panel was rewritten:
+**CLI.** `bin/subctl` learns a new top-level verb:
 
-- Status column with Lucide icons — `heart-pulse` (healthy), `alert-triangle` (degraded), `x-circle` (dead). Two new icons added to `dashboard/public/icons.js`.
-- Header count chip surfaces dead/degraded counts inline ("3 active · 1 degraded").
-- Per-row Details button toggles an inline expand row with:
-  - Metadata table (started_at, last_tick_at, expected interval, last tick ago, can_restart flag)
-  - Tick-history sparkline — bars colored by tick lateness (green / amber / red) vs expected interval, height encodes delta_ms
-  - Recent-notifications list (last 10, newest first, severity-tinted)
-  - Last-error box with stack trace, scrollable + monospace
-- Restart button (blue) bounces the watchdog. Disabled with a tooltip when the kind doesn't support hot-restart.
-- Kill button unchanged from v2.7.19 — operator gets the original "irreversible without bounce" path.
+- `subctl upstream check` — manual tick of the watchdog (same as the dashboard "Check now" button)
+- `subctl upstream update [<pkg>]` — manual auto-update; bypasses the throttle, optional positional arg picks one package
+- `subctl upstream update --enable` / `--disable` — flip the gate flag file
+- `subctl upstream history [N]` — show the last N audit entries (default 20)
 
-**Telegram.** Two new subcommands on the existing `/watchdogs` handler:
+The CLI is a thin shell over the master daemon's HTTP endpoints; it deliberately doesn't carry its own auto-update logic so there's one canonical code path.
 
-- `/watchdogs details` — renders the diag block for every watchdog (status, age, expected interval, last tick, tick deltas, last 3 notifications, last error if any)
-- `/watchdogs <id> details` — single-row deep dive, same format
-- `/watchdogs` (list) — now also tags each row with its `[status]` so operators on mobile see degraded/dead at a glance
+**Master HTTP surface.** Three new endpoints on the master daemon (all live under `/upstreams`, all proxied through the dashboard at `/api/upstreams`):
 
-**Tests.** `components/master/__tests__/watchdog-diag.test.ts` — 25 cases covering: shape lock, classifyStatus thresholds (healthy/degraded/dead at the boundaries), long-poll kinds always healthy, unknown kind classifies as "unknown", never-ticked grace period, observer captures + GC's history on kill, notification correlator regex mappings + tracker round-trip + backfill, restart factory round-trip + unknown-id error + factory-throw capture + can_restart toggle, recordWatchdogError surfaces in diag entry. All 387 master tests pass.
+- `POST /upstreams/update` — manual auto-update trigger (bypasses throttle). Body `{package?: string}`.
+- `GET  /upstreams/history?limit=N` — recent audit-log entries, newest first.
+- `POST /upstreams/auto-update/toggle` — body `{enabled: boolean}`, flips the gate flag.
 
-**Constraint adherence.** `components/master/watchdogs.ts` is unchanged in this PR — diff is empty for the shared registry file. Every new surface is in the sibling `watchdog-diag.ts`. No `claude_code` references outside `providers/claude/`. `bun build` clean for both master + dashboard.
+The existing `GET /upstreams` state shape gains four fields: `throttle_ms`, `throttle_state` (per-package last-attempt epochs), `audit_log_path`, and `recent_updates` (last 10 audit entries — the disclosure widget in the dashboard lazy-loads more from `/upstreams/history`).
+
+**Dashboard.** The Upstreams card in the Memory tab (added v2.7.25) gains an "Update now" button, an "Auto-update" toggle (touches/removes the flag file via the new HTTP endpoint), and a collapsible "Update history" disclosure widget showing the last 20 audit entries. The dashboard proxy in `dashboard/server.ts` is widened from the two literal paths it used to match to a `startsWith("/api/upstreams/")` prefix so every new sub-path forwards correctly.
+
+**Tests.** `components/master/__tests__/upstream-check.test.ts` gains 11 new pins across four blocks:
+
+- Throttle: second tick inside the 24h window does NOT re-invoke the runner; the throttled event lands in the audit log; manual trigger bypasses the throttle; `readLastAttempt` + `writeLastAttempt` round-trip cleanly.
+- Audit log: `appendAuditEntry` + `readUpdateHistory` return newest-first; tolerates a missing file; honors limit.
+- Flag toggle: `setAutoUpdateEnabled` writes/removes the file idempotently.
+- Worktree runner end-to-end with a mocked `Bun.spawn` that verifies the command order is worktree-add → bun install → bun test → bun build → tsc → git add → git commit → git push, that the branch name carries the package + timestamp, and crucially that the push command never carries `--force` or `main`/`main:main`. The failure-path test mocks `bun test` to exit 1 and asserts the worktree cleanup commands ran and that no push happened.
 
 **Files:**
 
-- New: `components/master/watchdog-diag.ts`
-- New: `components/master/__tests__/watchdog-diag.test.ts`
-- Modified: `components/master/server.ts` — imports diag module, wraps 4 watchdog arming sites in restart factories, adds `recordWatchdogError` to auto-compact catch, adds `/watchdogs/diag` + `/watchdogs/:id/diag` + `/watchdogs/:id/restart` endpoints, starts/stops observer + tracker in lifecycle
-- Modified: `components/master/master-notify-listener.ts` — `/watchdogs details` + `/watchdogs <id> details` subcommands + `formatWatchdogDiagBlock` helper + help-text updates
-- Modified: `dashboard/server.ts` — proxy routes for `/api/watchdogs/diag` + `/api/watchdogs/:id/diag` + `/api/watchdogs/:id/restart`
-- Modified: `dashboard/public/app.js` — `wireWatchdogPanel` rewritten with status badges, expand rows, sparkline renderer, restart button
-- Modified: `dashboard/public/index.html` — Watchdogs `<details>` panel header gains a "status" column
-- Modified: `dashboard/public/style.css` — `.watchdog-status-*` badge family, `.watchdog-sparkline*`, `.watchdog-notif-list`, `.watchdog-error-box`, `.watchdog-restart-btn`, expand-row chrome
-- Modified: `dashboard/public/icons.js` — `heart-pulse` + `x-circle` Lucide paths
-- Modified: `VERSION` → 2.7.35
-- Modified: `docs/master.md` — watchdog section extended with the new dashboard rendering + Telegram subcommands
+- Modified: `components/master/upstream-check.ts` — `worktreeAutoUpdateRunner`, `runManualUpdate`, `readUpdateHistory`, `appendAuditEntry`, `read/writeLastAttempt`, `setAutoUpdateEnabled` / `isAutoUpdateEnabled`, throttle gate inside `runUpstreamCheck`, audit log writes on every outcome, extended `describeUpstreamState`. The legacy `defaultAutoUpdateRunner` stays exported for back-compat but the watchdog default is now the worktree runner.
+- Modified: `components/master/server.ts` — three new HTTP routes under `/upstreams`, plus the new imports.
+- Modified: `components/master/__tests__/upstream-check.test.ts` — 11 new test cases across four describe blocks.
+- Modified: `dashboard/server.ts` — widened the `/api/upstreams` proxy match to a prefix.
+- Modified: `dashboard/public/index.html` — Update-now button, Auto-update toggle, history disclosure widget.
+- Modified: `dashboard/public/app.js` — `initUpstreamsCard()` extended with toggle + manual update + history rendering.
+- Modified: `dashboard/public/style.css` — toggle + history grid styles.
+- Modified: `bin/subctl` — new `upstream` subcommand + usage line.
+- Modified: `docs/master.md` — `3.5c` extended with v2.7.37 auto-update mechanics.
+- Modified: `VERSION` → `2.7.37`.
 
 ## [2.7.31] — 2026-05-13
 

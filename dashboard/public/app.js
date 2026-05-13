@@ -7842,10 +7842,12 @@
     initLucideChrome();
   }
 
-  // ── v2.7.25 (Scope C) — Upstreams card ──────────────────────────────
+  // ── v2.7.25 + v2.7.37 — Upstreams card ──────────────────────────────
   // Surfaces the master's upstream-check watchdog state in the Memory
   // tab. Loads once when the Memory tab becomes active (cheap GET, no
-  // SSE); "Check now" pokes the master's manual-tick endpoint.
+  // SSE); "Check now" pokes the master's manual-tick endpoint; v2.7.37
+  // adds an "Update now" manual-trigger button, an "Auto-update" gate
+  // toggle, and an expandable history of the last 20 audit entries.
   function initUpstreamsCard() {
     const card = document.getElementById("upstreams-card");
     if (!card) return;
@@ -7853,6 +7855,10 @@
     const lastChecked = document.getElementById("upstreams-last-checked");
     const status = document.getElementById("upstreams-status");
     const btn = document.getElementById("upstreams-check-btn");
+    const updateBtn = document.getElementById("upstreams-update-btn");
+    const autoToggle = document.getElementById("upstreams-auto-toggle");
+    const historyList = document.getElementById("upstreams-history-list");
+    const historyDetails = document.getElementById("upstreams-history-details");
     if (!grid || !btn) return;
 
     let loaded = false;
@@ -7899,6 +7905,49 @@
         ? "auto-update gate: ON (" + escapeHtml(payload.auto_update_flag_path || "") + ")"
         : "auto-update gate: OFF";
       status.textContent = auto;
+      if (autoToggle) {
+        autoToggle.checked = !!payload.auto_update_enabled;
+      }
+      // v2.7.37 — pre-populate the history list from the snapshot.
+      // describeUpstreamState() ships the last 10 entries; the
+      // expandable list lazy-loads more if the operator opens it.
+      if (historyList && Array.isArray(payload.recent_updates)) {
+        renderHistory(payload.recent_updates);
+      }
+    }
+
+    function renderHistory(entries) {
+      if (!historyList) return;
+      if (!entries || entries.length === 0) {
+        historyList.innerHTML = '<div class="dim small">no history yet</div>';
+        return;
+      }
+      historyList.innerHTML = entries.map((e) => {
+        const okIcon = e.event === "success" ? "✓" : (e.event === "throttled" ? "⏳" : "✗");
+        const branch = e.branch ? '<span class="dim small"> branch=' + escapeHtml(e.branch) + '</span>' : "";
+        const trigger = e.trigger ? '<span class="dim small"> · ' + escapeHtml(e.trigger) + '</span>' : "";
+        const detail = e.detail ? '<div class="dim small upstream-history-detail">' + escapeHtml(String(e.detail).slice(0, 240)) + '</div>' : "";
+        return [
+          '<div class="upstream-history-row">',
+          '  <span class="upstream-history-icon">' + okIcon + '</span>',
+          '  <span class="upstream-history-pkg">' + escapeHtml(e.package || "?") + '</span>',
+          '  <span class="upstream-history-ver">' + escapeHtml(e.from || "?") + ' → ' + escapeHtml(e.to || "?") + '</span>',
+          '  <span class="upstream-history-ts dim small">' + escapeHtml(e.ts || "") + '</span>',
+          branch, trigger, detail,
+          '</div>',
+        ].join("");
+      }).join("");
+    }
+
+    async function loadHistory() {
+      if (!historyList) return;
+      try {
+        const r = await fetch("/api/upstreams/history?limit=20");
+        const j = await r.json();
+        if (j && j.ok) renderHistory(j.entries || []);
+      } catch (err) {
+        historyList.innerHTML = '<div class="dim small">history unreachable: ' + escapeHtml(String(err && err.message || err)) + '</div>';
+      }
     }
 
     async function load() {
@@ -7926,6 +7975,81 @@
         btn.textContent = orig;
       }
     });
+
+    if (updateBtn) {
+      // v2.7.37 — manual auto-update. Bypasses the 24h throttle. Long-
+      // running (worktree + bun install + test + build + typecheck +
+      // push); UI just shows a spinner until the master returns.
+      updateBtn.addEventListener("click", async () => {
+        const ok = window.confirm(
+          "Manual upstream update will create a worktree under /tmp, run bun install + test + build + typecheck, " +
+          "commit, and push a chore/upstream-* branch (NOT merge). This may take several minutes. Continue?",
+        );
+        if (!ok) return;
+        updateBtn.disabled = true;
+        const orig = updateBtn.textContent;
+        updateBtn.textContent = "updating…";
+        try {
+          const r = await fetch("/api/upstreams/update", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: "{}",
+          });
+          const j = await r.json();
+          if (!j.ok) throw new Error(j.error || "update failed");
+          await load();
+          await loadHistory();
+        } catch (err) {
+          if (status) status.textContent = "update failed: " + String(err && err.message || err);
+        } finally {
+          updateBtn.disabled = false;
+          updateBtn.textContent = orig;
+        }
+      });
+    }
+
+    if (autoToggle) {
+      // v2.7.37 — gate flag toggle. Hits the master's
+      // /upstreams/auto-update/toggle endpoint, which touches/removes
+      // ~/.config/subctl/auto-update-upstreams.enabled.
+      autoToggle.addEventListener("change", async () => {
+        const desired = !!autoToggle.checked;
+        autoToggle.disabled = true;
+        try {
+          const r = await fetch("/api/upstreams/auto-update/toggle", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ enabled: desired }),
+          });
+          const j = await r.json();
+          if (!j.ok) {
+            // Roll back the visual state — server refused.
+            autoToggle.checked = !desired;
+            if (status) status.textContent = "toggle failed";
+          } else {
+            await load();
+          }
+        } catch (err) {
+          autoToggle.checked = !desired;
+          if (status) status.textContent = "toggle failed: " + String(err && err.message || err);
+        } finally {
+          autoToggle.disabled = false;
+        }
+      });
+    }
+
+    if (historyDetails) {
+      // Lazy-load the full 20-entry list the first time the
+      // operator expands the disclosure widget — the snapshot in
+      // /api/upstreams only carries 10 entries.
+      let historyLoaded = false;
+      historyDetails.addEventListener("toggle", () => {
+        if (historyDetails.open && !historyLoaded) {
+          historyLoaded = true;
+          loadHistory();
+        }
+      });
+    }
 
     // Lazy-load on Memory tab activation. The tab switcher sets
     // document.body.dataset.activeTab — observe it. If we're already

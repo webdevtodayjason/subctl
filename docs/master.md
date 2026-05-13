@@ -389,6 +389,30 @@ v2.7.25 closes the enforcement gap on ADR 0015's always-latest policy. A new wat
 
 **Notification kinds added:** `upstream-available`, `upstream-auto-updated`, `upstream-update-failed`, `upstream-check-error`. All flow through the same v2.7.22 ring buffer + SSE stream + dashboard tray.
 
+#### v2.7.37 — production-grade auto-update path
+
+v2.7.25 enabled the auto-update gate but its runner just bumped + tested against the live working copy. v2.7.37 rewrites the runner to use git worktrees, push a PR-ready branch, and never touch main:
+
+1. Resolve repo root via `git -C components/master rev-parse --show-toplevel` (worktree-safe).
+2. `git worktree add -b chore/upstream-<package>-<ts> /tmp/subctl-upstream-update-<ts>/ HEAD` (NEVER main, NEVER a tag).
+3. In the worktree's component dir: `bun install <package>@latest` → `bun test` → `bun run --if-present build` → `bun x tsc --noEmit`.
+4. All clean → `git add package.json bun.lock bun.lockb`, commit `chore(deps): auto-update <package> X.Y.Z → A.B.C`, push to `origin <branch>:<branch>`.
+5. Emit `severity:"info"` notification "<pkg> auto-updated X.Y.Z → A.B.C; PR-ready branch pushed". Worktree is left behind for inspection.
+
+Anything non-zero during steps 3–4 → `git worktree remove --force` + `git branch -D <branch>` cleanup, first 1KB of stderr captured into a `severity:"alert"` `upstream-update-failed` notification. Push failures are a soft case: the commit landed locally and the worktree stays around so the operator can push by hand after reviewing.
+
+**Hard guardrails.** Every step has a 5-minute timeout, `GIT_TERMINAL_PROMPT=0` is set in the spawned env (credential prompts fail fast instead of hanging the daemon), and the code path NEVER pushes to `main`, NEVER uses `--force`, NEVER tags, NEVER deletes any branch that isn't the chore branch it just created. The push is the highest level of automation — operator merges by hand.
+
+**Throttle.** At most one auto-update attempt per package per 24h. State at `~/.local/state/subctl/upstream-throttle.json` (restart-safe). Throttled ticks land in the audit log as `event:"throttled"` so the operator can see why nothing happened. Manual triggers bypass.
+
+**Audit log.** Every attempt — success, failure, throttled — appends one JSONL line to `~/.local/state/subctl/audit/upstream-updates.jsonl`: `{ts, event, package, from, to, bump_kind, branch?, worktree_path?, reverted?, detail?, stderr_excerpt?, trigger}`.
+
+**CLI.** `subctl upstream <check|update [<pkg>]|history [N]|update --enable|--disable>` — a thin shell over the master's HTTP endpoints. `update` bypasses the throttle; `update --enable`/`--disable` flips the gate flag.
+
+**HTTP surface.** Master gains `POST /upstreams/update`, `GET /upstreams/history?limit=N`, `POST /upstreams/auto-update/toggle {enabled: boolean}`. Dashboard proxies them all under `/api/upstreams/*`. The existing `GET /upstreams` state shape now includes `throttle_ms`, `throttle_state`, `audit_log_path`, and `recent_updates` (last 10 entries).
+
+**Dashboard.** The Upstreams card gains an "Update now" button, an "Auto-update" toggle, and a collapsible "Update history" disclosure widget (lazy-loads the full 20-entry list on first expand).
+
 ### 3.5d Notification system (v2.7.25 UX)
 
 v2.7.22 shipped the master-side notification channel (ring buffer + SSE stream + Telegram push for `severity:"alert"`). v2.7.25 reshapes the dashboard surface after operator feedback that the v2.7.22 panel rendered always-on and could not be collapsed or dismissed.

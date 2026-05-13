@@ -169,6 +169,10 @@ import { evyMemoryTools } from "./tools/evy-memory";
 import {
   startUpstreamWatchdog,
   describeUpstreamState,
+  readUpdateHistory,
+  runManualUpdate,
+  setAutoUpdateEnabled,
+  isAutoUpdateEnabled,
   type UpstreamWatchdogHandle,
 } from "./upstream-check";
 
@@ -2104,13 +2108,17 @@ async function main() {
         return Response.json({ ok: true, cleared });
       }
 
-      // ── /upstreams — pi-ai + pi-agent-core tracker (v2.7.25 Scope C) ────
+      // ── /upstreams — pi-ai + pi-agent-core tracker (v2.7.25 + v2.7.37) ──
       // ADR 0015 "always-latest" policy. The dashboard proxies these under
       // /api/upstreams; Telegram's /upstreams reads describeUpstreamState()
       // directly via master-notify-listener. Routes:
       //
-      //   GET  /upstreams        → { ok, checked_at, results[], auto_update_enabled, auto_update_flag_path }
-      //   POST /upstreams/check  → runs the watchdog once, returns the same shape
+      //   GET  /upstreams                    → state snapshot
+      //   POST /upstreams/check              → runs the watchdog once
+      //   POST /upstreams/update             → manual auto-update (v2.7.37,
+      //                                        bypasses 24h throttle)
+      //   GET  /upstreams/history            → recent audit-log entries
+      //   POST /upstreams/auto-update/toggle → flip the gate flag file
       if (url.pathname === "/upstreams" && req.method === "GET") {
         const state = describeUpstreamState();
         return Response.json({ ok: true, ...state });
@@ -2135,6 +2143,63 @@ async function main() {
         }
         const state = describeUpstreamState();
         return Response.json({ ok: true, ...state });
+      }
+      if (url.pathname === "/upstreams/update" && req.method === "POST") {
+        // v2.7.37 — manual auto-update trigger. Bypasses the 24h
+        // throttle. Body { package?: string } — when omitted, every
+        // tracked upstream with a newer version is attempted.
+        let body: { package?: string } = {};
+        try {
+          if (req.headers.get("content-type")?.includes("application/json")) {
+            body = (await req.json()) as { package?: string };
+          }
+        } catch {
+          /* tolerate empty / malformed body — defaults are fine */
+        }
+        try {
+          const summary = await runManualUpdate({
+            packageJsonPath: join(COMPONENT_DIR, "package.json"),
+            package: body.package,
+          });
+          return Response.json({ ok: true, summary });
+        } catch (err) {
+          return Response.json(
+            { ok: false, error: (err as Error).message },
+            { status: 500 },
+          );
+        }
+      }
+      if (url.pathname === "/upstreams/history" && req.method === "GET") {
+        const limitRaw = url.searchParams.get("limit");
+        const limit = limitRaw ? Math.max(1, Math.min(500, Number(limitRaw))) : 50;
+        const entries = readUpdateHistory({ limit });
+        return Response.json({ ok: true, count: entries.length, entries });
+      }
+      if (
+        url.pathname === "/upstreams/auto-update/toggle" &&
+        req.method === "POST"
+      ) {
+        // v2.7.37 — flip the flag file. Body { enabled: boolean }.
+        let body: { enabled?: unknown };
+        try {
+          body = (await req.json()) as { enabled?: unknown };
+        } catch {
+          return Response.json(
+            { ok: false, error: "expected JSON body { enabled: boolean }" },
+            { status: 400 },
+          );
+        }
+        if (typeof body.enabled !== "boolean") {
+          return Response.json(
+            { ok: false, error: "field `enabled` must be boolean" },
+            { status: 400 },
+          );
+        }
+        const ok = setAutoUpdateEnabled(body.enabled);
+        return Response.json({
+          ok,
+          enabled: isAutoUpdateEnabled(),
+        });
       }
 
       // ── /memory/* — Evy Memory (Tier 3) operator surface (v2.7.23) ──────
