@@ -63,6 +63,13 @@ import {
   setActiveProfile,
   PROFILE_NAMES,
 } from "./profiles";
+import {
+  registerWatchdog,
+  touchWatchdog,
+  killWatchdog,
+  listWatchdogs,
+  killAllWatchdogs,
+} from "./watchdogs";
 
 const HOME = homedir();
 const SUBCTL_CONFIG_DIR =
@@ -153,6 +160,37 @@ export function startMasterNotifyListener(
   _running = true;
   _abortController = new AbortController();
 
+  // v2.7.19 watchdog registry — register the two looping consumers
+  // before they start. The kill closures call _stopInternal() (raw
+  // abort + flag flip, no killWatchdog re-entry), which is also what
+  // stopMasterNotifyListener() does after deregistering; that
+  // separation prevents infinite recursion when killWatchdog invokes
+  // entry.kill which would otherwise call back into killWatchdog.
+  try {
+    registerWatchdog({
+      id: "telegram-listener",
+      kind: "telegram-listener",
+      kill: () => _stopInternal(),
+    });
+  } catch (err) {
+    // Duplicate id — listener restarted without registry cleanup.
+    // Best-effort: continue, since the listener itself is still wired.
+    console.error(
+      `[master-notify] watchdog register failed (telegram-listener): ${(err as Error).message}`,
+    );
+  }
+  try {
+    registerWatchdog({
+      id: "cli-prompt-poll",
+      kind: "cli-prompt-poll",
+      kill: () => _stopInternal(),
+    });
+  } catch (err) {
+    console.error(
+      `[master-notify] watchdog register failed (cli-prompt-poll): ${(err as Error).message}`,
+    );
+  }
+
   pollLoop(botToken, _abortController.signal).catch((err) => {
     console.error("[master-notify] poll loop crashed:", err?.message || err);
     _running = false;
@@ -165,12 +203,25 @@ export function startMasterNotifyListener(
   return { running: true };
 }
 
-export function stopMasterNotifyListener(): void {
+// Private — actually tear down the abort controller + flip the flag.
+// Split out so the watchdog-registry kill closures can call this
+// without going through killWatchdog() (which would re-enter and
+// recurse infinitely). Idempotent.
+function _stopInternal(): void {
   if (_abortController) {
     _abortController.abort();
     _abortController = null;
   }
   _running = false;
+}
+
+export function stopMasterNotifyListener(): void {
+  _stopInternal();
+  // v2.7.19 — deregister both watchdog ids. killWatchdog() returns
+  // { ok: false } on an unknown id, which is fine here (already
+  // deregistered by an earlier kill or never registered yet).
+  killWatchdog("telegram-listener");
+  killWatchdog("cli-prompt-poll");
 }
 
 export function masterNotifyListenerStatus(): {
@@ -258,6 +309,10 @@ async function pollLoop(token: string, signal: AbortSignal) {
   }
 
   while (!signal.aborted) {
+    // v2.7.19 watchdog freshness — bumped at the START of each loop
+    // iteration so listWatchdogs() shows a recent tick even when
+    // long-poll is blocked waiting on Telegram.
+    touchWatchdog("telegram-listener");
     try {
       const url = new URL(`https://api.telegram.org/bot${token}/getUpdates`);
       url.searchParams.set("timeout", "25");
@@ -385,9 +440,74 @@ async function handleBotCommand(text: string): Promise<string> {
       // Anything else         → usage help. We don't bounce master; the
       // fs.watch in components/master/profiles.ts handles propagation.
       return handleProfileCommand(parts.slice(1));
+    case "/watchdogs":
+      // v2.7.19 — operator's emergency kill path for stuck periodic
+      // probes. `/watchdogs` lists, `/watchdogs kill <id>` kills one,
+      // `/watchdogs killall` nukes everything except the telegram
+      // listener itself (since we need it alive to hear the next
+      // command). The looping-tool incident on 2026-05-13 is the
+      // motivating bug; see components/master/watchdogs.ts header.
+      return handleWatchdogsCommand(parts.slice(1));
     default:
-      return `Unknown command: ${cmd}\n\nTry: /status, /pause, /resume, /profile, /help`;
+      return `Unknown command: ${cmd}\n\nTry: /status, /pause, /resume, /profile, /watchdogs, /help`;
   }
+}
+
+function handleWatchdogsCommand(args: string[]): string {
+  const sub = (args[0] || "").trim().toLowerCase();
+  // No subcommand → list. Mirrors the `/profile` shape (no arg = read).
+  if (!sub) {
+    const all = listWatchdogs();
+    if (all.length === 0) {
+      return "No watchdogs registered.";
+    }
+    const lines: string[] = ["🐕 Active watchdogs:", ""];
+    for (const w of all) {
+      const ageStr =
+        w.age_seconds < 60
+          ? `${w.age_seconds}s`
+          : w.age_seconds < 3600
+            ? `${Math.floor(w.age_seconds / 60)}m`
+            : `${(w.age_seconds / 3600).toFixed(1)}h`;
+      lines.push(`• ${w.id} (${w.kind}) — age ${ageStr}`);
+    }
+    lines.push("");
+    lines.push("Kill one: /watchdogs kill <id>");
+    lines.push("Kill all (keeps telegram alive): /watchdogs killall");
+    return lines.join("\n");
+  }
+
+  if (sub === "killall") {
+    // Preserve the telegram listener — kind, not id — so a renamed
+    // listener still survives. Reply mirrors the registry's killed +
+    // preserved id lists for transparency.
+    const result = killAllWatchdogs({ preserve_kinds: ["telegram-listener"] });
+    const lines: string[] = [];
+    lines.push(`killed ${result.killed.length} watchdog(s), kept telegram-listener alive`);
+    if (result.killed.length > 0) {
+      lines.push("");
+      lines.push("Killed:");
+      for (const id of result.killed) lines.push(`  • ${id}`);
+    }
+    if (result.preserved.length > 0) {
+      lines.push("");
+      lines.push("Preserved:");
+      for (const id of result.preserved) lines.push(`  • ${id}`);
+    }
+    return lines.join("\n");
+  }
+
+  if (sub === "kill") {
+    const id = (args[1] || "").trim();
+    if (!id) {
+      return "Usage: /watchdogs kill <id>\n\nRun /watchdogs to see ids.";
+    }
+    const r = killWatchdog(id);
+    if (r.ok) return `✅ killed watchdog: ${r.killed_id}`;
+    return `❌ ${r.error}`;
+  }
+
+  return "Usage:\n/watchdogs              — list\n/watchdogs kill <id>    — kill one\n/watchdogs killall      — kill all (keeps telegram-listener)";
 }
 
 function handleProfileCommand(args: string[]): string {
@@ -431,13 +551,16 @@ function formatHelp(): string {
   return [
     "🤖 subctl master — the dev-team conductor",
     "",
-    "/start, /help    this message",
-    "/status          current daemon state + recent activity",
-    "/pause           halt the autonomous review loop",
-    "/resume          resume after pause",
-    "/profile         show active supervisor profile",
-    "/profile chat    swap to the chat supervisor (gemma — fast, conversational)",
-    "/profile heavy   swap to the heavy supervisor (qwen — deep reasoning)",
+    "/start, /help          this message",
+    "/status                current daemon state + recent activity",
+    "/pause                 halt the autonomous review loop",
+    "/resume                resume after pause",
+    "/profile               show active supervisor profile",
+    "/profile chat          swap to the chat supervisor (gemma — fast, conversational)",
+    "/profile heavy         swap to the heavy supervisor (qwen — deep reasoning)",
+    "/watchdogs             list active watchdogs",
+    "/watchdogs kill <id>   kill one watchdog",
+    "/watchdogs killall     kill all (keeps telegram-listener alive)",
     "",
     "Free-text messages are queued for the next agent turn — subctl master",
     "will act on them per its policy and report back.",
@@ -534,6 +657,8 @@ async function cliPromptLoop(signal: AbortSignal) {
   }
 
   while (!signal.aborted) {
+    // v2.7.19 watchdog freshness.
+    touchWatchdog("cli-prompt-poll");
     try {
       if (existsSync(CLI_PROMPTS_PATH)) {
         const size = statSync(CLI_PROMPTS_PATH).size;

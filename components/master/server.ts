@@ -107,6 +107,20 @@ import {
   type ProfileName,
   type ProfilesFile,
 } from "./profiles";
+import {
+  registerWatchdog,
+  touchWatchdog,
+  listWatchdogs,
+  killWatchdog,
+  killAllWatchdogs,
+} from "./watchdogs";
+import { watchdogTools } from "./tools/watchdogs";
+import {
+  recordToolResult,
+  shouldRefuseToolCall,
+  synthesizeRefusal,
+  resetOnNewTurn as resetCircuitBreakerOnNewTurn,
+} from "./circuit-breaker";
 
 const HOME = homedir();
 const COMPONENT_DIR = import.meta.dir;
@@ -416,6 +430,12 @@ export const toolRegistry: Record<string, InternalTool> = {
   ...Object.fromEntries(
     Object.entries(teamDocsTools).map(([k, v]) => [k, v as unknown as InternalTool]),
   ),
+  // watchdog family (v2.7.19): enumerate + kill stale watchdogs. Evy uses
+  // these when the operator says "what's running?" or "kill the inbox
+  // poll". Keys are fully-qualified (watchdog_list, watchdog_kill).
+  ...Object.fromEntries(
+    Object.entries(watchdogTools).map(([k, v]) => [k, v as unknown as InternalTool]),
+  ),
 };
 
 // system_my_tools needs to introspect the live registry. Bind it here so
@@ -439,7 +459,33 @@ function adaptTool(name: string, tool: InternalTool): AgentTool {
       _toolCallId,
       params,
     ): Promise<AgentToolResult<unknown>> => {
+      // v2.7.19 — empty-listener circuit breaker. After 3 consecutive
+      // empty-and-dead-listener returns for THIS exact tool name, we
+      // refuse the 4th call within the same turn-window. Returns a
+      // synthesized error to the model in place of invoking the tool;
+      // see components/master/circuit-breaker.ts for the trigger
+      // condition + reset semantics. Logs to stderr at warn level so
+      // the operator can grep master.log for circuit-breaker trips.
+      if (shouldRefuseToolCall(name)) {
+        const refusal = synthesizeRefusal(name);
+        console.error(
+          `[circuit-breaker] tripped on tool=${name} after 3 empty-dead-listener returns`,
+        );
+        return {
+          content: [{ type: "text", text: JSON.stringify(refusal, null, 2) }],
+          details: refusal,
+        };
+      }
       const result = await tool.invoke(params as Record<string, unknown>);
+      // Inspect the result and update breaker state. Never throws; on
+      // malformed result types the matcher just returns false (treating
+      // it as a non-empty result, which resets the counter — the safe
+      // default).
+      try {
+        recordToolResult(name, result);
+      } catch {
+        /* breaker bookkeeping must never break the tool call */
+      }
       const text =
         typeof result === "string" ? result : JSON.stringify(result, null, 2);
       return {
@@ -1033,7 +1079,20 @@ async function main() {
   // undefined for content writes inside the watched dir), so we can't depend
   // on it. The watcher below is an opportunistic "wake sooner" optimization;
   // the poll is the contract.
-  const inboxPoll = setInterval(scanInboxOnce, 2000);
+  //
+  // v2.7.19 wraps the tick in touchWatchdog() and registers a kill via
+  // clearInterval, so the registry can answer "is the inbox poll still
+  // alive?" and the operator can kill it from Telegram / dashboard / Evy
+  // without restarting master.
+  const inboxPoll = setInterval(() => {
+    touchWatchdog("inbox-poll");
+    scanInboxOnce();
+  }, 2000);
+  registerWatchdog({
+    id: "inbox-poll",
+    kind: "inbox-poll",
+    kill: () => clearInterval(inboxPoll),
+  });
   let inboxWatcher: import("node:fs").FSWatcher | null = null;
   try {
     inboxWatcher = require("node:fs").watch(INBOX_DIR, { persistent: false }, () => {
@@ -1358,6 +1417,16 @@ async function main() {
 
   async function processOnePrompt(p: PendingPrompt): Promise<{ ok: boolean; error?: string }> {
     try {
+      // ── v2.7.19 circuit-breaker reset ──────────────────────────────────
+      // Operator messages (chat or telegram) start a fresh turn and clear
+      // any in-flight breaker state. Synthetic prompts (source="watchdog",
+      // covers [verifier]/[watchdog]/[scheduled]/[team-report]) DON'T
+      // reset — they're tail continuations of the prior turn's reasoning,
+      // not new operator intent.
+      if (p.source === "chat" || p.source === "telegram") {
+        resetCircuitBreakerOnNewTurn();
+      }
+
       // ── v2.7.18 profile-swap gate ─────────────────────────────────────
       // If the watcher (fs.watch on profiles.json) flagged a pending
       // swap, apply it BEFORE anything else this turn. Runs at the
@@ -1619,6 +1688,40 @@ async function main() {
           active: want,
           note: "takes effect on the next prompt — no restart needed",
         });
+      }
+
+      // ── /watchdogs — watchdog kill controls (v2.7.19) ────────────────────
+      // GET    /watchdogs           → { ok, count, watchdogs: [...] }
+      // POST   /watchdogs/:id/kill  → { ok, killed_id } | { ok:false, error }
+      // POST   /watchdogs/killall   → { ok, killed: [...], preserved: [...] }
+      //
+      // killall preserves kind="telegram-listener" so the operator's
+      // command path doesn't sever itself when invoked from Telegram.
+      // The dashboard's /api/watchdogs (in dashboard/server.ts) proxies
+      // these — keep paths in sync if you rename.
+      if (url.pathname === "/watchdogs" && req.method === "GET") {
+        const watchdogs = listWatchdogs();
+        return Response.json({ ok: true, count: watchdogs.length, watchdogs });
+      }
+      {
+        const m = url.pathname.match(/^\/watchdogs\/([A-Za-z0-9_.-]+)\/kill\/?$/);
+        if (m && req.method === "POST") {
+          const id = m[1]!;
+          const result = killWatchdog(id);
+          const status = result.ok ? 200 : 404;
+          return Response.json(result, { status });
+        }
+      }
+      if (url.pathname === "/watchdogs/killall" && req.method === "POST") {
+        // Always preserve the telegram listener — see comment above.
+        // killall is intentionally a separate endpoint (not just looping
+        // /kill from the client) so the preserve-list lives on the
+        // server and the dashboard / Telegram client can't accidentally
+        // omit it.
+        const result = killAllWatchdogs({
+          preserve_kinds: ["telegram-listener"],
+        });
+        return Response.json({ ok: true, ...result });
       }
 
       // /transcript — return the persisted transcript so the dashboard can
@@ -2403,7 +2506,15 @@ async function main() {
     await dispatchToAgent(synthPrompt, "watchdog");
   }
 
-  const watchdog = setInterval(() => void runWatchdogTick(), watchdogIntervalMs);
+  const watchdog = setInterval(() => {
+    touchWatchdog("team-staleness");
+    void runWatchdogTick();
+  }, watchdogIntervalMs);
+  registerWatchdog({
+    id: "team-staleness",
+    kind: "team-staleness",
+    kill: () => clearInterval(watchdog),
+  });
   console.error(
     `[master] watchdog armed — interval=${watchdogIntervalMin}m, staleness_threshold=${stalenessThresholdMin}m`,
   );
@@ -2435,7 +2546,15 @@ async function main() {
       await dispatchToAgent(synthPrompt, "watchdog");
     }
   }
-  const followupTicker = setInterval(() => void runFollowupTick(), 60_000);
+  const followupTicker = setInterval(() => {
+    touchWatchdog("followup-scheduler");
+    void runFollowupTick();
+  }, 60_000);
+  registerWatchdog({
+    id: "followup-scheduler",
+    kind: "followup-scheduler",
+    kill: () => clearInterval(followupTicker),
+  });
   console.error(`[master] scheduled-followup ticker armed — every 60s`);
 
   // ── auto-compact watchdog (v2.7.3: SAFETY NET) ─────────────────────────
@@ -2490,7 +2609,15 @@ async function main() {
       autoCompactInFlight = false;
     }
   }
-  const autoCompactInterval = setInterval(() => void runAutoCompactTick(), 5 * 60 * 1000);
+  const autoCompactInterval = setInterval(() => {
+    touchWatchdog("auto-compact");
+    void runAutoCompactTick();
+  }, 5 * 60 * 1000);
+  registerWatchdog({
+    id: "auto-compact",
+    kind: "auto-compact",
+    kill: () => clearInterval(autoCompactInterval),
+  });
   // Also run shortly after boot so a freshly-restarted daemon catches an
   // already-bloated transcript without waiting 5 minutes.
   setTimeout(() => void runAutoCompactTick(), 30_000);
@@ -2501,7 +2628,14 @@ async function main() {
   // hitting policy denials in clusters (>5 in 60s OR >3 of the same
   // rule_path in 5min), fire a synthetic [verifier] correction prompt at
   // the worker. See components/master/tools/policy/verifier-cluster.ts.
-  const clusterTicker = startClusterTicker();
+  const clusterTicker = startClusterTicker({
+    onTick: () => touchWatchdog("verifier-cluster"),
+  });
+  registerWatchdog({
+    id: "verifier-cluster",
+    kind: "verifier-cluster",
+    kill: () => clusterTicker.stop(),
+  });
   console.error("[master] verifier denial-cluster ticker armed — interval=30s, burst=>5/60s, stuck=>3/5min");
 
   // ── graceful shutdown ───────────────────────────────────────────────────

@@ -2714,6 +2714,135 @@
     }, 5000);
   }
 
+  // ── Watchdogs panel (v2.7.19) ─────────────────────────────────────────
+  // Collapsible card on the Orchestration tab. Polls /api/watchdogs every
+  // 10s WHILE OPEN (idle when closed — the master daemon's registry is
+  // cheap but the panel is rarely the operator's focus, and they can
+  // open it on demand). Kill is optimistic: row removes immediately,
+  // server reconciles on the next poll.
+  function wireWatchdogPanel() {
+    const panel = document.getElementById("watchdog-panel");
+    const tbody = document.getElementById("watchdog-tbody");
+    const table = document.getElementById("watchdog-table");
+    const empty = document.getElementById("watchdog-empty");
+    const countEl = document.getElementById("watchdog-count");
+    const metaEl = document.getElementById("watchdog-meta");
+    if (!panel || !tbody) return;
+
+    let pollTimer = null;
+
+    function fmtAgeSec(s) {
+      if (typeof s !== "number" || !isFinite(s)) return "—";
+      if (s < 60) return `${s}s`;
+      if (s < 3600) return `${Math.floor(s / 60)}m`;
+      return `${(s / 3600).toFixed(1)}h`;
+    }
+
+    function fmtLastTick(iso) {
+      if (!iso) return "—";
+      try {
+        const ms = Date.parse(iso);
+        if (!isFinite(ms)) return "—";
+        const ageSec = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+        return `${fmtAgeSec(ageSec)} ago`;
+      } catch { return "—"; }
+    }
+
+    function escWd(s) {
+      return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    }
+
+    async function refresh() {
+      try {
+        const r = await fetch("/api/watchdogs", { cache: "no-store" });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const j = await r.json();
+        const list = Array.isArray(j.watchdogs) ? j.watchdogs : [];
+        if (countEl) countEl.textContent = `${list.length} active`;
+        if (metaEl) metaEl.textContent = `polled ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false })}`;
+        if (list.length === 0) {
+          if (empty) empty.style.display = "";
+          if (empty) empty.textContent = "no watchdogs registered";
+          if (table) table.hidden = true;
+          tbody.innerHTML = "";
+          return;
+        }
+        if (empty) empty.style.display = "none";
+        if (table) table.hidden = false;
+        // Stable sort: telegram-listener and inbox-poll first (most
+        // operator-relevant), then alphabetical.
+        list.sort((a, b) => {
+          const pri = (k) => k === "telegram-listener" ? 0 : k === "inbox-poll" ? 1 : 2;
+          const dp = pri(a.kind) - pri(b.kind);
+          if (dp !== 0) return dp;
+          return String(a.id).localeCompare(String(b.id));
+        });
+        tbody.innerHTML = list.map((w) => `
+          <tr data-watchdog-id="${escWd(w.id)}">
+            <td><code>${escWd(w.id)}</code></td>
+            <td>${escWd(w.kind)}</td>
+            <td>${fmtAgeSec(w.age_seconds)}</td>
+            <td>${fmtLastTick(w.last_tick_at)}</td>
+            <td><button type="button" class="watchdog-kill-btn" data-kill-id="${escWd(w.id)}">Kill</button></td>
+          </tr>
+        `).join("");
+        // Bind kill buttons. Optimistic removal — server reconciles on
+        // the next 10s tick. Catches a network failure and re-shows the
+        // row by triggering an immediate refresh.
+        for (const btn of tbody.querySelectorAll("button[data-kill-id]")) {
+          btn.addEventListener("click", async () => {
+            const id = btn.getAttribute("data-kill-id");
+            if (!id) return;
+            const ok = window.confirm(`Kill watchdog "${id}"? This is irreversible without a master restart.`);
+            if (!ok) return;
+            btn.disabled = true;
+            btn.textContent = "killing…";
+            const row = btn.closest("tr");
+            if (row) row.style.opacity = "0.5";
+            try {
+              const r = await fetch(`/api/watchdogs/${encodeURIComponent(id)}/kill`, { method: "POST" });
+              if (!r.ok && r.status !== 404) throw new Error(`HTTP ${r.status}`);
+              // Optimistic remove; refresh confirms.
+              if (row) row.remove();
+              setTimeout(refresh, 200);
+            } catch (err) {
+              btn.disabled = false;
+              btn.textContent = "Kill";
+              if (row) row.style.opacity = "1";
+              alert(`kill failed: ${err && err.message ? err.message : err}`);
+            }
+          });
+        }
+      } catch (err) {
+        if (empty) {
+          empty.style.display = "";
+          empty.textContent = `master unreachable: ${err && err.message ? err.message : err}`;
+        }
+        if (table) table.hidden = true;
+        if (countEl) countEl.textContent = "—";
+      }
+    }
+
+    function startPoll() {
+      if (pollTimer) return;
+      refresh();
+      pollTimer = setInterval(refresh, 10_000);
+    }
+    function stopPoll() {
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    }
+
+    // The <details> element fires `toggle` when the user opens or closes.
+    panel.addEventListener("toggle", () => {
+      if (panel.open) startPoll();
+      else stopPoll();
+    });
+    // If panel starts open (browser remembered state), kick off poll now.
+    if (panel.open) startPoll();
+  }
+  wireWatchdogPanel();
+
   function escapeText(s) {
     return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   }
