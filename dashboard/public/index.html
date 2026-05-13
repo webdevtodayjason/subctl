@@ -165,6 +165,9 @@
         <button type="button" class="nav-btn" data-tab="teams">
           <span class="nav-icon">▤</span><span class="nav-label">Teams</span>
         </button>
+        <button type="button" class="nav-btn" data-tab="templates">
+          <span class="nav-icon">▦</span><span class="nav-label">Templates</span>
+        </button>
         <button type="button" class="nav-btn" data-tab="sessions">
           <span class="nav-icon">≡</span><span class="nav-label">Claude Sessions</span>
         </button>
@@ -1140,6 +1143,30 @@
 
         <section class="team-detail-pane" id="team-detail-pane">
           <div class="dim small" style="padding:24px">select a template on the left, or click <strong>+ New Template</strong> above</div>
+        </section>
+      </div>
+    </section>
+
+    <!-- ── v2.8.0 team templates ─────────────────────────────────────────
+         Templates tab — multi-developer TOML rosters. Distinct from the
+         "Teams" tab above (legacy single-persona JSON templates).
+    -->
+    <section class="teams-screen" data-tab="templates">
+      <header class="screen-header">
+        <h2>Templates <span class="screen-sub">v2.8.0 · multi-developer team rosters · lead + developers + per-role tool scope</span></h2>
+        <div class="screen-header-actions">
+          <button type="button" class="primary-btn" id="v2-template-refresh-btn">↻ Refresh</button>
+        </div>
+      </header>
+      <div class="teams-screen-body">
+        <aside class="team-list-pane">
+          <header class="pane-header"><h3>Available templates</h3></header>
+          <div class="team-list" id="v2-template-list">
+            <div class="dim small" style="padding:18px">loading…</div>
+          </div>
+        </aside>
+        <section class="team-detail-pane" id="v2-template-detail">
+          <div class="dim small" style="padding:24px">select a template on the left to view its roster</div>
         </section>
       </div>
     </section>

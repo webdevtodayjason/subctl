@@ -117,6 +117,10 @@ Usage:
                                       team leads in dev-team tmux sessions)
   subctl team inbox <team> [--tail N] Show recent events for a team
   subctl team list                    List teams with an inbox
+  subctl team spawn --template <name> --project <path> [--account <alias>]
+                                      v2.8.0 — spawn a multi-developer team
+                                      from a TOML template (subctl templates
+                                      list to see available templates)
 
   subctl skills import <repo>         Import a skills repo (e.g. mattpocock/skills)
                                       into the local catalog at

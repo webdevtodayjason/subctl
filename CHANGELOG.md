@@ -1,3 +1,39 @@
+## [2.8.0] — 2026-05-13
+
+### `feat(master): v2.8.0 team templates — multi-developer rosters, dispatch, lazy pane spawn`
+
+The architectural feature subctl was built for: dev teams expressed as a typed roster (lead + developers + per-role skills + per-role tool scope) instead of a single-persona blob the lead has to negotiate from a freeform prompt. Templates are TOML, stored at `~/.config/subctl/team-templates/<name>.toml`. Five stock templates seed on first list: `full-stack-web`, `rust-api`, `data-pipeline`, `ml-research`, `infrastructure`.
+
+**Template schema.** A `[template]` block (name + description), a `[lead]` block (persona + skills + autonomy + optional boot_prompt), and one or more `[[developers]]` entries (name + persona + skills + tools allowlist). Strict validation on load — invalid templates surface in the dashboard's Templates tab as errors[] without breaking the listing.
+
+**Loader.** `components/master/team-templates.ts` — `listTemplates()`, `loadTemplate(name)`, `validateTemplate(parsed)`, plus an in-memory cache keyed by template name. Cache invalidates on fs.watch events (debounced 250 ms) and on mtime change at read time. `seedStockTemplates()` ships 5 ready-to-use templates as files (operator-editable, never overwritten).
+
+**Lead-side roster injection.** When spawning a template-shaped team, the lead's boot prompt is prepended with a roster preamble naming every developer and a concrete `subctl_team_dispatch({ team, developer_name, task_description })` example. The lead doesn't have to guess what developers exist or what to call them.
+
+**`subctl_team_dispatch` master tool.** New tool that routes a concrete task to a named developer in a template-spawned team. Validates the developer exists, then either lazy-spawns a new tmux window (first dispatch) or HMAC-wraps and pastes into the existing window (re-dispatch). Lazy spawn composes a developer boot prompt that bakes in the persona, skills, and tool scope — so a single paste puts the developer to work.
+
+**Per-developer tool scoping.** `tools = ["Read", "Edit", "Bash:bun,git"]` declares the developer's tool surface. `projectDeveloperToolScope()` projects the array into `{ permissions, bashAllowlist }`. Today the scope is enforced at the prompt layer (declared in the developer's boot prompt). Foundation for hard bash-gate enforcement via per-window settings.local.json is in place — the meta.json on disk records the scope so future iterations can read it without rerunning template parsing.
+
+**Storage on disk.**
+- `~/.config/subctl/team-templates/<name>.toml` — templates (operator-editable)
+- `~/.local/state/subctl/teams/<team_id>/meta.json` — per-team spawn record (template name + developer→window map). Read by the dispatch endpoint to route, and by the status endpoint so master tools know a team is template-shaped.
+
+**Dashboard surface.**
+- `GET  /api/team-templates` — list templates (parsed + errors)
+- `GET  /api/team-templates/<name>` — show one template
+- `POST /api/orchestration/<team>/dispatch` — dispatch task to developer (lazy-spawns pane on first call)
+- New "Templates" tab in the sidebar showing the roster + a "Use this template" button per project.
+
+**CLI.** `subctl team spawn --template <name> --project <path> [--account <alias>] [--prompt <text>] [--mode trusted|gated|sealed]`. Account defaults to the first claude-provider entry in accounts.conf. Foundational v2.7.28 CLI is preserved — `subctl team` just gets one new verb.
+
+**teams.sh integration.** New `-T|--team-template <name>` flag (separate from the legacy `-t|--template` JSON flow). Triggers a bun bridge (`providers/claude/_apply_team_template.ts`) that loads the TOML, writes the team_meta record, and composes the lead's boot prompt. Policy gate + HMAC team-contract wrap downstream stay untouched.
+
+**Backward compat.** The v2.7.x single-persona JSON templates at `~/.config/subctl/master/team-templates/<name>.json` and the legacy `subctl_orch_spawn_template` master tool continue to work unchanged. They share no state with the new TOML loader; the two flows coexist and can be migrated incrementally.
+
+**Tests.** 23 new bun tests in `components/master/__tests__/team-templates.test.ts` — parse/validate (7 cases), tool scope projection (3 cases), list/load with cache + mtime invalidation, broken-template error surfacing, roster preamble, dispatch routing (4 cases), boot-prompt composition, and meta round-trip. 783 total bun tests pass.
+
+**Scope discipline.** New TS additions are pure modules; `master/server.ts` only gets the tool registry append behind a `// ── v2.8.0 team templates ──` marker. `claude_code` outside `providers/claude/` = zero hits. No secrets logged.
+
 ## [2.7.31] — 2026-05-13
 
 ### `feat(master): v2.7.31 1Password Service Accounts (multi-backend secret resolution)`

@@ -70,6 +70,8 @@ import { tinyfishTools } from "./tools/tinyfish";
 import { linearTools } from "./tools/linear";
 import { knowledgeTools } from "./tools/knowledge";
 import { teamDocsTools } from "./tools/team-docs";
+// ── v2.8.0 team templates ──
+import { teamTemplateTools } from "./tools/team-templates";
 import {
   saveAttachment,
   listAttachments,
@@ -482,6 +484,14 @@ export const toolRegistry: Record<string, InternalTool> = {
   // fully-qualified (evy_recall, evy_remember).
   ...Object.fromEntries(
     Object.entries(evyMemoryTools).map(([k, v]) => [k, v as unknown as InternalTool]),
+  ),
+  // ── v2.8.0 team templates ──
+  // Roster-aware dispatch over multi-developer team templates (TOML).
+  // Keys are fully-qualified (subctl_team_template_list,
+  // subctl_team_template_show, subctl_team_dispatch). Coexists with the
+  // legacy single-persona JSON template flow (subctl_orch_spawn_template).
+  ...Object.fromEntries(
+    Object.entries(teamTemplateTools).map(([k, v]) => [k, v as unknown as InternalTool]),
   ),
 };
 

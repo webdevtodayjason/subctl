@@ -105,6 +105,11 @@ provider_claude_teams() {
   local ACCOUNT="" SKIP_PERMS=false CONTINUE=false ORCHESTRATOR=false DRY_RUN=false
   local INITIAL_PROMPT="" PROMPT_FILE="" RESUME_SID=""
   local TEMPLATE_NAME=""
+  # ── v2.8.0 team templates ── separate slot from --template (-t) so the
+  # legacy single-persona JSON flow keeps working unchanged. TOML templates
+  # live in ~/.config/subctl/team-templates/ and carry a developer roster
+  # the lead can dispatch to via subctl_team_dispatch.
+  local TEAM_TEMPLATE_NAME=""
   # Policy-gate inputs (v2.7.0 / PR 10). All optional; defaults resolve via
   # _subctl_claude_resolve_mode (pack 01 §2). Defang stays orthogonal — these
   # flags ONLY adjust the additive hook layer.
@@ -122,6 +127,7 @@ provider_claude_teams() {
       -f|--prompt-file)  PROMPT_FILE="$2"; shift 2 ;;
       -o|--orchestrator) ORCHESTRATOR=true; shift ;;
       -t|--template)     TEMPLATE_NAME="$2"; shift 2 ;;
+      -T|--team-template) TEAM_TEMPLATE_NAME="$2"; shift 2 ;;
       --resume)          RESUME_SID="$2"; shift 2 ;;
       --no-attach)       NO_ATTACH=1; shift ;;
       --dry-run)         DRY_RUN=true; shift ;;
@@ -259,6 +265,48 @@ $INITIAL_PROMPT"
     # --dangerously-skip-permissions even if the operator did. Templates
     # codify the autonomy boundary; respecting them is the point.
     case "$TEMPLATE_AUTONOMY" in
+      shadow|ask) SKIP_PERMS=false ;;
+    esac
+  fi
+
+  # ── v2.8.0 team templates ──
+  # Same shape as the v2.7.x JSON apply block above, but reads the new TOML
+  # roster-shaped template from ~/.config/subctl/team-templates/<name>.toml
+  # via the _apply_team_template.ts bridge. Bridge does three things in one
+  # shot: (1) parse + validate TOML, (2) record team_meta.json so dispatch
+  # endpoint can route subctl_team_dispatch, (3) emit the composed lead
+  # boot prompt (roster preamble + persona + boot_prompt body) to a temp
+  # file. We then read that file into INITIAL_PROMPT so the existing tmux
+  # paste path keeps working untouched.
+  if [[ -n "$TEAM_TEMPLATE_NAME" ]]; then
+    subctl_require bun "install: brew install oven-sh/bun/bun" || return 1
+    local _v2_prompt_file
+    _v2_prompt_file=$(mktemp -t subctl-v2-template.XXXXXX)
+    local _v2_out
+    if ! _v2_out=$(bun run \
+      "$SUBCTL_REPO_ROOT/providers/claude/_apply_team_template.ts" \
+      "$SESSION_NAME" "$TEAM_TEMPLATE_NAME" "$_v2_prompt_file" 2>&1); then
+      rm -f "$_v2_prompt_file"
+      subctl_die "team-template apply failed: $_v2_out"
+    fi
+    # Parse autonomy + developer_count out of the bridge's JSON line.
+    local _v2_autonomy _v2_dev_count
+    _v2_autonomy=$(echo "$_v2_out" | tail -1 | jq -r '.autonomy // "ask"' 2>/dev/null)
+    _v2_dev_count=$(echo "$_v2_out" | tail -1 | jq -r '.developer_count // 0' 2>/dev/null)
+    local _v2_composed=""
+    [[ -f "$_v2_prompt_file" ]] && _v2_composed=$(cat "$_v2_prompt_file")
+    rm -f "$_v2_prompt_file"
+    if [[ -n "$INITIAL_PROMPT" ]]; then
+      _v2_composed+="
+
+---
+
+Operator override / additional scope:
+$INITIAL_PROMPT"
+    fi
+    INITIAL_PROMPT="$_v2_composed"
+    echo "   TeamTemplate: $TEAM_TEMPLATE_NAME ($_v2_dev_count developers, autonomy=$_v2_autonomy)"
+    case "$_v2_autonomy" in
       shadow|ask) SKIP_PERMS=false ;;
     esac
   fi
