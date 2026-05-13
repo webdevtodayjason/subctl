@@ -149,28 +149,35 @@
             data-state="warn-compact" or "compacting" → BLUE (auto-compact firing)
             data-state="overflow"   → RED (past loaded_ctx; fail-safe)
         -->
-        <div class="ctx-overflow-banner" id="ctx-overflow-banner" data-state="ok" hidden>
-          <strong>Context budget</strong> — checking…
+        <!-- v2.7.14 — header now wraps ctx-banner + toolbar + H2 in ONE
+             sticky container so the master-log scrolls cleanly underneath
+             a single visual band. Previously these were siblings of the
+             scrolled master-log, which caused operator-reported visual
+             overlaps (toolbar/H2 rendered through scrolled content). -->
+        <div class="master-chat-header">
+          <div class="ctx-overflow-banner" id="ctx-overflow-banner" data-state="ok" hidden>
+            <strong>Context budget</strong> — checking…
+          </div>
+          <div class="chat-toolbar">
+            <label class="chat-model-label">model
+              <select id="chat-model-select" class="chat-model-select">
+                <option value="">loading…</option>
+              </select>
+            </label>
+            <button type="button" class="chat-toolbar-btn" id="chat-model-apply" title="Switch the master's supervisor model. Edits providers.json and restarts the master daemon (transcript preserved).">apply</button>
+            <button type="button" class="chat-toolbar-btn" id="chat-compact-btn" title="Compact older turns of this conversation into a single summary message. Master keeps a working memory but the supervisor's prompt window stays manageable. Use when the context meter goes red.">compact</button>
+            <button type="button" class="chat-toolbar-btn chat-toolbar-btn-warn" id="chat-new-btn" title="Archive the current transcript and start a fresh conversation. Your prior chat is saved to ~/.config/subctl/master/agent-state.archive-*.json.">+ new chat</button>
+            <button type="button" class="chat-toolbar-btn chat-toolbar-btn-icon" id="chat-fullscreen-btn" title="Toggle full-screen chat (Esc exits)" aria-label="toggle full-screen">⛶</button>
+            <span class="chat-context-meter" id="chat-context-meter" title="Approximate transcript tokens vs LM Studio's loaded context length. Includes system prompt + tool schemas overhead.">
+              <span class="ctx-fill" id="ctx-fill" style="width: 0%"></span>
+              <span class="ctx-label" id="ctx-label">ctx --</span>
+            </span>
+            <span class="chat-toolbar-hint" id="chat-model-current">supervisor: --</span>
+          </div>
+          <h2>Evy <span class="panel-hint">conversational dev-team orchestrator on <span class="host-label">this Mac</span> · streams from <code>/api/master/events</code></span>
+            <span class="master-conn-state" id="master-conn-state">disconnected</span>
+          </h2>
         </div>
-        <div class="chat-toolbar">
-          <label class="chat-model-label">model
-            <select id="chat-model-select" class="chat-model-select">
-              <option value="">loading…</option>
-            </select>
-          </label>
-          <button type="button" class="chat-toolbar-btn" id="chat-model-apply" title="Switch the master's supervisor model. Edits providers.json and restarts the master daemon (transcript preserved).">apply</button>
-          <button type="button" class="chat-toolbar-btn" id="chat-compact-btn" title="Compact older turns of this conversation into a single summary message. Master keeps a working memory but the supervisor's prompt window stays manageable. Use when the context meter goes red.">compact</button>
-          <button type="button" class="chat-toolbar-btn chat-toolbar-btn-warn" id="chat-new-btn" title="Archive the current transcript and start a fresh conversation. Your prior chat is saved to ~/.config/subctl/master/agent-state.archive-*.json.">+ new chat</button>
-          <button type="button" class="chat-toolbar-btn chat-toolbar-btn-icon" id="chat-fullscreen-btn" title="Toggle full-screen chat (Esc exits)" aria-label="toggle full-screen">⛶</button>
-          <span class="chat-context-meter" id="chat-context-meter" title="Approximate transcript tokens vs LM Studio's loaded context length. Includes system prompt + tool schemas overhead.">
-            <span class="ctx-fill" id="ctx-fill" style="width: 0%"></span>
-            <span class="ctx-label" id="ctx-label">ctx --</span>
-          </span>
-          <span class="chat-toolbar-hint" id="chat-model-current">supervisor: --</span>
-        </div>
-      <h2>Master <span class="panel-hint">conversational dev-team orchestrator on <span class="host-label">this Mac</span> · streams from <code>/api/master/events</code></span>
-        <span class="master-conn-state" id="master-conn-state">disconnected</span>
-      </h2>
       <div class="master-log" id="master-log">
         <div class="master-log-empty">no messages yet — type below to start a conversation, or try <code>/help</code> for slash commands</div>
       </div>

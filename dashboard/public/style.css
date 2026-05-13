@@ -2256,6 +2256,28 @@ body[data-active-tab="policy"] section[data-tab]:not([data-tab="policy"]) { disp
 
 /* ── Chat screen: model picker toolbar above the log ──────────────────── */
 .chat-screen { /* same grid as orchestration-screen */ }
+/* v2.7.14 — single sticky header container wrapping ctx-banner +
+   toolbar + H2. Previously these were siblings of the scrolled
+   master-log, which caused operator-reported visual overlaps (the
+   toolbar's sticky position was relative to a different scroll context
+   than the master-log's internal scroll). Now they share one band.
+   The chat-toolbar itself is no longer sticky; the wrapping header is. */
+.master-chat-header {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  background: #0e1116;
+  /* Subtle drop-shadow on the bottom edge gives scrolled content
+     a clean visual tuck-under instead of a hard border collision. */
+  box-shadow: 0 4px 8px -4px rgba(0, 0, 0, 0.6);
+  padding-bottom: 4px;
+  margin-bottom: 8px;
+}
+.master-chat-header > h2 {
+  /* Inherit the existing .master-chat h2 styling but ensure it sits
+     in the header band with proper spacing. */
+  margin: 8px 0 4px 0;
+}
 .chat-toolbar {
   display: flex;
   align-items: center;
@@ -2265,22 +2287,7 @@ body[data-active-tab="policy"] section[data-tab]:not([data-tab="policy"]) { disp
   gap: 12px;
   padding: 10px 0;
   border-bottom: 1px solid #1a1a1a;
-  margin-bottom: 12px;
-  overflow: hidden;      /* defensive clip in case any child still oversteps */
-  /* Sticky — toolbar stays anchored at the top of the chat panel even
-     when the master-log scrolls. Without this the operator reported the
-     toolbar visually overlapping scrolled content AND becoming unclickable
-     (z-stacking confusion). Sticky + explicit background = clean band the
-     scroll can't bleed past. Diagnosed 2026-05-10 (third occurrence). */
-  position: sticky;
-  top: 0;
-  z-index: 50;
-  /* Explicit opaque hex (not the --bg-1 var) so even when stacking-
-     contexts get weird, the toolbar reads as a solid band. v2.7.13. */
-  background: #0e1116;
-  /* Soft drop-shadow on the bottom edge: gives the scrolled content
-     a clean visual tuck-under instead of a hard border collision. */
-  box-shadow: 0 4px 8px -4px rgba(0, 0, 0, 0.6);
+  margin-bottom: 0;
 }
 .chat-model-label {
   display: flex;
@@ -3771,10 +3778,9 @@ tr.project-in-policy td { background: rgba(108, 214, 151, 0.03); }
 .master-log {
   max-height: 480px;
   overflow-y: auto;
-  /* v2.7.13 — extra top padding so the first message sits clearly below
-     the sticky chat-toolbar instead of butting against its bottom border
-     when the log is scrolled to the top. Operator-reported. */
-  padding: 20px 12px 12px 12px;
+  /* v2.7.14 — sticky header now owns the top-edge protection, so the
+     log's top padding just needs normal breathing room. */
+  padding: 12px;
   background: #0c0c0c;
   border: 1px solid #1f1f1f;
   border-radius: 4px;

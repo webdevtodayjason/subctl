@@ -4,6 +4,46 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.7.14] — 2026-05-12
+
+### `fix(dashboard/chat): structural header — wrap toolbar + H2 in one sticky band`
+
+The v2.7.13 z-index/background fix didn't solve it. Operator reported the
+toolbar still visually overlapping (and being clipped) when the chat-log
+scrolled, plus the "Master" H2 line floated separately above the log
+without sticky protection.
+
+Root cause was structural, not presentational. The HTML had:
+
+```
+<section class="master-chat">
+  <div class="ctx-overflow-banner">
+  <div class="chat-toolbar">       ← sticky
+  <h2>Master ... CONNECTED</h2>     ← SIBLING, not sticky
+  <div class="master-log">          ← own overflow-y: auto
+```
+
+`position: sticky` on the toolbar was relative to `.master-chat`, but the
+master-log scrolled INSIDE its own container. Two different scroll
+contexts. The H2 had no sticky at all. Net: scrolled content visually
+intersected the toolbar/H2 region in ways that z-index couldn't fix.
+
+v2.7.14 wraps `ctx-overflow-banner + chat-toolbar + h2` in a single
+`<div class="master-chat-header">`. The header is the sticky band.
+Master-log scrolls underneath cleanly. No sibling-scroll-context
+mismatch.
+
+Also: the H2 text changed from "Master" to "Evy" (matching the persona
+rename for the chat panel; v2.7.13 already changed the assistant bubble
+label but missed the panel H2).
+
+CSS changes:
+- New `.master-chat-header` — sticky, opaque, drop-shadow on bottom
+- `.chat-toolbar` no longer sticky / no own background — inherits from header
+- `.master-log` top padding back to 12px (header now owns the visual gap)
+
+Files: `dashboard/public/index.html` (1 wrap edit, H2 text), `dashboard/public/style.css` (3 rule edits). No JS, no master-daemon changes.
+
 ## [2.7.13] — 2026-05-12
 
 ### `fix(dashboard/chat): label normalization + sticky-toolbar overlap`
