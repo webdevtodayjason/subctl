@@ -1546,6 +1546,78 @@ The profile state is the source of truth for `models.supervisor.model` + `host`.
 - `dashboard/server.ts` — `/api/profile` pass-through.
 - `dashboard/public/{index.html,style.css,app.js}` — pill markup, CSS (green chat / amber heavy), `wireProfilePill` with optimistic toggle and SSE `profile_swapped` listener.
 
+### Phase 3o.19 — Watchdog kill controls + empty-listener circuit breaker (v2.7.19)
+
+Two reliability fixes shipping together, both driven by the same 2026-05-13 incident that motivated the v2.7.18 chat/heavy profile split.
+
+#### The incident
+
+During a 90-minute drive home the master daemon — running the heavy supervisor `qwen/qwen3.6-35b-a3b` — stopped responding to Telegram. The post-mortem showed master was stuck in an infinite tool-call loop, alternating between an assistant turn with `stopReason: "toolUse"` and empty text, and a tool result with `{ entries: [], listener: { running: false, ... } }`. The looping tool was `subctl_orch_inbox` (→ dashboard `/api/notify/inbox`); the dead listener was the dashboard's notify-listener (`dashboard/notify-listener.ts:notifyListenerStatus()`). The reasoning model fell into a "check again before answering" trap: empty inbox + dead listener → check again → repeat. CPU at 0.3% (idle); the prompt queue was wedged for 90 minutes because every assistant turn ended in another tool-use call instead of a final text response. The operator had no kill path until they got home.
+
+#### Watchdog controls
+
+Three operator-facing surfaces, one shared registry (`components/master/watchdogs.ts`).
+
+**Registry.** Every long-running tick or loop in master registers through `registerWatchdog({ id, kind, kill })`:
+
+- `telegram-listener` — the master-notify-listener Telegram long-poll (see §2.6 config).
+- `cli-prompt-poll` — the `subctl master prompt` JSONL bridge polling.
+- `inbox-poll` — the lead-report inbox tailer (2 s).
+- `team-staleness` — the 3-min stale-team ticker (also catches dead tmux sessions and prunes them).
+- `followup-scheduler` — the 60 s scheduled-followup ticker.
+- `auto-compact` — the 5-min auto-compact safety-net ticker.
+- `verifier-cluster` — the 30 s policy-denial cluster scanner.
+
+`listWatchdogs()` returns `id · kind · started_at · last_tick_at · age_seconds` for each. `killWatchdog(id)` invokes the entry's `kill` (which calls `clearInterval` or `AbortController.abort()` as appropriate) and removes the registration. `killAllWatchdogs({ preserve_kinds })` is what `/watchdogs killall` calls — it preserves `kind === "telegram-listener"` so the operator's last surviving command path can't sever itself.
+
+**Master tools.** `watchdog_list` and `watchdog_kill` ship in the master tool registry — Evy can list and kill without persona/SKILL.md edits.
+
+**Dashboard.** `GET /api/watchdogs` and `POST /api/watchdogs/:id/kill` (thin pass-throughs to the master daemon's `/watchdogs` endpoints, matching the v2.7.18 `/api/profile` shape). The "Watchdogs" card on the Orchestration tab is a collapsible `<details>` that polls every 10 s while open, idle when closed. Each row shows id · kind · age · last-tick · `[Kill]` with confirm-before-kill; optimistic removal, server reconciles on the next 10 s tick.
+
+**Telegram.**
+
+- `/watchdogs` — list active watchdogs with ids and ages.
+- `/watchdogs kill <id>` — kill one. Replies `✅ killed watchdog: <id>` or `❌ unknown watchdog id: <id>`.
+- `/watchdogs killall` — kill everything except `kind === "telegram-listener"`. Reply: `killed N watchdog(s), kept telegram-listener alive` followed by the killed and preserved id lists.
+
+The probes themselves are NOT rewritten — each `setInterval` site is wrapped to call `touchWatchdog(id)` at the start of each tick (so `last_tick_at` advances) and to register a `kill` closure. Pattern is "minimal touch", not "re-architect".
+
+#### Empty-listener circuit breaker
+
+Lives in `components/master/circuit-breaker.ts` and wires into the tool-call dispatch path inside `adaptTool` (`components/master/server.ts`).
+
+**Trigger condition.** After each tool result, the breaker inspects the payload. A result trips the per-tool counter if and only if all three hold:
+
+1. The result is an object.
+2. `result.entries` is an array AND has length 0.
+3. `result.listener` is an object AND `result.listener.running === false`.
+
+A non-matching result (any tool, any payload) resets the counter to 0. A matching result for a **different** tool resets the counter and re-starts counting on the new tool. The counter is per-(tool-name) but the state machine tracks only the most-recent matching tool — only sustained spamming of the same dead path trips the gate.
+
+**Refusal.** When the counter has reached 3 for a given tool name, the **next** call to that same tool is refused before invocation. Instead of calling `tool.invoke(args)`, the model receives a synthesized tool result:
+
+```json
+{
+  "error": "circuit-breaker: tool <name> returned empty entries with listener.running=false 3 times in a row. The listener is dead. Stop polling — either call watchdog_list to inspect, or respond to the operator with what you have."
+}
+```
+
+The trip logs at warn level to stderr (so it lands in `~/Library/Logs/subctl/master.log` and is `grep`-able): `[circuit-breaker] tripped on tool=<name> after 3 empty-dead-listener returns`.
+
+**Reset.** A new operator message (`source === "chat" | "telegram"`) calls `resetCircuitBreakerOnNewTurn()` at the top of `processOnePrompt`, clearing any tripped state. Synthetic prompts (`source === "watchdog"` — covers `[verifier]`, `[watchdog]`, `[scheduled]`, `[team-report]`) do NOT reset, because they're tail continuations of the prior reasoning trail, not new operator intent.
+
+**Conservatism.** The trigger pattern is intentionally tight: `entries: []` AND `listener.running === false`. False positives should be rare — a healthy inbox poll returns either non-empty `entries` or a payload where `listener.running === true`. A future tool can adopt the same `{ entries, listener }` shape; if its listener is genuinely alive (`running: true`) the breaker never trips on it regardless of how many empty polls happen.
+
+#### Files
+
+- New: `components/master/watchdogs.ts`, `components/master/tools/watchdogs.ts`, `components/master/circuit-breaker.ts`.
+- New: `components/master/__tests__/watchdogs.test.ts`, `components/master/__tests__/circuit-breaker.test.ts`.
+- `components/master/server.ts` — registry + breaker imports; `adaptTool` checks `shouldRefuseToolCall` + calls `recordToolResult`; `processOnePrompt` calls `resetCircuitBreakerOnNewTurn` on operator messages; four in-server setInterval call sites wrapped with `touchWatchdog` + `registerWatchdog`; `/watchdogs` + `/watchdogs/:id/kill` + `/watchdogs/killall` HTTP routes; `watchdogTools` registered in the tool registry.
+- `components/master/master-notify-listener.ts` — `telegram-listener` + `cli-prompt-poll` watchdogs registered at start; `_stopInternal` separates the raw teardown from the `killWatchdog` re-entry path so kill-from-registry doesn't recurse; both poll loops call `touchWatchdog`; `/watchdogs` subcommand handler; `/help` updated.
+- `components/master/tools/policy/verifier-cluster.ts` — `startClusterTicker` gains an optional `{ onTick }` callback so server.ts can wire `touchWatchdog("verifier-cluster")` without restructuring the module.
+- `dashboard/server.ts` — `/api/watchdogs` GET + `/api/watchdogs/:id/kill` POST pass-throughs.
+- `dashboard/public/index.html`, `app.js`, `style.css` — Watchdogs panel markup, `wireWatchdogPanel()` with open/close-driven polling and optimistic kill, `.watchdog-card` / `.watchdog-table` / `.watchdog-kill-btn` styles.
+
 ---
 
 ## 4a. Persona — Evy (v2.7.15+)

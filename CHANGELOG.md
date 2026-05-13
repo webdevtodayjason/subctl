@@ -4,6 +4,48 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.7.19] — 2026-05-13
+
+### `feat(master): watchdog kill controls + empty-listener circuit breaker`
+
+Two related reliability fixes in one release, both driven by the same 2026-05-13 incident that motivated v2.7.18's chat/heavy profile split.
+
+**The incident.** During a 90-minute drive home, the master daemon — running the heavy supervisor `qwen/qwen3.6-35b-a3b` — stopped responding to Telegram. Post-mortem revealed master was stuck in an infinite tool-call loop alternating between an assistant turn with `stopReason: "toolUse"` and empty text, and a tool result with `{ entries: [], listener: { running: false, ... } }`. The looping tool was **`subctl_orch_inbox`** (→ dashboard `/api/notify/inbox` → `dashboard/notify-listener.ts:notifyListenerStatus()`). The reasoning model fell into a "check again before answering" trap: empty inbox + dead listener → check again → repeat. CPU sat at 0.3% (idle); the prompt queue was wedged for 90 minutes because every assistant turn ended in another tool-use instead of a final text response. The operator had no kill path until they got home.
+
+**Part A — Watchdog kill controls.** A minimal central registry (`components/master/watchdogs.ts`) every long-running setInterval / poll-loop in master registers through: the telegram listener, the cli-prompt poll, the lead-report inbox tailer (2s), the team-staleness watchdog (3-min ticker), the followup-scheduler (60s), the auto-compact safety net (5-min), and the verifier denial-cluster ticker (30s). Each entry surfaces `id · kind · started_at · last_tick_at · age_seconds`. Three surfaces consume it:
+
+- **Master tools (Evy)** — `watchdog_list` enumerates; `watchdog_kill { id }` kills one. Registered in the master tool registry automatically; no persona / SKILL.md edits required.
+- **Dashboard** — `GET /api/watchdogs` + `POST /api/watchdogs/:id/kill` pass through to the master daemon. New collapsible "Watchdogs" card on the Orchestration tab polls every 10 s while open (idle when closed). Each row shows the id, kind, age, last-tick time, and a `[Kill]` button with confirm-before-kill. Optimistic removal; server reconciles on the next poll.
+- **Telegram** — `/watchdogs` lists, `/watchdogs kill <id>` kills one, `/watchdogs killall` kills everything except `kind === "telegram-listener"` (preserved so the operator's last surviving kill path can't sever itself). Reply shows the killed + preserved id lists for transparency.
+
+The probes themselves are NOT rewritten — each setInterval call site is wrapped to (a) call `touchWatchdog(id)` at the start of each tick so `last_tick_at` stays fresh, and (b) register a `kill: () => clearInterval(id)` (or the equivalent `AbortController.abort()` for the telegram listener) so the registry can tear them down without a master restart.
+
+**Part B — Empty-listener circuit breaker.** The actual bug fix. Lives in `components/master/circuit-breaker.ts` and wires into the tool-call dispatch path inside `adaptTool` (`components/master/server.ts`). After each tool result, the breaker inspects the payload. If the result is an object with `entries === []` AND `listener.running === false`, the per-tool consecutive counter increments. After three such consecutive returns for the same tool name, the **fourth** call to that same tool within the current turn is refused before invocation — instead of calling the tool, the model receives a synthesized tool result:
+
+```
+{ "error": "circuit-breaker: tool <name> returned empty entries with listener.running=false 3 times in a row. The listener is dead. Stop polling — either call watchdog_list to inspect, or respond to the operator with what you have." }
+```
+
+The trip is logged at warn level: `[circuit-breaker] tripped on tool=<name> after 3 empty-dead-listener returns`. The breaker is conservative on purpose: a different tool's result (or a non-empty result from the same tool) resets the counter, and a new operator message clears state via `resetOnNewTurn()` at the top of `processOnePrompt` (synthetic source=`"watchdog"` prompts deliberately do NOT reset — they're tail continuations of the prior reasoning trail, not new operator intent). False positives should be rare because the trigger pattern (`entries: []` AND `listener.running === false`) only matches results that strongly indicate "listener dead + nothing to deliver".
+
+**No ADR.** Both halves are tactical reliability fixes — registry + breaker — not load-bearing architectural decisions. The probes' designs are unchanged; the kill paths and the breaker just wrap them.
+
+**Files:**
+
+- New: `components/master/watchdogs.ts` — registry + register/touch/list/kill/killAll.
+- New: `components/master/tools/watchdogs.ts` — `watchdog_list` + `watchdog_kill` master tools.
+- New: `components/master/circuit-breaker.ts` — empty-listener heuristic + per-tool counter.
+- New: `components/master/__tests__/watchdogs.test.ts` — register / list / kill / kill-missing-id / killall preserve-kinds.
+- New: `components/master/__tests__/circuit-breaker.test.ts` — 3-trip pattern, mid-stream reset on non-empty, reset on different tool, reset on new turn.
+- `components/master/server.ts`: imports registry + breaker; tool registry includes `watchdogTools`; `adaptTool` checks `shouldRefuseToolCall` and calls `recordToolResult`; `processOnePrompt` calls `resetCircuitBreakerOnNewTurn` for `source === "chat" | "telegram"`; all four in-server setInterval call sites (`inboxPoll`, `watchdog`, `followupTicker`, `autoCompactInterval`) wrapped with `touchWatchdog` + `registerWatchdog`; `startClusterTicker({ onTick })` registered too; HTTP routes `GET /watchdogs`, `POST /watchdogs/:id/kill`, `POST /watchdogs/killall`.
+- `components/master/master-notify-listener.ts`: registers `telegram-listener` + `cli-prompt-poll` watchdogs at start; deregisters on stop via `_stopInternal` (private to avoid recursion when killWatchdog invokes the entry's kill closure); both poll loops call `touchWatchdog` at the start of each iteration; `/watchdogs`, `/watchdogs kill <id>`, `/watchdogs killall` commands added; `/help` updated.
+- `components/master/tools/policy/verifier-cluster.ts`: `startClusterTicker` gains an optional `{ onTick }` callback so server.ts can wire `touchWatchdog("verifier-cluster")` without restructuring the module.
+- `dashboard/server.ts`: `/api/watchdogs` GET + `/api/watchdogs/:id/kill` POST as thin pass-throughs to the master daemon's `/watchdogs` endpoints (matches the v2.7.18 `/api/profile` shape).
+- `dashboard/public/index.html`: collapsible `<details>` "Watchdogs" card on the Orchestration tab with a table for id / kind / age / last-tick / Kill button.
+- `dashboard/public/app.js`: `wireWatchdogPanel()` — open/close drives 10s polling; optimistic kill with confirm; sorts telegram-listener + inbox-poll first.
+- `dashboard/public/style.css`: `.watchdog-card`, `.watchdog-table`, `.watchdog-kill-btn` styles (red-accented kill button to match the existing watchdog-row vocabulary).
+- `docs/master.md`: "Watchdog controls" + "Empty-listener circuit breaker" sections.
+
 ## [2.7.18] — 2026-05-13
 
 ### `feat(master): supervisor profiles (chat / heavy) with dashboard pill + telegram command`

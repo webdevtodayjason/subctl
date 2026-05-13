@@ -4568,6 +4568,54 @@ const server = Bun.serve({
       }
     }
 
+    // ── /api/watchdogs — watchdog kill controls (v2.7.19) ────────────────
+    // Thin pass-through to the master daemon's /watchdogs endpoints.
+    //   GET  /api/watchdogs           → { ok, count, watchdogs: [...] }
+    //   POST /api/watchdogs/:id/kill  → { ok, killed_id } | { ok:false, error }
+    // The dashboard's Watchdogs panel polls the GET every 10s while
+    // open. Master owns the registry; the dashboard just renders it.
+    if (url.pathname === "/api/watchdogs" && req.method === "GET") {
+      const masterPort = process.env.SUBCTL_MASTER_PORT ?? "8788";
+      const masterUrl = `http://127.0.0.1:${masterPort}/watchdogs`;
+      try {
+        const upstream = await fetch(masterUrl, { method: "GET" });
+        const body = await upstream.text();
+        return new Response(body, {
+          status: upstream.status,
+          headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+        });
+      } catch (err) {
+        return Response.json(
+          { ok: false, error: `master daemon unreachable: ${(err as Error).message}` },
+          { status: 502 },
+        );
+      }
+    }
+    {
+      const m = url.pathname.match(/^\/api\/watchdogs\/([A-Za-z0-9_.-]+)\/kill\/?$/);
+      if (m && req.method === "POST") {
+        const id = m[1]!;
+        const masterPort = process.env.SUBCTL_MASTER_PORT ?? "8788";
+        const masterUrl = `http://127.0.0.1:${masterPort}/watchdogs/${encodeURIComponent(id)}/kill`;
+        try {
+          const upstream = await fetch(masterUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+          });
+          const body = await upstream.text();
+          return new Response(body, {
+            status: upstream.status,
+            headers: { "Content-Type": "application/json" },
+          });
+        } catch (err) {
+          return Response.json(
+            { ok: false, error: `master daemon unreachable: ${(err as Error).message}` },
+            { status: 502 },
+          );
+        }
+      }
+    }
+
     // ── /api/profile — supervisor profile (v2.7.18) ─────────────────────
     // Thin pass-through to the master daemon's /profile endpoint. Master
     // owns the source of truth (~/.config/subctl/profiles.json) and its

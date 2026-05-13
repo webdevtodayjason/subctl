@@ -296,6 +296,36 @@
             <div class="dim small">click refresh to run full /diag</div>
           </div>
         </section>
+
+        <!-- v2.7.19 — Watchdogs panel. Collapsible (closed by default to
+             keep the Orchestration tab uncluttered); polls /api/watchdogs
+             every 10s while open, idle when closed. Each row shows the
+             id · kind · age · a Kill button. Operator can also kill
+             from Evy or Telegram (/watchdogs); this is the visual surface
+             of the same registry. -->
+        <section class="orch-card orch-card-wide watchdog-card">
+          <details class="watchdog-details" id="watchdog-panel">
+            <summary class="orch-card-head watchdog-card-head">
+              <h3>Watchdogs <span class="dim small" id="watchdog-count">—</span></h3>
+              <span class="orch-card-meta" id="watchdog-meta">click to expand · polls every 10 s when open</span>
+            </summary>
+            <div class="orch-card-body" id="watchdog-body">
+              <div class="dim small" id="watchdog-empty">no watchdogs registered (or master daemon unreachable)</div>
+              <table class="watchdog-table" id="watchdog-table" hidden>
+                <thead>
+                  <tr>
+                    <th>id</th>
+                    <th>kind</th>
+                    <th>age</th>
+                    <th>last tick</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="watchdog-tbody"></tbody>
+              </table>
+            </div>
+          </details>
+        </section>
       </div>
     </section>
     <!-- ── /Orchestration ─────────────────────────────────────────────── -->

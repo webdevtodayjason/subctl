@@ -3292,6 +3292,76 @@ main {
 }
 .watchdog-row-fire .watchdog-detail { color: #d66c6c; }
 
+/* ── Watchdogs kill panel (v2.7.19) ──────────────────────────────────────
+   Collapsible card on the Orchestration tab. Lists every active watchdog
+   in the master registry with a per-row Kill button. Closed by default
+   to stay out of the operator's way; polls every 10s when open. */
+.watchdog-card .watchdog-card-head {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.watchdog-card .watchdog-card-head::-webkit-details-marker { display: none; }
+.watchdog-card .watchdog-card-head::before {
+  content: "▸";
+  color: #666;
+  display: inline-block;
+  margin-right: 8px;
+  transition: transform 120ms ease;
+  font-size: 10px;
+}
+.watchdog-details[open] > .watchdog-card-head::before { transform: rotate(90deg); }
+.watchdog-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.watchdog-table th {
+  text-align: left;
+  font-weight: normal;
+  color: #777;
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 6px 8px 6px 0;
+  border-bottom: 1px solid #1a1a1a;
+}
+.watchdog-table td {
+  padding: 6px 8px 6px 0;
+  border-bottom: 1px dashed #1a1a1a;
+  vertical-align: middle;
+  color: #bbb;
+}
+.watchdog-table tr:last-child td { border-bottom: none; }
+.watchdog-table code {
+  background: #0c0c0c;
+  border: 1px solid #1f1f1f;
+  border-radius: 3px;
+  padding: 1px 5px;
+  color: #c4c4c4;
+}
+.watchdog-kill-btn {
+  background: #2a1010;
+  color: #d66c6c;
+  border: 1px solid #3a1818;
+  border-radius: 3px;
+  padding: 3px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  font-family: inherit;
+  letter-spacing: 0.04em;
+}
+.watchdog-kill-btn:hover:not(:disabled) {
+  background: #3a1414;
+  border-color: #4a1c1c;
+  color: #ff9696;
+}
+.watchdog-kill-btn:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
+
 /* ── Vault viewer (Phase 3n) — two-pane Obsidian-flavoured note browser. */
 .vault-screen { display: block; }
 .vault-root-select {

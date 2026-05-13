@@ -474,9 +474,22 @@ export async function runClusterTickOnce(now: Date = new Date()): Promise<string
  * shutdown handler. The interval is fixed at 30s — same cadence as the
  * watchdog's row-color transition resolution, fast enough to catch a burst
  * within ~2 ticks of when it crosses threshold.
+ *
+ * v2.7.19: optional `onTick` callback fires at the START of each tick.
+ * Server.ts uses this to keep the watchdog registry's last_tick_at fresh
+ * without having to peek inside this module. Pure side-channel — return
+ * value is ignored; throws are swallowed so a misbehaving observer can't
+ * stop the ticker.
  */
-export function startClusterTicker(): { stop: () => void } {
+export function startClusterTicker(
+  opts: { onTick?: () => void } = {},
+): { stop: () => void } {
   const id = setInterval(() => {
+    try {
+      opts.onTick?.();
+    } catch {
+      /* observer must not break the ticker */
+    }
     void runClusterTickOnce();
   }, TICKER_INTERVAL_MS);
   return {
