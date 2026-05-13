@@ -1,9 +1,11 @@
 # 0012: Multi-backend secret resolution with 1Password Service Accounts as first-class option
 
-- **Status:** Accepted (implementation queued for v2.7.17)
+- **Status:** Accepted (shipped v2.7.31)
 - **Date:** 2026-05-13
 - **Decided by:** Jason Brashear (operator)
-- **Implemented in:** v2.7.17 (after v2.7.16 TinyFish)
+- **Implemented in:** v2.7.31 (slot shifted from the originally-planned v2.7.17 — the
+  v2.7.17 through v2.7.30 sequence shipped around this ADR; the actual implementation
+  landed at v2.7.31 chronologically)
 
 ## Context
 

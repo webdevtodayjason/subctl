@@ -283,11 +283,23 @@ export function envVarFor(key: string): string {
  * The v2.7.4 priority chain: env var beats secrets.json beats absent.
  * Used by lmstudioAuthHeader(), getApiKeyForProvider(), and the tool
  * adapters in tools/web.ts, tools/linear.ts, tools/context7.ts.
+ *
+ * v2.7.31 (ADR 0012): synchronous shape preserved for back-compat —
+ * existing callers expect a non-async lookup so a tool dispatch isn't
+ * blocked on a 1Password roundtrip. For full multi-backend resolution
+ * (including 1Password), call `resolveSecretChain` from
+ * `secrets-backends.ts`. This wrapper consults env + file synchronously
+ * and ignores the onepassword backend, matching its v2.7.4 behavior.
  */
 export function resolveSecret(key: string): string | null {
   const env = process.env[envVarFor(key)];
   if (env && env.length > 0) return env;
-  return loadSecret(key);
+  const v = loadSecret(key);
+  // Hide raw op:// refs from sync callers — those are resolved by the
+  // multi-backend chain. A caller that gets back "op://Personal/..." as
+  // a literal would treat it as the secret value and call APIs with it.
+  if (v && v.startsWith("op://")) return null;
+  return v;
 }
 
 // Test seams.

@@ -1,3 +1,39 @@
+## [2.7.31] — 2026-05-13
+
+### `feat(master): v2.7.31 1Password Service Accounts (multi-backend secret resolution)`
+
+ADR 0012 implementation. Subctl's master daemon used to look up secrets through a 2-source chain: `process.env.<KEY>` first, then `~/.config/subctl/secrets.json`. That worked for solo-developer use but had four known gaps the operator hit repeatedly in MSP context — manual key re-entry on a new host, no in-place rotation, no audit, and an unencrypted-at-rest bootstrap file. This release generalizes the resolution into an N-backend chain whose default order is **env → onepassword → file**, with per-key overrides and a 5-minute cache for 1Password lookups.
+
+**Architecture.** A new `components/master/secrets-backends.ts` module owns the chain; `resolveSecret(key)` in `secrets.ts` keeps its synchronous shape and v2.7.4 behavior for back-compat (env > file, op:// refs hidden from sync callers). New code that wants full multi-backend resolution — including the async 1Password roundtrip — calls `resolveSecretChain({ key, backends?, required? })`. Both surfaces share the same backend implementations, so the env-var lookup and the file-backed fallback can't diverge over time.
+
+**1Password backend.** Shells out to the `op` CLI via `Bun.spawn(["op", "read", ref])` — no shell interpolation, ref passed as argv. The backend silently no-ops (falls through to file) when either `op` is missing from PATH or `OP_SERVICE_ACCOUNT_TOKEN` is unset in env. Existing deploys with no 1Password setup see zero behavioral change. Successful resolutions cache in process memory for 5 minutes, keyed by op:// reference (so two subctl keys pointing at the same vault item share a slot). Cache flushes on process restart or via `POST /secrets/cache/flush`.
+
+**Storage forms.** Operator can express an op:// reference two ways: (1) inline literal in `secrets.json` (`"brave_api_key": "op://Personal/Brave/key"`), or (2) explicit map in `~/.config/subctl/secrets-backends.json` under `onepassword_refs`. The file backend auto-skips any literal that starts with `op://` so a caller never gets back a URI as if it were the secret value — the chain's job is to resolve them through the onepassword backend instead.
+
+**Audit log.** Every successful 1Password resolution appends one JSONL line to `~/.config/subctl/master/secrets-audit.jsonl` containing `ts`, `key`, `ref`, and `cache_hit`. Values never appear in audit records. Pairs with 1Password's own server-side audit log for end-to-end traceability.
+
+**Backends config.** `~/.config/subctl/secrets-backends.json` is operator-editable with three fields: `default_chain` (e.g. `["env", "onepassword", "file"]`), `overrides` (per-key chain pin), and `onepassword_refs` (per-key explicit ref). Unknown backend names get filtered out; malformed JSON falls back to defaults with a single `console.error` — daemon never crashes on a bad config.
+
+**HTTP surface (master).** Three new endpoints, none of which return a secret value:
+
+- `GET  /secrets/backends` — chain config + op CLI availability + token-set flag + cache size + audit path
+- `POST /secrets/test {key}` — `{ ok, key, exists, found_via }` — boolean + origin backend, no value
+- `POST /secrets/cache/flush` — `{ ok, cleared }` — wipes the 1Password cache, returns the count
+
+**Telegram.** New `/secrets` command echoes the same chain status the dashboard sees — chain order, per-key overrides, 1Password CLI/token state, cache size. No values, no refs to specific items — just shape and availability.
+
+**Tests.** `components/master/__tests__/secrets-backends.test.ts` covers default chain order, per-key overrides, op silent-no-op when CLI/token are missing, op cache TTL behavior (cache hit emits `cache_hit: true` audit entry), file-backend op:// hygiene, audit log shape + value-never-appearing assertion, `flushOnePasswordCache` count return, `testSecret` shape (no `value` field), and config robustness (missing/malformed/unknown-backend cases).
+
+**Files:**
+
+- New: `components/master/secrets-backends.ts` — chain orchestration, op CLI wrapper, audit, cache, status surfaces
+- New: `components/master/__tests__/secrets-backends.test.ts`
+- Modified: `components/master/secrets.ts` — `resolveSecret` now hides op:// refs from sync callers
+- Modified: `components/master/server.ts` — three new HTTP routes (~30 lines, all under the `// ── v2.7.31 secret backends ──` marker)
+- Modified: `components/master/master-notify-listener.ts` — `/secrets` Telegram command + help-text line
+- Modified: `docs/adr/0012-1password-service-accounts-multibackend.md` — status → Accepted (shipped v2.7.31)
+- Modified: `docs/adr/README.md` — ADR 0012 row updated
+
 ## [2.7.30] — 2026-05-13
 
 ### `test(eval): v2.7.30 add eval coverage for v2.7.18 through v2.7.24 features`
