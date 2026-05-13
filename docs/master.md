@@ -75,7 +75,18 @@ prompt queue — no double-dispatch, no missed messages.
 | `dashboard/public/index.html` | Single-page shell. Sidebar nav + per-tab `<section data-tab="...">` panels |
 | `dashboard/public/app.js` | All client logic. Notable functions: `wireMasterChat`, `wireOrchestrationCockpit`, `wireProvidersTab`, `wireTeamsTab`, `wireSkillsTab`, `wireSettingsTab`, `wireProjectsTab`, `wireLogsTab` |
 | `dashboard/public/style.css` | Theme + per-screen styling. Dark, monospace headers, color-coded by event kind |
+| `dashboard/public/tool-display.json` | v2.7.12 — family/color/icon map + name-prefix rules consumed by the Chat panel to render tool calls as inline neon-glow pills instead of full-width cards |
 | `dashboard/notify-listener.ts` | Separate from master — handles the legacy operator-notify flow (subctl notify ask-yesno etc.) |
+
+**Chat tool-call rendering (v2.7.12).** Inline neon-glow pills replace
+the legacy full-width "TOOL · ..." cards. Each pill is family-colored
+per `dashboard/public/tool-display.json`, has a one-line truncated arg
+preview (empty `{}` is suppressed entirely), and is click-to-expand
+for full args + result. Pills appear live as SSE `toolcall_start`
+events arrive so the operator sees master fetching tool after tool.
+While waiting for the first SSE event of a turn, a pulsing
+`evy · thinking` indicator sits between the user bubble and where the
+assistant turn will appear.
 
 **Sidebar tabs** (top to bottom):
 1. **Chat** — full-height conversation with master + model picker + sidecar (active dev teams + recent activity)

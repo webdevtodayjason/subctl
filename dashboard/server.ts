@@ -1537,6 +1537,7 @@ const STATIC_FILES: Record<string, { path: string; type: string }> = {
   "/style.css":   { path: join(PUBLIC_DIR, "style.css"),  type: "text/css; charset=utf-8" },
   "/app.js":      { path: join(PUBLIC_DIR, "app.js"),     type: "application/javascript; charset=utf-8" },
   "/logo.png":    { path: join(PUBLIC_DIR, "logo.png"),   type: "image/png" },
+  "/tool-display.json": { path: join(PUBLIC_DIR, "tool-display.json"), type: "application/json; charset=utf-8" },
 };
 
 function serveStatic(pathname: string): Response | null {

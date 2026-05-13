@@ -3986,3 +3986,87 @@ tr.team-stale-red td           { background: rgba(214, 108, 108, 0.06); }
 .team-event-pill.team-event-done     { background: #102236; color: #5fd7ff; }
 .team-event-pill.team-event-note     { background: #1a1a1a; color: #888; }
 .team-event-text { color: #999; font-size: 12.5px; margin-left: 6px; }
+
+/* ----- v2.7.12 chat tool-call pills + thinking indicator ----- */
+/* Replaces the full-width "TOOL · system_log_tail / {}" cards that ate
+   60% of the chat panel. Each tool call now renders as an inline neon
+   pill with a one-line truncated arg preview. Multiple pills from the
+   same assistant turn share a `.chat-tool-pills` row that wraps
+   naturally. Click a pill to open a side notice with full args + result. */
+
+.chat-tool-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0;
+  padding: 4px 0;
+}
+
+.chat-tool-pill {
+  --pill-color: #888;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  font-size: 11.5px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  background: color-mix(in srgb, var(--pill-color) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--pill-color) 60%, transparent);
+  border-radius: 999px;
+  color: var(--pill-color);
+  cursor: pointer;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--pill-color) 20%, transparent) inset,
+    0 0 8px -2px color-mix(in srgb, var(--pill-color) 50%, transparent);
+  transition: all 120ms ease;
+}
+
+.chat-tool-pill:hover {
+  background: color-mix(in srgb, var(--pill-color) 22%, transparent);
+  border-color: var(--pill-color);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--pill-color) 30%, transparent) inset,
+    0 0 14px -2px color-mix(in srgb, var(--pill-color) 80%, transparent);
+}
+
+.chat-tool-pill__icon { font-size: 13px; line-height: 1; }
+.chat-tool-pill__name { font-weight: 500; letter-spacing: 0.02em; }
+.chat-tool-pill__args {
+  color: color-mix(in srgb, var(--pill-color) 70%, #aaa);
+  font-size: 11px;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-tool-pill--ok::after  { content: "✓"; color: #6cd697; font-size: 11px; margin-left: 4px; }
+.chat-tool-pill--err::after { content: "✗"; color: #d66c6c; font-size: 11px; margin-left: 4px; }
+
+/* Live "thinking" indicator — shown after the operator sends a chat
+   message, hidden when the master starts streaming (first text_delta or
+   toolcall_start), on agent_end, or on error/timeout. Operator is
+   renaming master to Evy in v2.7.12; using "evy" as the label now. */
+.chat-thinking {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  margin: 4px 0;
+  font-size: 11px;
+  color: #6dd49a;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  opacity: 0.85;
+}
+.chat-thinking__label { letter-spacing: 0.06em; }
+.chat-thinking__dots { letter-spacing: 2px; }
+.chat-thinking__dots > span {
+  display: inline-block;
+  animation: chat-thinking-dot 1.4s infinite ease-in-out;
+}
+.chat-thinking__dots > span:nth-child(2) { animation-delay: 0.2s; }
+.chat-thinking__dots > span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes chat-thinking-dot {
+  0%, 100% { opacity: 0.3; }
+  50%      { opacity: 1.0; }
+}

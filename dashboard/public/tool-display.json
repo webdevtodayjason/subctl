@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "fallback": { "family": "tool", "icon": "🔧" },
+  "families": {
+    "system":        { "color": "#5fd7ff", "icon": "🖥" },
+    "lmstudio":      { "color": "#6dd4d4", "icon": "🧠" },
+    "knowledge":     { "color": "#d480b8", "icon": "📚" },
+    "memory":        { "color": "#b074d6", "icon": "💭" },
+    "network":       { "color": "#6cd697", "icon": "🌐" },
+    "orchestration": { "color": "#e89a4a", "icon": "🎭" },
+    "docs":          { "color": "#7ad4c4", "icon": "📝" },
+    "policy":        { "color": "#d6c46c", "icon": "🛡" },
+    "notify":        { "color": "#d67aa7", "icon": "📣" },
+    "tool":          { "color": "#888888", "icon": "🔧" }
+  },
+  "rules": [
+    { "prefix": "system_lmstudio_",       "family": "lmstudio" },
+    { "exact":  "system_subctl_knowledge", "family": "knowledge" },
+    { "prefix": "system_",                 "family": "system" },
+    { "prefix": "memory_",                 "family": "memory" },
+    { "prefix": "mcp__plugin_claude-mem_", "family": "memory" },
+    { "prefix": "web_",                    "family": "network" },
+    { "prefix": "linear_",                 "family": "network" },
+    { "prefix": "context7_",               "family": "network" },
+    { "prefix": "subctl_orch_",            "family": "orchestration" },
+    { "prefix": "team_doc_",               "family": "docs" },
+    { "exact":  "team_decision_log",       "family": "docs" },
+    { "prefix": "policy_",                 "family": "policy" },
+    { "prefix": "notify_",                 "family": "notify" },
+    { "prefix": "telegram_",               "family": "notify" }
+  ]
+}

@@ -60,6 +60,225 @@
 
   const $ = (id) => document.getElementById(id);
 
+  // ----- Tool-call display config (v2.7.12) -----
+  // Maps a tool name → { family, color, icon } so the chat panel can render
+  // each tool as a family-colored neon pill instead of a full-width card.
+  // Config is fetched once from /tool-display.json (served as a static file
+  // by dashboard/server.ts); if the fetch fails (offline, bad deploy, etc.)
+  // we fall back to a hardcoded copy so the chat keeps working.
+  const TOOL_DISPLAY_FALLBACK = {
+    version: 1,
+    fallback: { family: "tool", icon: "🔧" },
+    families: {
+      system:        { color: "#5fd7ff", icon: "🖥" },
+      lmstudio:      { color: "#6dd4d4", icon: "🧠" },
+      knowledge:     { color: "#d480b8", icon: "📚" },
+      memory:        { color: "#b074d6", icon: "💭" },
+      network:       { color: "#6cd697", icon: "🌐" },
+      orchestration: { color: "#e89a4a", icon: "🎭" },
+      docs:          { color: "#7ad4c4", icon: "📝" },
+      policy:        { color: "#d6c46c", icon: "🛡" },
+      notify:        { color: "#d67aa7", icon: "📣" },
+      tool:          { color: "#888888", icon: "🔧" },
+    },
+    rules: [
+      { prefix: "system_lmstudio_",       family: "lmstudio" },
+      { exact:  "system_subctl_knowledge", family: "knowledge" },
+      { prefix: "system_",                 family: "system" },
+      { prefix: "memory_",                 family: "memory" },
+      { prefix: "mcp__plugin_claude-mem_", family: "memory" },
+      { prefix: "web_",                    family: "network" },
+      { prefix: "linear_",                 family: "network" },
+      { prefix: "context7_",               family: "network" },
+      { prefix: "subctl_orch_",            family: "orchestration" },
+      { prefix: "team_doc_",               family: "docs" },
+      { exact:  "team_decision_log",       family: "docs" },
+      { prefix: "policy_",                 family: "policy" },
+      { prefix: "notify_",                 family: "notify" },
+      { prefix: "telegram_",               family: "notify" },
+    ],
+  };
+  let _toolDisplayConfig = null;
+  let _toolDisplayPromise = null;
+  function loadToolDisplay() {
+    if (_toolDisplayConfig) return Promise.resolve(_toolDisplayConfig);
+    if (_toolDisplayPromise) return _toolDisplayPromise;
+    _toolDisplayPromise = fetch("/tool-display.json")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => {
+        _toolDisplayConfig = (j && j.families && j.rules) ? j : TOOL_DISPLAY_FALLBACK;
+        return _toolDisplayConfig;
+      })
+      .catch(() => {
+        _toolDisplayConfig = TOOL_DISPLAY_FALLBACK;
+        return _toolDisplayConfig;
+      });
+    return _toolDisplayPromise;
+  }
+  // Kick off the fetch immediately so the cache is usually warm by the time
+  // the first tool call renders. Synchronous lookups fall back if the fetch
+  // hasn't resolved yet.
+  loadToolDisplay();
+
+  function _toolDisplayConfigSync() {
+    return _toolDisplayConfig || TOOL_DISPLAY_FALLBACK;
+  }
+
+  // Resolve a tool name → { family, color, icon }. Walks the rules array in
+  // order; first match wins. Unmatched → fallback. Matching is case-sensitive
+  // because tool names from the LM Studio API are already canonical.
+  function resolveToolDisplay(name) {
+    const cfg = _toolDisplayConfigSync();
+    const safeName = String(name || "");
+    for (const rule of cfg.rules || []) {
+      if (rule.exact && rule.exact === safeName) {
+        const fam = cfg.families[rule.family] || cfg.fallback;
+        return { family: rule.family, color: fam.color, icon: fam.icon };
+      }
+      if (rule.prefix && safeName.startsWith(rule.prefix)) {
+        const fam = cfg.families[rule.family] || cfg.fallback;
+        return { family: rule.family, color: fam.color, icon: fam.icon };
+      }
+    }
+    const fb = cfg.fallback || { family: "tool", icon: "🔧" };
+    const famDef = cfg.families[fb.family] || { color: "#888888", icon: "🔧" };
+    return { family: fb.family, color: famDef.color, icon: famDef.icon };
+  }
+
+  // Args -> a short single-line preview string. Returns "" when there are
+  // no args so callers can hide the preview span entirely (no empty `{}`
+  // noise). For one key: `key=value` (value truncated to 24 chars). For 2+:
+  // `key1=v1, key2=v2 …` truncated to 40 chars total.
+  function formatToolArgsPreview(args) {
+    if (args == null) return "";
+    let obj = args;
+    if (typeof args === "string") {
+      const s = args.trim();
+      if (!s || s === "{}") return "";
+      try { obj = JSON.parse(s); } catch { return s.length > 40 ? s.slice(0, 39) + "…" : s; }
+    }
+    if (typeof obj !== "object" || Array.isArray(obj)) {
+      const s = JSON.stringify(obj);
+      return s.length > 40 ? s.slice(0, 39) + "…" : s;
+    }
+    const keys = Object.keys(obj);
+    if (keys.length === 0) return "";
+    const fmtVal = (v, max) => {
+      let s = (typeof v === "string") ? v : JSON.stringify(v);
+      s = String(s).replace(/\s+/g, " ");
+      if (s.length > max) s = s.slice(0, max - 1) + "…";
+      return s;
+    };
+    if (keys.length === 1) {
+      const k = keys[0];
+      return `${k}=${fmtVal(obj[k], 24)}`;
+    }
+    const parts = keys.slice(0, 4).map((k) => `${k}=${fmtVal(obj[k], 10)}`);
+    let out = parts.join(", ");
+    if (keys.length > parts.length) out += " …";
+    if (out.length > 40) out = out.slice(0, 39) + "…";
+    return out;
+  }
+
+  // Format the full args + result blob for the click-to-expand panel.
+  // Pretty-printed JSON for objects, raw for strings.
+  function formatToolDetailBlock(label, value) {
+    if (value == null || value === "") return "";
+    let body = value;
+    if (typeof value !== "string") {
+      try { body = JSON.stringify(value, null, 2); } catch { body = String(value); }
+    }
+    return `${label}:\n${body}`;
+  }
+
+  // Render a single tool-call pill. Returns a <button> element ready to be
+  // appended into a `.chat-tool-pills` container. `opts.ok` may be true
+  // (success), false (error), or undefined (pending — no status glyph yet).
+  function renderToolPill(opts) {
+    const { name, args, result, ok } = opts || {};
+    const disp = resolveToolDisplay(name);
+    const pill = document.createElement("button");
+    pill.type = "button";
+    pill.className = "chat-tool-pill";
+    pill.dataset.family = disp.family;
+    pill.dataset.toolName = String(name || "");
+    pill.style.setProperty("--pill-color", disp.color);
+
+    const iconEl = document.createElement("span");
+    iconEl.className = "chat-tool-pill__icon";
+    iconEl.textContent = disp.icon;
+    pill.appendChild(iconEl);
+
+    const nameEl = document.createElement("span");
+    nameEl.className = "chat-tool-pill__name";
+    nameEl.textContent = String(name || "tool");
+    pill.appendChild(nameEl);
+
+    const preview = formatToolArgsPreview(args);
+    if (preview) {
+      const argsEl = document.createElement("span");
+      argsEl.className = "chat-tool-pill__args";
+      argsEl.textContent = preview;
+      pill.appendChild(argsEl);
+    }
+
+    if (ok === true) pill.classList.add("chat-tool-pill--ok");
+    else if (ok === false) pill.classList.add("chat-tool-pill--err");
+
+    if (args != null) pill.dataset.args = (typeof args === "string") ? args : JSON.stringify(args);
+    if (result != null) pill.dataset.result = (typeof result === "string") ? result : JSON.stringify(result);
+
+    pill.addEventListener("click", () => {
+      const a = formatToolDetailBlock("args", pill.dataset.args || "");
+      const r = formatToolDetailBlock("result", pill.dataset.result || "");
+      const body = [a, r].filter(Boolean).join("\n\n") || "(no details captured)";
+      try {
+        if (window.notice) window.notice(`tool · ${pill.dataset.toolName}`, body);
+        else alert(body);
+      } catch { /* swallow */ }
+    });
+
+    return pill;
+  }
+
+  // Append `pill` into the most recent `.chat-tool-pills` row attached to
+  // `logEl`. If the row doesn't exist yet (this is the first pill of an
+  // assistant turn), create one and append it to logEl.
+  function ensureChatToolPillsRow(logEl) {
+    if (!logEl) return null;
+    const lastChild = logEl.lastElementChild;
+    if (lastChild && lastChild.classList.contains("chat-tool-pills")) {
+      return lastChild;
+    }
+    const row = document.createElement("div");
+    row.className = "chat-tool-pills";
+    logEl.appendChild(row);
+    return row;
+  }
+
+  // ----- Thinking indicator (v2.7.12) -----
+  // Append a transient "evy · thinking…" pill while the master is processing
+  // a chat turn. Removed when the assistant starts streaming, on agent_end,
+  // or on error/timeout. Caller owns lifecycle.
+  function showChatThinking(logEl) {
+    if (!logEl) return null;
+    hideChatThinking(logEl); // dedup — only one at a time
+    const el = document.createElement("div");
+    el.className = "chat-thinking";
+    el.dataset.role = "thinking";
+    el.innerHTML =
+      '<span class="chat-thinking__label">evy · thinking</span>' +
+      '<span class="chat-thinking__dots"><span>●</span><span>●</span><span>●</span></span>';
+    logEl.appendChild(el);
+    logEl.scrollTop = logEl.scrollHeight;
+    return el;
+  }
+  function hideChatThinking(logEl) {
+    if (!logEl) return;
+    const existing = logEl.querySelectorAll(".chat-thinking");
+    existing.forEach((n) => n.remove());
+  }
+
   // ----- Manual refresh button -----
   // Calls /api/refresh which clears the in-process + on-disk usage caches and
   // pushes a fresh state to all open WebSocket clients. Disabled briefly after
@@ -2601,13 +2820,30 @@
         } else if (ev.type === "toolcall_start") {
           const tc = ev.partial?.content?.[ev.contentIndex];
           if (tc?.id && tc?.name) {
-            const tcEl = document.createElement("div");
-            tcEl.className = "pd-chat-msg pd-chat-tool";
-            tcEl.innerHTML = `<div class="pd-chat-label">tool · ${escapeText(tc.name)}</div>`;
-            logEl.appendChild(tcEl);
-            toolBubbles.set(tc.id, tcEl);
+            // v2.7.12: render as a neon pill in the same row as sibling
+            // pills from this turn (wraps naturally). No more full-width
+            // tool-card eating 60% of the panel.
+            const row = ensureChatToolPillsRow(logEl);
+            const pill = renderToolPill({ name: tc.name, args: tc.arguments });
+            row.appendChild(pill);
+            toolBubbles.set(tc.id, pill);
             logEl.scrollTop = logEl.scrollHeight;
           }
+        }
+      } catch {}
+    });
+    es.addEventListener("tool_result", (e) => {
+      // Attach result + ok/err marker to the pill spawned by toolcall_start.
+      if (!active) return;
+      try {
+        const d = JSON.parse(e.data);
+        const pill = toolBubbles.get(d.toolCallId);
+        if (!pill) return;
+        const ok = !d.error;
+        pill.classList.add(ok ? "chat-tool-pill--ok" : "chat-tool-pill--err");
+        const result = d.error || (d.content && d.content[0] && d.content[0].text) || d.content;
+        if (result != null) {
+          pill.dataset.result = (typeof result === "string") ? result : JSON.stringify(result);
         }
       } catch {}
     });
@@ -3342,19 +3578,36 @@
               block.querySelector(".master-msg-body").textContent = text;
               log.appendChild(block);
             }
+            // v2.7.12: tool calls render as inline neon pills grouped per
+            // assistant turn (one .chat-tool-pills row per turn). Multiple
+            // tool calls in the same turn share the row. The toolResult
+            // role (next branch) patches in the ✓/✗ marker.
             const toolCalls = (m.content || []).filter((b) => b.type === "toolCall");
-            for (const tc of toolCalls) {
-              const block = document.createElement("div");
-              block.className = "master-msg master-msg-tool";
-              block.innerHTML = `<div class="master-msg-label">tool · ${escapeText(tc.name || "?")}</div><div class="master-msg-body master-tool-body"></div>`;
-              block.querySelector(".master-tool-body").textContent = tc.arguments ? JSON.stringify(tc.arguments) : "";
-              log.appendChild(block);
+            if (toolCalls.length > 0) {
+              const row = document.createElement("div");
+              row.className = "chat-tool-pills";
+              for (const tc of toolCalls) {
+                const pill = renderToolPill({ name: tc.name || "tool", args: tc.arguments });
+                pill.dataset.tcid = tc.id || "";
+                row.appendChild(pill);
+              }
+              log.appendChild(row);
             }
           } else if (m.role === "toolResult") {
-            // Show as a small ✓ next to the most recent tool bubble — keeps
-            // log compact. For now skip; SSE will render fresh tool results
-            // anyway. Could be enhanced to attach result summary to the
-            // matching tool bubble.
+            // Walk back through the log to find the pill with matching id
+            // and attach the result marker. Best-effort — old transcripts
+            // may have results without a matching pill if the assistant
+            // turn was clipped.
+            const tcid = m.toolCallId || (m.content && m.content[0] && m.content[0].toolCallId);
+            if (tcid) {
+              const pill = log.querySelector(`.chat-tool-pill[data-tcid="${cssEscape(String(tcid))}"]`);
+              if (pill) {
+                const ok = !m.error;
+                pill.classList.add(ok ? "chat-tool-pill--ok" : "chat-tool-pill--err");
+                const resultText = (m.content || []).map((b) => b.text).filter(Boolean).join("\n");
+                if (resultText) pill.dataset.result = resultText;
+              }
+            }
           }
         }
         // Defer scroll-to-bottom past two RAFs so layout has fully
@@ -3620,35 +3873,55 @@
       return body;
     }
 
+    // v2.7.12: tool calls render as neon-glow pills grouped per assistant
+    // turn (one .chat-tool-pills row reused for the whole turn). Pills
+    // appear live as SSE toolcall_start events arrive, so the operator
+    // SEES master fetching tool after tool. Click a pill → side notice
+    // with full args + result.
     function appendToolCall(toolCallId, name, args) {
       clearEmpty();
-      const el = document.createElement("div");
-      el.className = "master-msg master-msg-tool";
-      el.dataset.tcid = toolCallId;
-      const label = document.createElement("div");
-      label.className = "master-msg-label";
-      label.textContent = "tool · " + name;
-      const body = document.createElement("div");
-      body.className = "master-msg-body master-tool-body";
-      body.textContent = args ? JSON.stringify(args) : "";
-      el.appendChild(label);
-      el.appendChild(body);
-      log.appendChild(el);
+      hideChatThinking(log);
+      // Reuse the row the active assistant turn already started, or open a
+      // fresh one if the turn hasn't emitted any tool pills yet.
+      let row;
+      const lastEl = log.lastElementChild;
+      if (lastEl && lastEl.classList.contains("chat-tool-pills") && lastEl.dataset.turnOpen === "1") {
+        row = lastEl;
+      } else {
+        row = document.createElement("div");
+        row.className = "chat-tool-pills";
+        row.dataset.turnOpen = "1";
+        log.appendChild(row);
+      }
+      const pill = renderToolPill({ name, args });
+      pill.dataset.tcid = toolCallId;
+      row.appendChild(pill);
       log.scrollTop = log.scrollHeight;
-      toolCallEls.set(toolCallId, el);
+      toolCallEls.set(toolCallId, pill);
     }
 
     function markToolDone(toolCallId, ok, summary) {
-      const el = toolCallEls.get(toolCallId);
-      if (!el) return;
-      el.classList.add(ok ? "master-tool-ok" : "master-tool-err");
-      if (summary) {
-        const result = document.createElement("div");
-        result.className = "master-tool-result";
-        result.textContent = String(summary).slice(0, 400);
-        el.appendChild(result);
+      const pill = toolCallEls.get(toolCallId);
+      if (!pill) return;
+      pill.classList.add(ok ? "chat-tool-pill--ok" : "chat-tool-pill--err");
+      if (summary != null) {
+        pill.dataset.result = (typeof summary === "string") ? summary : JSON.stringify(summary);
       }
       log.scrollTop = log.scrollHeight;
+    }
+
+    // Close any "open" tool-pill row so the NEXT assistant turn opens a
+    // fresh row instead of piling pills into the previous turn's row.
+    function closeToolPillRow() {
+      const lastEl = log.lastElementChild;
+      if (lastEl && lastEl.classList.contains("chat-tool-pills")) {
+        delete lastEl.dataset.turnOpen;
+      }
+      // Also clear any stragglers — only the trailing row could still be
+      // open, but be defensive.
+      log.querySelectorAll('.chat-tool-pills[data-turn-open="1"]').forEach((n) => {
+        delete n.dataset.turnOpen;
+      });
     }
 
     function startAssistantBubble() {
@@ -3657,6 +3930,9 @@
     }
 
     function appendDelta(delta) {
+      // First delta of a turn = master has started speaking. Drop the
+      // thinking indicator so it doesn't sit between text and pills.
+      hideChatThinking(log);
       if (!activeAssistantEl) startAssistantBubble();
       activeAssistantText += delta;
       activeAssistantEl.textContent = activeAssistantText;
@@ -3666,6 +3942,13 @@
     function endAssistantBubble() {
       activeAssistantEl = null;
       activeAssistantText = "";
+      // Seal the tool-pill row so the next assistant turn opens a new one
+      // (otherwise consecutive turns' pills would pile into the same row).
+      closeToolPillRow();
+      // Belt-and-suspenders: thinking indicator should already be hidden by
+      // appendDelta / appendToolCall, but if the turn was empty (zero
+      // deltas + zero tool calls) clean it up here.
+      hideChatThinking(log);
     }
 
     let es = null;
@@ -4180,6 +4463,13 @@
         ? (text ? `${attachLabels}\n${text}` : attachLabels)
         : text;
       appendMessage("user", visible, { label: "you" });
+      // v2.7.12: paint the live "evy · thinking" indicator while we wait
+      // for the master to start streaming. Removed by appendDelta /
+      // appendToolCall on the first SSE event, or below on error/timeout.
+      showChatThinking(log);
+      // Safety: if no SSE event arrives in 30s, drop the indicator so the
+      // operator isn't stuck staring at a forever-pulsing dot.
+      const thinkingTimeout = setTimeout(() => hideChatThinking(log), 30000);
       // Clear pending attachments NOW (so the next message starts fresh).
       pendingAttachments.length = 0;
       renderAttachmentBar();
@@ -4195,9 +4485,13 @@
         });
         if (!r.ok) {
           const j = await r.json().catch(() => ({}));
+          clearTimeout(thinkingTimeout);
+          hideChatThinking(log);
           appendMessage("error", "send failed: " + (j.error || r.status), { label: "error" });
         }
       } catch (err) {
+        clearTimeout(thinkingTimeout);
+        hideChatThinking(log);
         appendMessage("error", "send error: " + err, { label: "error" });
       } finally {
         sendBtn.disabled = false;

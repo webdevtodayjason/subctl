@@ -4,6 +4,75 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.7.12] — 2026-05-12
+
+### `feat(dashboard/chat): inline neon-glow tool pills + thinking indicator`
+
+**What changed.** The dashboard Chat panel no longer renders each tool
+call as a full-width card. Pre-2.7.12 a single turn that ran four tools
+spawned four separate "TOOL · system_log_tail" blocks (often with an
+empty `{}` body), eating ~60% of the panel width. v2.7.12 replaces that
+with a row of inline **neon-glow pills** grouped per assistant turn,
+color-coded by tool family, with a one-line truncated arg preview.
+
+**Visual.** Each pill is a translucent rounded badge with a colored
+border + soft outer glow (CSS `box-shadow` + `color-mix`), styled in the
+spirit of sci-fi command-center dashboards. Family colors:
+
+- `system_*` → cyan
+- `system_lmstudio_*` → teal-cyan
+- `system_subctl_knowledge` → magenta
+- `memory_*` + `mcp__plugin_claude-mem_*` → purple
+- `web_*` / `linear_*` / `context7_*` → green
+- `subctl_orch_*` → orange
+- `team_doc_*` + `team_decision_log` → mint
+- `policy_*` → yellow
+- `notify_*` + `telegram_*` → pink
+- Anything else → grey
+
+**Args preview.** Truncated single line next to each pill:
+
+- Empty `{}` → no preview rendered (no more noise)
+- One key → `key=value` (value clipped to 24 chars)
+- Multiple keys → `k1=v1, k2=v2 …` (clipped to 40 chars total)
+
+Click any pill → opens a `notice()` dialog with full args + full result
+(pretty-printed).
+
+**Live rendering.** Pills appear as SSE `toolcall_start` events arrive,
+so the operator sees master fetching tool after tool in real time. The
+`tool_result` event patches the originating pill with a ✓ (success) or
+✗ (error) marker. Pills from a single assistant turn share one
+`.chat-tool-pills` row that wraps naturally; the next turn opens a
+fresh row.
+
+**Thinking indicator.** While master is processing a chat turn (operator
+just sent, first SSE event has not arrived yet), the panel shows a
+pulsing `evy · thinking ● ● ●` line. Cleared on first `text_delta` /
+`toolcall_start`, on `agent_end`, or on error / 30s timeout. The label
+uses "evy" (the rename landing alongside the persona work in v2.7.13)
+so the text doesn't have to flip twice.
+
+**Config file.** New `dashboard/public/tool-display.json` is the single
+source of truth for the family → color/icon map and the name-prefix →
+family rules. Walks `rules` in order, first match wins, unmatched falls
+back to grey. Fetched once at boot, cached, with a hardcoded copy baked
+into `app.js` for offline / deploy-failure resilience.
+
+**Files touched.**
+
+- `dashboard/public/tool-display.json` (NEW) — family/icon/rules config
+- `dashboard/public/app.js` — pill helpers + replaced three tool-call
+  render sites + wired thinking indicator into `sendChat`
+- `dashboard/public/style.css` — pill + thinking indicator styles (uses
+  `color-mix` for translucent variants; Safari 16.4+, Chrome 111+,
+  Firefox 113+)
+- `dashboard/server.ts` — `/tool-display.json` added to STATIC_FILES
+- `docs/master.md` — chat panel section updated with pill description
+
+No master-daemon changes. No test changes. Tool-call wire protocol
+(SSE event names, JSON shapes) untouched.
+
 ## [2.7.11] — 2026-05-12
 
 ### `fix(verifier): structured tool-call inspection + keyword-overlap validation`
