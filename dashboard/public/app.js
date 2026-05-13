@@ -257,9 +257,10 @@
   }
 
   // ----- Thinking indicator (v2.7.12) -----
-  // Append a transient "evy · thinking…" pill while the master is processing
+  // Append a transient "Evy · thinking…" pill while master is processing
   // a chat turn. Removed when the assistant starts streaming, on agent_end,
-  // or on error/timeout. Caller owns lifecycle.
+  // or on error/timeout. Caller owns lifecycle. Capitalized in v2.7.13 to
+  // normalize with the (CSS-uppercased) "EVY" label on assistant bubbles.
   function showChatThinking(logEl) {
     if (!logEl) return null;
     hideChatThinking(logEl); // dedup — only one at a time
@@ -267,7 +268,7 @@
     el.className = "chat-thinking";
     el.dataset.role = "thinking";
     el.innerHTML =
-      '<span class="chat-thinking__label">evy · thinking</span>' +
+      '<span class="chat-thinking__label">Evy · thinking</span>' +
       '<span class="chat-thinking__dots"><span>●</span><span>●</span><span>●</span></span>';
     logEl.appendChild(el);
     logEl.scrollTop = logEl.scrollHeight;
@@ -2796,7 +2797,7 @@
       if (bubble) return bubble;
       const m = document.createElement("div");
       m.className = "pd-chat-msg pd-chat-master";
-      m.innerHTML = `<div class="pd-chat-label">master</div><div class="pd-chat-body"></div>`;
+      m.innerHTML = `<div class="pd-chat-label">evy</div><div class="pd-chat-body"></div>`;
       logEl.appendChild(m);
       logEl.scrollTop = logEl.scrollHeight;
       bubble = m.querySelector(".pd-chat-body");
@@ -3574,7 +3575,7 @@
             if (text) {
               const block = document.createElement("div");
               block.className = "master-msg master-msg-assistant";
-              block.innerHTML = `<div class="master-msg-label">master</div><div class="master-msg-body"></div>`;
+              block.innerHTML = `<div class="master-msg-label">evy</div><div class="master-msg-body"></div>`;
               block.querySelector(".master-msg-body").textContent = text;
               log.appendChild(block);
             }
@@ -3926,7 +3927,7 @@
 
     function startAssistantBubble() {
       activeAssistantText = "";
-      activeAssistantEl = appendMessage("assistant", "", { label: "master" });
+      activeAssistantEl = appendMessage("assistant", "", { label: "evy" });
     }
 
     function appendDelta(delta) {
@@ -4463,7 +4464,7 @@
         ? (text ? `${attachLabels}\n${text}` : attachLabels)
         : text;
       appendMessage("user", visible, { label: "you" });
-      // v2.7.12: paint the live "evy · thinking" indicator while we wait
+      // v2.7.12: paint the live "Evy · thinking" indicator while we wait
       // for the master to start streaming. Removed by appendDelta /
       // appendToolCall on the first SSE event, or below on error/timeout.
       showChatThinking(log);

@@ -2274,8 +2274,13 @@ body[data-active-tab="policy"] section[data-tab]:not([data-tab="policy"]) { disp
      scroll can't bleed past. Diagnosed 2026-05-10 (third occurrence). */
   position: sticky;
   top: 0;
-  z-index: 5;
-  background: var(--bg-1);
+  z-index: 50;
+  /* Explicit opaque hex (not the --bg-1 var) so even when stacking-
+     contexts get weird, the toolbar reads as a solid band. v2.7.13. */
+  background: #0e1116;
+  /* Soft drop-shadow on the bottom edge: gives the scrolled content
+     a clean visual tuck-under instead of a hard border collision. */
+  box-shadow: 0 4px 8px -4px rgba(0, 0, 0, 0.6);
 }
 .chat-model-label {
   display: flex;
@@ -3766,7 +3771,10 @@ tr.project-in-policy td { background: rgba(108, 214, 151, 0.03); }
 .master-log {
   max-height: 480px;
   overflow-y: auto;
-  padding: 12px;
+  /* v2.7.13 — extra top padding so the first message sits clearly below
+     the sticky chat-toolbar instead of butting against its bottom border
+     when the log is scrolled to the top. Operator-reported. */
+  padding: 20px 12px 12px 12px;
   background: #0c0c0c;
   border: 1px solid #1f1f1f;
   border-radius: 4px;
@@ -4046,7 +4054,7 @@ tr.team-stale-red td           { background: rgba(214, 108, 108, 0.06); }
 /* Live "thinking" indicator — shown after the operator sends a chat
    message, hidden when the master starts streaming (first text_delta or
    toolcall_start), on agent_end, or on error/timeout. Operator is
-   renaming master to Evy in v2.7.12; using "evy" as the label now. */
+   master is named Evy. Label text is lowercase "evy"; CSS uppercases. */
 .chat-thinking {
   display: flex;
   align-items: center;

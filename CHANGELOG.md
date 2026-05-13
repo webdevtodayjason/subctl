@@ -4,6 +4,55 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.7.13] — 2026-05-12
+
+### `fix(dashboard/chat): label normalization + sticky-toolbar overlap`
+
+Three operator-reported polish issues from the v2.7.12 chat panel:
+
+**1. Label normalization to "evy" (renders as "EVY" via CSS uppercase).**
+The thinking indicator said "evy · thinking" (lowercase, no
+text-transform on `.chat-thinking__label`), while the assistant
+response label said "MASTER" (CSS-uppercased `.master-msg-label`). Two
+different names for the same agent in adjacent UI elements. v2.7.13
+normalizes all three render sites to label `"evy"`:
+
+- `appendMessage("assistant", ..., { label: "evy" })` (live SSE bubble)
+- `<div class="master-msg-label">evy</div>` (transcript replay bubble)
+- `<div class="pd-chat-label">evy</div>` (project-chat bubble)
+
+CSS `.master-msg-label` already has `text-transform: uppercase`, so the
+rendered label is "EVY", consistent with "YOU" / "WATCHDOG" patterns.
+The thinking indicator's `.chat-thinking__label` is *not* uppercased,
+so it now reads "Evy · thinking ● ● ●" (capital-E, mixed case),
+matching the operator's preferred name styling for that surface.
+
+**2. Sticky toolbar overlap.** When the master-log scrolled to the top,
+chat content visually butted against (and sometimes overlapped) the
+chat-toolbar's bottom border. The toolbar was already
+`position: sticky; top: 0; z-index: 5; background: var(--bg-1)` (from
+v2.7.10), but in practice operator reported the toolbar becoming
+unclickable and visually contaminated by scrolled content. Two fixes:
+
+- Bumped `z-index: 5 → 50` so the toolbar dominates any sibling
+  stacking context it might end up next to.
+- Replaced `background: var(--bg-1)` with the explicit opaque hex
+  `#0e1116` (same value, but ensures no stacking-context-driven
+  transparency anomalies).
+- Added a soft drop-shadow on the toolbar's bottom edge so scrolled
+  content tucks cleanly beneath the toolbar instead of colliding with
+  its border.
+- Bumped `.master-log` top padding from `12px` to `20px` (per operator
+  suggestion) so the first message has clear breathing room beneath
+  the toolbar.
+
+**3. Z-index/opaque-bg defensive belt and suspenders.** The previous
+fix (v2.7.10) was layout-level; this one is presentation-level. Both
+should be in place so the next person who edits chat-panel CSS doesn't
+need to re-discover the failure mode.
+
+Files: `dashboard/public/app.js` (5 string edits), `dashboard/public/style.css` (3 rule edits, 1 comment update). No master-daemon changes. No test changes.
+
 ## [2.7.12] — 2026-05-12
 
 ### `feat(dashboard/chat): inline neon-glow tool pills + thinking indicator`
