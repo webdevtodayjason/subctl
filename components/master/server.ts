@@ -57,6 +57,13 @@ import { projectTools } from "./tools/project";
 import { memoryTools } from "./tools/memory";
 import { context7Tools } from "./tools/context7";
 import { tier1MemoryTools, buildMemoryBlock } from "./tools/tier1-memory";
+// ── v2.8.1 chat perf / skill router ──
+import {
+  selectSkills as routerSelectSkills,
+  renderSelected as routerRenderSelected,
+  isRouterEnabled as routerIsEnabled,
+  type RouterDecision,
+} from "./skill-router";
 import { skillAuthorTools } from "./tools/skill-author";
 import { notifyTools, bindNotifyBroadcast } from "./tools/notify";
 import { specforgeTools } from "./tools/specforge";
@@ -956,16 +963,44 @@ async function main() {
   // (user profile + learned facts). Both memory files are re-read on
   // every dispatchToAgent call below, so writes from operator OR master
   // tools land in the next turn without restart.
-  function composeSystemPrompt(): string {
+  // ── v2.8.1 chat perf / skill router ──
+  // Last router decision for the current turn, captured so the SSE
+  // broadcast in processOnePrompt can surface it to the dashboard pill
+  // without re-running scoring. Re-set on every compose call.
+  let lastRouterDecision: RouterDecision | null = null;
+
+  function composeSystemPrompt(userMessage?: string): string {
     const memBlock = buildMemoryBlock();
     const personality = buildPersonalityFragment();
+    // ── v2.8.1: skill router (Hermes-style preloading) ──
+    // When ~/.config/subctl/skill-router.enabled exists, score the
+    // inbound message against the in-repo skill catalog and prepend
+    // the chosen skills' bodies BEFORE the master SKILL.md. Absent
+    // the flag, behavior is identical to v2.8.0 (master SKILL.md
+    // only). Routing runs sub-ms (no LLM call, no embeddings) and
+    // re-uses a stat()-invalidated catalog cache.
+    let routerBlock = "";
+    try {
+      const decision = routerSelectSkills(userMessage ?? "", {
+        cwd: process.cwd(),
+      });
+      lastRouterDecision = decision;
+      if (decision.enabled) {
+        routerBlock = routerRenderSelected(decision.selected);
+      }
+    } catch (err) {
+      // Router must never block the prompt path. Fail open (no extra
+      // skills) and log loud.
+      console.error(`[skill-router] selection failed: ${(err as Error).message}`);
+      lastRouterDecision = null;
+    }
     // Personality goes LAST so voice rules are the most-recent thing the
     // model reads before responding. SKILL.md (the behavioral contract)
     // and anti-hallucination rules stay authoritative — the personality
     // fragment cannot relax them, and every preset's content explicitly
     // says so. Hot-swappable: composeSystemPrompt() runs before every
     // turn, so writes to personality.json take effect on the next prompt.
-    return memBlock + skill + personality;
+    return memBlock + routerBlock + skill + personality;
   }
 
   const agent = new Agent({
@@ -1586,12 +1621,70 @@ async function main() {
       // ticker below is a safety net; this is the primary gate.
       await runJitCompactCheck();
 
+      // ── v2.8.1 chat perf / skill router ──
+      // Per-turn latency telemetry. Stage timestamps recorded on the
+      // local stack so they don't leak across overlapping turns
+      // (processOnePrompt is serialized via promptInFlight, but the
+      // closure is reentered for each turn). emitStage() logs to stderr
+      // AND broadcasts a `latency_stage` SSE event so the dashboard can
+      // surface the breakdown — see chat-perf zone in app.js.
+      const turnT0 = performance.now();
+      const turnId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      const stageTimes: Record<string, number> = {};
+      const emitStage = (stage: string, extras?: Record<string, unknown>) => {
+        const elapsed = Math.round(performance.now() - turnT0);
+        stageTimes[stage] = elapsed;
+        const extraStr = extras
+          ? " " + Object.entries(extras).map(([k, v]) => `${k}=${v}`).join(" ")
+          : "";
+        console.error(
+          `[latency] turn=${turnId} stage=${stage} ms=${elapsed}${extraStr}`,
+        );
+        try {
+          broadcast("latency_stage", {
+            ts: new Date().toISOString(),
+            turn: turnId,
+            source: p.source,
+            stage,
+            elapsed_ms: elapsed,
+            extras: extras ?? null,
+          });
+        } catch { /* never block on broadcast */ }
+      };
+      emitStage("process_start");
+
       // Refresh the system prompt with current tier-1 memory before every
       // prompt. Both memory.md and user.md are re-read fresh — operator
       // edits via the dashboard Memory tab AND master's own memory_*
       // tool writes both flow into the next turn without restart.
       try {
-        (agent.state as any).systemPrompt = composeSystemPrompt();
+        // ── v2.8.1 chat perf / skill router ──
+        // Pass the operator's message into composeSystemPrompt so the
+        // skill router can score against it. Falls back to legacy
+        // single-skill behavior when the flag file is absent.
+        const newPrompt = composeSystemPrompt(p.text);
+        (agent.state as any).systemPrompt = newPrompt;
+        emitStage("compose_prompt_done", {
+          prompt_chars: newPrompt.length,
+          router_enabled: lastRouterDecision?.enabled ? 1 : 0,
+          routed_skills:
+            lastRouterDecision?.selected.map((s) => s.name).join(",") || "-",
+        });
+        // Surface the routing decision on the SSE bus so the dashboard
+        // can render the "[router] X · Y" pill under this operator
+        // message. Cheap; just metadata.
+        if (lastRouterDecision && lastRouterDecision.enabled) {
+          try {
+            broadcast("skill_router", {
+              ts: new Date().toISOString(),
+              turn: turnId,
+              source: p.source,
+              message_preview: p.text.slice(0, 80),
+              selected: lastRouterDecision.selected.map((s) => s.name),
+              reason: lastRouterDecision.reason,
+            });
+          } catch { /* never block */ }
+        }
       } catch { /* if pi-agent-core ever locks state.systemPrompt, we'll see it loud */ }
       broadcast("inbound", { source: p.source, text: p.text, ts: new Date().toISOString() });
       // v2.7.23 — record the inbound on Tier 3 (Evy Memory). User-facing
@@ -1616,7 +1709,36 @@ async function main() {
           `[memory] inbound record failed: ${(err as Error).message ?? err}`,
         );
       }
-      await agent.prompt(p.text);
+      // ── v2.8.1 chat perf / skill router ──
+      // Hook agent.subscribe just for the duration of this turn so we
+      // can record first-token + last-token timings. The longstanding
+      // global subscriber upstream stays in place; this is a piggyback
+      // listener that detaches in finally{}.
+      emitStage("llm_call_start");
+      let firstTokenEmitted = false;
+      const detach = agent.subscribe((event: any) => {
+        try {
+          if (
+            !firstTokenEmitted &&
+            event?.type === "message_update" &&
+            event?.assistantMessageEvent?.type === "text_delta"
+          ) {
+            firstTokenEmitted = true;
+            emitStage("first_token");
+          }
+          if (event?.type === "agent_end") {
+            emitStage("last_token");
+          }
+        } catch { /* never throw out of subscriber */ }
+      });
+      try {
+        await agent.prompt(p.text);
+      } finally {
+        if (typeof detach === "function") {
+          try { detach(); } catch { /* ignore */ }
+        }
+      }
+      emitStage("turn_complete", { stages: JSON.stringify(stageTimes) });
       let { stop, err } = lastStopReason();
       if (stop === "error" && isTransient(err) && !stopped) {
         console.error(`[master] transient error "${err}" (source=${p.source}), retrying in 5s`);

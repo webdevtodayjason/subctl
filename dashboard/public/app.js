@@ -256,17 +256,32 @@
     return row;
   }
 
-  // ----- Thinking indicator (v2.7.12) -----
+  // ----- Thinking indicator (v2.7.12, fix v2.8.1) -----
   // Append a transient "Evy · thinking…" pill while master is processing
-  // a chat turn. Removed when the assistant starts streaming, on agent_end,
-  // or on error/timeout. Caller owns lifecycle. Capitalized in v2.7.13 to
-  // normalize with the (CSS-uppercased) "EVY" label on assistant bubbles.
+  // a chat turn. v2.8.1 fix: the indicator now persists through
+  // intermediate events (tool_call, tool_result, message_start without
+  // text) and is ONLY removed when an actual text_delta paints into the
+  // assistant bubble (appendDelta) or the turn ends (endAssistantBubble,
+  // agent_end), or on error/timeout. Previously a tool_call between the
+  // operator message and the response text would prematurely hide the
+  // indicator, leaving the operator staring at silence — the exact bug
+  // the operator surfaced 2026-05-13 ("It says 'thinking', and then it
+  // goes away, and it takes a hot second for her to respond").
+  //
+  // Label switches to "Evy · working" while a tool is mid-flight so the
+  // operator gets feedback that something IS happening (the tool pills
+  // already render below, but the label-flip closes the visual gap
+  // between "thinking dots stopped" → "next event lands"). Reverts to
+  // "thinking" if the assistant goes quiet again (e.g. tool_result then
+  // waiting for the next reasoning step).
+  // ── v2.8.1 chat perf / skill router ──
   function showChatThinking(logEl) {
     if (!logEl) return null;
     hideChatThinking(logEl); // dedup — only one at a time
     const el = document.createElement("div");
     el.className = "chat-thinking";
     el.dataset.role = "thinking";
+    el.dataset.state = "thinking";
     el.innerHTML =
       '<span class="chat-thinking__label">Evy · thinking</span>' +
       '<span class="chat-thinking__dots"><span>●</span><span>●</span><span>●</span></span>';
@@ -278,6 +293,20 @@
     if (!logEl) return;
     const existing = logEl.querySelectorAll(".chat-thinking");
     existing.forEach((n) => n.remove());
+  }
+  // v2.8.1 — flip the label between "thinking" and "working" without
+  // removing+re-adding the node (so the CSS dot animation doesn't
+  // restart mid-turn). Safe to call when no indicator exists; no-op.
+  function setChatThinkingState(logEl, state) {
+    if (!logEl) return;
+    const el = logEl.querySelector(".chat-thinking");
+    if (!el) return;
+    if (el.dataset.state === state) return;
+    el.dataset.state = state;
+    const label = el.querySelector(".chat-thinking__label");
+    if (label) {
+      label.textContent = state === "working" ? "Evy · working" : "Evy · thinking";
+    }
   }
 
   // ----- Manual refresh button -----
@@ -4714,7 +4743,17 @@
     // with full args + result.
     function appendToolCall(toolCallId, name, args) {
       clearEmpty();
-      hideChatThinking(log);
+      // ── v2.8.1 chat perf / skill router ──
+      // PRE-FIX (v2.7.12 → v2.8.0): hideChatThinking() ran here, which
+      // killed the indicator the moment Evy issued a tool call. If the
+      // assistant message then took a few seconds to actually start
+      // streaming (LM Studio JIT, tool latency, prompt re-load), the
+      // operator stared at silence. POST-FIX: keep the indicator alive
+      // through tool calls; flip its label to "working" so the visual
+      // changes (operator knows something IS happening) but the dots
+      // keep animating. Removed only when actual text streams in via
+      // appendDelta() or the turn ends in endAssistantBubble().
+      setChatThinkingState(log, "working");
       // Reuse the row the active assistant turn already started, or open a
       // fresh one if the turn hasn't emitted any tool pills yet.
       let row;
@@ -4985,6 +5024,55 @@
         try {
           const d = JSON.parse(e.data);
           markToolDone(d.toolCallId ?? "?", !d.error, d.error || (d.content && d.content[0] && d.content[0].text));
+          // ── v2.8.1 chat perf / skill router ──
+          // After a tool result lands but BEFORE Evy continues
+          // reasoning, the indicator should pulse "thinking" again
+          // (not "working") — there's no active tool, we're waiting on
+          // the next LLM step. Reverts when appendToolCall runs again
+          // or hides when appendDelta paints text.
+          setChatThinkingState(log, "thinking");
+        } catch {}
+      });
+      // ── v2.8.1 chat perf / skill router ──
+      // Skill router decision pill. Master broadcasts `skill_router`
+      // once per turn (right after composeSystemPrompt) with the list
+      // of skills it loaded into Evy's prompt. Render as a tiny
+      // "[router] x · y" row under the operator's last message — the
+      // operator can see in real-time which skills got preloaded for
+      // this turn.
+      es.addEventListener("skill_router", (e) => {
+        try {
+          const d = JSON.parse(e.data);
+          if (!Array.isArray(d.selected) || d.selected.length === 0) return;
+          const pill = document.createElement("div");
+          pill.className = "chat-router-pill";
+          pill.title = d.reason || "skill router";
+          pill.textContent = "[router] " + d.selected.join(" · ");
+          // Drop the pill just above the thinking indicator if there
+          // is one, otherwise at the tail.
+          const thinking = log.querySelector(".chat-thinking");
+          if (thinking) {
+            log.insertBefore(pill, thinking);
+          } else {
+            log.appendChild(pill);
+          }
+          log.scrollTop = log.scrollHeight;
+        } catch {}
+      });
+      // ── v2.8.1 chat perf / skill router ──
+      // Latency stages — silent by default; the master logs the full
+      // breakdown to stderr. We surface only the "last_token" event
+      // as a debug-friendly data attribute on the most recent assistant
+      // bubble so curious operators can inspect total turn time via
+      // devtools without us painting numbers onto the chat.
+      es.addEventListener("latency_stage", (e) => {
+        try {
+          const d = JSON.parse(e.data);
+          if (d.stage !== "last_token" && d.stage !== "turn_complete") return;
+          const bubbles = log.querySelectorAll(".master-msg-assistant");
+          const last = bubbles[bubbles.length - 1];
+          if (!last) return;
+          last.dataset[`latency_${d.stage}_ms`] = String(d.elapsed_ms);
         } catch {}
       });
       es.addEventListener("watchdog_fire", (e) => {

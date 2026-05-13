@@ -128,6 +128,8 @@ Usage:
   subctl skills list                  List imported skills
   subctl skills info <id>             Show one skill's frontmatter + content
   subctl skills sources               List skill sources (each imported repo)
+  subctl skills router-trace <msg>    v2.8.1 — Trace which skills Evy's
+                                      router would preload for a message
 
   subctl templates list               List dev-team templates (persona+skills+tools)
   subctl templates show <name>        Show one template's JSON

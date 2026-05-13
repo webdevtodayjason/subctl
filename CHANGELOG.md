@@ -1,5 +1,39 @@
 ## [2.8.1] — 2026-05-13
 
+### `feat(master,dashboard): v2.8.1 chat latency telemetry + skill router + thinking-indicator fix`
+
+Three operator complaints from the 2026-05-13 chat session, ganged into one slice:
+
+1. **Thinking indicator vanished too early.** Operator: *"When chatting, you see that she's chatting for a second. It says 'thinking', and then it goes away, and it takes a hot second for her to respond."* Root cause: `appendToolCall()` in `dashboard/public/app.js` ran `hideChatThinking(log)` the moment Evy issued a tool call, which killed the indicator even if Evy hadn't started streaming text yet. With LM Studio JIT + tool latency + the prompt re-load each turn, the gap between "indicator gone" and "first text byte" was the "hot second" of silence. Fix: keep the indicator alive through tool calls and tool results, flip its label between `Evy · thinking` and `Evy · working` so the visual changes (operator knows something is happening) but the dots keep animating. The indicator is now removed ONLY when actual text streams in via `appendDelta()` or the turn ends in `endAssistantBubble()` / `agent_end` / error / timeout.
+
+2. **Chat felt slow vs Hermes.** Operator: *"I don't know why our chatting is so slow when I chat with hermes. Things are just almost instant."* The master had no instrumentation to point at the bottleneck. v2.8.1 adds per-turn latency telemetry across the full chat path. `components/master/server.ts` now emits `[latency] turn=<id> stage=<X> ms=<Y>` log lines at six stage boundaries — `process_start`, `compose_prompt_done` (with prompt char count + router skills), `llm_call_start`, `first_token`, `last_token`, `turn_complete`. The same stages broadcast as `latency_stage` SSE events so the dashboard can surface them on the assistant bubble (`data-latency_last_token_ms` etc) for devtools-driven debugging. Operator now has the breakdown live without `subctl logs grep` gymnastics.
+
+3. **Skill preloading (Hermes-style).** Operator: *"Hermes, when you ask a question, you'll see it load a skill. It'll preload a skill based on what you're asking. It kind of reads the room, loads the skill, and then passes that over to the agent."* v2.8.1 adds `components/master/skill-router.ts` — a lightweight scoring router that, on each turn, picks the top-K skills from the in-repo catalog (`components/skills/*/SKILL.md`) and folds their bodies into Evy's system prompt as `<skill name="…">…</skill>` fenced blocks. Scoring is keyword + description-token overlap against the operator's message tokens (3× weight on hand-curated `keywords:` frontmatter, 1× on description tokens, +2 for a direct name hit). `subctl-team-protocol` and `handoff-protocol` are always-loaded floor; domain skills (`node-conventions` / `python-conventions` / `rust-conventions`) are routed by cwd-based ecosystem detection (`package.json` → node, `pyproject.toml` → python, `Cargo.toml` → rust). Short messages (<5 chars, "hi", "/profile") fast-path to floor-only — no point burning router cycles on a one-word turn. The router is feature-flagged via the presence of `~/.config/subctl/skill-router.enabled`; absent that file, master falls back to the v2.8.0 legacy single-skill prompt path. Catalog reads are memoized with mtime invalidation — sub-ms on the happy path.
+
+**Dashboard surface.** A `[router] node-conventions · spec-driven-dev` pill renders under each operator turn when the router preloaded skills. CSS mirrors the v2.7.21 tool-pill accent palette but in slate (so it doesn't compete with the bright tool-pill row).
+
+**CLI.** New `subctl skills router-trace <message>` subcommand runs the router against a sample message and prints the scoring rationale (selected skills + score-sorted trace with matched keywords and matched description tokens). Useful for tuning the scoring weights without restarting master. `--force` flag bypasses the runtime enable flag so the operator can score the catalog even when the router is off in production.
+
+**Telegram.** Skipped this slice — operator's feedback was that pill rendering on a phone is too verbose for the surface.
+
+**Tests.** 22 new pinned tests in `components/master/__tests__/skill-router.test.ts` covering frontmatter parsing (inline scalars, folded `>-`, hyphen-list keywords), tokenization, ecosystem detection, the disabled/enabled router contracts, short-message fast-path, scoring-trace ordering, render output shape, and catalog cache invalidation on SKILL.md mtime bump. The 853 pre-existing master tests still pass; dashboard's 109 still pass. Bun build clean.
+
+**What's still slow.** The biggest opportunities (not addressed this slice — kept in scope to ship telemetry + the easy thinking-indicator fix in the same commit):
+- LM Studio cold-start on profile swap. The supervisor JITs the first prompt after a profile change. v2.7.18's `ensureModelLoaded` already pre-pins context; a periodic keep-alive would close the remaining gap.
+- Persona prompt-cache misses on every turn. pi-ai's openai-completions provider doesn't expose explicit cache_control; the chat profile (gemma) and heavy profile (qwen) both lose the cache when memory writes change the prefix. Worth investigating after we see real telemetry numbers from operator's typical flow.
+- Verifier re-runs (claim-gap iteration). Each adds a full LLM round-trip. Currently capped at 2; visible in the per-stage trace as a second `llm_call_start` within the same turn.
+
+**Files:**
+
+- New: `components/master/skill-router.ts` — scoring router + catalog loader + ecosystem detection
+- New: `components/master/__tests__/skill-router.test.ts` — 22 tests
+- New: `bin/skills/router-trace.ts` — CLI trace tool
+- Modified: `components/master/server.ts` — wired router into `composeSystemPrompt(userMessage?)`, added per-turn latency stages and `latency_stage` + `skill_router` SSE broadcasts under the `── v2.8.1 chat perf / skill router ──` zone markers
+- Modified: `dashboard/public/app.js` — thinking-indicator state-flip (`thinking` ↔ `working`), `skill_router` + `latency_stage` SSE handlers, router pill rendering
+- Modified: `dashboard/public/style.css` — `.chat-router-pill` styling
+- Modified: `components/skills/skills.sh` — `subctl skills router-trace` subcommand
+- Modified: `bin/subctl` — help text addition
+
 ### `fix(dashboard): Templates tab route — render only Templates content`
 
 Operator clicked the Templates tab in the dashboard after v2.8.0 shipped and reported "it just shows me every page, so this route is broken." Root cause was a missing CSS visibility rule in `dashboard/public/style.css`. The tab-visibility block at lines 1324–1336 enumerates each tab as `body[data-active-tab="<name>"] section[data-tab]:not([data-tab="<name>"]) { display: none; }`, and the v2.8.0 Templates ship added the nav-button + `<section data-tab="templates">` but never added the matching CSS rule. With no `display: none` rule firing for `data-active-tab="templates"`, every panel stayed visible. Spot-checking the rest of the block surfaced the same bug for the v2.7.29 Plans tab — also missing. Watchdogs + Notifications are nested inside the Orchestration tab (not standalone tabs) so they are unaffected. Fix adds the two missing rules under a `── v2.8.1 templates route fix ──` zone marker. No JS change needed — `setActiveTab()` already toggles `body.dataset.activeTab` correctly; the CSS was just incomplete.
