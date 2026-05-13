@@ -4,6 +4,41 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.7.24] — 2026-05-13
+
+### `feat(dashboard): v2.7.24 pi-ai provider catalog (dynamic dropdown) — pi-ai + pi-agent declared first-class upstreams`
+
+Two scopes, one architectural framing: subctl now treats **both** pi-mono packages as first-class always-latest upstreams (ADR 0015), and the dashboard's "New profile" dropdown finally consumes the catalog half of that dependency.
+
+**Scope A — first-class upstreams (always-latest policy).** Subctl depends on the pi-mono monorepo via two npm packages, and both are load-bearing: `@earendil-works/pi-agent-core` runs master's agent loop, tool registry, and streaming (the existing agent runtime — untouched in code, but now explicitly documented as a tracked upstream); `@earendil-works/pi-ai` is the provider catalog (what providers exist, model lists per provider, factory shapes). Both are pinned to `^0.74.0` in `components/master/package.json` so `bun install` resolves to latest on every deploy. The release policy added in ADR 0015: subctl's release process MUST update both packages to their latest published versions on every minor/patch release. v2.7.25 will add an auto-tracker watchdog that surfaces upstream bumps as `severity:"info"` notifications — deferred from v2.7.24 to keep the catalog work shippable in isolation.
+
+**Scope B — dynamic provider catalog (the v2.7.24 code change).** Replaces the hand-curated dropdown — five entries, three flagged `(future)`, missing the `pi-coding-agent` integration entirely — with a dynamic catalog backed by `@earendil-works/pi-ai`. The master daemon was already importing pi-ai for its stream factory; subctl's UI just wasn't consuming the catalog half. Net result: the dropdown jumps from 5 entries to 31, and new providers added upstream (groq, cerebras, openrouter, xai, bedrock, openai-codex, github-copilot, deepseek, fireworks, vercel-ai-gateway, …) light up automatically on the next pi-ai bump.
+
+**Files:**
+
+- New: `components/master/pi-ai-catalog.ts` — wraps pi-ai's `getProviders()` + `getModels()` into a stable `CatalogProvider` shape (id, display_name, kind, auth_method, model_count, notes). Holds the `SUBCTL_TO_PI_AI` alias table — legacy subctl ids (`claude`, `gemini`, `pi-coding-agent`) map to pi-ai canonicals (`anthropic`, `google`, `anthropic`) so existing `accounts.conf` rows keep working. Exports `listCatalogProviders()`, `isCatalogProvider()`, `resolveProviderId()`, `legacyAliasFor()`.
+- New: `dashboard/__tests__/providers.test.ts` — 26 tests covering catalog shape, alias mapping (both directions), validation gate, profile-merge contract, accounts.conf parse robustness.
+- New: `docs/adr/0015-pi-ai-and-pi-agent-as-first-class-upstreams.md` — decision record framing both packages as first-class upstreams, the always-latest dependency-update policy, the mapping table, the v2.7.25 auto-tracker note, and the deferred open questions (OAuth flows for new providers, WIRED_PROVIDERS deduplication, pi-mono major-version handling).
+- `dashboard/server.ts` — `/api/providers` GET replaces its hand-curated `CLOUD` array with `listCatalogProviders()`, walks every catalog entry, attaches matching `accounts.conf` profiles via the alias map, surfaces `auth_method` / `model_count` / `legacy_alias` in the JSON. `/api/providers/profiles` POST validates the requested provider against the catalog and rejects unknown ids with a 400 + hint listing the known legacy aliases.
+- `dashboard/public/index.html` — `<select id="profile-provider">` is now empty in markup; app.js populates it dynamically. The `(future)` tags are gone.
+- `dashboard/public/app.js` — `populateProviderDropdown()` runs on each modal open: fetches `/api/providers`, filters to cloud, sorts (providers-with-profiles-first, then alphabetical), renders each `<option>` with the display name + `(OAuth)` badge when applicable + a `· N profile(s)` suffix when the operator already has profiles for that provider. `openModal()` is now async and refreshes the dropdown so newly-added upstream providers show up without a page reload.
+- `docs/adr/README.md` — index updated.
+- `docs/master.md` — new "Pi-mono upstreams + provider catalog (v2.7.24+)" section explaining the dual-upstream relationship and how the catalog is consumed.
+- `VERSION` → `2.7.24`.
+
+**Dependencies (`components/master/package.json`):**
+
+- `@earendil-works/pi-agent-core`: `^0.74.0` (agent runtime, unchanged usage)
+- `@earendil-works/pi-ai`: `^0.74.0` (provider catalog, now consumed by dashboard)
+
+Both pinned with `^` so `bun install` resolves to the latest published `0.x.y` automatically on every deploy. This is the mechanical layer of the always-latest policy in ADR 0015.
+
+**Out of scope, queued for follow-up:**
+
+- **v2.7.25: auto-tracker watchdog.** Polls npm for new pi-ai + pi-agent-core releases, raises a `severity:"info"` notification with a one-click bump action. Documented in ADR 0015.
+- **OAuth flows for newly-surfaced providers** (GitHub Copilot, xAI). `@earendil-works/pi-ai/oauth` exposes helpers; wiring `subctl auth github-copilot <alias>` through them is a follow-up. Operators authenticate new providers via API keys (env var or `secrets.json`) in v2.7.24.
+- **Deriving `WIRED_PROVIDERS`** (in `/api/master/supervisor`) from pi-ai's `registerBuiltInApiProviders` registry. Two related-but-separate concerns (what's in the dropdown vs. what the supervisor can actually run) — folding them into one source of truth is queued.
+
 ## [2.7.23] — 2026-05-13
 
 ### `feat(master): v2.7.23 Evy Memory (Tier 3) — Memori-substrate TS implementation`
