@@ -8,11 +8,14 @@ server returns raw audio bytes plus duration metadata in response headers.
 Backend selection is env-driven (SUBCTL_TTS_BACKEND):
 
   - voxcpm   primary lean per docs/persona/voice-future.md (~0.5B model,
-             quality + cloning + streaming on M3)
-  - kokoro   CPU-friendly fallback (~82M, fast, no GPU)
-  - mock     generates a 1s silent WAV; default in-tree so the rest of the
-             voice layer is developable + testable without committing to a
-             TTS backend. Production deploys override via env.
+             quality + cloning + streaming on M3). Requires `pip install voxcpm`.
+  - kokoro   CPU-friendly fallback (~82M, fast, no GPU). Requires `pip install kokoro`.
+  - system   macOS-native `say` command (zero deps, instant). Lower quality + no
+             cloning, but produces real audio immediately. Best operator-friendly
+             default on macOS hosts; chosen automatically by `subctl voice install
+             system` since v2.8.0.
+  - mock     generates a 1s silent WAV; useful for tests + CI when no real
+             backend is wired. Used as the fallback default if no env is set.
 
 The server only binds to 127.0.0.1 (HOST env override exists but defaults
 to localhost) — ADR 0009 self-hosted-only floor extends here. No CORS,
@@ -137,11 +140,75 @@ def _kokoro_render(text: str, voice_id: str, model: str) -> tuple[bytes, str, in
     return audio, "wav", elapsed_ms
 
 
+def _system_render(text: str, voice_id: str, model: str) -> tuple[bytes, str, int]:
+    """Render via macOS native `say` command. Zero deps, instant audio.
+
+    Trade-off: lower quality + no voice cloning vs Kokoro/VoxCPM, but produces
+    real spoken audio immediately on any macOS host. Useful as the
+    operator-friendly default when neither heavyweight backend is installed.
+
+    voice_id maps to a `say` voice name (run `say -v ?` to list). For the
+    Rachel-Weisz-as-Evy-Carnahan anchor, "Serena" (British female Siri voice)
+    is the closest match; falls back to "Samantha" otherwise.
+    """
+    import subprocess
+    import tempfile
+
+    voice_map = {
+        "evy-rachel-weisz": "Serena",
+        "evy": "Serena",
+        "default": "Samantha",
+    }
+    say_voice = voice_map.get(voice_id, voice_id) or "Samantha"
+
+    fd, tmp_path = tempfile.mkstemp(suffix=".wav", prefix="subctl-tts-")
+    os.close(fd)
+    started = time.time()
+    try:
+        subprocess.run(
+            [
+                "say",
+                "-v", say_voice,
+                "--data-format=LEI16@22050",
+                "-o", tmp_path,
+                text,
+            ],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        elapsed_ms = int((time.time() - started) * 1000)
+        with open(tmp_path, "rb") as f:
+            audio = f.read()
+        LOG.info(
+            "system render text_len=%d voice=%s ms=%d bytes=%d",
+            len(text), say_voice, elapsed_ms, len(audio),
+        )
+        return audio, "wav", elapsed_ms
+    except subprocess.CalledProcessError as e:
+        stderr_tail = (e.stderr or b"").decode("utf-8", errors="replace")[-400:]
+        raise RuntimeError(
+            f"`say` command failed (voice={say_voice}): {stderr_tail.strip()}"
+        ) from e
+    except FileNotFoundError as e:
+        raise RuntimeError(
+            "`say` command not found — system backend is macOS-only. "
+            "Use SUBCTL_TTS_BACKEND=mock|voxcpm|kokoro instead."
+        ) from e
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
 def render(text: str, voice_id: str, model: str) -> tuple[bytes, str, int]:
     if BACKEND == "voxcpm":
         return _voxcpm_render(text, voice_id, model)
     if BACKEND == "kokoro":
         return _kokoro_render(text, voice_id, model)
+    if BACKEND == "system":
+        return _system_render(text, voice_id, model)
     return _mock_render(text, voice_id, model)
 
 

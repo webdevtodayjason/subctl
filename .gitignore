@@ -44,3 +44,14 @@ credentials.json
 # accidental in-tree copy by name too.
 secrets.json
 .claude/worktrees/
+
+# v2.8.0 — voice/TTS reference audio. Operator-sourced, often licensed/
+# personal, never enters the repo. Server reads from disk at runtime.
+services/tts/voices/**/*.wav
+services/tts/voices/**/*.mp3
+services/tts/voices/**/*.flac
+services/tts/voices/**/reference.*
+services/tts/voices/**/transcript.txt
+# TTS cache (rendered audio for prior chat turns)
+services/tts/cache/
+.local/state/subctl/voice/
