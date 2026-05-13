@@ -121,6 +121,19 @@ import {
   synthesizeRefusal,
   resetOnNewTurn as resetCircuitBreakerOnNewTurn,
 } from "./circuit-breaker";
+import {
+  emitNotification,
+  listNotifications,
+  markRead as markNotificationRead,
+  markAllRead as markAllNotificationsRead,
+  subscribeNotifications,
+  type Notification,
+} from "./notifications";
+import {
+  runStaleTeamSweep,
+  type TeamNudgeState,
+  type TeamSnapshot,
+} from "./auto-nudge";
 
 const HOME = homedir();
 const COMPONENT_DIR = import.meta.dir;
@@ -139,6 +152,12 @@ const SUBCTL_VERSION = (() => {
     return "0.0.0-dev";
   }
 })();
+
+// Dashboard API base for outbound calls FROM master (auto-nudge → /api/orchestration/:name/msg).
+// The dashboard owns the tmux paste-buffer + HMAC-signed marker, so the
+// auto-nudge path POSTs through the dashboard rather than duplicating that
+// logic here. Mirrors components/master/tools/subctl-orch.ts.
+const SUBCTL_API = process.env.SUBCTL_API ?? "http://127.0.0.1:8787";
 
 const PROVIDERS_PATH = join(MASTER_STATE_DIR, "providers.json");
 const POLICY_PATH = join(MASTER_STATE_DIR, "policy.json");
@@ -1724,6 +1743,84 @@ async function main() {
         return Response.json({ ok: true, ...result });
       }
 
+      // ── /notifications — operator notification channel (v2.7.22) ─────────
+      // Replaces the old "synthesize a [watchdog] prompt into Evy's
+      // transcript" path. The watchdog tick + auto-compact errors emit
+      // here; dashboard pulls via GET /notifications + GET
+      // /notifications/stream (SSE), Telegram pushes on severity=alert.
+      //
+      //   GET  /notifications?since=<iso>&limit=N → { ok, notifications: [...] }
+      //   POST /notifications/:id/read           → { ok, found }
+      //   POST /notifications/read-all           → { ok, marked }
+      //   GET  /notifications/stream             → text/event-stream
+      if (url.pathname === "/notifications" && req.method === "GET") {
+        const since = url.searchParams.get("since") ?? undefined;
+        const limitRaw = url.searchParams.get("limit");
+        const limit = limitRaw ? Math.max(1, Math.min(200, Number(limitRaw))) : 50;
+        const notifications = listNotifications({ since, limit });
+        return Response.json({ ok: true, notifications });
+      }
+      {
+        const m = url.pathname.match(/^\/notifications\/([A-Za-z0-9-]+)\/read\/?$/);
+        if (m && req.method === "POST") {
+          const found = markNotificationRead(m[1]!);
+          return Response.json({ ok: true, found });
+        }
+      }
+      if (url.pathname === "/notifications/read-all" && req.method === "POST") {
+        const marked = markAllNotificationsRead();
+        return Response.json({ ok: true, marked });
+      }
+      if (url.pathname === "/notifications/stream" && req.method === "GET") {
+        // Dedicated SSE channel — separate from /events so a notification
+        // subscriber doesn't have to grok the full kitchen-sink agent
+        // event stream. Each new notification emits one
+        //   event: notification
+        //   data: <json>
+        // frame. No replay; clients should GET /notifications first to
+        // seed their state, then keep this open for live deltas.
+        let unsub: (() => void) | null = null;
+        const stream = new ReadableStream({
+          start(controller) {
+            const enc = new TextEncoder();
+            const write = (line: string) => {
+              try {
+                controller.enqueue(enc.encode(line));
+              } catch {
+                /* client dropped */
+              }
+            };
+            // Initial comment so the EventSource fires `onopen` and
+            // proxies (nginx) flush headers without waiting for the
+            // first event.
+            write(`: notifications stream open\n\n`);
+            unsub = subscribeNotifications((n: Notification) => {
+              write(`event: notification\ndata: ${JSON.stringify(n)}\n\n`);
+            });
+            // 25s keepalive — comments are ignored by EventSource but
+            // keep the socket open through idle-timeout proxies.
+            const keepalive = setInterval(() => write(`: keepalive\n\n`), 25_000);
+            const cancel = () => {
+              clearInterval(keepalive);
+              if (unsub) { try { unsub(); } catch { /* ignore */ } unsub = null; }
+              try { controller.close(); } catch { /* ignore */ }
+            };
+            req.signal.addEventListener("abort", cancel);
+          },
+          cancel() {
+            if (unsub) { try { unsub(); } catch { /* ignore */ } unsub = null; }
+          },
+        });
+        return new Response(stream, {
+          status: 200,
+          headers: {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+          },
+        });
+      }
+
       // /transcript — return the persisted transcript so the dashboard can
       // rehydrate the chat log on page load. Optional ?limit=N (default 100).
       if (url.pathname === "/transcript" && req.method === "GET") {
@@ -2327,6 +2424,23 @@ async function main() {
     console.error(`[master] telegram listener NOT armed: ${listenerResult.reason}`);
   }
 
+  // ── notification Telegram push (v2.7.22) ───────────────────────────────
+  // severity:"alert" notifications page the operator on Telegram. info /
+  // warn stay in the dashboard tray only — the goal is to make the alert
+  // surface itself selective so the operator can trust a Telegram buzz to
+  // mean "you actually need to look at this". Subscribe AFTER the
+  // listener arms; if master-notify.json isn't configured, sendTelegramOutbound
+  // throws and we swallow it.
+  subscribeNotifications((n: Notification) => {
+    if (n.severity !== "alert") return;
+    const txt = `🚨 ${n.title}\n\n${n.body}`;
+    void sendTelegramOutbound(txt).catch((err) => {
+      console.error(
+        `[master] notification telegram push failed (${n.id}): ${(err as Error).message}`,
+      );
+    });
+  });
+
   // ── watchdog ticker ────────────────────────────────────────────────────
   // Master's KPI is "keep projects moving forward". Periodically scan open
   // dev teams + tracked projects; if anything looks stuck (no lead report
@@ -2467,27 +2581,89 @@ async function main() {
     staleness_threshold_minutes: stalenessThresholdMin,
   }));
 
+  // v2.7.22 — per-team auto-nudge state. The watchdog NO LONGER appends a
+  // synthetic "[watchdog] ... decide whether to ping" prompt into the agent
+  // transcript. Instead it attempts the cheap remediation itself — POST to
+  // /api/orchestration/:name/msg (HMAC-authenticated via the dashboard's
+  // existing route) — and only escalates to the operator via a `severity:
+  // "alert"` notification if the team fails to respond within 30 min.
+  //
+  // The decision logic lives in ./auto-nudge.ts so it's unit-testable.
+  // This map holds the per-team state across ticks.
+  const teamNudgeState = new Map<string, TeamNudgeState>();
+  // Re-nudge cadence — if a team is still stale 30 min after our last
+  // nudge, the spec says fire an alert AND re-nudge.
+  const NUDGE_RETRY_MS = 30 * 60_000;
+
+  /**
+   * POST the auto-nudge through the dashboard's /api/orchestration/:name/msg
+   * route. That route applies the v2.7.20 HMAC trust marker, so the worker's
+   * lead verifies this as a legitimate supervisor directive — same path the
+   * master tool uses for subctl_orch_msg. Returns ok:false (without throwing)
+   * when the dashboard is unreachable; the caller still records the nudge
+   * attempt so we don't tight-loop on a downed dashboard.
+   */
+  async function sendAutoNudge(
+    team: string,
+    body: string,
+  ): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const r = await fetch(
+        `${SUBCTL_API}/api/orchestration/${encodeURIComponent(team)}/msg`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: body, phase: "auto-nudge" }),
+          signal: AbortSignal.timeout(5_000),
+        },
+      );
+      if (!r.ok) return { ok: false, error: `HTTP ${r.status}` };
+      const j = (await r.json()) as { ok?: boolean; error?: string };
+      if (j.ok === false) return { ok: false, error: j.error ?? "unknown" };
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: (err as Error).message };
+    }
+  }
+
   async function runWatchdogTick() {
-    if (stopped || promptInFlight) return;
+    if (stopped) return;
     watchdogLastTickMs = Date.now();
     // Refresh from tmux first — workers may be productive without
     // writing to the inbox; window_activity captures keystrokes and
     // pane output regardless of whether the lead self-reported.
     await refreshTeamActivityFromTmux();
-    // Use the in-memory teamLastActivity map (populated by the inbox tailer
-    // + tmux refresh above) rather than re-stat'ing files every tick.
     const now = Date.now();
-    const stale: Array<{ team: string; lastSeenMin: number; lastEventType?: string }> = [];
+    const teams: TeamSnapshot[] = [];
     for (const [team, v] of teamLastActivity) {
-      const ageMin = (now - v.ts) / 60_000;
-      if (ageMin > stalenessThresholdMin) {
-        stale.push({
-          team,
-          lastSeenMin: Math.round(ageMin),
-          lastEventType: v.lastEvent?.type,
-        });
-      }
+      teams.push({
+        team_id: team,
+        last_activity_ms: v.ts,
+        last_event_type: v.lastEvent?.type,
+      });
     }
+
+    const actions = await runStaleTeamSweep({
+      teams,
+      state: teamNudgeState,
+      cfg: {
+        staleness_threshold_ms: stalenessThresholdMin * 60_000,
+        nudge_retry_ms: NUDGE_RETRY_MS,
+        now_ms: now,
+      },
+      staleness_threshold_min: stalenessThresholdMin,
+      callbacks: {
+        sendNudge: sendAutoNudge,
+        emitInfo: (team_id, title, body) =>
+          emitNotification({ kind: "team-nudge-sent", severity: "info", title, body, team_id }),
+        emitAlert: (team_id, title, body) =>
+          emitNotification({ kind: "team-unresponsive", severity: "alert", title, body, team_id }),
+        logDecision: (team_id, action, rationale) =>
+          logDecision({ project: team_id, action, rationale }),
+      },
+    });
+
+    const stale = actions.filter((a) => a.action !== "fresh");
     if (stale.length === 0) {
       broadcast("watchdog_ok", {
         ts: new Date().toISOString(),
@@ -2497,13 +2673,23 @@ async function main() {
       return;
     }
     const summary = stale
-      .map((s) => `${s.team} (${s.lastSeenMin}min ago${s.lastEventType ? `, last=${s.lastEventType}` : ""})`)
+      .map(
+        (a) =>
+          `${a.team_id} (${Math.round(a.age_min)}min${a.last_event_type ? `, last=${a.last_event_type}` : ""}, action=${a.action})`,
+      )
       .join(", ");
-    const synthPrompt = `[watchdog] ${stale.length} dev team(s) appear stale: ${summary}. Decide whether to ping the lead via subctl_orch_msg, escalate to Jason via telegram_send, or take corrective action.`;
     watchdogLastFireMs = Date.now();
     watchdogLastFireReason = summary;
-    broadcast("watchdog_fire", { ts: new Date().toISOString(), stale, prompt: synthPrompt });
-    await dispatchToAgent(synthPrompt, "watchdog");
+    // Still broadcast the SSE event so the dashboard's live-logs view + any
+    // operator-facing observability surface can see "the watchdog DID fire,
+    // and here's what it found." We just don't synthesize a prompt for the
+    // agent anymore.
+    broadcast("watchdog_fire", {
+      ts: new Date().toISOString(),
+      stale_count: stale.length,
+      summary,
+      action: "auto-nudge",
+    });
   }
 
   const watchdog = setInterval(() => {
@@ -2569,25 +2755,46 @@ async function main() {
   //
   // Uses the SAME decideCompactAction algorithm as the JIT gate so the two
   // paths can never disagree.
+  //
+  // v2.7.22 — bug fix: the boot-time early-fire used to call
+  // runAutoCompactTick() WITHOUT touchWatchdog(), and the periodic
+  // setInterval called touchWatchdog OUTSIDE the tick body. Net effect:
+  // if the master was inspected within the first 5 min of boot the
+  // watchdog reported last_tick_at: null even though the early-fire HAD
+  // run, and any error inside the tick was a silent console.error rather
+  // than an operator-visible notification. Restructured so the watchdog
+  // freshness bump happens AT THE TOP of every tick path (early-fire +
+  // periodic) and the tick body is wrapped in a try/catch that emits a
+  // severity: "warn" notification on failure.
   let autoCompactInFlight = false;
   async function runAutoCompactTick() {
+    // Freshness bump FIRST — operator's "is this watchdog alive?" query
+    // must succeed on every tick path even if the rest of the function
+    // bails early on stopped / autoCompactInFlight / promptInFlight.
+    touchWatchdog("auto-compact");
     if (stopped || autoCompactInFlight || promptInFlight) return;
     let cfg: CompactConfig;
     try {
       cfg = loadCompactConfig(COMPACT_CFG_PATH);
-    } catch {
+    } catch (err) {
+      emitNotification({
+        kind: "auto-compact-error",
+        severity: "warn",
+        title: "auto-compact: config load failed",
+        body: `loadCompactConfig threw: ${(err as Error).message}`,
+      });
       return;
     }
     if (!cfg.auto_compact) return;
-    const transcriptTokens = estimateTranscriptTokens(
-      agent.state.messages as Array<{ content?: unknown }>,
-    );
-    const current = transcriptTokens + FIXED_PROMPT_OVERHEAD_TOKENS;
-    const loadedCtx = await getSupervisorLoadedCtx(2000);
-    const decision = decideCompactAction(current, loadedCtx ?? 0, cfg);
-    if (decision.action !== "compact") return; // ticker only acts on hard compact
     autoCompactInFlight = true;
     try {
+      const transcriptTokens = estimateTranscriptTokens(
+        agent.state.messages as Array<{ content?: unknown }>,
+      );
+      const current = transcriptTokens + FIXED_PROMPT_OVERHEAD_TOKENS;
+      const loadedCtx = await getSupervisorLoadedCtx(2000);
+      const decision = decideCompactAction(current, loadedCtx ?? 0, cfg);
+      if (decision.action !== "compact") return; // ticker only acts on hard compact
       console.error(
         `[master] safety-net compact (ticker): ${decision.reason} — compacting toward ${cfg.target_tokens.toLocaleString()} tok`,
       );
@@ -2602,15 +2809,26 @@ async function main() {
         console.error(`[master] safety-net compact noop — ${result.message}`);
       } else {
         console.error(`[master] safety-net compact failed: ${result.error ?? "unknown"}`);
+        emitNotification({
+          kind: "auto-compact-error",
+          severity: "warn",
+          title: "auto-compact: compaction returned an error",
+          body: `compactTranscriptInline failed: ${result.error ?? "unknown"}`,
+        });
       }
     } catch (err) {
       console.error(`[master] safety-net compact error: ${(err as Error).message}`);
+      emitNotification({
+        kind: "auto-compact-error",
+        severity: "warn",
+        title: "auto-compact: tick threw",
+        body: `runAutoCompactTick threw: ${(err as Error).message}`,
+      });
     } finally {
       autoCompactInFlight = false;
     }
   }
   const autoCompactInterval = setInterval(() => {
-    touchWatchdog("auto-compact");
     void runAutoCompactTick();
   }, 5 * 60 * 1000);
   registerWatchdog({
@@ -2619,8 +2837,12 @@ async function main() {
     kill: () => clearInterval(autoCompactInterval),
   });
   // Also run shortly after boot so a freshly-restarted daemon catches an
-  // already-bloated transcript without waiting 5 minutes.
-  setTimeout(() => void runAutoCompactTick(), 30_000);
+  // already-bloated transcript without waiting 5 minutes. v2.7.22 lowered
+  // this from 30s to 15s so the watchdog's last_tick_at lights up well
+  // inside the operator-observable window (the tests assert <30s).
+  // touchWatchdog now happens at the top of runAutoCompactTick itself, so
+  // even this early fire counts as a real tick.
+  setTimeout(() => void runAutoCompactTick(), 15_000);
   console.error("[master] auto-compact safety-net ticker armed — every 5min (PRIMARY gate is just-in-time, see runJitCompactCheck())");
 
   // ── verifier denial-cluster ticker (PR 6.5, HANDOFF_DIGEST D8) ─────────

@@ -97,12 +97,31 @@
       <span class="uptime" id="uptime">running --</span>
       <span class="clock" id="clock">--:--:--</span>
       <button class="refresh-btn" id="refresh-btn" title="Force a fresh /api/oauth/usage call (bypasses 5-min cache)" aria-label="Refresh usage">↻</button>
+      <!-- v2.7.22 notification tray. Bell + badge unread count. Click to
+           open the drawer below. JS in app.js binds load + SSE. -->
+      <button class="notif-bell" id="notif-bell" type="button" aria-label="Notifications" title="Operator notifications">
+        <span class="notif-bell-icon" aria-hidden="true">🔔</span>
+        <span class="notif-bell-badge" id="notif-bell-badge" hidden>0</span>
+      </button>
       <span class="status-pill" id="status-pill">
         <span class="dot dim"></span>
         <span class="status-text">connecting</span>
       </span>
     </div>
   </header>
+
+  <!-- v2.7.22 notification tray drawer. Positioned absolute under the
+       bell; JS toggles .open. List rendered into #notif-tray-list. -->
+  <div class="notif-tray" id="notif-tray" hidden>
+    <header class="notif-tray-head">
+      <strong>Notifications</strong>
+      <button type="button" class="notif-tray-readall" id="notif-tray-readall" title="Mark all read">mark all read</button>
+      <button type="button" class="notif-tray-close" id="notif-tray-close" aria-label="close">✕</button>
+    </header>
+    <div class="notif-tray-list" id="notif-tray-list">
+      <div class="dim small" style="padding: 12px">loading…</div>
+    </div>
+  </div>
 
   <div class="app-shell">
     <aside class="sidebar" id="sidebar">

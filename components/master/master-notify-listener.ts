@@ -70,6 +70,10 @@ import {
   listWatchdogs,
   killAllWatchdogs,
 } from "./watchdogs";
+import {
+  listNotifications,
+  markAllRead as markAllNotificationsRead,
+} from "./notifications";
 
 const HOME = homedir();
 const SUBCTL_CONFIG_DIR =
@@ -455,9 +459,39 @@ async function handleBotCommand(text: string): Promise<string> {
       // /api/terminal/* request; this command just touches/removes that
       // flag and reports state. Default is OFF.
       return handleTerminalCommand(parts.slice(1));
+    case "/notifications":
+      // v2.7.22 — operator-facing read of the master's notification
+      // ring buffer. `/notifications` returns the last 5; `/notifications
+      // read` marks all as read. Higher-severity alerts already push
+      // here on emit; this command lets the operator scrollback / clear
+      // without opening the dashboard.
+      return handleNotificationsCommand(parts.slice(1));
     default:
-      return `Unknown command: ${cmd}\n\nTry: /status, /pause, /resume, /profile, /watchdogs, /terminal, /help`;
+      return `Unknown command: ${cmd}\n\nTry: /status, /pause, /resume, /profile, /watchdogs, /terminal, /notifications, /help`;
   }
+}
+
+function handleNotificationsCommand(args: string[]): string {
+  const sub = (args[0] || "").trim().toLowerCase();
+  if (sub === "read") {
+    const marked = markAllNotificationsRead();
+    return marked === 0
+      ? "(no unread notifications)"
+      : `marked ${marked} notification(s) as read`;
+  }
+  const last = listNotifications({ limit: 5 });
+  if (last.length === 0) return "(no notifications)";
+  const lines: string[] = ["📬 Last 5 notifications:", ""];
+  for (const n of last) {
+    const sev =
+      n.severity === "alert" ? "🚨" : n.severity === "warn" ? "⚠️" : "ℹ️";
+    const readMark = n.read_at ? "  " : "● ";
+    const when = n.ts.slice(11, 16);
+    lines.push(`${readMark}${sev} ${when} · ${n.title}`);
+  }
+  lines.push("");
+  lines.push("Mark all read: /notifications read");
+  return lines.join("\n");
 }
 
 function terminalFlagFilePath(): string {
@@ -622,6 +656,8 @@ function formatHelp(): string {
     "/watchdogs killall     kill all (keeps telegram-listener alive)",
     "/terminal              web-terminal escape-hatch state",
     "/terminal on|off       toggle dashboard's in-browser tmux attach",
+    "/notifications         show last 5 operator notifications",
+    "/notifications read    mark all notifications read",
     "",
     "Free-text messages are queued for the next agent turn — subctl master",
     "will act on them per its policy and report back.",

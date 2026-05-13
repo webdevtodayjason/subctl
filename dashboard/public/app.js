@@ -6606,6 +6606,158 @@
     }[c]));
   }
 
+  // ── v2.7.22 notification tray ─────────────────────────────────────────
+  // Bell + drawer fed by the master's in-memory notification ring buffer.
+  // Distinct from the per-team activity ring under .orch-notify-* — this
+  // surface is for OPERATOR-FACING alerts (team-unresponsive, auto-compact
+  // errors). REST seed on load + SSE for live deltas.
+  function initNotificationTray() {
+    const bell = document.getElementById("notif-bell");
+    const badge = document.getElementById("notif-bell-badge");
+    const tray = document.getElementById("notif-tray");
+    const list = document.getElementById("notif-tray-list");
+    const closeBtn = document.getElementById("notif-tray-close");
+    const readAllBtn = document.getElementById("notif-tray-readall");
+    if (!bell || !badge || !tray || !list) return;
+
+    // Notifications keyed by id so SSE deltas can dedupe / merge.
+    const items = new Map(); // id → notification
+    let trayOpen = false;
+    let sse = null;
+
+    function fmtRelative(iso) {
+      try {
+        const ms = Date.now() - Date.parse(iso);
+        if (Number.isNaN(ms) || ms < 0) return "now";
+        if (ms < 60_000) return Math.floor(ms / 1000) + "s ago";
+        if (ms < 3600_000) return Math.floor(ms / 60_000) + "m ago";
+        if (ms < 86_400_000) return Math.floor(ms / 3600_000) + "h ago";
+        return Math.floor(ms / 86_400_000) + "d ago";
+      } catch { return ""; }
+    }
+
+    function severityGlyph(sev) {
+      if (sev === "alert") return "●";
+      if (sev === "warn")  return "▲";
+      return "·";
+    }
+
+    function render() {
+      const sorted = [...items.values()].sort((a, b) => (a.ts < b.ts ? 1 : -1));
+      const unread = sorted.filter((n) => !n.read_at).length;
+      const hasAlert = sorted.some((n) => n.severity === "alert" && !n.read_at);
+      bell.classList.toggle("has-alert", hasAlert);
+      if (unread > 0) {
+        badge.hidden = false;
+        badge.textContent = unread > 99 ? "99+" : String(unread);
+      } else {
+        badge.hidden = true;
+      }
+      if (sorted.length === 0) {
+        list.innerHTML = '<div class="notif-tray-empty">no notifications yet</div>';
+        return;
+      }
+      const top = sorted.slice(0, 20);
+      list.innerHTML = top
+        .map((n) => {
+          const cls = ["notif-item", "sev-" + (n.severity || "info"), n.read_at ? "read" : "unread"].join(" ");
+          const detail = n.body ? `<div class="notif-item-detail">${escapeHtml(n.body)}</div>` : "";
+          const readBtn = n.read_at
+            ? ""
+            : `<button type="button" class="notif-item-read-btn" data-notif-read="${escapeHtml(n.id)}">mark read</button>`;
+          return [
+            `<div class="${cls}" data-notif-id="${escapeHtml(n.id)}">`,
+            `  <div class="notif-item-glyph">${severityGlyph(n.severity)}</div>`,
+            `  <div class="notif-item-body">`,
+            `    <div class="notif-item-title">${escapeHtml(n.title || "(no title)")}</div>`,
+            detail,
+            `  </div>`,
+            `  <div class="notif-item-when" title="${escapeHtml(n.ts || "")}">${escapeHtml(fmtRelative(n.ts))}</div>`,
+            readBtn,
+            `</div>`,
+          ].join("");
+        })
+        .join("");
+    }
+
+    async function loadInitial() {
+      try {
+        const r = await fetch("/api/notifications?limit=50");
+        const j = await r.json();
+        if (j && j.ok && Array.isArray(j.notifications)) {
+          for (const n of j.notifications) items.set(n.id, n);
+        }
+      } catch { /* offline; SSE will pick up live */ }
+      render();
+    }
+
+    function openSse() {
+      if (sse) try { sse.close(); } catch {}
+      try {
+        sse = new EventSource("/api/notifications/stream");
+        sse.addEventListener("notification", (ev) => {
+          try {
+            const n = JSON.parse(ev.data);
+            if (n && n.id) {
+              items.set(n.id, n);
+              render();
+            }
+          } catch {}
+        });
+        sse.addEventListener("error", () => {
+          // EventSource reconnects automatically; nothing to do here
+          // beyond letting the browser retry.
+        });
+      } catch { /* SSE unsupported; REST seed still works */ }
+    }
+
+    bell.addEventListener("click", () => {
+      trayOpen = !trayOpen;
+      tray.hidden = !trayOpen;
+      if (trayOpen) loadInitial();
+    });
+    if (closeBtn) closeBtn.addEventListener("click", () => {
+      trayOpen = false;
+      tray.hidden = true;
+    });
+    if (readAllBtn) readAllBtn.addEventListener("click", async () => {
+      try {
+        await fetch("/api/notifications/read-all", { method: "POST" });
+      } catch {}
+      const now = new Date().toISOString();
+      for (const n of items.values()) if (!n.read_at) n.read_at = now;
+      render();
+    });
+    list.addEventListener("click", async (ev) => {
+      const btn = ev.target.closest("button[data-notif-read]");
+      if (!btn) return;
+      const id = btn.getAttribute("data-notif-read");
+      if (!id) return;
+      try {
+        await fetch(`/api/notifications/${encodeURIComponent(id)}/read`, { method: "POST" });
+      } catch {}
+      const n = items.get(id);
+      if (n) n.read_at = new Date().toISOString();
+      render();
+    });
+
+    // Click outside the tray closes it (but not when clicking the bell).
+    document.addEventListener("click", (ev) => {
+      if (!trayOpen) return;
+      if (tray.contains(ev.target) || bell.contains(ev.target)) return;
+      trayOpen = false;
+      tray.hidden = true;
+    });
+
+    loadInitial();
+    openSse();
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initNotificationTray, { once: true });
+  } else {
+    initNotificationTray();
+  }
+
   // Kick off — also try polling immediately so first paint isn't blocked
   // on the WS handshake.
   startPolling();
