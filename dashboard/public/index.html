@@ -1021,6 +1021,8 @@
       </section>
 
       <!-- Section 2: project resolved policy (currently-selected team) -->
+      <!-- v2.7.34: chip-list view replaces the raw JSON dump. Toggle to JSON
+           remains available for power users. -->
       <section class="panel">
         <h3>Resolved policy
           <span class="panel-hint">
@@ -1028,10 +1030,86 @@
             <select id="policy-resolved-team" class="logs-policy-team">
               <option value="">(none)</option>
             </select>
+            <button type="button" class="secondary-btn small" id="policy-resolved-view-toggle" data-view="chips">
+              view: chips
+            </button>
           </span>
         </h3>
         <div id="policy-resolved-view" class="policy-resolved-view">
-          <div class="dim small" style="padding:16px">pick a team to load its <code>subctl policy list --json</code> output</div>
+          <div class="dim small" style="padding:16px">pick a team to load resolved policy</div>
+        </div>
+      </section>
+
+      <!-- ── v2.7.34 policy UI ── operator-facing editor panels ──────────
+           Three subpanels: user policy / project policy / "apply preset". -->
+      <section class="panel" id="policy-editor-panel">
+        <h3>Policy editor
+          <span class="panel-hint">
+            edit <code>~/.config/subctl/policy.toml</code> or
+            <code>&lt;project&gt;/.subctl/policy.toml</code> via form ·
+            changes apply to future workers spawned for the project
+          </span>
+        </h3>
+        <div class="policy-editor-tabs" role="tablist">
+          <button type="button" class="policy-editor-tab active" data-editor="user" role="tab">User policy</button>
+          <button type="button" class="policy-editor-tab" data-editor="project" role="tab">Project policy</button>
+          <button type="button" class="policy-editor-tab" data-editor="apply" role="tab">Apply preset</button>
+        </div>
+
+        <!-- User editor pane -->
+        <div class="policy-editor-pane active" data-editor="user">
+          <div class="policy-editor-toolbar">
+            <span class="policy-editor-path" id="policy-editor-user-path">~/.config/subctl/policy.toml</span>
+            <span class="policy-editor-exists dim small" id="policy-editor-user-exists">checking…</span>
+            <span class="policy-editor-spacer"></span>
+            <button type="button" class="secondary-btn small" id="policy-editor-user-reload">reload</button>
+            <button type="button" class="primary-btn small" id="policy-editor-user-save">save</button>
+          </div>
+          <div class="policy-editor-form" id="policy-editor-user-form"></div>
+          <div class="policy-editor-status dim small" id="policy-editor-user-status"></div>
+        </div>
+
+        <!-- Project editor pane -->
+        <div class="policy-editor-pane" data-editor="project">
+          <div class="policy-editor-toolbar">
+            <label class="policy-editor-label">Project:</label>
+            <select id="policy-editor-project-select" class="policy-editor-select">
+              <option value="">(loading…)</option>
+            </select>
+            <span class="policy-editor-exists dim small" id="policy-editor-project-exists"></span>
+            <span class="policy-editor-spacer"></span>
+            <button type="button" class="secondary-btn small" id="policy-editor-project-reload">reload</button>
+            <button type="button" class="primary-btn small" id="policy-editor-project-save">save</button>
+          </div>
+          <div class="policy-editor-path-row">
+            <code id="policy-editor-project-path" class="dim small"></code>
+          </div>
+          <div class="policy-editor-form" id="policy-editor-project-form"></div>
+          <div class="policy-editor-status dim small" id="policy-editor-project-status"></div>
+        </div>
+
+        <!-- Apply preset pane -->
+        <div class="policy-editor-pane" data-editor="apply">
+          <div class="policy-editor-toolbar">
+            <label class="policy-editor-label">Project:</label>
+            <select id="policy-apply-project-select" class="policy-editor-select">
+              <option value="">(loading…)</option>
+            </select>
+            <label class="policy-editor-label">Preset:</label>
+            <select id="policy-apply-preset-select" class="policy-editor-select">
+              <option value="">(loading…)</option>
+            </select>
+            <span class="policy-editor-spacer"></span>
+            <button type="button" class="primary-btn small" id="policy-apply-preset-btn">apply preset</button>
+          </div>
+          <div class="policy-apply-hint dim small">
+            Writes <code>preset = "&lt;name&gt;"</code> into
+            <code>&lt;project&gt;/.subctl/policy.toml</code>, overwriting any prior
+            file. Future workers spawned for that project pick up the preset's
+            allowlist on next spawn. To customize the preset further, switch to
+            the <em>Project policy</em> tab after applying.
+          </div>
+          <div class="policy-apply-status dim small" id="policy-apply-status"></div>
         </div>
       </section>
 

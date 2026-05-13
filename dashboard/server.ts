@@ -84,6 +84,17 @@ import {
   readNewAuditEntries,
 } from "./lib/audit-api.ts";
 import { loadResolvedPolicy } from "../components/master/tools/policy/load.ts";
+// ── v2.7.34 policy UI ── operator-facing policy editor + chip view
+import {
+  handleApplyPreset,
+  handleGetProjectPolicy,
+  handleGetUserPolicy,
+  handleListPresets,
+  handlePostProjectPolicy,
+  handlePostUserPolicy,
+  handleResolvedForProject,
+  handleResolvedForTeam,
+} from "./lib/policy-api.ts";
 import {
   resolveSecret,
   loadSecret,
@@ -2876,6 +2887,58 @@ const server = Bun.serve({
             "Connection": "keep-alive",
           },
         });
+      }
+    }
+
+    // ── v2.7.34 policy UI ── operator-facing policy edit + chip view ──
+    //   GET  /api/policy/presets
+    //   GET  /api/policy/user
+    //   POST /api/policy/user
+    //   GET  /api/policy/project/:project
+    //   POST /api/policy/project/:project
+    //   POST /api/policy/preset/:project
+    //   GET  /api/policy/resolved/:team_id
+    //   GET  /api/policy/resolved-project/:project
+    if (url.pathname === "/api/policy/presets" && req.method === "GET") {
+      return handleListPresets();
+    }
+    if (url.pathname === "/api/policy/user" && req.method === "GET") {
+      return handleGetUserPolicy();
+    }
+    if (url.pathname === "/api/policy/user" && req.method === "POST") {
+      let body: unknown;
+      try { body = await req.json(); } catch { return Response.json({ ok: false, error: "invalid JSON body" }, { status: 400 }); }
+      return handlePostUserPolicy(body);
+    }
+    {
+      const m = url.pathname.match(/^\/api\/policy\/project\/(.+?)\/?$/);
+      if (m && req.method === "GET") {
+        return handleGetProjectPolicy(decodeURIComponent(m[1]!));
+      }
+      if (m && req.method === "POST") {
+        let body: unknown;
+        try { body = await req.json(); } catch { return Response.json({ ok: false, error: "invalid JSON body" }, { status: 400 }); }
+        return handlePostProjectPolicy(decodeURIComponent(m[1]!), body);
+      }
+    }
+    {
+      const m = url.pathname.match(/^\/api\/policy\/preset\/(.+?)\/?$/);
+      if (m && req.method === "POST") {
+        let body: unknown;
+        try { body = await req.json(); } catch { return Response.json({ ok: false, error: "invalid JSON body" }, { status: 400 }); }
+        return handleApplyPreset(decodeURIComponent(m[1]!), body);
+      }
+    }
+    {
+      const m = url.pathname.match(/^\/api\/policy\/resolved\/([A-Za-z0-9_-]+)\/?$/);
+      if (m && req.method === "GET") {
+        return handleResolvedForTeam(m[1]!);
+      }
+    }
+    {
+      const m = url.pathname.match(/^\/api\/policy\/resolved-project\/(.+?)\/?$/);
+      if (m && req.method === "GET") {
+        return handleResolvedForProject(decodeURIComponent(m[1]!));
       }
     }
 
