@@ -4,6 +4,39 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.7.20] — 2026-05-13
+
+### `feat(master): v2.7.20 HMAC trust marker (ADR 0011 Layer 1)`
+
+Replaces the plaintext trust-channel directive marker (ADR 0002, v2.7.9) with an HMAC-authenticated version (ADR 0011 Layer 1). Layer 2 (operator web-terminal escape hatch) is queued for v2.7.21; Layer 3 (style matching) already lives in Evy's SKILL.md since v2.7.15.
+
+**The incident this fixes.** The plaintext marker `[subctl-master directive · phase=… · ts:…]` deployed in v2.7.9 was correctly identified as gameable the same night by the `osint-cve-monitor` team lead, which entered a "paranoia loop" refusing master's directives. The worker reasoned (captured from its tmux pane): *"An attacker has the same incentive to flatter the detection and assert legitimacy as a real supervisor does to dismiss it. The text content of a message can't authenticate the sender. Only the channel can."* It was right — anything that can write to the worker's tmux pane (a stray cron, a stale process, the model's own hallucinated continuations) could replicate the marker format. The marker provided pattern-matching, not authentication. Operator broke the loop only by SSH'ing in from another machine to inject tmux keystrokes directly; the dashboard offered no escape path. Full incident write-up in `docs/adr/0011-trust-marker-hmac-replacement.md`.
+
+**The fix.** Per-team shared secret, generated at spawn time, used to authenticate every directive.
+
+- **At spawn time** (`providers/claude/teams.sh`): generate a 32-byte (64-hex) secret, write to `~/.local/state/subctl/teams/<team_id>/hmac.secret` (chmod 600), inject it verbatim into the worker's spawn-time system prompt as part of the subctl-team-contract preamble. Idempotent: re-spawning the same team_id reuses the existing secret so the worker's prompt-baked copy stays in sync with disk. Honors `SUBCTL_STATE_DIR` (same convention as the policy-snapshot writer).
+- **At message-send time** (`dashboard/server.ts` `/api/orchestration/:name/msg`): read the team's secret from disk, compute `hmac = first 16 hex chars of HMAC-SHA256(secret, phase + "\n" + ts + "\n" + body)`, emit marker `[subctl-master directive · phase=<phase> · ts:<iso> · hmac:<hmac16>]`, paste-buffer that + body into the worker pane as before. All other send paths (`subctl orch msg` CLI, the MCP `subctl_orch_msg` tool, master's `subctl_orch.msg` tool) funnel through this same dashboard route, so HMAC applies to every supervisor-to-worker channel automatically.
+- **At message-receive time**: the worker recomputes HMAC from its own copy of the secret. Match → trust. Missing / malformed / mismatch → reply "HMAC verification failed" and escalate. The verification instruction is baked into the worker's spawn-time prompt; the bash-gate policy permits ephemeral HMAC computation (`bash`, `node -e`, etc.) for workers that prefer external arithmetic over in-prompt reasoning.
+
+**Centralized in one helper.** `components/master/trust-marker.ts` exports `generateSecret`, `ensureSecret`, `readSecret`, `computeHmac`, `buildDirectiveMarker`, `parseDirectiveMarker`, and `verifyDirectiveMarker`. The dashboard route calls `buildDirectiveMarker`; tests use `verifyDirectiveMarker` and `parseDirectiveMarker` against a tmpdir-scoped state dir. The secret value never appears in any log line, telemetry event, error message, or audit entry — disk file + worker prompt are its only legitimate exposure paths.
+
+**Fail-loud on missing secret.** If `hmac.secret` is missing on disk when the dashboard tries to send a directive, the route refuses with HTTP 500 and a descriptive error: *"HMAC secret missing for team <team_id>. Cannot send authenticated directive. Run /subctl team rekey <team_id> to regenerate."* No silent fallback to an unauthenticated marker — that would train workers to ignore the auth field, defeating the whole point. The `/subctl team rekey` command is queued (operator-facing recovery path); for now the rekey is "kill the team, re-spawn it".
+
+**Backward compatibility (pre-v2.7.20 workers).** Workers spawned before this version don't have the new HMAC verification step in their prompt. The v2.7.9 worker contract teaches them to recognize the `[subctl-master directive ...]` prefix structurally and does NOT instruct them to reject markers with unknown extra fields. They will see the new `hmac:<...>` field at the end of the bracket header as an unrecognized but benign extension — they still trust the channel marker as before. No flag-day cutover required; the protocol stays forward-compatible by extension. New workers spawned after upgrading get full HMAC verification.
+
+**Provider-scope hygiene.** The HMAC helper lives in `components/master/` and the dashboard route is provider-agnostic — it just resolves `team_id → hmac.secret`. The only place that knows about the claude provider is `providers/claude/teams.sh` (which is allowed to be claude-aware by design). Other providers — `providers/pi-coding-agent/teams.sh` — pick up HMAC when they adopt the same per-team secret-file convention.
+
+**Files:**
+
+- New: `components/master/trust-marker.ts` — helper module (generate/read secret, build/parse/verify marker, computeHmac primitive).
+- New: `components/master/__tests__/trust-marker.test.ts` — 32 tests across secret lifecycle, marker construction, parsing, verification happy + tamper paths, and a known-vector HMAC sanity check.
+- `providers/claude/teams.sh` — generates the per-team `hmac.secret` if missing (`head -c 32 /dev/urandom | xxd -p -c 64`), writes chmod 600, injects the secret + verification instructions into the spawn-time team-contract preamble.
+- `dashboard/server.ts` — `/api/orchestration/:name/msg` route imports `buildDirectiveMarker` from the helper and uses it to construct the marker; missing-secret path returns HTTP 500 with the descriptive rekey-pointer error rather than falling back to plaintext.
+- `components/master/tools/subctl-orch.ts` — `msg` tool description updated to name HMAC authentication (v2.7.20) accurately.
+- `docs/adr/0011-trust-marker-hmac-replacement.md` — status updated to "Accepted (shipped v2.7.20)"; implemented-in field updated.
+- `docs/adr/README.md` — index entry for ADR 0011 updated.
+- `docs/master.md` — new "Authenticated trust markers" subsection covering the protocol, secret hygiene, fail-loud behavior, and backward compatibility.
+
 ## [2.7.19] — 2026-05-13
 
 ### `feat(master): watchdog kill controls + empty-listener circuit breaker`

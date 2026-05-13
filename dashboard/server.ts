@@ -92,6 +92,16 @@ import {
   SECRET_KEYS,
   envVarFor,
 } from "../components/master/secrets.ts";
+// v2.7.20 (ADR 0011 Layer 1): HMAC-authenticated trust marker. The
+// per-team secret lives at ~/.local/state/subctl/teams/<team_id>/hmac.secret
+// (chmod 600), generated at spawn time by providers/claude/teams.sh and
+// also injected into the worker's spawn-time system prompt. The
+// /api/orchestration/:name/msg route below reads the secret, computes
+// HMAC-SHA256(secret, phase + "\n" + ts + "\n" + body), and bakes the
+// first 16 hex chars into the marker as `hmac:<16hex>`. Missing secret
+// fails LOUD (refuses to send) — falling back to an unauthenticated
+// marker would teach workers to ignore the auth field.
+import { buildDirectiveMarker } from "../components/master/trust-marker.ts";
 
 const PORT = Number(process.env.PORT ?? 8787);
 const STARTED_AT = Date.now();
@@ -5142,19 +5152,41 @@ const server = Bun.serve({
           return new Response(JSON.stringify({ ok: false, error: "session not found" }),
             { status: 404, headers: { "Content-Type": "application/json" } });
         }
-        // v2.7.9: trusted-channel marker. Wrap the operator's text with a
-        // directive header so the worker's lead can distinguish messages
-        // that came through subctl_orch_msg (a trusted supervisor channel)
-        // from arbitrary text. Without this, security-conscious leads
-        // correctly refuse bare imperatives as prompt-injection probes.
-        // The format contract (consumed by the worker-contract preamble in
+        // v2.7.9 → v2.7.20 (ADR 0011 Layer 1): HMAC-authenticated
+        // trusted-channel marker. The marker carries phase, ts, and a
+        // truncated HMAC over (phase + "\n" + ts + "\n" + body), keyed
+        // by the team's secret on disk. The worker's spawn-time prompt
+        // contains the matching secret so it can recompute and verify.
+        // Anything that can't read both files (the disk secret + the
+        // worker's prompt) cannot forge a valid marker.
+        //
+        // team_id == tmux session name, matching the policy-snapshot
+        // convention (providers/claude/teams.sh sets SESSION_NAME and
+        // passes it as team_id to the snapshot writer).
+        //
+        // Marker format (consumed by the worker-contract preamble in
         // providers/claude/teams.sh):
-        //   [subctl-master directive · phase=<phase> · ts:<iso>]\n<text>
-        //   [subctl-master directive · ts:<iso>]\n<text>     (no phase)
-        const marker = phase
-          ? `[subctl-master directive · phase=${phase} · ts:${new Date().toISOString()}]`
-          : `[subctl-master directive · ts:${new Date().toISOString()}]`;
-        const wrapped = `${marker}\n${text}`;
+        //   [subctl-master directive · phase=<phase> · ts:<iso> · hmac:<hmac16>]\n<text>
+        //   [subctl-master directive · ts:<iso> · hmac:<hmac16>]\n<text>     (no phase)
+        //
+        // Secret missing on disk = REFUSE TO SEND (fail loud, do NOT
+        // fall back to unauthenticated marker — that would train
+        // workers to ignore the auth field).
+        let wrapped: string;
+        try {
+          const { marker } = buildDirectiveMarker({
+            teamId: name,
+            phase,
+            body: text,
+          });
+          wrapped = `${marker}\n${text}`;
+        } catch (err) {
+          const msg = (err as Error).message;
+          return new Response(JSON.stringify({ ok: false, error: msg }), {
+            status: 500,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
         // Use a tmux buffer so multi-line text injects safely (avoids escape chaos)
         const r1 = spawnSync(TMUX_BIN, ["set-buffer", "-b", "subctl-msg", wrapped], { encoding: "utf8" });
         const r2 = spawnSync(TMUX_BIN, ["paste-buffer", "-t", name, "-b", "subctl-msg"], { encoding: "utf8" });
