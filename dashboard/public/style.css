@@ -1334,6 +1334,9 @@ body[data-active-tab="providers"]     section[data-tab]:not([data-tab="providers
 body[data-active-tab="teams"]         section[data-tab]:not([data-tab="teams"])         { display: none; }
 body[data-active-tab="logs"]          section[data-tab]:not([data-tab="logs"])          { display: none; }
 body[data-active-tab="vault"]         section[data-tab]:not([data-tab="vault"])         { display: none; }
+/* ── v2.8.1 templates route fix ── add tabs that were missing visibility rules */
+body[data-active-tab="templates"]     section[data-tab]:not([data-tab="templates"])     { display: none; }
+body[data-active-tab="plans"]         section[data-tab]:not([data-tab="plans"])         { display: none; }
 
 /* ── Logs screen ──────────────────────────────────────────────────────── */
 .logs-screen { display: flex; flex-direction: column; gap: 12px; }

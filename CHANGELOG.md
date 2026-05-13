@@ -1,3 +1,14 @@
+## [2.8.1] — 2026-05-13
+
+### `fix(dashboard): Templates tab route — render only Templates content`
+
+Operator clicked the Templates tab in the dashboard after v2.8.0 shipped and reported "it just shows me every page, so this route is broken." Root cause was a missing CSS visibility rule in `dashboard/public/style.css`. The tab-visibility block at lines 1324–1336 enumerates each tab as `body[data-active-tab="<name>"] section[data-tab]:not([data-tab="<name>"]) { display: none; }`, and the v2.8.0 Templates ship added the nav-button + `<section data-tab="templates">` but never added the matching CSS rule. With no `display: none` rule firing for `data-active-tab="templates"`, every panel stayed visible. Spot-checking the rest of the block surfaced the same bug for the v2.7.29 Plans tab — also missing. Watchdogs + Notifications are nested inside the Orchestration tab (not standalone tabs) so they are unaffected. Fix adds the two missing rules under a `── v2.8.1 templates route fix ──` zone marker. No JS change needed — `setActiveTab()` already toggles `body.dataset.activeTab` correctly; the CSS was just incomplete.
+
+**Files:**
+
+- Modified: `dashboard/public/style.css` — added `body[data-active-tab="templates"]` and `body[data-active-tab="plans"]` visibility rules
+- Modified: `VERSION` → 2.8.1
+
 ## [2.8.0] — 2026-05-13
 
 ### `feat(voice): v2.8.0 voice layer for Evy — self-hosted TTS, opt-in, redacted (ADR 0017)`
