@@ -9,8 +9,13 @@ they sit on top of.
 - **Canonical reference rubric:**
   [`docs/persona/evy-eval-rubric-test-1.2.md`](../../../../docs/persona/evy-eval-rubric-test-1.2.md)
 - **Pipeline ADR:** [`docs/adr/0008-eval-suite-pipeline.md`](../../../../docs/adr/0008-eval-suite-pipeline.md)
-- **Eval test set (24 tests, 7 categories):**
-  [`docs/persona/evy.md`](../../../../docs/persona/evy.md)
+- **Eval test set (40 tests, 14 categories):** the original 24 persona
+  tests (categories 1-7, see [`docs/persona/evy.md`](../../../../docs/persona/evy.md))
+  plus 16 feature-coverage tests added in v2.7.30 (categories 8-14)
+  covering operator-visible behaviors that shipped in v2.7.18 through
+  v2.7.24 — supervisor profiles, watchdog controls + circuit breaker,
+  HMAC trust marker, web terminal, notifications + auto-nudge, Evy
+  Memory, and the pi-ai provider catalog.
 
 ## Architecture
 
