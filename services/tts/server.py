@@ -78,48 +78,66 @@ def _mock_render(text: str, voice_id: str, model: str) -> tuple[bytes, str, int]
     return buf.getvalue(), "wav", 1000
 
 
-def _voxcpm_render(text: str, voice_id: str, model: str) -> tuple[bytes, str, int]:
-    """Render via VoxCPM. Lazy-imports the dep so the server starts even
-    when VoxCPM isn't installed; raises if invoked without it.
+_VOXCPM_MODEL = None  # lazy-init, cached across requests
 
-    The actual VoxCPM Python API surface should be validated against the
-    upstream README at install time. The placeholder below documents the
-    expected shape; install.sh prints a warning if the wheel isn't found.
+
+def _voxcpm_render(text: str, voice_id: str, model: str) -> tuple[bytes, str, int]:
+    """Render via VoxCPM 2.x. Lazy-imports + lazy-loads the model on first call,
+    then caches it for all subsequent requests (loading the 0.5B model + weights
+    takes ~30-60s; we only pay that cost once per server process).
+
+    Voice cloning: if `services/tts/voices/<voice_id>/reference.wav` exists,
+    it's passed to VoxCPM via `reference_wav_path`. Paired transcript.txt
+    becomes `prompt_text` if both files are present (improves quality).
     """
+    global _VOXCPM_MODEL
     try:
-        # Expected upstream package; the real call signature lives in the
-        # VoxCPM repo and may differ slightly between releases. The
-        # install.sh probe pins a known-good version.
-        import voxcpm  # type: ignore[import-not-found]
+        from voxcpm import VoxCPM  # type: ignore[import-not-found]
+        import numpy as np
     except ImportError as e:
         raise RuntimeError(
             "voxcpm not installed; install via 'pip install voxcpm' "
-            "or override SUBCTL_TTS_BACKEND=kokoro|mock"
+            "or override SUBCTL_TTS_BACKEND=kokoro|mock|system"
         ) from e
+
+    if _VOXCPM_MODEL is None:
+        load_started = time.time()
+        # Model id: caller passes "voxcpm-0.5b" friendly name, but
+        # VoxCPM.from_pretrained needs the HuggingFace repo id.
+        hf_id = "openbmb/VoxCPM-0.5B" if model == "voxcpm-0.5b" else model
+        LOG.info("voxcpm loading model %s (first request — may take 30-60s)", hf_id)
+        _VOXCPM_MODEL = VoxCPM.from_pretrained(hf_id)
+        LOG.info("voxcpm model loaded in %.1fs", time.time() - load_started)
+
     ref_dir = os.path.join(VOICES_DIR, voice_id)
     ref_wav = os.path.join(ref_dir, "reference.wav")
     transcript_path = os.path.join(ref_dir, "transcript.txt")
-    voice_kwargs: dict = {}
+    gen_kwargs: dict = {"text": text}
     if os.path.exists(ref_wav):
-        voice_kwargs["reference_audio"] = ref_wav
+        gen_kwargs["reference_wav_path"] = ref_wav
     if os.path.exists(transcript_path):
         with open(transcript_path) as f:
-            voice_kwargs["reference_transcript"] = f.read().strip()
+            transcript_text = f.read().strip()
+        if transcript_text:
+            gen_kwargs["prompt_wav_path"] = ref_wav
+            gen_kwargs["prompt_text"] = transcript_text
+
     started = time.time()
-    audio, sample_rate = voxcpm.synthesize(  # type: ignore[attr-defined]
-        text=text,
-        model=model,
-        **voice_kwargs,
-    )
+    audio = _VOXCPM_MODEL.generate(**gen_kwargs)  # returns np.ndarray, float32 [-1,1]
     elapsed_ms = int((time.time() - started) * 1000)
-    # `audio` should be a 1D numpy int16 array; pack to WAV.
+
+    # VoxCPM output is mono float32 @ 16kHz; convert to int16 PCM WAV.
+    audio_int16 = (audio.clip(-1.0, 1.0) * 32767).astype(np.int16)
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
-        w.setframerate(sample_rate)
-        w.writeframes(audio.tobytes())
-    LOG.info("voxcpm render text_len=%d ms=%d", len(text), elapsed_ms)
+        w.setframerate(16000)
+        w.writeframes(audio_int16.tobytes())
+    LOG.info(
+        "voxcpm render text_len=%d ms=%d bytes=%d cloned=%s",
+        len(text), elapsed_ms, len(buf.getvalue()), os.path.exists(ref_wav),
+    )
     return buf.getvalue(), "wav", elapsed_ms
 
 
