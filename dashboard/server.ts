@@ -4817,6 +4817,54 @@ const server = Bun.serve({
       }
     }
 
+    // ── /api/voice/* — proxy to master's voice layer (v2.8.0) ───────────
+    // Voice rendering happens on master (which fronts the local TTS
+    // server at :8789 and owns the cache + redaction). The dashboard
+    // browser tab hits these endpoints:
+    //
+    //   POST /api/voice/render          → master /voice/render
+    //   GET  /api/voice/status          → master /voice/status
+    //   POST /api/voice/config          → master /voice/config
+    //   GET  /api/voice/audio/:hash.fmt → master /voice/audio/:hash.fmt (bytes)
+    //
+    // /api/voice/audio is the one that streams binary audio back; the
+    // others are JSON.
+    if (url.pathname.startsWith("/api/voice")) {
+      const masterPort = process.env.SUBCTL_MASTER_PORT ?? "8788";
+      const masterUrl = `http://127.0.0.1:${masterPort}${url.pathname.replace(/^\/api\/voice/, "/voice")}${url.search}`;
+      try {
+        if (url.pathname.startsWith("/api/voice/audio/") && req.method === "GET") {
+          const upstream = await fetch(masterUrl, { signal: req.signal });
+          // Pass through bytes + content-type so <audio src=…> works directly.
+          return new Response(upstream.body, {
+            status: upstream.status,
+            headers: {
+              "Content-Type": upstream.headers.get("Content-Type") ?? "audio/wav",
+              "Cache-Control": upstream.headers.get("Cache-Control") ?? "public, max-age=3600",
+            },
+          });
+        }
+        const init: RequestInit = {
+          method: req.method,
+          headers: { "Content-Type": "application/json" },
+        };
+        if (req.method !== "GET" && req.method !== "HEAD") {
+          init.body = await req.text();
+        }
+        const upstream = await fetch(masterUrl, init);
+        const body = await upstream.text();
+        return new Response(body, {
+          status: upstream.status,
+          headers: { "Content-Type": upstream.headers.get("Content-Type") ?? "application/json" },
+        });
+      } catch (err) {
+        return Response.json(
+          { ok: false, error: `master daemon unreachable: ${(err as Error).message}` },
+          { status: 502 },
+        );
+      }
+    }
+
     // ── /api/upstreams — proxy to master's upstream-check (v2.7.25 C) ───
     // ADR 0015 always-latest policy. The master owns the watchdog state;
     // this proxy lets the dashboard's Memory tab "Upstreams" card read it

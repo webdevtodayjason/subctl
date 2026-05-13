@@ -561,6 +561,35 @@ component_install() {
       subctl_info "dashboard service skipped — enable later: subctl service enable"
     fi
   fi
+
+  # v2.8.0 — voice layer (opt-in). Default backend is the in-tree mock
+  # (1s silent WAV) so install is fast and the rest of the voice pipeline
+  # — voice_render tool, dashboard 🔊 button, Telegram /say — can be
+  # validated end-to-end. Real TTS (voxcpm or kokoro) needs a manual
+  # pip install + model weights; see services/tts/README.md.
+  if ! $NO_SERVICE; then
+    echo
+    if $ASSUME_YES || _confirm "Install v2.8.0 voice layer (TTS service, mock backend by default)?" "N"; then
+      . "$REPO_ROOT/lib/voice.sh"
+      local _backend="mock"
+      if $ASSUME_YES; then
+        _backend="mock"
+      else
+        local _reply
+        echo "  Backend: mock = 1s silent WAV (no pip install needed)"
+        echo "           voxcpm = pip install voxcpm (operator's primary lean; ADR 0017)"
+        echo "           kokoro = pip install kokoro (CPU-friendly fallback)"
+        read -r -p "  Backend [mock]: " _reply
+        case "${_reply:-mock}" in
+          voxcpm|kokoro|mock) _backend="${_reply:-mock}" ;;
+          *) subctl_warn "unknown backend '$_reply' — using mock" ;;
+        esac
+      fi
+      $DRY_RUN || subctl_voice_install "$_backend"
+    else
+      subctl_info "voice layer skipped — enable later: bash $0 (re-run) or load lib/voice.sh and call subctl_voice_install"
+    fi
+  fi
 }
 
 # ── final summary ────────────────────────────────────────────────────────────

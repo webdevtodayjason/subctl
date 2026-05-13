@@ -81,6 +81,10 @@ import {
   recallEntries as recallMemoryEntries,
   redactEntryForEgress,
 } from "./memory";
+// v2.8.0 voice layer — Telegram /voice + /say
+import { loadVoiceConfig, saveVoiceConfig } from "./voice-config";
+import { renderVoice, probeTtsServer } from "./tools/voice-render";
+import { sendTelegramVoice } from "./tools/telegram";
 
 const HOME = homedir();
 const SUBCTL_CONFIG_DIR =
@@ -498,8 +502,20 @@ async function handleBotCommand(text: string): Promise<string> {
       // "/remember " becomes a kind="operator-note" entry. Replies "saved"
       // with the id (so /memory <text> can find it back).
       return handleRememberCommand(text.slice("/remember".length));
+    case "/voice":
+      // v2.8.0 — read voice layer state from Telegram (config + TTS
+      // reachability). `/voice` reports; `/voice on` and `/voice off`
+      // toggle voice.json#enabled with no daemon restart (file watcher
+      // picks up the change). Mirrors the /profile shape.
+      return await handleVoiceCommand(parts.slice(1));
+    case "/say":
+      // v2.8.0 — operator-asked voice synthesis. Everything after `/say `
+      // is rendered through voice_render and shipped back to Telegram as
+      // a sendVoice. Egress redaction applies inside voice_render so
+      // secrets can't leak even if the operator types one.
+      return await handleSayCommand(text.slice("/say".length));
     default:
-      return `Unknown command: ${cmd}\n\nTry: /status, /pause, /resume, /profile, /watchdogs, /terminal, /notifications, /upstreams, /secrets, /memory, /remember, /help`;
+      return `Unknown command: ${cmd}\n\nTry: /status, /pause, /resume, /profile, /watchdogs, /terminal, /notifications, /upstreams, /secrets, /memory, /remember, /voice, /say, /help`;
   }
 }
 
@@ -631,6 +647,50 @@ function handleRememberCommand(rest: string): string {
   } catch (e: any) {
     return `remember failed: ${e?.message || e}`;
   }
+}
+
+// v2.8.0 — /voice status + toggle (mirror /profile shape).
+async function handleVoiceCommand(args: string[]): Promise<string> {
+  const sub = (args[0] || "").trim().toLowerCase();
+  if (sub === "on" || sub === "off") {
+    const next = saveVoiceConfig({ enabled: sub === "on" });
+    return `🔊 voice ${next.enabled ? "ENABLED" : "DISABLED"}\nvoice: ${next.default_voice_id}\nmodel: ${next.model}`;
+  }
+  const cfg = loadVoiceConfig();
+  const probe = await probeTtsServer();
+  const lines: string[] = [
+    `🔊 Voice layer (v2.8.0):`,
+    ``,
+    `enabled: ${cfg.enabled ? "✓ on" : "✗ off"}`,
+    `voice:   ${cfg.default_voice_id}`,
+    `model:   ${cfg.model}`,
+    `server:  ${cfg.tts_server}`,
+    ``,
+    `TTS reachable: ${probe.reachable ? `✓ (${probe.ms ?? "?"}ms)` : `✗ ${probe.error ?? "unreachable"}`}`,
+    ``,
+    `Toggle: /voice on | /voice off`,
+    `Speak:  /say <text>`,
+  ];
+  return lines.join("\n");
+}
+
+// v2.8.0 — /say <text> renders speech and ships a Telegram voice note.
+async function handleSayCommand(rest: string): Promise<string> {
+  const text = rest.trim();
+  if (!text) {
+    return "Usage: /say <text>\n\nRenders the text through the local TTS server and sends it as a Telegram voice note. Voice must be enabled (/voice on).";
+  }
+  const render = await renderVoice({ text });
+  if (!render.ok || !render.audio_path) {
+    return `say failed: ${render.error ?? "no audio"}`;
+  }
+  const sent = await sendTelegramVoice(render.audio_path, {
+    caption: text.length > 60 ? text.slice(0, 60) + "…" : text,
+    duration_ms: render.duration_ms,
+    format: render.format,
+  });
+  if (!sent.ok) return `voice render ok, telegram upload failed: ${sent.error}`;
+  return `🔊 sent (${render.cached ? "cached" : "rendered"}, ${render.duration_ms ?? 0}ms)`;
 }
 
 function handleNotificationsCommand(args: string[]): string {
@@ -825,6 +885,9 @@ function formatHelp(): string {
     "/memory <query>        search Evy Memory (Tier 3) — top 3 hits",
     "/memory recent         show last 5 memory entries",
     "/remember <text>       save a durable note into Evy Memory",
+    "/voice                 voice layer state + TTS reachability",
+    "/voice on|off          toggle Evy's voice layer (TTS)",
+    "/say <text>            render speech via local TTS, send as voice note",
     "",
     "Free-text messages are queued for the next agent turn — subctl master",
     "will act on them per its policy and report back.",

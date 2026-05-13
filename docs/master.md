@@ -2069,6 +2069,37 @@ Three tools enforce structural rules at the runtime layer rather than relying on
 - `memory_forget` requires `confirmation: true`. Evy does not destroy memory without confirmation.
 - `subctl_orch_kill` requires `confirmation: true` plus `reason` (≥10 chars). The destruction lands in the log with rationale.
 
+### Voice layer (TTS) — v2.8.0
+
+The voice layer (shipped in v2.8.0) is a **delivery channel**, not a persona change. Evy's voice rules above operate on the text she produces; the TTS layer renders that text to audio after egress redaction. See [ADR 0017](adr/0017-voice-layer-tts.md), [persona/voice-future.md](persona/voice-future.md), and [persona/evy.md](persona/evy.md).
+
+**Self-hosted-only.** [ADR 0009](adr/0009-self-hosted-only-no-cloud-memory.md) extends to TTS — no ElevenLabs / OpenAI TTS / Azure egress. The TTS service runs as `com.subctl.tts` (separate launchd job) bound to 127.0.0.1:8789. Master fronts it via `/voice/render`, `/voice/audio/<hash>.<fmt>`, `/voice/status`, `/voice/config`.
+
+**Opt-in default.** `~/.config/subctl/voice.json#enabled` defaults to `false`. Operator opts in via the dashboard 🔊 surface, `subctl voice on`, or `/voice on` in Telegram. The config is read on every render — no in-memory cache (operator's VERSION-as-canonical-source rule applies).
+
+**Three backends.** Configured per-host via the plist's `SUBCTL_TTS_BACKEND` env:
+
+- `voxcpm` — operator's primary lean per `voice-future.md`. ~0.5B, cloning + streaming, Apple-Silicon-capable on M3. Requires `pip install voxcpm` + model weights + a ~10s reference clip at `services/tts/voices/<voice_id>/reference.wav` with aligned transcript.
+- `kokoro` — Kokoro-82M. CPU-friendly fallback for mini nodes.
+- `mock` — in-tree default. 1-second silent WAV. Lets the pipeline run end-to-end without committing to a real backend; `install.sh` ships this so first-run install stays fast.
+
+**Tool surface.** Two master tools:
+
+- `voice_render({text, voice_id?})` — synthesizes text, caches at `~/.local/state/subctl/voice/cache/<sha256(model|voice_id|text)[:24]>.<fmt>` (24h TTL), returns `{audio_url, format, duration_ms, cached}`.
+- `voice_status` — config + TTS reachability probe.
+
+Plus `telegram_send_voice` (uploads rendered audio via Telegram's `sendVoice` multipart). Evy is instructed (in the tool description) to call `voice_render` ONLY on explicit operator request or for `severity: alert` notifications — voice is not a default channel.
+
+**Redaction floor.** `redactForEgress()` (the same function Telegram + dashboard quoting use) runs on every render's text BEFORE bytes leave master to the TTS server. Test pinned: an `sk-*` token in the input never reaches the TTS server, regardless of who produced the text.
+
+**Surfaces.**
+
+- Dashboard chat panel: each Evy bubble gets a 🔊 button (Lucide volume-2 inline SVG). Click → render + autoplay an `<audio>` element in the bubble footer. Visibility tracks `voice.json#enabled` via initial fetch + live SSE `voice_config` event (master broadcasts on `voice.json` change).
+- Telegram: `/voice` reports state, `/voice on|off` toggles, `/say <text>` renders + uploads a voice note. Telegram-relayed `severity: alert` notifications can also voice via `telegram_send_voice`.
+- CLI: `subctl voice [status|test|render <text>|on|off]`. `subctl voice test` renders a canned line + plays via `afplay`.
+
+**Hot reload.** `voice.json` is watched (fs.watch + 200ms debounce, same pattern as profiles.ts). Toggling `enabled` from any surface affects the very next render.
+
 ---
 
 ## 5. Operational reference

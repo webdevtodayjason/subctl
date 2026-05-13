@@ -162,6 +162,12 @@ Usage:
   subctl memory [recent <N>|search <query>|remember <text>]
                                       Query / append Evy Tier 3 memory via
                                       /api/memory/* proxy.
+  subctl voice [status|test|render <text>|on|off]
+                                      Voice layer (v2.8.0). status shows
+                                      voice.json + TTS reachability; test
+                                      renders + plays a canned line; render
+                                      returns audio URL; on/off toggles
+                                      voice.json#enabled (hot-reload).
 
   subctl uninstall                    Remove subctl
   subctl version                      Print version
@@ -671,6 +677,11 @@ case "$cmd" in
   memory|mem)
     . "$SUBCTL_REPO_ROOT/lib/cli.sh"
     subctl_cli_memory "$@"
+    ;;
+
+  voice)
+    . "$SUBCTL_REPO_ROOT/lib/cli.sh"
+    subctl_cli_voice "$@"
     ;;
 
   uninstall)

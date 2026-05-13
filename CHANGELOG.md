@@ -1,3 +1,55 @@
+## [2.8.0] — 2026-05-13
+
+### `feat(voice): v2.8.0 voice layer for Evy — self-hosted TTS, opt-in, redacted (ADR 0017)`
+
+`docs/persona/voice-future.md` was authored 2026-05-12 as a parking-lot for "after text-Evy is stable." v2.7.30 added the 16 feature-coverage eval tests that closed the v2.7.18–v2.7.24 surface (16 + the original 24 = 40 across fourteen categories), and the persona-grader trend was healthy enough for the operator to surface the voice layer as the v2.8.0 promotion. This release ships it. Self-hosted-only (ADR 0009 extends to TTS — no ElevenLabs / OpenAI TTS / Azure egress), opt-in (defaults OFF in `voice.json`), redacted at the tool boundary (the same `redactForEgress` used for Telegram + dashboard quoting runs BEFORE bytes leave master to the TTS server).
+
+**TTS service.** Lives in `services/tts/` as a separate launchd job (`com.subctl.tts`) bound to 127.0.0.1:8789. `services/tts/server.py` is a thin BaseHTTPServer wrapper that hands `(text, voice_id, model)` to the configured backend. Three backends behind one HTTP surface (POST /render returns audio bytes plus `X-Audio-Format` + `X-Audio-Duration-Ms` headers):
+
+- `voxcpm` — operator's primary lean per voice-future.md (~0.5B model, cloning + streaming, Apple Silicon capable). Requires `pip install voxcpm` plus model weights and a ~10s reference clip + transcript at `services/tts/voices/<voice_id>/`. License: Apache 2.0.
+- `kokoro` — Kokoro-82M fallback. ~325MB, CPU-friendly, good for the mini nodes. License: Apache 2.0.
+- `mock` — default. 1-second silent WAV. Lets the rest of the pipeline (master tool, dashboard 🔊 button, Telegram `/say`, CLI, cache, redaction, tests) be developed and tested without committing to a real backend. `install.sh` ships the mock backend by default so first-run install stays fast; the operator picks `voxcpm` or `kokoro` interactively or via env override on the plist.
+
+**Master daemon tool.** `voice_render({text, voice_id?})` → `{audio_url, format, duration_ms, cached, hash, voice_id, model}`. Egress redaction runs before the POST to the TTS server, then bytes cache to `~/.local/state/subctl/voice/cache/<sha256(model|voice_id|text)[:24]>.<fmt>` with a 24h TTL. Second render of the same line hits cache (no second TTS roundtrip). A companion `voice_status` tool reports `voice.json` state + TTS reachability + latency probe. Master also exposes HTTP routes `POST /voice/render`, `GET /voice/audio/<hash>.<fmt>`, `GET /voice/status`, `POST /voice/config` (allowlist-gated patch) — dashboard + CLI hit these via the existing `/api/master/*` proxy pattern with a dedicated `/api/voice/*` prefix.
+
+**Config + hot reload.** `~/.config/subctl/voice.json` holds `{enabled, default_voice_id, model, tts_server}`. `loadVoiceConfig()` reads on every call — no in-memory cache. The operator's "VERSION is the canonical source" rule (feedback 2026-05-11) extends to voice config: toggling `enabled` from the dashboard or CLI must affect the very next render. `watchVoiceConfig()` exists for SSE-side propagation (the master broadcasts a `voice_config` SSE event on change so the dashboard's 🔊 button toggles live without a refresh), not for caching.
+
+**Telegram.** New `telegram_send_voice` tool uploads rendered audio via `sendVoice` multipart. Wraps `voice_render` so the same redaction + cache path applies. New `/voice` (status / `/voice on` / `/voice off`) and `/say <text>` slash commands let the operator drive the voice layer from their phone. `/voice on|off` writes `voice.json#enabled` and the master's file watcher picks the change up immediately. `/say` renders + uploads in one shot.
+
+**Dashboard.** Each Evy assistant bubble gains a 🔊 button (Lucide volume-2 inline SVG — keeps with ADR 0016). Click → POST `/api/voice/render`, swap an autoplay `<audio>` element into the bubble footer. Visibility tracks `voice.json#enabled` via initial fetch + live SSE `voice_config` events. CSS mirrors the v2.7.21 tool-pill accent palette.
+
+**CLI.** New `subctl voice [status|test|render <text>|on|off]` sanity surface routes through the dashboard's `/api/voice/*` proxy. `subctl voice test` renders a canned line and plays it locally via `afplay`. Wired into bin/subctl + lib/cli.sh + help text.
+
+**Install.** `install.sh` grows an opt-in voice prompt that defaults to the `mock` backend (no pip install required). For `voxcpm` / `kokoro` operators, `services/tts/README.md` documents the manual pip install + model-weight + reference-clip steps; the plist's `SUBCTL_TTS_BACKEND` placeholder gets substituted by `lib/voice.sh:subctl_voice_install`. `voice.json` seeded with `enabled: false` — operator opts in explicitly.
+
+**Tests.** `voice-config.test.ts` (11 tests): seed-on-missing, normalize-missing-fields, malformed JSON fallback, save merges, watch debounce, watch close. `voice-render.test.ts` (12 tests): disabled gate, empty/oversized text, secrets-redacted-before-TTS-server (mocked Bun.serve verifies the raw `sk-*` token never reaches the server), cache hit on second render, TTS HTTP error propagation, unreachable server handling, `resolveCachedAudio` path-traversal resistance, `probeTtsServer` reachable/unreachable shape. 23 voice-specific tests; 783 total master tests pass after the additions (was 760).
+
+**Files:**
+
+- New: `components/master/voice-config.ts` — voice.json loader + saver + fs.watch
+- New: `components/master/tools/voice-render.ts` — `voice_render` + `voice_status` tools + `renderVoice`/`resolveCachedAudio`/`probeTtsServer` helpers consumed by the HTTP surface
+- New: `components/master/__tests__/voice-config.test.ts`
+- New: `components/master/__tests__/voice-render.test.ts`
+- New: `services/tts/server.py` — three-backend HTTP server stub
+- New: `services/tts/launchd/com.subctl.tts.plist` — launchd template (com.subctl.tts)
+- New: `services/tts/voices/evy-rachel-weisz/README.md` — voice-cloning reference instructions
+- New: `services/tts/README.md` — backend selection + manual install notes
+- New: `lib/voice.sh` — `subctl_voice_install` / `subctl_voice_disable` (matches lib/master.sh pattern)
+- New: `docs/adr/0017-voice-layer-tts.md` — voice layer architecture decision
+- Modified: `components/master/server.ts` — voice tool registration, HTTP routes, watcher boot + shutdown hooks
+- Modified: `components/master/tools/telegram.ts` — `sendTelegramVoice` helper + `telegram_send_voice` tool
+- Modified: `components/master/master-notify-listener.ts` — `/voice` + `/say` slash commands + help text
+- Modified: `dashboard/server.ts` — `/api/voice/*` proxy (including audio passthrough)
+- Modified: `dashboard/public/app.js` — 🔊 button injection + SSE `voice_config` listener + initial status probe
+- Modified: `dashboard/public/style.css` — voice button + audio player styling
+- Modified: `bin/subctl` — `voice` verb dispatch + usage text
+- Modified: `lib/cli.sh` — `subctl_cli_voice` (status / test / render / on / off)
+- Modified: `install.sh` — opt-in voice install prompt + backend picker
+- Modified: `docs/adr/README.md` — ADR 0017 row appended
+- Modified: `ROADMAP.md` — voice layer promoted from "future" to "currently shipping v2.8.0"
+- Modified: `docs/master.md` — new "Voice layer (TTS)" section
+- Modified: `VERSION` → 2.8.0
+
 ## [2.7.31] — 2026-05-13
 
 ### `feat(master): v2.7.31 1Password Service Accounts (multi-backend secret resolution)`

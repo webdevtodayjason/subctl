@@ -4616,3 +4616,51 @@ tr.team-stale-red td           { background: rgba(214, 108, 108, 0.06); }
   color: var(--fg-mute);
   font-family: var(--mono);
 }
+
+/* ── v2.8.0 voice layer — chat bubble 🔊 button + inline audio player ── */
+.voice-footer {
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.voice-play-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--border, #30363d);
+  background: transparent;
+  color: var(--fg-mute, #8b949e);
+  border-radius: 5px;
+  cursor: pointer;
+  transition: color .12s ease, border-color .12s ease, background .12s ease;
+}
+.voice-play-btn:hover {
+  color: var(--blue, #58a6ff);
+  border-color: var(--blue, #58a6ff);
+  background: rgba(88, 166, 255, 0.08);
+}
+.voice-play-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.voice-play-btn--loading {
+  animation: voice-pulse 1s ease-in-out infinite;
+}
+@keyframes voice-pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+.voice-audio {
+  height: 28px;
+  max-width: 280px;
+}
+.voice-err {
+  font-size: 11px;
+  color: var(--red, #f85149);
+  font-family: var(--mono);
+}

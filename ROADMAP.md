@@ -113,6 +113,23 @@ Minimax's M1-Coder Plan is the youngest of the four and has the least mature CLI
 - **Sessions / projects** — `subctl sessions` and `subctl projects` walk Claude's transcript and project-binding files. Each new provider adds its own transcript convention; the iteration logic generalizes.
 - **`subctl teams`** — currently spawns the orchestrator + workers in tmux pinned to a Claude account. Each new provider gets its own `teams.sh` that knows the right CLI invocation; the tmux scaffolding stays shared.
 
+## Voice layer (TTS)
+
+| State | Version | Notes |
+|---|---|---|
+| **Currently shipping** | **v2.8.0** | Self-hosted TTS, opt-in (`voice.json#enabled`), redacted at the tool boundary. Three backends: `mock` (default, 1s silent WAV — used in install for first-run), `voxcpm` (operator's primary lean, ~0.5B Apple-Silicon-capable), `kokoro` (CPU-friendly fallback). Surfaces: master `voice_render` tool, dashboard 🔊 button per Evy turn, Telegram `telegram_send_voice` + `/say` + `/voice`, CLI `subctl voice [status\|test\|render\|on\|off]`. See [ADR 0017](docs/adr/0017-voice-layer-tts.md) and [docs/persona/voice-future.md](docs/persona/voice-future.md). |
+
+The voice layer is a **delivery channel**, not a persona change. Evy's
+voice rules (no padding, no em dashes, dry/precise register — [ADR
+0004](docs/adr/0004-evy-persona-librarian-framing.md)) operate on the
+text she produces; the TTS layer reads that text aloud after egress
+redaction. The character voice anchor is Rachel Weisz as Evy Carnahan
+(reference clip stays operator-sourced under
+`services/tts/voices/<voice_id>/`).
+
+Self-hosted-only per [ADR 0009](docs/adr/0009-self-hosted-only-no-cloud-memory.md). No
+ElevenLabs / OpenAI TTS / Azure egress for synthesized audio.
+
 ## Plugin SDK (post-1.x)
 
 Once a third provider ships, the duplicated patterns across `providers/*` become extractable into a small SDK:

@@ -442,6 +442,100 @@ EOF
   esac
 }
 
+# ── v2.8.0 — voice layer CLI ──────────────────────────────────────────
+# `subctl voice [status|test|render <text>|on|off]` — operator-facing
+# control of the voice layer. Goes through the dashboard's /api/voice/*
+# proxy → master's /voice/*. `render` returns the URL of the cached
+# audio; `test` does a render with a fixed string and plays via afplay.
+subctl_cli_voice() {
+  local sub="${1:-status}"
+  [[ $# -gt 0 ]] && shift
+  case "$sub" in
+    -h|--help)
+      cat <<EOF
+subctl voice [status | test | render <text> | on | off]
+
+  Quick sanity surface for the v2.8.0 voice layer. Routes through the
+  dashboard's /api/voice/* proxy.
+
+  Verbs:
+    status              voice.json + TTS server reachability (default)
+    test                render a canned line and play it locally (afplay)
+    render <text>       render <text> and print the audio URL + duration
+    on                  enable voice (voice.json#enabled=true, hot-reload)
+    off                 disable voice
+EOF
+      return 0 ;;
+    status|"")
+      _subctl_cli_require_jq || return 1
+      local url body
+      url="$(_subctl_cli_dashboard_base)/api/voice/status"
+      if ! body=$(_subctl_cli_curl "$url" 2>/dev/null); then
+        subctl_err "GET $url failed — is the dashboard running?"
+        return 1
+      fi
+      printf '%s' "$body" | jq -r '
+        "🔊 voice " + (if .config.enabled then "ENABLED" else "DISABLED" end),
+        "voice:    \(.config.default_voice_id)",
+        "model:    \(.config.model)",
+        "server:   \(.config.tts_server)",
+        "reach:    " + (if .tts_reachable then "✓ \(.latency_ms // "?")ms" else "✗ \(.error // "unreachable")" end)
+      '
+      ;;
+    on|off)
+      _subctl_cli_require_jq || return 1
+      local enable url body
+      [[ "$sub" == "on" ]] && enable=true || enable=false
+      url="$(_subctl_cli_dashboard_base)/api/voice/config"
+      body=$(_subctl_cli_curl -X POST -H "Content-Type: application/json" \
+        --data "{\"enabled\":$enable}" "$url" 2>/dev/null) || {
+        subctl_err "POST $url failed — is the dashboard running?"
+        return 1
+      }
+      subctl_ok "voice $sub"
+      printf '%s' "$body" | jq -r '.config | "  voice: \(.default_voice_id)  model: \(.model)"'
+      ;;
+    render)
+      local text="${*:-}"
+      [[ -z "$text" ]] && { subctl_err "render expects text"; return 1; }
+      _subctl_cli_require_jq || return 1
+      local payload url body
+      payload=$(jq -n --arg t "$text" '{text:$t}')
+      url="$(_subctl_cli_dashboard_base)/api/voice/render"
+      if ! body=$(_subctl_cli_curl -X POST -H "Content-Type: application/json" \
+        --data "$payload" "$url" 2>/dev/null); then
+        subctl_err "POST $url failed — is the dashboard running?"
+        return 1
+      fi
+      if [[ "$(printf '%s' "$body" | jq -r '.ok // false')" != "true" ]]; then
+        subctl_err "voice_render failed: $(printf '%s' "$body" | jq -r '.error // "?"')"
+        return 1
+      fi
+      printf '%s' "$body" | jq -r '"audio: \(.audio_url)\nformat: \(.format)\nduration_ms: \(.duration_ms)\ncached: \(.cached)\nvoice: \(.voice_id)"'
+      ;;
+    test)
+      subctl_cli_voice render "Evy here. Voice layer is working. Desk is clean."
+      local audio_url
+      audio_url=$(_subctl_cli_curl -X POST -H "Content-Type: application/json" \
+        --data '{"text":"Evy here. Voice layer is working. Desk is clean."}' \
+        "$(_subctl_cli_dashboard_base)/api/voice/render" 2>/dev/null | jq -r '.audio_url // empty')
+      [[ -z "$audio_url" ]] && return 0
+      if command -v afplay >/dev/null 2>&1; then
+        local tmp
+        tmp=$(mktemp -t subctl-voice-test.XXXXXX.wav)
+        if _subctl_cli_curl "$(_subctl_cli_dashboard_base)/api${audio_url}" -o "$tmp" 2>/dev/null; then
+          afplay "$tmp" 2>/dev/null || true
+          rm -f "$tmp"
+        fi
+      fi
+      ;;
+    *)
+      subctl_err "unknown voice verb: $sub (try: status | test | render | on | off)"
+      return 1
+      ;;
+  esac
+}
+
 _subctl_cli_memory_render() {
   _subctl_cli_require_jq || return 1
   local url="$1" body

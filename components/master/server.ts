@@ -154,6 +154,18 @@ import {
   describeUpstreamState,
   type UpstreamWatchdogHandle,
 } from "./upstream-check";
+// ── v2.8.0 voice layer ──
+import {
+  voiceTools,
+  renderVoice,
+  resolveCachedAudio,
+  probeTtsServer,
+} from "./tools/voice-render";
+import {
+  loadVoiceConfig,
+  saveVoiceConfig,
+  watchVoiceConfig,
+} from "./voice-config";
 
 const HOME = homedir();
 const COMPONENT_DIR = import.meta.dir;
@@ -482,6 +494,14 @@ export const toolRegistry: Record<string, InternalTool> = {
   // fully-qualified (evy_recall, evy_remember).
   ...Object.fromEntries(
     Object.entries(evyMemoryTools).map(([k, v]) => [k, v as unknown as InternalTool]),
+  ),
+  // voice family (v2.8.0): voice_render synthesizes Evy's text reply to
+  // audio via the local self-hosted TTS server (ADR 0017). voice_status
+  // is a quick read of voice.json + TTS reachability. Disabled by default
+  // — operator opts in via voice.json or the dashboard /voice toggle.
+  // Keys are fully-qualified (voice_render, voice_status).
+  ...Object.fromEntries(
+    Object.entries(voiceTools).map(([k, v]) => [k, v as unknown as InternalTool]),
   ),
 };
 
@@ -1030,6 +1050,19 @@ async function main() {
     }
   });
 
+  // ── v2.8.0 voice layer ────────────────────────────────────────────────
+  // voice.json hot-reload. The voice_render tool reads the config on every
+  // call (no in-memory cache; same "VERSION is the canonical source" rule
+  // the operator pinned 2026-05-11), so the watcher's only job is logging
+  // the change so the operator can see in master.log that the toggle took
+  // effect immediately. SSE bus also notifies the dashboard so the chat
+  // panel's 🔊 button can hide itself live.
+  const voiceConfigInitial = loadVoiceConfig();
+  console.error(
+    `[voice] booted: enabled=${voiceConfigInitial.enabled} voice=${voiceConfigInitial.default_voice_id} model=${voiceConfigInitial.model} server=${voiceConfigInitial.tts_server}`,
+  );
+  // Watcher registration deferred until after `broadcast` is defined (TDZ).
+
   // ── event bus: agent → SSE subscribers ──────────────────────────────────
   // Every connected /events client gets every agent event (text deltas, tool
   // calls, decisions, watchdog firings) as Server-Sent Events. Persist the
@@ -1044,6 +1077,17 @@ async function main() {
   }
   // Let the notify tool publish to the SSE bus via the same broadcast.
   bindNotifyBroadcast(broadcast);
+
+  // v2.8.0 — voice config watcher (defined after `broadcast` so the SSE
+  // bus is available to the callback). The watcher only logs + emits
+  // a `voice_config` SSE event; voice_render itself reads the file on
+  // every call.
+  const voiceWatcher = watchVoiceConfig((next) => {
+    console.error(
+      `[voice] config reloaded: enabled=${next.enabled} voice=${next.default_voice_id} model=${next.model}`,
+    );
+    broadcast("voice_config", next);
+  });
 
   agent.subscribe((event) => {
     // Stream every event to subscribers — the dashboard chat panel renders
@@ -2717,6 +2761,88 @@ async function main() {
         });
       }
 
+      // ── v2.8.0 voice layer routes ────────────────────────────────────
+      // Dashboard + CLI hit these directly via the master HTTP surface.
+      // The TTS server itself stays on 8789 and is never reached from the
+      // browser; this layer brokers cache, redaction, and config.
+      if (url.pathname === "/voice/render" && req.method === "POST") {
+        let body: { text?: string; voice_id?: string };
+        try {
+          body = (await req.json()) as { text?: string; voice_id?: string };
+        } catch {
+          return Response.json({ ok: false, error: "bad json" }, { status: 400 });
+        }
+        const out = await renderVoice({
+          text: body.text ?? "",
+          voice_id: body.voice_id,
+        });
+        if (!out.ok) {
+          // Disabled is a 200-with-ok:false — operator-facing state, not a server error.
+          return Response.json(out, {
+            status: out.error?.includes("disabled") ? 200 : 502,
+          });
+        }
+        // Strip the absolute path before returning to the network.
+        const { audio_path: _omit, ...rest } = out;
+        void _omit;
+        return Response.json(rest);
+      }
+
+      if (url.pathname === "/voice/status" && req.method === "GET") {
+        const cfg = loadVoiceConfig();
+        const probe = await probeTtsServer();
+        return Response.json({
+          ok: true,
+          config: cfg,
+          tts_reachable: probe.reachable,
+          tts_url: probe.url,
+          latency_ms: probe.ms ?? null,
+          error: probe.error,
+        });
+      }
+
+      if (url.pathname === "/voice/config" && req.method === "POST") {
+        let body: Record<string, unknown>;
+        try {
+          body = (await req.json()) as Record<string, unknown>;
+        } catch {
+          return Response.json({ ok: false, error: "bad json" }, { status: 400 });
+        }
+        // Allowlist the fields the dashboard can set — drop anything else.
+        const patch: Record<string, unknown> = {};
+        for (const k of ["enabled", "default_voice_id", "model", "tts_server"]) {
+          if (k in body) patch[k] = body[k];
+        }
+        const next = saveVoiceConfig(patch);
+        return Response.json({ ok: true, config: next });
+      }
+
+      {
+        const m = url.pathname.match(/^\/voice\/audio\/([a-f0-9]+\.[a-z0-9]+)$/i);
+        if (m && req.method === "GET") {
+          const hit = resolveCachedAudio(m[1]!);
+          if (!hit) {
+            return Response.json({ ok: false, error: "not found" }, { status: 404 });
+          }
+          try {
+            const buf = readFileSync(hit.path);
+            const ctype = hit.format === "wav" ? "audio/wav" : "audio/mpeg";
+            return new Response(buf, {
+              headers: {
+                "Content-Type": ctype,
+                "Cache-Control": "public, max-age=3600",
+                "Content-Disposition": `inline; filename="evy.${hit.format}"`,
+              },
+            });
+          } catch (err) {
+            return Response.json(
+              { ok: false, error: (err as Error).message },
+              { status: 500 },
+            );
+          }
+        }
+      }
+
       return new Response("not found", { status: 404 });
     },
   });
@@ -3227,6 +3353,7 @@ async function main() {
     clusterTicker.stop();
     try { upstreamWatchdog?.stop(); } catch { /* ignore */ }
     try { profilesWatcher.close(); } catch { /* ignore */ }
+    try { voiceWatcher.close(); } catch { /* ignore */ }
     if (inboxWatcher) try { inboxWatcher.close(); } catch { /* ignore */ }
     try { stopMasterNotifyListener(); } catch { /* ignore */ }
     httpServer.stop(true);
