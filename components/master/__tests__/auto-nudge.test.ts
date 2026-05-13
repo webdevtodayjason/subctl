@@ -364,6 +364,134 @@ describe("runStaleTeamSweep — vanished team reconciliation (v2.7.32)", () => {
   });
 });
 
+describe("runStaleTeamSweep — server.ts integration pattern (v2.8.1)", () => {
+  // These tests mirror the wiring added to components/master/server.ts in
+  // v2.8.1 — a stateful `vanishedTeams` Set memoizes "we already alerted
+  // on this team" so the alert is one-shot across ticks, even if the
+  // caller's tracker (teamLastActivity) somehow re-seeds the team between
+  // sweeps (e.g. a tmux zombie pane survives the registry archive). The
+  // v2.7.32 fix added the predicate to auto-nudge.ts but the operator's
+  // 2026-05-13 screenshot proved the wiring was missing in server.ts.
+  function makeServerLikeCallbacks(opts: {
+    registryExists: (id: string) => boolean;
+    vanishedTeams: Set<string>;
+  }) {
+    const vanishedAlerts: Array<{ team_id: string; title: string }> = [];
+    const sweepInfos: Array<{ team_id: string; title: string }> = [];
+    const sweepAlerts: Array<{ team_id: string; title: string }> = [];
+    const nudges: Array<{ team_id: string; body: string }> = [];
+    return {
+      vanishedAlerts,
+      sweepInfos,
+      sweepAlerts,
+      nudges,
+      callbacks: {
+        sendNudge: async (team_id: string, body: string) => {
+          nudges.push({ team_id, body });
+          return { ok: true as const };
+        },
+        emitInfo: (team_id: string, title: string) => sweepInfos.push({ team_id, title }),
+        emitAlert: (team_id: string, title: string) => sweepAlerts.push({ team_id, title }),
+        teamRegistryExists: opts.registryExists,
+        emitVanished: (team_id: string, title: string) => {
+          // One-shot guard — exactly what server.ts does.
+          if (opts.vanishedTeams.has(team_id)) return;
+          opts.vanishedTeams.add(team_id);
+          vanishedAlerts.push({ team_id, title });
+        },
+      },
+    };
+  }
+
+  test("operator archives a stale team mid-flight — exactly one vanished alert", async () => {
+    const now = 100 * T_MIN;
+    const state = new Map<string, TeamNudgeState>([
+      ["claude-osint-cve-monitor", { last_nudge_at_ms: now - 31 * T_MIN }],
+    ]);
+    const vanishedTeams = new Set<string>();
+    // Caller's tracker — server.ts's teamLastActivity.
+    const tracker = new Set(["claude-osint-cve-monitor"]);
+
+    const c = makeServerLikeCallbacks({
+      registryExists: () => false, // dir was archived to .killed/
+      vanishedTeams,
+    });
+
+    // Tick 1 — predicate fires, vanished alert emitted, server-side caller
+    // drops the team from the tracker.
+    const actions1 = await runStaleTeamSweep({
+      teams: [...tracker].map((team_id) => ({
+        team_id,
+        last_activity_ms: now - 60 * T_MIN,
+        last_event_type: "report",
+      })),
+      state,
+      cfg: { staleness_threshold_ms: STALENESS, nudge_retry_ms: RETRY, now_ms: now },
+      staleness_threshold_min: 15,
+      callbacks: c.callbacks,
+    });
+    for (const a of actions1) if (a.action === "vanished") tracker.delete(a.team_id);
+
+    expect(c.vanishedAlerts.length).toBe(1);
+    expect(c.nudges.length).toBe(0);
+    expect(c.sweepAlerts.length).toBe(0); // not a regular team-unresponsive
+    expect(vanishedTeams.has("claude-osint-cve-monitor")).toBe(true);
+
+    // Tick 2 — pretend the inbox tailer or a tmux zombie re-seeded the
+    // team into the tracker. The registry is still absent. server.ts's
+    // isStillVanished() guard should normally block this, but even if it
+    // doesn't (paranoia), the emitVanished memoization keeps the alert
+    // one-shot.
+    tracker.add("claude-osint-cve-monitor");
+    const actions2 = await runStaleTeamSweep({
+      teams: [...tracker].map((team_id) => ({
+        team_id,
+        last_activity_ms: now - 90 * T_MIN,
+        last_event_type: "report",
+      })),
+      state,
+      cfg: { staleness_threshold_ms: STALENESS, nudge_retry_ms: RETRY, now_ms: now + 5 * T_MIN },
+      staleness_threshold_min: 15,
+      callbacks: c.callbacks,
+    });
+    for (const a of actions2) if (a.action === "vanished") tracker.delete(a.team_id);
+
+    expect(c.vanishedAlerts.length).toBe(1); // still one — no spam
+    expect(c.nudges.length).toBe(0);
+    expect(c.sweepAlerts.length).toBe(0);
+  });
+
+  test("registry dir comes back (operator re-spawn) — vanishedTeams flag is cleared by the wrapper", async () => {
+    // server.ts's isStillVanished() helper: if the team is in the set
+    // AND the registry dir came back, clear from the set and permit
+    // tracking. This test simulates that wrapper logic directly.
+    const vanishedTeams = new Set<string>(["claude-comeback"]);
+    let registryPresent = false;
+    function isStillVanished(team_id: string): boolean {
+      if (!vanishedTeams.has(team_id)) return false;
+      if (registryPresent) {
+        vanishedTeams.delete(team_id);
+        return false;
+      }
+      return true;
+    }
+
+    // Before re-spawn — still blocked.
+    expect(isStillVanished("claude-comeback")).toBe(true);
+    expect(vanishedTeams.has("claude-comeback")).toBe(true);
+
+    // Operator re-spawns; registry dir reappears.
+    registryPresent = true;
+
+    // First call sees the registry, clears the flag, allows tracking.
+    expect(isStillVanished("claude-comeback")).toBe(false);
+    expect(vanishedTeams.has("claude-comeback")).toBe(false);
+
+    // Subsequent calls are also unblocked.
+    expect(isStillVanished("claude-comeback")).toBe(false);
+  });
+});
+
 describe("runStaleTeamSweep — send failure recorded but state advances", () => {
   test("failed delivery still sets last_nudge_at and emits an info notification", async () => {
     const now = 100 * T_MIN;
