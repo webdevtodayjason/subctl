@@ -1846,6 +1846,70 @@ The trip logs at warn level to stderr (so it lands in `~/Library/Logs/subctl/mas
 - `dashboard/server.ts` — `/api/watchdogs` GET + `/api/watchdogs/:id/kill` POST pass-throughs.
 - `dashboard/public/index.html`, `app.js`, `style.css` — Watchdogs panel markup, `wireWatchdogPanel()` with open/close-driven polling and optimistic kill, `.watchdog-card` / `.watchdog-table` / `.watchdog-kill-btn` styles.
 
+### Phase 3o.35 — Rich watchdog diagnostic surface (v2.7.35)
+
+v2.7.19 shipped the bare kill-controls UI. v2.7.35 layers the full **/diag** surface on top — status badges, tick-history sparklines, recent notifications, last-error blocks, and a hot-restart button — so the operator can answer "is this watchdog dead, slow, or normal?" at a glance instead of `grep`'ing `master.log`.
+
+The v2.7.19 registry contract is unchanged. v2.7.35 reads from it through a sibling module so the kill-controls path and the diagnostic surface don't risk drifting on shared mutations.
+
+#### The diag module — `components/master/watchdog-diag.ts`
+
+Four passive surfaces, none of which require modifications to `watchdogs.ts`:
+
+1. **Tick-history observer.** A 500ms `setInterval` polls `listWatchdogs()` and records a `TickRecord { ts, delta_ms }` whenever `last_tick_at` advances. Per-id ring caps at 20. Poll rate is faster than the fastest real watchdog (`inbox-poll @ 2s`) so no ticks are missed.
+2. **Notification correlator.** Subscribes to `notifications.ts:subscribeNotifications` and routes each event to its source watchdog by `kind` regex (`team-stale*` → `team-staleness`, `auto-compact-error` → `auto-compact`, `upstream-*` → `upstream-check`). Backfills from the ring on start. Unattributable notifications fall through to the global tray only.
+3. **Status classifier.** `classifyStatus(snap)` returns one of `healthy | degraded | dead | unknown` from a hardcoded `EXPECTED_INTERVAL_SECONDS` table sourced from each watchdog's actual `setInterval` value. Thresholds: `healthy` < 2× expected, `degraded` < 5× expected, `dead` ≥ 5× expected. Long-poll kinds (`telegram-listener`, sentinel `-1`) always report healthy when registered. Never-ticked watchdogs get grace until 2× expected interval has elapsed since `started_at`.
+4. **Restart factory registry.** Each arming site in `server.ts` opts in via `registerRestartFactory(id, armX)` — the same closure that originally registered the watchdog. `POST /watchdogs/:id/restart` calls `killWatchdog(id)` (if still live) then runs the factory. Kinds tightly coupled to closure state (`telegram-listener`, `cli-prompt-poll`, `inbox-poll`) skip the factory and the UI's Restart button is grayed-out for them.
+
+Errors: `recordWatchdogError(id, err)` lets opt-in tick sites attribute a captured `try/catch` to a watchdog id. The `auto-compact` tick uses it — its error is now visible per-watchdog in the diag entry's `last_error` field, separate from the global notifications tray.
+
+#### HTTP surface
+
+| Method | Path | Returns |
+|--------|------|---------|
+| `GET`  | `/watchdogs` | bare list (v2.7.19, unchanged) |
+| `GET`  | `/watchdogs/diag` | rich list — every entry includes status, tick_history, recent_notifications, last_error, can_restart, expected_interval_seconds, last_tick_ago_seconds, memory_bytes |
+| `GET`  | `/watchdogs/:id/diag` | single-row deep dive |
+| `POST` | `/watchdogs/:id/kill` | unchanged (v2.7.19) |
+| `POST` | `/watchdogs/:id/restart` | bounce via registered factory, or 404 with human message when none |
+| `POST` | `/watchdogs/killall` | unchanged (v2.7.19) |
+
+Dashboard proxies all of the above as `/api/watchdogs/*`.
+
+#### Dashboard UI
+
+The existing Watchdogs `<details>` panel on the Orchestration tab was rewritten to render the diag shape:
+
+- **Status column** — Lucide icons: `heart-pulse` (green) for healthy, `alert-triangle` (amber) for degraded, `x-circle` (red) for dead.
+- **Header count chip** surfaces totals plus dead/degraded counts inline ("3 active · 1 degraded").
+- **Per-row Details** button toggles an inline expand row showing:
+  - Metadata grid (started_at, last_tick_at, expected interval, last tick ago, can_restart flag).
+  - **Tick-history sparkline** — bars colored green/amber/red by tick lateness vs expected interval, bar height encoded by `delta_ms`. Empty when no ticks observed yet.
+  - Recent-notifications list (newest first, severity-tinted).
+  - Last-error box — monospace + scrollable; falls back to message when no stack.
+- **Restart button** (blue) bounces the watchdog. Disabled with a tooltip when the kind doesn't support hot-restart.
+- Kill button unchanged from v2.7.19.
+
+Two new icons added to `dashboard/public/icons.js` (`heart-pulse`, `x-circle`). Lucide v0.474.0 paths.
+
+#### Telegram
+
+- `/watchdogs` (list) — each row now carries `[status]` so mobile operators see degraded/dead at a glance.
+- `/watchdogs details` — full diag block for every watchdog (status, age, expected interval, last tick, last 6 tick deltas, last 3 notifications, last error).
+- `/watchdogs <id> details` — single-row deep dive in the same format.
+
+#### Files
+
+- New: `components/master/watchdog-diag.ts` — diag module (sibling to v2.7.19 `watchdogs.ts`).
+- New: `components/master/__tests__/watchdog-diag.test.ts` — 25 cases, shape lock + classifier boundaries + observer + correlator + restart factory + error recording.
+- Modified: `components/master/server.ts` — imports diag module, wraps 4 watchdog arming sites in restart factories (team-staleness, followup-scheduler, auto-compact, verifier-cluster, upstream-check), adds `recordWatchdogError` to auto-compact catch, adds `/watchdogs/diag` + `/watchdogs/:id/diag` + `/watchdogs/:id/restart` endpoints, starts/stops observer + tracker in lifecycle.
+- Modified: `components/master/master-notify-listener.ts` — `/watchdogs details` + `/watchdogs <id> details` subcommands, `formatWatchdogDiagBlock` helper, help-text updates.
+- Modified: `dashboard/server.ts` — proxy routes for diag + restart.
+- Modified: `dashboard/public/app.js` — `wireWatchdogPanel` rewritten end-to-end.
+- Modified: `dashboard/public/index.html` — Watchdogs `<details>` panel gains the status column header.
+- Modified: `dashboard/public/style.css` — `.watchdog-status-*` badges, sparkline chrome, notif list, error box, restart button.
+- Modified: `dashboard/public/icons.js` — `heart-pulse` + `x-circle` Lucide paths added.
+
 ### Phase 3o.20 — Authenticated trust markers (v2.7.20)
 
 HMAC-authenticated supervisor→worker directives, replacing the plaintext marker from v2.7.9. Layer 1 of [ADR 0011](adr/0011-trust-marker-hmac-replacement.md). Layer 2 (operator web-terminal escape hatch) is queued for v2.7.21; Layer 3 (style matching) already lives in Evy's SKILL.md from v2.7.15.

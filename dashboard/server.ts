@@ -4742,12 +4742,15 @@ const server = Bun.serve({
       }
     }
 
-    // ── /api/watchdogs — watchdog kill controls (v2.7.19) ────────────────
+    // ── /api/watchdogs — watchdog kill controls (v2.7.19) + diag (v2.7.35)
     // Thin pass-through to the master daemon's /watchdogs endpoints.
-    //   GET  /api/watchdogs           → { ok, count, watchdogs: [...] }
-    //   POST /api/watchdogs/:id/kill  → { ok, killed_id } | { ok:false, error }
-    // The dashboard's Watchdogs panel polls the GET every 10s while
-    // open. Master owns the registry; the dashboard just renders it.
+    //   GET  /api/watchdogs                → { ok, count, watchdogs: [...] }
+    //   GET  /api/watchdogs/diag           → { ok, count, watchdogs: [<rich>...] }
+    //   GET  /api/watchdogs/:id/diag       → { ok, watchdog: <rich> }
+    //   POST /api/watchdogs/:id/kill       → { ok, killed_id } | { ok:false, error }
+    //   POST /api/watchdogs/:id/restart    → { ok } | { ok:false, error }
+    // The dashboard's Watchdogs panel polls the diag GET every 10s
+    // while open. Master owns the registry; the dashboard just renders it.
     if (url.pathname === "/api/watchdogs" && req.method === "GET") {
       const masterPort = process.env.SUBCTL_MASTER_PORT ?? "8788";
       const masterUrl = `http://127.0.0.1:${masterPort}/watchdogs`;
@@ -4765,12 +4768,78 @@ const server = Bun.serve({
         );
       }
     }
+    if (url.pathname === "/api/watchdogs/diag" && req.method === "GET") {
+      const masterPort = process.env.SUBCTL_MASTER_PORT ?? "8788";
+      const masterUrl = `http://127.0.0.1:${masterPort}/watchdogs/diag`;
+      try {
+        const upstream = await fetch(masterUrl, { method: "GET" });
+        const body = await upstream.text();
+        return new Response(body, {
+          status: upstream.status,
+          headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+        });
+      } catch (err) {
+        return Response.json(
+          { ok: false, error: `master daemon unreachable: ${(err as Error).message}` },
+          { status: 502 },
+        );
+      }
+    }
+    {
+      const m = url.pathname.match(/^\/api\/watchdogs\/([A-Za-z0-9_.-]+)\/diag\/?$/);
+      if (m && req.method === "GET") {
+        const id = m[1]!;
+        const masterPort = process.env.SUBCTL_MASTER_PORT ?? "8788";
+        const masterUrl = `http://127.0.0.1:${masterPort}/watchdogs/${encodeURIComponent(id)}/diag`;
+        try {
+          const upstream = await fetch(masterUrl, { method: "GET" });
+          const body = await upstream.text();
+          return new Response(body, {
+            status: upstream.status,
+            headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+          });
+        } catch (err) {
+          return Response.json(
+            { ok: false, error: `master daemon unreachable: ${(err as Error).message}` },
+            { status: 502 },
+          );
+        }
+      }
+    }
     {
       const m = url.pathname.match(/^\/api\/watchdogs\/([A-Za-z0-9_.-]+)\/kill\/?$/);
       if (m && req.method === "POST") {
         const id = m[1]!;
         const masterPort = process.env.SUBCTL_MASTER_PORT ?? "8788";
         const masterUrl = `http://127.0.0.1:${masterPort}/watchdogs/${encodeURIComponent(id)}/kill`;
+        try {
+          const upstream = await fetch(masterUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+          });
+          const body = await upstream.text();
+          return new Response(body, {
+            status: upstream.status,
+            headers: { "Content-Type": "application/json" },
+          });
+        } catch (err) {
+          return Response.json(
+            { ok: false, error: `master daemon unreachable: ${(err as Error).message}` },
+            { status: 502 },
+          );
+        }
+      }
+    }
+    {
+      // v2.7.35 — restart endpoint proxy. Bounces (kill+re-arm) a
+      // watchdog that opted into the restart-factory registry. 404 from
+      // master means the kind doesn't support hot-restart — surfacing the
+      // master's error verbatim so the UI explains why the button is grey.
+      const m = url.pathname.match(/^\/api\/watchdogs\/([A-Za-z0-9_.-]+)\/restart\/?$/);
+      if (m && req.method === "POST") {
+        const id = m[1]!;
+        const masterPort = process.env.SUBCTL_MASTER_PORT ?? "8788";
+        const masterUrl = `http://127.0.0.1:${masterPort}/watchdogs/${encodeURIComponent(id)}/restart`;
         try {
           const upstream = await fetch(masterUrl, {
             method: "POST",

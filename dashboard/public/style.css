@@ -3721,6 +3721,173 @@ main {
   cursor: progress;
 }
 
+/* ── Watchdog rich rendering (v2.7.35) ─────────────────────────────────────
+   Full /diag surface: status badge, expandable details (tick sparkline +
+   recent notifications + last error). Same colour vocabulary as the
+   notification tray (info=blue, warn=amber, alert/dead=red). */
+.watchdog-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 500;
+  border: 1px solid;
+}
+.watchdog-status-healthy {
+  background: #0e1a0e;
+  border-color: #1f3a1f;
+  color: #6cd66c;
+}
+.watchdog-status-degraded {
+  background: #1a160c;
+  border-color: #3a311a;
+  color: #d6b06c;
+}
+.watchdog-status-dead {
+  background: #1a0c0c;
+  border-color: #3a1818;
+  color: #d66c6c;
+}
+.watchdog-status-unknown {
+  background: #14141a;
+  border-color: #25252e;
+  color: #8c8cac;
+}
+.watchdog-status-badge .lucide { vertical-align: -2px; }
+.watchdog-restart-btn {
+  background: #102030;
+  color: #6cc4d6;
+  border: 1px solid #1c344a;
+  border-radius: 3px;
+  padding: 3px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  font-family: inherit;
+  letter-spacing: 0.04em;
+  margin-right: 6px;
+}
+.watchdog-restart-btn:hover:not(:disabled) {
+  background: #14283c;
+  border-color: #24446a;
+  color: #96daff;
+}
+.watchdog-restart-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.watchdog-row-actions {
+  display: flex;
+  gap: 4px;
+  justify-content: flex-end;
+}
+.watchdog-expand-btn {
+  background: transparent;
+  color: #888;
+  border: 1px solid #222;
+  border-radius: 3px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.watchdog-expand-btn:hover { color: #ccc; border-color: #333; }
+.watchdog-detail-row > td {
+  padding: 0 !important;
+  border-bottom: none !important;
+}
+.watchdog-detail-box {
+  background: #050505;
+  border: 1px solid #181818;
+  border-radius: 3px;
+  margin: 0 0 10px 0;
+  padding: 10px 12px;
+  font-size: 11.5px;
+  color: #b5b5b5;
+  display: grid;
+  gap: 10px;
+}
+.watchdog-detail-section h4 {
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #888;
+  margin: 0 0 6px 0;
+  font-weight: 500;
+}
+.watchdog-sparkline {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 32px;
+  padding: 4px 0;
+}
+.watchdog-sparkline-bar {
+  flex: 1;
+  min-width: 3px;
+  background: #2c5a2c;
+  border-radius: 1px;
+  transition: background 200ms ease;
+}
+.watchdog-sparkline-bar.late { background: #5a4c2c; }
+.watchdog-sparkline-bar.very-late { background: #5a2c2c; }
+.watchdog-sparkline-empty {
+  color: #555;
+  font-style: italic;
+  padding: 4px 0;
+}
+.watchdog-notif-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.watchdog-notif-list li {
+  padding: 4px 0;
+  border-bottom: 1px dashed #1a1a1a;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+.watchdog-notif-list li:last-child { border-bottom: none; }
+.watchdog-notif-sev {
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  padding: 1px 5px;
+  border-radius: 2px;
+  text-transform: uppercase;
+}
+.watchdog-notif-sev.info  { background: #0c1420; color: #6c9ed6; }
+.watchdog-notif-sev.warn  { background: #1a160c; color: #d6b06c; }
+.watchdog-notif-sev.alert { background: #1a0c0c; color: #d66c6c; }
+.watchdog-notif-ts { color: #666; font-size: 10.5px; min-width: 70px; }
+.watchdog-notif-title { color: #c4c4c4; flex: 1; }
+.watchdog-error-box {
+  background: #1a0808;
+  border: 1px solid #2a1010;
+  border-radius: 3px;
+  padding: 8px 10px;
+  color: #d66c6c;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-x: auto;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.watchdog-meta-kv {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 14px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+}
+.watchdog-meta-kv dt { color: #777; }
+.watchdog-meta-kv dd { color: #c4c4c4; margin: 0; }
+
 /* ── Vault viewer (Phase 3n) — two-pane Obsidian-flavoured note browser. */
 .vault-screen { display: block; }
 .vault-root-select {

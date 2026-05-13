@@ -371,12 +371,12 @@
           </div>
         </section>
 
-        <!-- v2.7.19 — Watchdogs panel. Collapsible (closed by default to
-             keep the Orchestration tab uncluttered); polls /api/watchdogs
-             every 10s while open, idle when closed. Each row shows the
-             id · kind · age · a Kill button. Operator can also kill
-             from Evy or Telegram (/watchdogs); this is the visual surface
-             of the same registry. -->
+        <!-- v2.7.19 — Watchdogs panel. v2.7.35 — full /diag surface:
+             status badge (healthy/degraded/dead), per-row expand to
+             reveal tick history sparkline, recent notifications, and
+             last error. Collapsible (closed by default to keep the
+             Orchestration tab uncluttered); polls /api/watchdogs/diag
+             every 10s while open, idle when closed. -->
         <section class="orch-card orch-card-wide watchdog-card">
           <details class="watchdog-details" id="watchdog-panel">
             <summary class="orch-card-head watchdog-card-head">
@@ -390,6 +390,7 @@
                   <tr>
                     <th>id</th>
                     <th>kind</th>
+                    <th>status</th>
                     <th>age</th>
                     <th>last tick</th>
                     <th></th>
