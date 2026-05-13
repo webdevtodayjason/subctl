@@ -4497,6 +4497,7 @@ const server = Bun.serve({
         "mlx",
         "ollama",
         "vllm",
+        "openrouter",      // v2.7.17 — OpenAI-compat gateway, hundreds of models (incl. free preview tier)
       ]);
       if (newProvider && !WIRED_PROVIDERS.has(newProvider)) {
         return Response.json(

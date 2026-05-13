@@ -447,7 +447,7 @@ function adaptTool(name: string, tool: InternalTool): AgentTool {
 // which doesn't cover local runtimes (mlx/ollama/lmstudio) or operator-pinned
 // custom IDs. We construct a Model<any> object directly — it's a structural
 // type and the provider/api fields drive dispatch in pi-ai's stream pipeline.
-const PROVIDER_API: Record<string, string> = {
+export const PROVIDER_API: Record<string, string> = {
   anthropic: "anthropic-messages",
   openai: "openai-responses",
   "openai-codex": "openai-codex-responses",
@@ -461,9 +461,18 @@ const PROVIDER_API: Record<string, string> = {
   ollama: "openai-completions",
   lmstudio: "openai-completions",
   vllm: "openai-completions",
+  // OpenRouter — unified gateway for hundreds of models (incl. a free preview
+  // tier). OpenAI-compat wire format at https://openrouter.ai/api/v1. Model
+  // IDs use vendor/name (e.g. "anthropic/claude-sonnet-4", "openai/gpt-5.2").
+  // Auth via openrouter_api_key (secrets.json) / OPENROUTER_API_KEY (env). The
+  // optional attribution headers (HTTP-Referer, X-OpenRouter-Title) are
+  // intentionally NOT injected in v2.7.17 — operators stay anonymous on the
+  // OpenRouter leaderboard. If we ever want attribution that's a separate
+  // change in pi-ai's openai-completions header pipeline.
+  openrouter: "openai-completions",
 };
 
-function buildModel(cfg: {
+export function buildModel(cfg: {
   provider: string;
   model: string;
   host?: string;
@@ -485,7 +494,11 @@ function buildModel(cfg: {
     // omits `host`. Without this, pi-ai's OpenAI client falls back to
     // api.openai.com and sends the local-runtime token to real OpenAI,
     // which 401s. Fixed in v2.7.7 after a long debug.
-    baseUrl: cfg.host ?? (LOCAL_PROVIDERS.has(cfg.provider) ? "http://localhost:1234/v1" : ""),
+    baseUrl: cfg.host ?? (
+      LOCAL_PROVIDERS.has(cfg.provider) ? "http://localhost:1234/v1" :
+      cfg.provider === "openrouter" ? "https://openrouter.ai/api/v1" :
+      ""
+    ),
     reasoning: false,
     input: ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -547,6 +560,16 @@ export function getApiKeyForProvider(provider: string): string | undefined {
     return resolveSecret("lmstudio_api_token") ?? "not-needed";
   }
   if (LOCAL_PROVIDERS.has(provider)) return "not-needed";
+  if (provider === "openrouter") {
+    // OpenRouter REQUIRES a real key on every request — unlike LM Studio
+    // there's no "not-needed" fallback. Return undefined (NOT a sentinel)
+    // when the secret is absent so pi-ai surfaces a clear "no API key for
+    // provider: openrouter" instead of pushing a bogus token to api/v1
+    // and getting a generic 401. Operator mints a key at
+    // https://openrouter.ai/keys and pastes it into Settings → API Tokens
+    // (or sets OPENROUTER_API_KEY in the launchd plist).
+    return resolveSecret("openrouter_api_key") ?? undefined;
+  }
   // Fall through — pi-ai handles real providers via env vars / OAuth
   return undefined;
 }

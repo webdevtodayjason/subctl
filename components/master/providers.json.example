@@ -28,6 +28,13 @@
       "provider": "lmstudio",
       "model": "text-embedding-nomic-embed-text-v1.5",
       "host": "http://localhost:1234/v1"
+    },
+
+    "_alt_supervisor_openrouter": {
+      "_comment": "ALTERNATE EXAMPLE (v2.7.17) — point supervisor at OpenRouter for hundreds of models (incl. a free preview tier). To activate: rename this key to 'supervisor' (replacing the lmstudio block above), set openrouter_api_key in the dashboard's Settings → API Tokens panel (or export OPENROUTER_API_KEY in the launchd plist), then bounce master. Model IDs use vendor/name format — browse https://openrouter.ai/models for the live catalog. host is optional; when omitted, master defaults to https://openrouter.ai/api/v1.",
+      "provider": "openrouter",
+      "model": "anthropic/claude-sonnet-4",
+      "context_length": 200000
     }
   },
 

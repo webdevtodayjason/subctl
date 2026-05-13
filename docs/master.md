@@ -1477,6 +1477,32 @@ Operator decided to integrate TinyFish first-class rather than via MCP passthrou
 
 Dashboard `/api/settings/keys` gains a `TINYFISH_API_KEY` row; the Settings → API Tokens panel shows the secret status with the same Set / Not set / env-override pills as the other keys. Master tool count: **71 → 73**.
 
+### Phase 3o.17 — OpenRouter as a first-class model provider (v2.7.17)
+
+OpenRouter is a unified gateway for hundreds of AI models (incl. a free preview tier across many vendors) speaking the OpenAI Chat Completions wire format at `https://openrouter.ai/api/v1`. v2.7.17 registers `openrouter` as a first-class provider alongside `anthropic`, `openai`, `lmstudio`, `mlx`, `ollama`, `vllm`, `mistral`, `google`, `google-vertex`, and `amazon-bedrock`.
+
+**How it works:**
+
+- `PROVIDER_API["openrouter"] = "openai-completions"` (in `components/master/server.ts`) — pi-ai dispatches to the same stream factory used for the local OpenAI-compatible runtimes.
+- `buildModel({provider: "openrouter", ...})` defaults `baseUrl` to `https://openrouter.ai/api/v1` when providers.json omits `host`. An explicit `host` still wins for proxies or regional endpoints.
+- `getApiKeyForProvider("openrouter")` resolves `openrouter_api_key` from the v2.7.4 secrets chain (env > secrets.json > absent). Unlike the local-runtime providers it does NOT return a `"not-needed"` sentinel — OpenRouter requires a real key, so absence surfaces as `undefined` and pi-ai reports "no API key for provider: openrouter" instead of silently 401-ing on first call.
+- Model IDs use vendor/name format: `openai/gpt-5.2`, `anthropic/claude-sonnet-4`, `mistralai/mixtral-8x22b-instruct`, `meta-llama/llama-3.3-70b-instruct:free`. Browse https://openrouter.ai/models for the live catalog.
+
+**Operator setup:**
+
+1. Mint a key at https://openrouter.ai/keys.
+2. Paste it into Settings → API Tokens → `openrouter_api_key` in the dashboard (or export `OPENROUTER_API_KEY` in the launchd plist).
+3. Switch the supervisor via the dashboard's model picker (provider `openrouter`, model e.g. `anthropic/claude-sonnet-4`). `providers.json.example` carries an `_alt_supervisor_openrouter` block as reference.
+
+**Free tier:** OpenRouter exposes many models with `:free` suffix as preview tier. Rate limits and availability vary per model — see https://openrouter.ai/docs/faq#how-are-rate-limits-calculated. Operator's primary motivator for the integration is rapid testing of new models without per-vendor signup, plus a no-cost path to complex models during local-runtime outages.
+
+**What's NOT included in v2.7.17:**
+
+- **Attribution headers** — OpenRouter accepts optional `HTTP-Referer` and `X-OpenRouter-Title` headers for leaderboard attribution. These are intentionally omitted; the operator stays anonymous on the OpenRouter leaderboard. If we ever want attribution that's a separate small change in pi-ai's openai-completions header pipeline.
+- **Tier-specific routing** — the operator picks a specific model per spawn; there's no automatic `:free`-first fallback chain yet.
+
+**Trade-offs vs local runtimes:** higher and more variable latency (cloud round-trip + model load on OpenRouter's side), model availability changes (vendors can deprecate or reroute IDs without notice), per-model rate limits. Trade-off vs direct vendor SDKs: one key + one billing relationship instead of N; uniform OpenAI-compat surface instead of per-vendor quirks.
+
 ---
 
 ## 4a. Persona — Evy (v2.7.15+)

@@ -4,6 +4,40 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.7.17] — 2026-05-13
+
+### `feat(providers): OpenRouter as first-class model provider`
+
+OpenRouter is a unified API gateway for hundreds of AI models (incl. a large free-preview tier across many vendors) speaking the OpenAI Chat Completions wire format at `https://openrouter.ai/api/v1`. v2.7.17 registers `openrouter` as a first-class provider alongside the existing `anthropic`, `openai`, `lmstudio`, `mlx`, `ollama`, `vllm`, `mistral`, `google`, `google-vertex`, and `amazon-bedrock` entries. The integration is the smallest of the recent provider series because subctl's provider abstraction already does the heavy lifting; OpenRouter is OpenAI-compatible, so the wire format is shared with the existing local-runtime providers and pi-ai's `openai-completions` stream factory dispatches it unchanged.
+
+**How it works.** The provider gets three pieces of wiring:
+
+- `PROVIDER_API["openrouter"] = "openai-completions"` in `components/master/server.ts` — same family as the local runtimes.
+- `buildModel({provider: "openrouter", ...})` defaults `baseUrl` to `https://openrouter.ai/api/v1` when `providers.json` omits the `host` field. An explicit `host` still wins (proxies, regional endpoints).
+- `getApiKeyForProvider("openrouter")` resolves `openrouter_api_key` via the v2.7.4 priority chain (env > secrets.json > absent). Unlike the local runtimes it does NOT return the `"not-needed"` sentinel — OpenRouter requires a real key on every request, so absence surfaces as `undefined` and pi-ai reports "no API key for provider: openrouter" instead of silently 401-ing.
+
+Model IDs use OpenRouter's `vendor/model` format: `openai/gpt-5.2`, `anthropic/claude-sonnet-4`, `mistralai/mixtral-8x22b-instruct`, `meta-llama/llama-3.3-70b-instruct:free`. Browse https://openrouter.ai/models for the live catalog.
+
+**Operator setup (one-time).** Mint a key at https://openrouter.ai/keys → paste it into the dashboard's Settings → API Tokens panel under `openrouter_api_key` (writes `~/.config/subctl/secrets.json` chmod 600), OR export `OPENROUTER_API_KEY` in `~/Library/LaunchAgents/com.subctl.master.plist`'s EnvironmentVariables. Then switch the supervisor via the dashboard's model picker — pick provider `openrouter`, paste a model ID like `anthropic/claude-sonnet-4`. The host field can be left blank; master defaults to `https://openrouter.ai/api/v1`. `providers.json.example` carries an `_alt_supervisor_openrouter` block showing the shape for operators who want to hand-edit `providers.json` directly.
+
+**What's NOT included in v2.7.17:**
+
+- **Attribution headers** — OpenRouter accepts optional `HTTP-Referer` and `X-OpenRouter-Title` headers for leaderboard attribution. Intentionally omitted; the operator stays anonymous on the OpenRouter leaderboard. Adding them later would need pi-ai to support per-provider extra headers and is a separate small change.
+- **Tier-specific routing** — no automatic `:free`-first fallback chain. The operator picks a specific model per spawn / per supervisor switch.
+- **1Password secret backend** — that's v2.7.18 (ADR 0012). The `openrouter_api_key` lives in the existing `secrets.json` chain like the other API keys.
+
+**Trade-offs.** Higher and more variable latency than local runtimes (cloud round-trip + per-vendor cold-start on OpenRouter's side); model availability changes (vendors can deprecate or reroute IDs without notice); per-model rate limits (see https://openrouter.ai/docs/faq#how-are-rate-limits-calculated). Trade-off vs direct vendor SDKs: one key + one billing relationship instead of N, with a uniform OpenAI-compat surface in exchange for missing some vendor-specific features.
+
+**Files:**
+
+- `components/master/server.ts`: `PROVIDER_API.openrouter = "openai-completions"`; `buildModel` baseUrl default extended; `getApiKeyForProvider` openrouter case; `PROVIDER_API` and `buildModel` re-exported for the test suite.
+- `components/master/secrets.ts`: `openrouter_api_key` added to `SECRET_KEYS`; `envVarFor("openrouter_api_key") → "OPENROUTER_API_KEY"`.
+- `dashboard/server.ts`: `openrouter` added to `WIRED_PROVIDERS` allowlist in the `/api/master/supervisor` handler. The cloud-provider host-clearing branch already does the right thing — clearing `host` lets `buildModel` fall through to the openrouter default URL.
+- `dashboard/public/app.js`: `openrouter_api_key` description added to the Settings → API Tokens panel.
+- `components/master/providers.json.example`: `_alt_supervisor_openrouter` block appended as an operator-facing reference.
+- New: `components/master/__tests__/openrouter-provider.test.ts` — pins the three contracts (PROVIDER_API entry, baseUrl default + explicit host override, API key required-and-undefined-when-absent semantics).
+- `docs/master.md`: Phase 3o.17 section documents the integration.
+
 ## [2.7.16] — 2026-05-13
 
 ### `feat(tools): TinyFish first-class — tinyfish_search + tinyfish_fetch as native master tools`

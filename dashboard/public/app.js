@@ -1379,6 +1379,7 @@
           tinyfish_api_key: "TinyFish search + fetch (tinyfish_* master tools — v2.7.16, free tier)",
           linear_api_key: "Linear API (linear_* master tools — v2.7.2)",
           context7_api_key: "Context7 — up-to-date library docs (master tool + MCP for dev-team Claude leads)",
+          openrouter_api_key: "OpenRouter API key for accessing hundreds of models via openrouter.ai. Free tier includes many preview models. Mint at https://openrouter.ai/keys",
         };
         const table = document.createElement("table");
         table.className = "secrets-table";
