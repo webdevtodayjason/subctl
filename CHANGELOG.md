@@ -1,30 +1,62 @@
 ## [2.8.1] — 2026-05-13
 
-### `fix(dashboard,master): v2.8.1 notification dropdown UX + watchdog reconciliation for archived teams`
+> **Note:** v2.8.1 is a batched release. The operator may bundle additional items before tagging; this entry covers what's landed on the branch so far.
 
-Two operator-facing regressions surfaced on 2026-05-13. Both ship as part of a batched v2.8.1 release alongside the operator-preferences system (separate PR).
+### `feat(master): v2.8.1 operator preferences (bilateral maintenance, TOML store)`
 
-**Bug #1 — Notification dropdown was sticky-open.** Operator screenshot showed the v2.7.25 notification tray refused to close: the mailbox icon click didn't toggle it shut, the dropdown's top-right `[×]` did nothing, and outside-clicks didn't dismiss it. Root cause: `.notif-tray { display: flex }` in `dashboard/public/style.css` ties on specificity with the browser's UA `[hidden] { display: none }` rule (both are 0,0,1,0), and author styles always beat UA styles regardless — so JS-set `tray.hidden = true` was a silent no-op. Fix: add `.notif-tray[hidden] { display: none; }` rule (specificity 0,0,2,0). While in the JS, the open/close pattern was centralized into a single `setTrayOpen(open)` helper and an ESC-to-close listener was added (per-item dismiss, mark-all-read, outside-click, and bell-toggle now all funnel through one setter). Per-item dismiss now fades to "read" state instead of deleting locally — matches mark-all-read semantics and avoids the v2.7.25 wart where reopening the tray re-fetched the just-dismissed item from the master ring.
+Operator-raised on 2026-05-13:
 
-**Bug #2 — Watchdog kept alerting on archived teams.** Operator screenshot showed two fresh notifications about `claude-osint-cve-monitor` (one `auto-nudged ... 383min idle`, one `unresponsive 30min since nudge`) — but the team's registry dir had been archived to `~/.local/state/subctl/teams/.killed/claude-osint-cve-monitor.20260513-095850/` hours earlier. The v2.7.32 PR added a `teamRegistryExists` reconciliation predicate + `emitVanished` callback to `auto-nudge.ts`, with the intention that `runStaleTeamSweep` would skip nudging teams whose registry dir was gone. The predicate and unit tests existed and passed. The callbacks were never wired in `components/master/server.ts` — `runWatchdogTick`'s `callbacks` block had `sendNudge`, `emitInfo`, `emitAlert`, `logDecision` and stopped, so the optional reconciliation always fell through and the auto-nudge fired on a team that had been dead for hours.
+> We need to have an operator preferences section that both me and the agent can maintain. Examples would be: I prefer audio over Telegram versus text, I prefer this coding style, I prefer this type of report, et cetera.
 
-Fix lives entirely in `server.ts`:
+The load-bearing requirement is bilateral authorship — both the operator AND Evy write to the same file. Evy writes when she learns a preference from conversation; the operator writes via dashboard, CLI, Telegram, or direct edit. The next turn's system prompt reflects the new value either way.
 
-- Wired `teamRegistryExists(team_id)` predicate — fresh `statSync(~/.local/state/subctl/teams/<id>/)` on every call, no caching, honors `SUBCTL_STATE_DIR` env override the same way `trust-marker.ts` does.
-- Wired `emitVanished(team_id, title, body)` callback that emits `kind:"team-vanished", severity:"alert"` exactly once per team via a persistent `vanishedTeams: Set<string>` memo at `~/.config/subctl/master/vanished-teams.json` (survives daemon restart so a bounce can't re-spam).
-- After each sweep, walks `actions` and removes `action:"vanished"` entries from `teamLastActivity` + `teamPaneHash` so subsequent ticks don't re-pass them to the sweep. (auto-nudge.ts already clears `teamNudgeState`.)
-- Added `isStillVanished(team_id)` guard called from `tailInboxFile` (master restart re-seeding from historical inbox files) and `refreshTeamActivityFromTmux` (zombie tmux pane outliving the registry archive). Self-heals: if the registry dir came back (operator re-spawned the team), the team is cleared from `vanishedTeams` and tracking resumes normally.
-- Added forward-fix HTTP endpoint `POST /teams/:id/vanished` so the v2.7.36 `subctl team kill <name>` CLI (and any future operator tool that archives a team mid-run) can immediately notify the staleness tracker instead of waiting up to one watchdog interval (default 3 min) for the tick-based reconciliation to catch up. Idempotent. Returns `{ ok, was_tracked }`.
+**Storage.** `~/.config/subctl/preferences.toml` (chmod 600, parent dir chmod 700 — same posture as `profiles.json`). TOML over JSON for three reasons (ADR 0018): comments survive (the seed file ships with inline guidance the operator sees in `$EDITOR`), matches v2.8.0 team-templates precedent for operator-facing config, and `smol-toml` is already a dependency. A sidecar `preferences.meta.json` records `{by: "operator" | "evy" | "default", at, reason?}` for each write so the audit trail says who decided what. Schema is intentionally loose — categories and keys are free-form strings matching `^[A-Za-z_][A-Za-z0-9_-]*$`. Seeded categories: `[communication]`, `[coding]`, `[reports]`, `[agent_behavior]`. Operator can add categories at runtime.
 
-**Tests.** `auto-nudge.test.ts` already covered the predicate path at the unit level (`runStaleTeamSweep — vanished team reconciliation (v2.7.32)`). Added a v2.8.1 `runStaleTeamSweep — server.ts integration pattern` describe block with two tests that exercise the stateful-Set memoization the way `server.ts` actually wires it: one verifies the alert is one-shot even if the caller's tracker re-seeds the team between sweeps (zombie-tmux scenario), one verifies the self-heal path when the registry dir reappears (operator re-spawn). Existing vanished-related tests still pass unchanged.
+**Comment-preserving writes.** `smol-toml`'s `stringify()` drops comments, so `setPreference()` uses a regex-aware merge: locate the `[category]` header, locate the `key = ` line, replace just the value portion. Inline comments and the surrounding section survive untouched. New keys insert at the end of the section; new categories append at the end of the file. Multi-line strings / arrays / nested tables aren't part of the preferences contract and the merger leaves them alone.
+
+**Master tools.** Three new tools (zone marker `// ── v2.8.1 operator preferences ──` in `server.ts`):
+
+- `evy_get_preferences({category?})` — full preferences bag or one category
+- `evy_set_preference({category, key, value, reason?})` — Evy's write surface. `by="evy"` and `reason` get stamped in the meta sidecar. Called when the operator says "actually, keep responses shorter from now on" — Evy persists the standing preference instead of trusting memory retrieval to surface it next time.
+- `evy_get_preference_value({category, key})` — quick single-key lookup
+
+**Prompt injection.** `composeSystemPrompt()` now appends `renderPreferencesForPrompt()` between SKILL.md and the persona fragment. The block is clearly labeled ("Your operator's preferences") so the model knows these are operator knobs, not persona / safety rules. Reads fresh from disk on every dispatched turn — operator-side and Evy-side writes both take effect immediately. `watchPreferences()` broadcasts a `preferences` SSE event so the dashboard tab refreshes live.
+
+**Master HTTP.** `GET /preferences`, `GET /preferences/:category`, `POST /preferences/:category/:key` (body `{value, by?, reason?}`), `DELETE /preferences/:category/:key`, `POST /preferences/reset` (gated on `{confirm: true}`). The dashboard proxies under `/api/preferences/*`.
+
+**Dashboard.** New Preferences tab in the sidebar nav. Categories render as collapsible cards; each row is `key + edit-in-place input + "set by …" badge + save/delete buttons`. "+ Add new preference" affordance per category, "+ Add category" toolbar button. Reset-all button confirms before clearing operator-added categories and reseeding defaults. Optimistic UI with rollback toast on error.
+
+**Telegram.** New `/prefs` family:
+- `/prefs` — list every category, terse
+- `/prefs <category>` — list one
+- `/prefs get <cat>.<key>` — single value
+- `/prefs set <cat>.<key> <value>` — write (by=operator)
+- `/prefs reset confirm` — two-step reset
+
+All replies pass through `redactForEgress` so a misplaced `sk-*` / HMAC mark in `preferences.toml` can't leak through chat.
+
+**CLI.** `subctl prefs show|get|set|edit|reset`:
+- `show [--category <cat>]` — dump all or one
+- `get <cat>.<key>` — single value
+- `set <cat>.<key> <value>` — write
+- `edit` — open `$EDITOR` directly on `preferences.toml`; master's fs.watch picks up the save
+- `reset` — confirm-then-restore-defaults
+
+**Tests.** `preferences.test.ts` (24 tests, all pass): seed-on-missing + chmod 600, comment preamble survives seed, unparseable file recovers by reseeding, get/set/list round-trip, comment + sibling-key preservation on merge-write, value coercion (`"false"` → `false`, `"10"` → `10`), new-key + new-category insertion, name validation, sidecar `by` / `reason` metadata, delete-line-without-disturbing-neighbors, reset-restores-defaults, fs.watch debounce + close, render-as-markdown output shape.
 
 **Files:**
 
-- Modified: `dashboard/public/style.css` — `.notif-tray[hidden] { display: none; }` reset
-- Modified: `dashboard/public/app.js` — centralized `setTrayOpen()`, ESC-to-close, per-item dismiss fades instead of deleting
-- Modified: `components/master/server.ts` — `teamRegistryExists` + `emitVanished` + `isStillVanished` + persistent `vanishedTeams` Set + `POST /teams/:id/vanished` endpoint
-- Modified: `components/master/__tests__/auto-nudge.test.ts` — 2 new integration-pattern tests
-- Modified: `VERSION` → 2.8.1
+- New: `components/master/preferences.ts` — TOML store + merge-write + sidecar meta + watcher + `renderPreferencesForPrompt()`
+- New: `components/master/tools/preferences.ts` — three Evy-facing tools
+- New: `components/master/__tests__/preferences.test.ts` — 24 tests
+- New: `docs/adr/0018-operator-preferences-bilateral-maintenance.md`
+- Modified: `components/master/server.ts` — tool registry, prompt injection, HTTP routes, watcher boot + shutdown
+- Modified: `components/master/master-notify-listener.ts` — `/prefs` handler + help
+- Modified: `dashboard/server.ts` — `/api/preferences/*` proxy
+- Modified: `dashboard/public/index.html`, `app.js`, `style.css` — Preferences tab
+- Modified: `bin/subctl`, `lib/cli.sh` — `subctl prefs` subcommand + help
+- Modified: `docs/adr/README.md` — ADR 0018 index entry
+- Modified: `VERSION` → `2.8.1`
 
 ## [2.8.0] — 2026-05-13
 

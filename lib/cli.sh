@@ -1186,3 +1186,158 @@ subctl_cli_profile_list() {
     | @tsv
   ' | awk -F'\t' '{ printf "%-10s %-40s %s\n", $1, $2, $3 }'
 }
+
+# ── v2.8.1 — operator preferences CLI ─────────────────────────────────
+# `subctl prefs [show | get | set | edit]` — bilateral-maintenance config
+# the operator + Evy both write. Goes through the dashboard's
+# /api/preferences/* proxy → master's /preferences/*. `edit` opens
+# $EDITOR on the TOML file directly (no daemon hop — master's fs.watch
+# picks up the save automatically).
+subctl_cli_prefs() {
+  local sub="${1:-show}"
+  [[ $# -gt 0 ]] && shift
+  case "$sub" in
+    -h|--help)
+      cat <<EOF
+subctl prefs [show | get | set | edit | reset]
+
+  Bilateral-maintenance operator preferences (v2.8.1).
+  Goes through the dashboard's /api/preferences proxy → master's
+  /preferences. The file on disk lives at
+  ~/.config/subctl/preferences.toml (chmod 600).
+
+  Verbs:
+    show [--category <cat>]      List every preference (or one category)
+    get <category>.<key>         Print a single value
+    set <category>.<key> <val>   Write a value (by=operator)
+    edit                         Open the TOML file in \$EDITOR
+    reset                        Reset to seeded defaults (confirm prompt)
+EOF
+      return 0 ;;
+    show|"")
+      _subctl_cli_require_jq || return 1
+      local cat="" url body
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --category) cat="${2:-}"; shift 2 ;;
+          *) subctl_err "unknown flag: $1"; return 1 ;;
+        esac
+      done
+      if [[ -n "$cat" ]]; then
+        url="$(_subctl_cli_dashboard_base)/api/preferences/$cat"
+      else
+        url="$(_subctl_cli_dashboard_base)/api/preferences"
+      fi
+      if ! body=$(_subctl_cli_curl "$url" 2>/dev/null); then
+        subctl_err "GET $url failed — is the dashboard running?"
+        return 1
+      fi
+      if [[ -n "$cat" ]]; then
+        printf '%s' "$body" | jq -r '
+          "[\(.category)]",
+          (.values // {} | to_entries[] | "  \(.key) = \(.value | tojson)")
+        '
+      else
+        printf '%s' "$body" | jq -r '
+          .preferences // {}
+          | to_entries[]
+          | "[\(.key)]",
+            (.value | to_entries[] | "  \(.key) = \(.value | tojson)"),
+            ""
+        '
+      fi
+      ;;
+    get)
+      local path="${1:-}"
+      [[ -z "$path" ]] && { subctl_err "get expects <category>.<key>"; return 1; }
+      local category key
+      category="${path%%.*}"
+      key="${path#*.}"
+      if [[ "$category" == "$path" || -z "$key" ]]; then
+        subctl_err "get expects <category>.<key>"
+        return 1
+      fi
+      _subctl_cli_require_jq || return 1
+      local url body
+      url="$(_subctl_cli_dashboard_base)/api/preferences/$category"
+      if ! body=$(_subctl_cli_curl "$url" 2>/dev/null); then
+        subctl_err "GET $url failed — is the dashboard running?"
+        return 1
+      fi
+      local value
+      value=$(printf '%s' "$body" | jq -r --arg k "$key" '.values[$k] // empty')
+      if [[ -z "$value" ]]; then
+        echo "(unset)"
+        return 0
+      fi
+      printf '%s\n' "$value"
+      ;;
+    set)
+      local path="${1:-}"
+      [[ -z "$path" ]] && { subctl_err "set expects <category>.<key> <value>"; return 1; }
+      shift
+      local value="${*:-}"
+      [[ -z "$value" ]] && { subctl_err "set expects a value"; return 1; }
+      local category key
+      category="${path%%.*}"
+      key="${path#*.}"
+      if [[ "$category" == "$path" || -z "$key" ]]; then
+        subctl_err "set expects <category>.<key>"
+        return 1
+      fi
+      _subctl_cli_require_jq || return 1
+      local payload url body
+      # JSON value: try to parse as a literal (number/bool); otherwise quote
+      # it as a string. The server-side coerceValue handles "true"/"false"/
+      # numeric strings too, so a missed JSON cast still ends up correct.
+      if printf '%s' "$value" | jq -e . >/dev/null 2>&1; then
+        payload=$(jq -n --argjson v "$value" '{value: $v, by: "operator"}')
+      else
+        payload=$(jq -n --arg v "$value" '{value: $v, by: "operator"}')
+      fi
+      url="$(_subctl_cli_dashboard_base)/api/preferences/$category/$key"
+      if ! body=$(_subctl_cli_curl -X POST -H "Content-Type: application/json" \
+        --data "$payload" "$url" 2>/dev/null); then
+        subctl_err "POST $url failed — is the dashboard running?"
+        return 1
+      fi
+      if [[ "$(printf '%s' "$body" | jq -r '.ok // false')" != "true" ]]; then
+        subctl_err "set failed: $(printf '%s' "$body" | jq -r '.error // "?"')"
+        return 1
+      fi
+      subctl_ok "set $category.$key"
+      ;;
+    edit)
+      local path="$SUBCTL_CONFIG_DIR/preferences.toml"
+      # Trigger a seed if the file isn't there yet — master will create
+      # it on its next call, but for a fresh box we shouldn't make the
+      # operator start an empty buffer.
+      if [[ ! -f "$path" ]]; then
+        _subctl_cli_curl "$(_subctl_cli_dashboard_base)/api/preferences" >/dev/null 2>&1 || true
+      fi
+      "${EDITOR:-vi}" "$path"
+      ;;
+    reset)
+      _subctl_cli_require_jq || return 1
+      printf "Reset ALL preferences to seeded defaults? [y/N] "
+      local ans; read -r ans
+      [[ "${ans,,}" != "y" && "${ans,,}" != "yes" ]] && { echo "aborted"; return 0; }
+      local url body
+      url="$(_subctl_cli_dashboard_base)/api/preferences/reset"
+      if ! body=$(_subctl_cli_curl -X POST -H "Content-Type: application/json" \
+        --data '{"confirm":true}' "$url" 2>/dev/null); then
+        subctl_err "POST $url failed — is the dashboard running?"
+        return 1
+      fi
+      if [[ "$(printf '%s' "$body" | jq -r '.ok // false')" != "true" ]]; then
+        subctl_err "reset failed: $(printf '%s' "$body" | jq -r '.error // "?"')"
+        return 1
+      fi
+      subctl_ok "preferences reset to seeded defaults"
+      ;;
+    *)
+      subctl_err "unknown prefs verb: $sub (try: show | get | set | edit | reset)"
+      return 1
+      ;;
+  esac
+}

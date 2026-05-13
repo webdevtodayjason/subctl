@@ -149,6 +149,18 @@ import {
   type MemoryEntry,
 } from "./memory";
 import { evyMemoryTools } from "./tools/evy-memory";
+// ── v2.8.1 operator preferences ──
+import { preferencesTools } from "./tools/preferences";
+import {
+  loadPreferences,
+  setPreference as setPreferenceValue,
+  deletePreference,
+  resetPreferences,
+  watchPreferences,
+  renderPreferencesForPrompt,
+  listPreferences,
+  getPreferenceMeta,
+} from "./preferences";
 import {
   startUpstreamWatchdog,
   describeUpstreamState,
@@ -502,6 +514,17 @@ export const toolRegistry: Record<string, InternalTool> = {
   // Keys are fully-qualified (voice_render, voice_status).
   ...Object.fromEntries(
     Object.entries(voiceTools).map(([k, v]) => [k, v as unknown as InternalTool]),
+  ),
+  // ── v2.8.1 operator preferences ──
+  // Bilateral-maintenance config the operator AND Evy both write. Keys
+  // are fully-qualified (evy_get_preferences, evy_set_preference,
+  // evy_get_preference_value) — distinct from evy-memory which is the
+  // conversational Tier 3 store.
+  ...Object.fromEntries(
+    Object.entries(preferencesTools).map(([k, v]) => [
+      k,
+      v as unknown as InternalTool,
+    ]),
   ),
 };
 
@@ -953,19 +976,36 @@ async function main() {
     getApiKeyForProvider(provider);
 
   // Compose the initial system prompt: master persona + tier-1 memory
-  // (user profile + learned facts). Both memory files are re-read on
-  // every dispatchToAgent call below, so writes from operator OR master
-  // tools land in the next turn without restart.
+  // (user profile + learned facts) + operator preferences (v2.8.1).
+  // Memory files + preferences.toml are re-read on every dispatchToAgent
+  // call below, so writes from operator OR master tools land in the
+  // next turn without restart.
   function composeSystemPrompt(): string {
     const memBlock = buildMemoryBlock();
     const personality = buildPersonalityFragment();
+    // v2.8.1: operator preferences. Bilateral-maintenance config —
+    // operator writes via dashboard / CLI / /prefs; Evy writes via
+    // evy_set_preference when she learns one in conversation. Rendered
+    // as a clearly-labeled markdown block so the model knows these are
+    // operator preferences, not safety rules. Empty when no preferences
+    // have been set (e.g. before first boot seeds the file).
+    let prefsBlock = "";
+    try {
+      const md = renderPreferencesForPrompt();
+      if (md) prefsBlock = "\n\n" + md;
+    } catch (err) {
+      console.error(
+        `[preferences] renderPreferencesForPrompt failed: ${(err as Error).message ?? err}`,
+      );
+    }
     // Personality goes LAST so voice rules are the most-recent thing the
     // model reads before responding. SKILL.md (the behavioral contract)
     // and anti-hallucination rules stay authoritative — the personality
-    // fragment cannot relax them, and every preset's content explicitly
-    // says so. Hot-swappable: composeSystemPrompt() runs before every
-    // turn, so writes to personality.json take effect on the next prompt.
-    return memBlock + skill + personality;
+    // fragment + preferences cannot relax them, and every preset's
+    // content explicitly says so. Hot-swappable: composeSystemPrompt()
+    // runs before every turn, so writes to personality.json /
+    // preferences.toml take effect on the next prompt.
+    return memBlock + skill + prefsBlock + personality;
   }
 
   const agent = new Agent({
@@ -1087,6 +1127,17 @@ async function main() {
       `[voice] config reloaded: enabled=${next.enabled} voice=${next.default_voice_id} model=${next.model}`,
     );
     broadcast("voice_config", next);
+  });
+
+  // v2.8.1 — operator preferences watcher. The renderer + tools read
+  // preferences.toml fresh on every call, so the watcher's only job is
+  // to broadcast a `preferences` SSE event for the dashboard's
+  // Preferences tab to refresh, and log the change. The next agent
+  // turn picks up the new values automatically via composeSystemPrompt().
+  const preferencesWatcher = watchPreferences((next) => {
+    const cats = Object.keys(next).join(",");
+    console.error(`[preferences] reloaded: categories=${cats}`);
+    broadcast("preferences", { preferences: next });
   });
 
   agent.subscribe((event) => {
@@ -2932,6 +2983,136 @@ async function main() {
         return Response.json({ ok: true, config: next });
       }
 
+      // ── v2.8.1 operator preferences ───────────────────────────────────
+      // Bilateral-maintenance config. Dashboard proxies these under
+      // /api/preferences/*. Telegram's /prefs command reads/writes via
+      // the same module directly (no HTTP hop) inside master-notify-listener.
+      //
+      //   GET    /preferences                       → { ok, preferences }
+      //   GET    /preferences/:category             → { ok, category, values }
+      //   POST   /preferences/:category/:key        body { value, by?, reason? }
+      //   DELETE /preferences/:category/:key        → { ok, removed }
+      //   POST   /preferences/reset                 body { confirm: true }
+      //
+      // by defaults to "operator" — only the master tool path uses "evy".
+      // Values are NOT redacted on egress: the operator deliberately
+      // chose what to put here, and unlike Evy Memory the contents are
+      // expected to be operator-readable shorthand (no chat history,
+      // no transcripts). The Telegram surface still applies the same
+      // redaction pass as memory before quoting back as a defense-in-depth.
+      if (url.pathname === "/preferences" && req.method === "GET") {
+        try {
+          const prefs = loadPreferences();
+          return Response.json({ ok: true, preferences: prefs });
+        } catch (err) {
+          return Response.json(
+            { ok: false, error: (err as Error).message },
+            { status: 500 },
+          );
+        }
+      }
+      {
+        const m = url.pathname.match(/^\/preferences\/([A-Za-z_][A-Za-z0-9_-]*)\/?$/);
+        if (m && req.method === "GET") {
+          try {
+            const cat = m[1]!;
+            const entries = listPreferences(cat);
+            const values: Record<string, unknown> = {};
+            for (const e of entries) values[e.key] = e.value;
+            return Response.json({
+              ok: true,
+              category: cat,
+              values,
+              count: entries.length,
+            });
+          } catch (err) {
+            return Response.json(
+              { ok: false, error: (err as Error).message },
+              { status: 500 },
+            );
+          }
+        }
+      }
+      {
+        const m = url.pathname.match(
+          /^\/preferences\/([A-Za-z_][A-Za-z0-9_-]*)\/([A-Za-z_][A-Za-z0-9_-]*)\/?$/,
+        );
+        if (m && req.method === "POST") {
+          let body: { value?: unknown; by?: unknown; reason?: unknown };
+          try {
+            body = (await req.json()) as typeof body;
+          } catch {
+            return Response.json(
+              { ok: false, error: "invalid JSON body" },
+              { status: 400 },
+            );
+          }
+          const value = body.value;
+          if (value !== null && typeof value === "object") {
+            return Response.json(
+              { ok: false, error: "value must be a string, number, or boolean" },
+              { status: 400 },
+            );
+          }
+          const by =
+            body.by === "evy" || body.by === "operator" ? body.by : "operator";
+          const reason = typeof body.reason === "string" ? body.reason : undefined;
+          try {
+            const entry = setPreferenceValue(
+              m[1]!,
+              m[2]!,
+              value as string | number | boolean,
+              by,
+              reason,
+            );
+            return Response.json({
+              ok: true,
+              entry,
+              meta: getPreferenceMeta(m[1]!, m[2]!),
+            });
+          } catch (err) {
+            return Response.json(
+              { ok: false, error: (err as Error).message },
+              { status: 400 },
+            );
+          }
+        }
+        if (m && req.method === "DELETE") {
+          try {
+            const removed = deletePreference(m[1]!, m[2]!);
+            return Response.json({ ok: true, removed });
+          } catch (err) {
+            return Response.json(
+              { ok: false, error: (err as Error).message },
+              { status: 400 },
+            );
+          }
+        }
+      }
+      if (url.pathname === "/preferences/reset" && req.method === "POST") {
+        let body: { confirm?: unknown };
+        try {
+          body = (await req.json().catch(() => ({}))) as typeof body;
+        } catch {
+          body = {};
+        }
+        if (body.confirm !== true) {
+          return Response.json(
+            { ok: false, error: "pass { confirm: true } to reset to seeded defaults" },
+            { status: 400 },
+          );
+        }
+        try {
+          const prefs = resetPreferences();
+          return Response.json({ ok: true, preferences: prefs });
+        } catch (err) {
+          return Response.json(
+            { ok: false, error: (err as Error).message },
+            { status: 500 },
+          );
+        }
+      }
+
       {
         const m = url.pathname.match(/^\/voice\/audio\/([a-f0-9]+\.[a-z0-9]+)$/i);
         if (m && req.method === "GET") {
@@ -3507,6 +3688,7 @@ async function main() {
     try { upstreamWatchdog?.stop(); } catch { /* ignore */ }
     try { profilesWatcher.close(); } catch { /* ignore */ }
     try { voiceWatcher.close(); } catch { /* ignore */ }
+    try { preferencesWatcher.close(); } catch { /* ignore */ }
     if (inboxWatcher) try { inboxWatcher.close(); } catch { /* ignore */ }
     try { stopMasterNotifyListener(); } catch { /* ignore */ }
     httpServer.stop(true);

@@ -90,6 +90,14 @@ import {
 import { loadVoiceConfig, saveVoiceConfig } from "./voice-config";
 import { renderVoice, probeTtsServer } from "./tools/voice-render";
 import { sendTelegramVoice } from "./tools/telegram";
+// ── v2.8.1 operator preferences ──
+import {
+  listPreferences,
+  getPreference,
+  setPreference,
+  resetPreferences,
+} from "./preferences";
+import { redactForEgress } from "./memory";
 
 const HOME = homedir();
 const SUBCTL_CONFIG_DIR =
@@ -519,8 +527,16 @@ async function handleBotCommand(text: string): Promise<string> {
       // a sendVoice. Egress redaction applies inside voice_render so
       // secrets can't leak even if the operator types one.
       return await handleSayCommand(text.slice("/say".length));
+    case "/prefs":
+      // v2.8.1 — operator preferences (bilateral maintenance).
+      //   /prefs                          → list every category
+      //   /prefs <category>               → list one category
+      //   /prefs get <category>.<key>     → single value
+      //   /prefs set <category>.<key> v   → write (by=operator)
+      //   /prefs reset                    → confirm-then-seed
+      return handlePrefsCommand(parts.slice(1));
     default:
-      return `Unknown command: ${cmd}\n\nTry: /status, /pause, /resume, /profile, /watchdogs, /terminal, /notifications, /upstreams, /secrets, /memory, /remember, /voice, /say, /help`;
+      return `Unknown command: ${cmd}\n\nTry: /status, /pause, /resume, /profile, /watchdogs, /terminal, /notifications, /upstreams, /secrets, /memory, /remember, /voice, /say, /prefs, /help`;
   }
 }
 
@@ -696,6 +712,105 @@ async function handleSayCommand(rest: string): Promise<string> {
   });
   if (!sent.ok) return `voice render ok, telegram upload failed: ${sent.error}`;
   return `🔊 sent (${render.cached ? "cached" : "rendered"}, ${render.duration_ms ?? 0}ms)`;
+}
+
+// v2.8.1 — /prefs operator preferences. Bilateral-maintenance config.
+// All replies pass through redactForEgress so a misplaced sk-* / HMAC
+// mark in preferences.toml can't leak back through chat.
+function handlePrefsCommand(args: string[]): string {
+  const sub = (args[0] || "").trim().toLowerCase();
+  // No args → dump everything terse.
+  if (!sub) {
+    const entries = listPreferences();
+    if (entries.length === 0) return "(no preferences set)";
+    const grouped: Record<string, string[]> = {};
+    for (const e of entries) {
+      if (!grouped[e.category]) grouped[e.category] = [];
+      grouped[e.category]!.push(`  ${e.key} = ${formatPrefValue(e.value)}`);
+    }
+    const lines: string[] = ["📋 Operator preferences:", ""];
+    for (const cat of Object.keys(grouped).sort()) {
+      lines.push(`[${cat}]`);
+      lines.push(...grouped[cat]!);
+      lines.push("");
+    }
+    lines.push("Usage:");
+    lines.push("  /prefs <category>");
+    lines.push("  /prefs get <category>.<key>");
+    lines.push("  /prefs set <category>.<key> <value>");
+    lines.push("  /prefs reset");
+    return redactForEgress(lines.join("\n"));
+  }
+  if (sub === "reset") {
+    const wantConfirm = (args[1] || "").trim().toLowerCase();
+    if (wantConfirm !== "confirm") {
+      return "Reset will wipe operator-set preferences back to seeded defaults.\n\nReply: /prefs reset confirm";
+    }
+    try {
+      resetPreferences();
+      return "✓ preferences reset to seeded defaults";
+    } catch (e: any) {
+      return `reset failed: ${e?.message ?? e}`;
+    }
+  }
+  if (sub === "get") {
+    const path = (args[1] || "").trim();
+    const parsed = parsePrefPath(path);
+    if (!parsed) {
+      return "Usage: /prefs get <category>.<key>";
+    }
+    const v = getPreference(parsed.category, parsed.key);
+    if (v === undefined) {
+      return `(no value at ${parsed.category}.${parsed.key})`;
+    }
+    return redactForEgress(`${parsed.category}.${parsed.key} = ${formatPrefValue(v)}`);
+  }
+  if (sub === "set") {
+    const path = (args[1] || "").trim();
+    const value = args.slice(2).join(" ").trim();
+    const parsed = parsePrefPath(path);
+    if (!parsed) {
+      return "Usage: /prefs set <category>.<key> <value>";
+    }
+    if (!value) {
+      return "Usage: /prefs set <category>.<key> <value> (value cannot be empty)";
+    }
+    try {
+      const entry = setPreference(parsed.category, parsed.key, value, "operator");
+      return redactForEgress(
+        `✓ set ${entry.category}.${entry.key} = ${formatPrefValue(entry.value)}`,
+      );
+    } catch (e: any) {
+      return `set failed: ${e?.message ?? e}`;
+    }
+  }
+  // Else: treat as a category name and list it.
+  try {
+    const entries = listPreferences(sub);
+    if (entries.length === 0) {
+      return `(no preferences in category "${sub}")`;
+    }
+    const lines: string[] = [`📋 [${sub}]`];
+    for (const e of entries) {
+      lines.push(`  ${e.key} = ${formatPrefValue(e.value)}`);
+    }
+    return redactForEgress(lines.join("\n"));
+  } catch (e: any) {
+    return `prefs ${sub} failed: ${e?.message ?? e}`;
+  }
+}
+
+function parsePrefPath(p: string): { category: string; key: string } | null {
+  if (!p) return null;
+  const m = p.match(/^([A-Za-z_][A-Za-z0-9_-]*)\.([A-Za-z_][A-Za-z0-9_-]*)$/);
+  if (!m) return null;
+  return { category: m[1]!, key: m[2]! };
+}
+
+function formatPrefValue(v: unknown): string {
+  if (typeof v === "boolean") return v ? "true" : "false";
+  if (typeof v === "number") return String(v);
+  return JSON.stringify(String(v));
 }
 
 function handleNotificationsCommand(args: string[]): string {
@@ -981,6 +1096,11 @@ function formatHelp(): string {
     "/voice                 voice layer state + TTS reachability",
     "/voice on|off          toggle Evy's voice layer (TTS)",
     "/say <text>            render speech via local TTS, send as voice note",
+    "/prefs                 list operator preferences (v2.8.1)",
+    "/prefs <category>      list one category",
+    "/prefs get <cat>.<key> show one value",
+    "/prefs set <cat>.<key> <value>   write one value",
+    "/prefs reset confirm   reset to seeded defaults",
     "",
     "Free-text messages are queued for the next agent turn — subctl master",
     "will act on them per its policy and report back.",

@@ -4865,6 +4865,36 @@ const server = Bun.serve({
       }
     }
 
+    // ── /api/preferences — proxy to master's operator preferences (v2.8.1) ──
+    // Bilateral-maintenance config. Master owns the source of truth at
+    // ~/.config/subctl/preferences.toml; this proxy lets the dashboard's
+    // Preferences tab read + edit without knowing master's port. Routes
+    // mirror master's /preferences/* exactly. Reset gates on `{confirm: true}`.
+    if (url.pathname === "/api/preferences" || url.pathname.startsWith("/api/preferences/")) {
+      const masterPort = process.env.SUBCTL_MASTER_PORT ?? "8788";
+      const masterUrl = `http://127.0.0.1:${masterPort}${url.pathname.replace(/^\/api\/preferences/, "/preferences")}${url.search}`;
+      try {
+        const init: RequestInit = {
+          method: req.method,
+          headers: { "Content-Type": "application/json" },
+        };
+        if (req.method !== "GET" && req.method !== "HEAD") {
+          init.body = await req.text();
+        }
+        const upstream = await fetch(masterUrl, init);
+        const body = await upstream.text();
+        return new Response(body, {
+          status: upstream.status,
+          headers: { "Content-Type": upstream.headers.get("Content-Type") ?? "application/json" },
+        });
+      } catch (err) {
+        return Response.json(
+          { ok: false, error: `master daemon unreachable: ${(err as Error).message}` },
+          { status: 502 },
+        );
+      }
+    }
+
     // ── /api/upstreams — proxy to master's upstream-check (v2.7.25 C) ───
     // ADR 0015 always-latest policy. The master owns the watchdog state;
     // this proxy lets the dashboard's Memory tab "Upstreams" card read it
