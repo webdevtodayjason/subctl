@@ -4381,6 +4381,15 @@ tr.team-stale-red td           { background: rgba(214, 108, 108, 0.06); }
   display: flex;
   flex-direction: column;
 }
+/* v2.8.1 — explicit [hidden] reset. The UA default
+   `[hidden] { display: none }` has author-stylesheet specificity 0,0,1,0,
+   which the `.notif-tray { display: flex }` rule above (also 0,0,1,0) ties
+   with — and ties go to source order, so `display:flex` wins and JS-set
+   `tray.hidden = true` becomes a visual no-op. That broke v2.7.25's
+   close/dismiss/outside-click/ESC handlers (operator screenshot 2026-05-13:
+   "dropdown is sticky-open, mailbox click doesn't toggle"). Bumping the
+   selector to `.notif-tray[hidden]` makes it 0,0,2,0 — wins cleanly. */
+.notif-tray[hidden] { display: none; }
 .notif-tray-head {
   display: flex;
   align-items: center;

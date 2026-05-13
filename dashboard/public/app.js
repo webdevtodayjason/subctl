@@ -7972,16 +7972,28 @@
       } catch { /* SSE unsupported; REST seed still works */ }
     }
 
-    bell.addEventListener("click", () => {
-      trayOpen = !trayOpen;
+    // v2.8.1 — centralized open/close so bell, [x], ESC, and outside-click
+    // all funnel through the same state-mutating helper. The previous
+    // wiring scattered `trayOpen = …; tray.hidden = …` across five
+    // listeners, which made the regression surface (operator screenshot
+    // 2026-05-13: "mailbox click doesn't toggle, [×] doesn't close")
+    // harder to reason about. One setter, four callers.
+    function setTrayOpen(open) {
+      trayOpen = !!open;
       tray.hidden = !trayOpen;
       if (trayOpen) loadInitial();
+    }
+
+    bell.addEventListener("click", (ev) => {
+      ev.stopPropagation(); // don't let the document outside-click fire
+      setTrayOpen(!trayOpen);
     });
-    if (closeBtn) closeBtn.addEventListener("click", () => {
-      trayOpen = false;
-      tray.hidden = true;
+    if (closeBtn) closeBtn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      setTrayOpen(false);
     });
-    if (readAllBtn) readAllBtn.addEventListener("click", async () => {
+    if (readAllBtn) readAllBtn.addEventListener("click", async (ev) => {
+      ev.stopPropagation();
       try {
         await fetch("/api/notifications/read-all", { method: "POST" });
       } catch {}
@@ -7991,21 +8003,29 @@
     });
 
     list.addEventListener("click", async (ev) => {
-      // Dismiss → POST /:id/read + drop from local map.
+      // Dismiss → POST /:id/read + mark locally so it fades to "read"
+      // (matches mark-all-read semantics). v2.7.25 deleted from the local
+      // map, which felt right until you reopened the tray — loadInitial()
+      // re-fetches from the master ring and the dismissed item came back
+      // as unread, looking like the X had failed. Marking locally + remote
+      // gives a stable visual ("this one is done") consistent with reload.
       const dismissBtn = ev.target.closest("button[data-notif-dismiss]");
       if (dismissBtn) {
+        ev.stopPropagation();
         const id = dismissBtn.getAttribute("data-notif-dismiss");
         if (!id) return;
         try {
           await fetch("/api/notifications/" + encodeURIComponent(id) + "/read", { method: "POST" });
         } catch {}
-        _notifItems.delete(id);
+        const n = _notifItems.get(id);
+        if (n && !n.read_at) n.read_at = new Date().toISOString();
         render();
         return;
       }
       // Copy prompt → build prompt string + clipboard + confirm toast.
       const copyBtn = ev.target.closest("button[data-notif-copy]");
       if (copyBtn) {
+        ev.stopPropagation();
         const id = copyBtn.getAttribute("data-notif-copy");
         const n = id ? _notifItems.get(id) : null;
         if (!n) return;
@@ -8016,11 +8036,21 @@
     });
 
     // Click outside the tray closes it (but not when clicking the bell).
+    // stopPropagation on the bell handler keeps this from racing the
+    // bell's toggle on the same click.
     document.addEventListener("click", (ev) => {
       if (!trayOpen) return;
       if (tray.contains(ev.target) || bell.contains(ev.target)) return;
-      trayOpen = false;
-      tray.hidden = true;
+      setTrayOpen(false);
+    });
+
+    // v2.8.1 — ESC closes the dropdown. Standard tray UX; the v2.7.25
+    // surface only honored the [×] button + outside-click, which felt
+    // off when the keyboard had focus.
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key !== "Escape") return;
+      if (!trayOpen) return;
+      setTrayOpen(false);
     });
 
     loadInitial();

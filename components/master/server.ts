@@ -1122,6 +1122,83 @@ async function main() {
   const teamLastActivity = new Map<string, { ts: number; lastEvent?: TeamEvent }>();
   const teamReadOffsets = new Map<string, number>(); // file path → last byte read
 
+  // ── v2.8.1 vanished-team registry ────────────────────────────────────
+  // The team-staleness watchdog tracks teams via teamLastActivity, which
+  // gets seeded from three sources: inbox tailing, tmux pane refresh, and
+  // an explicit /teams/:id/vanished hook (added below). When an operator
+  // (or the v2.7.36 `subctl team kill` CLI) archives a team's registry
+  // dir to ~/.local/state/subctl/teams/.killed/<id>.<ts>/, the v2.7.32 fix
+  // added a teamRegistryExists predicate to auto-nudge.ts — but the
+  // callback was never wired in this file. Result: the watchdog kept
+  // nudging/escalating teams that no longer exist on disk (operator
+  // screenshot 2026-05-13: "auto-nudged claude-osint-cve-monitor (383min
+  // idle)" 5h after its dir was archived to .killed/).
+  //
+  // This Set is the persistent "we already alerted on this vanished team"
+  // memo. One alert per team_id, period — survives restart so a daemon
+  // bounce can't re-spam.
+  const TEAMS_REGISTRY_ROOT = join(
+    process.env.SUBCTL_STATE_DIR ?? join(HOME, ".local", "state", "subctl"),
+    "teams",
+  );
+  const VANISHED_TEAMS_PATH = join(MASTER_STATE_DIR, "vanished-teams.json");
+  const vanishedTeams = new Set<string>();
+  try {
+    if (existsSync(VANISHED_TEAMS_PATH)) {
+      const raw = readFileSync(VANISHED_TEAMS_PATH, "utf8");
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        for (const id of parsed) {
+          if (typeof id === "string") vanishedTeams.add(id);
+        }
+      }
+    }
+  } catch (err) {
+    console.error(
+      `[master] vanished-teams load failed (continuing with empty set): ${(err as Error).message}`,
+    );
+  }
+  function persistVanishedTeams(): void {
+    try {
+      writeFileSync(
+        VANISHED_TEAMS_PATH,
+        JSON.stringify([...vanishedTeams], null, 2),
+      );
+    } catch (err) {
+      console.error(
+        `[master] vanished-teams persist failed: ${(err as Error).message}`,
+      );
+    }
+  }
+  /** True when ~/.local/state/subctl/teams/<team_id>/ is an extant dir. */
+  function teamRegistryExists(team_id: string): boolean {
+    try {
+      const stat = require("node:fs").statSync(
+        join(TEAMS_REGISTRY_ROOT, team_id),
+      );
+      return stat.isDirectory();
+    } catch {
+      return false;
+    }
+  }
+  /**
+   * Called from refreshTeamActivityFromTmux + tailInboxFile before they
+   * add an entry to teamLastActivity. If the team is vanished AND the
+   * registry dir is still gone, refuse to re-track (true=block). If the
+   * registry dir came back (operator re-spawned), clear the vanished
+   * flag and allow tracking (false=permit).
+   */
+  function isStillVanished(team_id: string): boolean {
+    if (!vanishedTeams.has(team_id)) return false;
+    if (teamRegistryExists(team_id)) {
+      // Re-spawned — let it back in.
+      vanishedTeams.delete(team_id);
+      persistVanishedTeams();
+      return false;
+    }
+    return true;
+  }
+
   function teamNameFromPath(p: string): string {
     return p.replace(/^.*\//, "").replace(/\.jsonl$/, "");
   }
@@ -1140,6 +1217,15 @@ async function main() {
       return;
     }
     const team = teamNameFromPath(filePath);
+    // v2.8.1 — suppress re-tracking of vanished teams. The inbox file
+    // for an archived team can linger (the archive only moves teams/<id>/,
+    // not inbox/<id>.jsonl); without this guard, a master restart would
+    // reseed teamLastActivity from the historical inbox content and the
+    // watchdog would re-fire on a team that was already alerted as
+    // vanished. isStillVanished() also self-heals: if the registry dir
+    // came back (operator re-spawn), the team is cleared from the set
+    // and tracking resumes normally.
+    if (isStillVanished(team)) return;
     let prev = teamReadOffsets.get(filePath);
     if (prev === undefined) {
       // Never seen this file. On first scan after boot, jump to end so
@@ -2345,6 +2431,35 @@ async function main() {
         return Response.json({ ok: true, teams });
       }
 
+      // v2.8.1 — POST /teams/:id/vanished is the fix-forward hook for the
+      // v2.7.36 `subctl team kill <name>` CLI (and any future operator
+      // tool that archives a team's registry dir). It immediately removes
+      // the team from the staleness tracker so we don't have to wait for
+      // the next 3-min watchdog tick to reconcile. Idempotent. Returns
+      // { ok, was_tracked } so the caller can tell whether anything
+      // changed.
+      {
+        const m = url.pathname.match(/^\/teams\/([A-Za-z0-9_.-]+)\/vanished\/?$/);
+        if (m && req.method === "POST") {
+          const team_id = m[1]!;
+          const was_tracked =
+            teamLastActivity.has(team_id) || teamNudgeState.has(team_id);
+          teamLastActivity.delete(team_id);
+          teamPaneHash.delete(team_id);
+          teamNudgeState.delete(team_id);
+          if (!vanishedTeams.has(team_id)) {
+            vanishedTeams.add(team_id);
+            persistVanishedTeams();
+          }
+          logDecision({
+            project: team_id,
+            action: "team_marked_vanished",
+            rationale: "operator/CLI archived team — staleness tracker silenced",
+          });
+          return Response.json({ ok: true, was_tracked });
+        }
+      }
+
       if (url.pathname === "/diag" && req.method === "GET") {
         // Fan out connectivity + readiness checks in parallel. Each check
         // returns {name, ok, detail} — UI renders a green/red row per check.
@@ -2957,6 +3072,12 @@ async function main() {
       );
       const now = Date.now();
       for (const session of sessions) {
+        // v2.8.1 — don't re-seed teamLastActivity for a team we've already
+        // alerted as vanished (its registry dir is in teams/.killed/). The
+        // tmux session can outlive the registry archive, so without this
+        // guard the watchdog would keep nudging a zombie pane. Self-heals
+        // when the dir comes back (operator re-spawn).
+        if (isStillVanished(session)) continue;
         const cap = Bun.spawnSync(
           ["tmux", "capture-pane", "-p", "-t", `${session}:0`, "-S", "-50"],
           { stdout: "pipe", stderr: "pipe" },
@@ -3127,10 +3248,42 @@ async function main() {
           emitNotification({ kind: "team-nudge-sent", severity: "info", title, body, team_id }),
         emitAlert: (team_id, title, body) =>
           emitNotification({ kind: "team-unresponsive", severity: "alert", title, body, team_id }),
+        // v2.8.1 — wire the v2.7.32 reconciliation predicate that was
+        // defined in auto-nudge.ts but never wired here (root cause of
+        // the 2026-05-13 "auto-nudged claude-osint-cve-monitor" + "team
+        // unresponsive" alerts for a team archived hours earlier to
+        // teams/.killed/). On each tick we check the registry dir for
+        // every tracked team BEFORE deciding nudge/escalate.
+        teamRegistryExists,
+        emitVanished: (team_id, title, body) => {
+          if (vanishedTeams.has(team_id)) return; // one-shot — already alerted
+          vanishedTeams.add(team_id);
+          persistVanishedTeams();
+          emitNotification({
+            kind: "team-vanished",
+            severity: "alert",
+            title,
+            body,
+            team_id,
+          });
+        },
         logDecision: (team_id, action, rationale) =>
           logDecision({ project: team_id, action, rationale }),
       },
     });
+
+    // v2.8.1 — drop vanished teams from the local tracker so subsequent
+    // ticks don't keep handing them to the sweep. auto-nudge.ts only
+    // clears teamNudgeState; teamLastActivity + teamPaneHash live here.
+    // Combined with persistVanishedTeams() above + the isStillVanished()
+    // guards in tailInboxFile / refreshTeamActivityFromTmux, this makes
+    // the alert one-shot for the lifetime of the team_id.
+    for (const a of actions) {
+      if (a.action === "vanished") {
+        teamLastActivity.delete(a.team_id);
+        teamPaneHash.delete(a.team_id);
+      }
+    }
 
     const stale = actions.filter((a) => a.action !== "fresh");
     if (stale.length === 0) {
