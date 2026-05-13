@@ -6,6 +6,7 @@
       "dependencies": {
         "lucide": "^0.474.0",
         "node-pty": "^1.0.0",
+        "smol-toml": "^1.6.1",
         "xterm": "^5.3.0",
         "xterm-addon-fit": "^0.8.0",
       },
@@ -26,6 +27,8 @@
     "node-addon-api": ["node-addon-api@7.1.1", "", {}, "sha512-5m3bsyrjFWE1xf7nz7YXdN4udnVtXK6/Yfgn5qnahL6bCkf2yKt4k3nuTKAtT4r3IG8JNR2ncsIMdZuAzJjHQQ=="],
 
     "node-pty": ["node-pty@1.1.0", "", { "dependencies": { "node-addon-api": "^7.1.0" } }, "sha512-20JqtutY6JPXTUnL0ij1uad7Qe1baT46lyolh2sSENDd4sTzKZ4nmAFkeAARDKwmlLjPx6XKRlwRUxwjOy+lUg=="],
+
+    "smol-toml": ["smol-toml@1.6.1", "", {}, "sha512-dWUG8F5sIIARXih1DTaQAX4SsiTXhInKf1buxdY9DIg4ZYPZK5nGM1VRIYmEbDbsHt7USo99xSLFu5Q1IqTmsg=="],
 
     "undici-types": ["undici-types@7.21.0", "", {}, "sha512-w9IMgQrz4O0YN1LtB7K5P63vhlIOvC7opSmouCJ+ZywlPAlO9gIkJ+otk6LvGpAs2wg4econaCz3TvQ9xPoyuQ=="],
 

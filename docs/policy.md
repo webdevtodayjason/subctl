@@ -195,7 +195,66 @@ The default mode flip is a breaking change for anyone who has scripted `subctl t
 - Anyone who runs `subctl teams claude` without `--mode` and hits a denial gets a clear stderr message pointing at `docs/policy.md` and the `--mode=trusted` opt-out
 - The first time a user is denied by Gated, the master daemon (if running) posts a one-time notification to the dashboard chat panel: *"Worker `<team>` had a command denied by Gated mode. This is expected. See `subctl policy explain` for details."*
 
-## 11. Open questions for review
+## 11. Operator UI (v2.7.34)
+
+The policy engine ships with three operator-facing UIs: the CLI (`subctl policy *`), the Telegram bot, and — since v2.7.34 — a form-based dashboard editor. The dashboard surface is intentionally non-canonical: it reads and writes the same TOML files that the CLI does, with no separate store. Anything you can do in the dashboard you can do in `$EDITOR`, and vice versa.
+
+### 11.1 The Policy tab — four panels
+
+The dashboard's **Policy** tab carries four panels:
+
+1. **Active teams** — every team with a snapshot under `~/.local/state/subctl/teams/<team_id>/`. One row per team showing the mode (Trusted/Gated/Sealed pill), the preset, the allowlist sha, and the project root from the snapshot header.
+2. **Resolved policy** — the chip-list view (v2.7.34) for whichever team is selected in the dropdown. Five chip groups: Allowed commands, Allowed patterns, Ecosystem allowlists, Deny substrings, Deny regex. Each chip carries an origin tag (`project` / `user` / `preset:<name>` / `defaults`) — these come from the snapshot's `source_paths` and are best-effort. A `view: chips`/`view: json` toggle reveals the raw resolved doc for the power-user case.
+3. **Recent denials** — top-10 denial buckets across all teams, grouped by `rule_path`, last 24h.
+4. **Verifier interventions** — denial-cluster corrections fired by the master verifier.
+
+### 11.2 The Policy editor panel
+
+Below the four panels: a **Policy editor** panel with three sub-tabs.
+
+**User policy.** Edits `~/.config/subctl/policy.toml`. Form sections:
+
+- Top-level scalars: `preset`, `default_mode`
+- `mode.gated.allow.commands` — add/remove list (one input per row)
+- `mode.gated.allow_pattern` — per-row: command + comma-separated args + comma-separated `deny_if_arg_contains`
+- `mode.gated.deny_always.substrings` — add/remove list
+- `mode.gated.deny_always.regex` — add/remove list
+
+Save commits the form back to TOML. Validation runs server-side before the file is written; errors surface inline.
+
+**Project policy.** Same shape, but for `<project>/.subctl/policy.toml`. Project dropdown enumerates from `~/code` via the existing `/api/projects` scanner.
+
+**Apply preset.** Two dropdowns (project, preset) + an Apply button. Click → overwrites `<project>/.subctl/policy.toml` with the one-liner `preset = "<name>"`. The preset's rules are inherited via the existing merge chain, so updates to a shipped preset reach the project on next spawn. No inline copy.
+
+A faster path to the same operation: open a project in the **Projects** tab and use the per-project `Apply preset…` dropdown in the detail header. Same endpoint, fewer clicks.
+
+### 11.3 API surface
+
+All endpoints are JSON request/response. Routes:
+
+```
+GET    /api/policy/presets                 # list shipped preset names
+GET    /api/policy/user                    # read ~/.config/subctl/policy.toml
+POST   /api/policy/user           {doc}    # write it
+GET    /api/policy/project/:project        # read <project>/.subctl/policy.toml
+POST   /api/policy/project/:project {doc}  # write it
+POST   /api/policy/preset/:project {preset} # write preset = "<name>" only
+GET    /api/policy/resolved/:team_id       # chip-list shape for a running team
+GET    /api/policy/resolved-project/:p     # chip-list shape keyed by project directly
+```
+
+`:project` accepts either a bare directory name (resolved under `SUBCTL_CODE_ROOT`, `~/code` by default) or an absolute path. Absolute paths outside the code root and `$HOME` are refused. Path traversal (`..`, `\0`) is always refused.
+
+POST bodies accept either `{toml: "..."}` or `{doc: {...}}`. The first parses the TOML; the second stringifies the doc. Both go through `validatePolicyShape` before write — unknown top-level keys, invalid `default_mode`, non-array `allow_pattern`, and unknown `mode.gated.*` keys all return 400 with `{ok: false, error: "field: message"}`.
+
+### 11.4 What the UI does *not* do
+
+- **No mode-mode switching.** The active mode of a *running* worker is set at spawn time and snapshotted. The UI never re-modes a running team. Edit the policy, respawn the team.
+- **No retroactive rule changes.** Editing a policy file does not change the gate underneath any running worker. The snapshot is immutable; the worker keeps gating against it. Next spawn picks up the change.
+- **No secret-bearing fields.** The policy schema contains no secret fields. The dashboard never logs policy contents, but if you somehow introduce a secret into a policy file (you should not), it will appear in the form fields. Treat policy files as non-secret.
+- **No editing the four-source merge chain.** The UI edits exactly two files: `~/.config/subctl/policy.toml` and `<project>/.subctl/policy.toml`. The shipped defaults and presets are read-only via the merge chain; to override a deny pattern, switch to `preset = "none"` and declare inline (the v2.7.0 schema design point — see §10).
+
+## 12. Open questions for review
 
 These are the questions I want resolved before Umar starts coding. Tag Jason on each.
 
