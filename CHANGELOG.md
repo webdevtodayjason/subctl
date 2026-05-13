@@ -1,3 +1,63 @@
+## [2.7.35] — 2026-05-13
+
+### `feat(dashboard,master): v2.7.35 — watchdog dashboard surface (full /diag integration)`
+
+v2.7.19 shipped watchdog kill controls + a basic dashboard table. v2.7.22 added the dedicated notification channel. v2.7.35 wires the **full per-watchdog diagnostic surface** into the Orchestration tab: status badges, tick-history sparklines, recent notifications, last-error blocks, and a Restart button that re-arms a killed watchdog without bouncing the master daemon. Telegram operators get the same depth via `/watchdogs details` and `/watchdogs <id> details`.
+
+**Architecture.** A sibling module — `components/master/watchdog-diag.ts` — sits next to the v2.7.19 registry (`watchdogs.ts`) without mutating it. The registry's contract is shared with the notification-UX worker and the kill-controls path; modifying it would risk drift. Instead, watchdog-diag layers four passive surfaces on top:
+
+1. **Tick-history observer** — a 500ms `setInterval` polls `listWatchdogs()`, writes a `TickRecord { ts, delta_ms }` whenever `last_tick_at` advances. Faster than the fastest real watchdog (inbox-poll @ 2s) so no ticks are missed. Per-id ring caps at 20.
+2. **Notification correlator** — subscribes to `notifications.ts` `subscribeNotifications` and routes each event to its source watchdog by kind regex (`team-stale*` → `team-staleness`, `auto-compact-error` → `auto-compact`, `upstream-*` → `upstream-check`). Backfills from the existing ring on start so first-load isn't empty.
+3. **Status classifier** — server-side `classifyStatus(snap)` returns `healthy / degraded / dead / unknown` per the spec thresholds (2×, 5×, 10× expected interval). The expected interval per kind comes from a static `EXPECTED_INTERVAL_SECONDS` table sourced from each watchdog's actual `setInterval` value. Long-poll kinds (`telegram-listener`) report `healthy` whenever registered.
+4. **Restart factory registry** — opt-in. Each watchdog arming site in `server.ts` was wrapped in a `let interval = setInterval(...)` + `function armX()` factory pair, then registered via `registerRestartFactory(id, armX)`. The HTTP endpoint `POST /watchdogs/:id/restart` calls `killWatchdog(id)` (if still live) then runs the factory. Kinds that can't be hot-restarted (`telegram-listener`, `cli-prompt-poll`, `inbox-poll` — tightly coupled to closure state) skip the factory; the Restart button is grayed-out in the UI for them.
+
+**Errors.** `recordWatchdogError(id, err)` lets opt-in tick sites attribute a captured `try/catch` to a watchdog id. The auto-compact tick uses it — operator can now see `last_error.message + stack` per watchdog without `grep`'ing master.log.
+
+**HTTP surface.**
+
+- `GET /watchdogs` — unchanged (bare list, v2.7.19)
+- `GET /watchdogs/diag` — every watchdog with rich shape (status, tick_history, recent_notifications, last_error, can_restart, expected_interval_seconds, last_tick_ago_seconds, memory_bytes)
+- `GET /watchdogs/:id/diag` — single-row deep dive
+- `POST /watchdogs/:id/restart` — bounces a watchdog via its registered factory. Returns 404 with a human-readable message when no factory is registered.
+
+Dashboard proxies all of these via `/api/watchdogs/*` (same path scheme as v2.7.19 to keep the rename surface small).
+
+**Dashboard UI.** The Orchestration tab's existing Watchdogs `<details>` panel was rewritten:
+
+- Status column with Lucide icons — `heart-pulse` (healthy), `alert-triangle` (degraded), `x-circle` (dead). Two new icons added to `dashboard/public/icons.js`.
+- Header count chip surfaces dead/degraded counts inline ("3 active · 1 degraded").
+- Per-row Details button toggles an inline expand row with:
+  - Metadata table (started_at, last_tick_at, expected interval, last tick ago, can_restart flag)
+  - Tick-history sparkline — bars colored by tick lateness (green / amber / red) vs expected interval, height encodes delta_ms
+  - Recent-notifications list (last 10, newest first, severity-tinted)
+  - Last-error box with stack trace, scrollable + monospace
+- Restart button (blue) bounces the watchdog. Disabled with a tooltip when the kind doesn't support hot-restart.
+- Kill button unchanged from v2.7.19 — operator gets the original "irreversible without bounce" path.
+
+**Telegram.** Two new subcommands on the existing `/watchdogs` handler:
+
+- `/watchdogs details` — renders the diag block for every watchdog (status, age, expected interval, last tick, tick deltas, last 3 notifications, last error if any)
+- `/watchdogs <id> details` — single-row deep dive, same format
+- `/watchdogs` (list) — now also tags each row with its `[status]` so operators on mobile see degraded/dead at a glance
+
+**Tests.** `components/master/__tests__/watchdog-diag.test.ts` — 25 cases covering: shape lock, classifyStatus thresholds (healthy/degraded/dead at the boundaries), long-poll kinds always healthy, unknown kind classifies as "unknown", never-ticked grace period, observer captures + GC's history on kill, notification correlator regex mappings + tracker round-trip + backfill, restart factory round-trip + unknown-id error + factory-throw capture + can_restart toggle, recordWatchdogError surfaces in diag entry. All 387 master tests pass.
+
+**Constraint adherence.** `components/master/watchdogs.ts` is unchanged in this PR — diff is empty for the shared registry file. Every new surface is in the sibling `watchdog-diag.ts`. No `claude_code` references outside `providers/claude/`. `bun build` clean for both master + dashboard.
+
+**Files:**
+
+- New: `components/master/watchdog-diag.ts`
+- New: `components/master/__tests__/watchdog-diag.test.ts`
+- Modified: `components/master/server.ts` — imports diag module, wraps 4 watchdog arming sites in restart factories, adds `recordWatchdogError` to auto-compact catch, adds `/watchdogs/diag` + `/watchdogs/:id/diag` + `/watchdogs/:id/restart` endpoints, starts/stops observer + tracker in lifecycle
+- Modified: `components/master/master-notify-listener.ts` — `/watchdogs details` + `/watchdogs <id> details` subcommands + `formatWatchdogDiagBlock` helper + help-text updates
+- Modified: `dashboard/server.ts` — proxy routes for `/api/watchdogs/diag` + `/api/watchdogs/:id/diag` + `/api/watchdogs/:id/restart`
+- Modified: `dashboard/public/app.js` — `wireWatchdogPanel` rewritten with status badges, expand rows, sparkline renderer, restart button
+- Modified: `dashboard/public/index.html` — Watchdogs `<details>` panel header gains a "status" column
+- Modified: `dashboard/public/style.css` — `.watchdog-status-*` badge family, `.watchdog-sparkline*`, `.watchdog-notif-list`, `.watchdog-error-box`, `.watchdog-restart-btn`, expand-row chrome
+- Modified: `dashboard/public/icons.js` — `heart-pulse` + `x-circle` Lucide paths
+- Modified: `VERSION` → 2.7.35
+- Modified: `docs/master.md` — watchdog section extended with the new dashboard rendering + Telegram subcommands
+
 ## [2.7.31] — 2026-05-13
 
 ### `feat(master): v2.7.31 1Password Service Accounts (multi-backend secret resolution)`

@@ -122,6 +122,18 @@ import {
 } from "./watchdogs";
 import { watchdogTools } from "./tools/watchdogs";
 import {
+  startWatchdogDiagObserver,
+  startWatchdogDiagNotificationTracker,
+  stopWatchdogDiagObserver,
+  stopWatchdogDiagNotificationTracker,
+  registerRestartFactory,
+  runRestartFactory,
+  canRestart,
+  recordWatchdogError,
+  listWatchdogDiag,
+  getWatchdogDiag,
+} from "./watchdog-diag";
+import {
   recordToolResult,
   shouldRefuseToolCall,
   synthesizeRefusal,
@@ -1842,18 +1854,42 @@ async function main() {
         });
       }
 
-      // ── /watchdogs — watchdog kill controls (v2.7.19) ────────────────────
-      // GET    /watchdogs           → { ok, count, watchdogs: [...] }
-      // POST   /watchdogs/:id/kill  → { ok, killed_id } | { ok:false, error }
-      // POST   /watchdogs/killall   → { ok, killed: [...], preserved: [...] }
+      // ── /watchdogs — watchdog kill controls (v2.7.19) + diag (v2.7.35) ──
+      // GET    /watchdogs              → { ok, count, watchdogs: [...] }
+      // GET    /watchdogs/diag         → { ok, count, watchdogs: [<rich>...] }
+      // GET    /watchdogs/:id/diag     → { ok, watchdog: <rich> } | 404
+      // POST   /watchdogs/:id/kill     → { ok, killed_id } | { ok:false, error }
+      // POST   /watchdogs/:id/restart  → { ok } | { ok:false, error }
+      // POST   /watchdogs/killall      → { ok, killed: [...], preserved: [...] }
       //
       // killall preserves kind="telegram-listener" so the operator's
       // command path doesn't sever itself when invoked from Telegram.
       // The dashboard's /api/watchdogs (in dashboard/server.ts) proxies
       // these — keep paths in sync if you rename.
+      //
+      // v2.7.35 — /diag returns the rich shape from watchdog-diag.ts:
+      // tick history, recent notifications, last error, status badge.
       if (url.pathname === "/watchdogs" && req.method === "GET") {
         const watchdogs = listWatchdogs();
         return Response.json({ ok: true, count: watchdogs.length, watchdogs });
+      }
+      if (url.pathname === "/watchdogs/diag" && req.method === "GET") {
+        const watchdogs = listWatchdogDiag();
+        return Response.json({ ok: true, count: watchdogs.length, watchdogs });
+      }
+      {
+        const m = url.pathname.match(/^\/watchdogs\/([A-Za-z0-9_.-]+)\/diag\/?$/);
+        if (m && req.method === "GET") {
+          const id = m[1]!;
+          const entry = getWatchdogDiag(id);
+          if (!entry) {
+            return Response.json(
+              { ok: false, error: `unknown watchdog id: ${id}` },
+              { status: 404 },
+            );
+          }
+          return Response.json({ ok: true, watchdog: entry });
+        }
       }
       {
         const m = url.pathname.match(/^\/watchdogs\/([A-Za-z0-9_.-]+)\/kill\/?$/);
@@ -1862,6 +1898,41 @@ async function main() {
           const result = killWatchdog(id);
           const status = result.ok ? 200 : 404;
           return Response.json(result, { status });
+        }
+      }
+      {
+        // v2.7.35 — restart endpoint. Two paths:
+        //   1. If the watchdog is still registered, kill it first then
+        //      run the restart factory. Equivalent to "bounce".
+        //   2. If it's already killed, just run the factory.
+        // Returns 404 when no factory is registered for the id — not
+        // every watchdog kind has an opt-in restart path (telegram-listener,
+        // cli-prompt-poll, inbox-poll are tightly coupled to closure state).
+        const m = url.pathname.match(/^\/watchdogs\/([A-Za-z0-9_.-]+)\/restart\/?$/);
+        if (m && req.method === "POST") {
+          const id = m[1]!;
+          if (!canRestart(id)) {
+            return Response.json(
+              {
+                ok: false,
+                error: `no restart factory for: ${id} — this watchdog kind doesn't support hot-restart; bounce the master daemon instead.`,
+              },
+              { status: 404 },
+            );
+          }
+          // Kill if still registered. Ignore failure — id might already
+          // be killed (caller wants restart-only).
+          const liveSnap = listWatchdogs().find((w) => w.id === id);
+          if (liveSnap) killWatchdog(id);
+          const result = runRestartFactory(id);
+          if (!result.ok) {
+            return Response.json(result, { status: 500 });
+          }
+          return Response.json({
+            ok: true,
+            id,
+            killed_first: !!liveSnap,
+          });
         }
       }
       if (url.pathname === "/watchdogs/killall" && req.method === "POST") {
@@ -3035,15 +3106,31 @@ async function main() {
     });
   }
 
-  const watchdog = setInterval(() => {
+  // v2.7.35 — wrap the arming in a re-runnable factory so the dashboard's
+  // Restart button can re-register a killed watchdog without bouncing the
+  // entire master daemon. The `let` + reassign pattern keeps the kill
+  // closure pointing at whichever interval is currently active.
+  let watchdog = setInterval(() => {
     touchWatchdog("team-staleness");
     void runWatchdogTick();
   }, watchdogIntervalMs);
+  function armTeamStalenessWatchdog() {
+    watchdog = setInterval(() => {
+      touchWatchdog("team-staleness");
+      void runWatchdogTick();
+    }, watchdogIntervalMs);
+    registerWatchdog({
+      id: "team-staleness",
+      kind: "team-staleness",
+      kill: () => clearInterval(watchdog),
+    });
+  }
   registerWatchdog({
     id: "team-staleness",
     kind: "team-staleness",
     kill: () => clearInterval(watchdog),
   });
+  registerRestartFactory("team-staleness", armTeamStalenessWatchdog);
   console.error(
     `[master] watchdog armed — interval=${watchdogIntervalMin}m, staleness_threshold=${stalenessThresholdMin}m`,
   );
@@ -3075,15 +3162,28 @@ async function main() {
       await dispatchToAgent(synthPrompt, "watchdog");
     }
   }
-  const followupTicker = setInterval(() => {
+  // v2.7.35 — re-runnable factory for the dashboard Restart button.
+  let followupTicker = setInterval(() => {
     touchWatchdog("followup-scheduler");
     void runFollowupTick();
   }, 60_000);
+  function armFollowupScheduler() {
+    followupTicker = setInterval(() => {
+      touchWatchdog("followup-scheduler");
+      void runFollowupTick();
+    }, 60_000);
+    registerWatchdog({
+      id: "followup-scheduler",
+      kind: "followup-scheduler",
+      kill: () => clearInterval(followupTicker),
+    });
+  }
   registerWatchdog({
     id: "followup-scheduler",
     kind: "followup-scheduler",
     kill: () => clearInterval(followupTicker),
   });
+  registerRestartFactory("followup-scheduler", armFollowupScheduler);
   console.error(`[master] scheduled-followup ticker armed — every 60s`);
 
   // ── auto-compact watchdog (v2.7.3: SAFETY NET) ─────────────────────────
@@ -3161,6 +3261,10 @@ async function main() {
       }
     } catch (err) {
       console.error(`[master] safety-net compact error: ${(err as Error).message}`);
+      // v2.7.35 — also attribute the error to the watchdog id so the
+      // dashboard's per-watchdog `last_error` field surfaces this. The
+      // notification still emits independently for the global tray.
+      recordWatchdogError("auto-compact", err);
       emitNotification({
         kind: "auto-compact-error",
         severity: "warn",
@@ -3171,14 +3275,26 @@ async function main() {
       autoCompactInFlight = false;
     }
   }
-  const autoCompactInterval = setInterval(() => {
+  // v2.7.35 — re-runnable factory for the dashboard Restart button.
+  let autoCompactInterval = setInterval(() => {
     void runAutoCompactTick();
   }, 5 * 60 * 1000);
+  function armAutoCompactWatchdog() {
+    autoCompactInterval = setInterval(() => {
+      void runAutoCompactTick();
+    }, 5 * 60 * 1000);
+    registerWatchdog({
+      id: "auto-compact",
+      kind: "auto-compact",
+      kill: () => clearInterval(autoCompactInterval),
+    });
+  }
   registerWatchdog({
     id: "auto-compact",
     kind: "auto-compact",
     kill: () => clearInterval(autoCompactInterval),
   });
+  registerRestartFactory("auto-compact", armAutoCompactWatchdog);
   // Also run shortly after boot so a freshly-restarted daemon catches an
   // already-bloated transcript without waiting 5 minutes. v2.7.22 lowered
   // this from 30s to 15s so the watchdog's last_tick_at lights up well
@@ -3193,14 +3309,27 @@ async function main() {
   // hitting policy denials in clusters (>5 in 60s OR >3 of the same
   // rule_path in 5min), fire a synthetic [verifier] correction prompt at
   // the worker. See components/master/tools/policy/verifier-cluster.ts.
-  const clusterTicker = startClusterTicker({
+  // v2.7.35 — re-runnable factory. The ticker returns a {stop} handle,
+  // so the kill closure just forwards to handle.stop().
+  let clusterTicker = startClusterTicker({
     onTick: () => touchWatchdog("verifier-cluster"),
   });
+  function armVerifierClusterWatchdog() {
+    clusterTicker = startClusterTicker({
+      onTick: () => touchWatchdog("verifier-cluster"),
+    });
+    registerWatchdog({
+      id: "verifier-cluster",
+      kind: "verifier-cluster",
+      kill: () => clusterTicker.stop(),
+    });
+  }
   registerWatchdog({
     id: "verifier-cluster",
     kind: "verifier-cluster",
     kill: () => clusterTicker.stop(),
   });
+  registerRestartFactory("verifier-cluster", armVerifierClusterWatchdog);
   console.error("[master] verifier denial-cluster ticker armed — interval=30s, burst=>5/60s, stuck=>3/5min");
 
   // ── upstream-check watchdog (v2.7.25 Scope C) ───────────────────────────
@@ -3213,7 +3342,22 @@ async function main() {
   upstreamWatchdog = startUpstreamWatchdog({
     packageJsonPath: join(COMPONENT_DIR, "package.json"),
   });
+  // v2.7.35 — re-runnable factory so the dashboard Restart button can
+  // re-arm a killed upstream-check watchdog without bouncing master.
+  registerRestartFactory("upstream-check", () => {
+    upstreamWatchdog = startUpstreamWatchdog({
+      packageJsonPath: join(COMPONENT_DIR, "package.json"),
+    });
+  });
   console.error("[master] upstream-check watchdog armed — interval=6h, packages=pi-ai + pi-agent-core");
+
+  // v2.7.35 — start the diagnostic observer + notification correlator.
+  // These are sibling background tasks that watch the registry passively
+  // and tag notifications by source watchdog. Both are idempotent +
+  // disposed on shutdown below.
+  startWatchdogDiagObserver();
+  startWatchdogDiagNotificationTracker();
+  console.error("[master] watchdog-diag observer + notification tracker armed");
 
   // ── graceful shutdown ───────────────────────────────────────────────────
   const shutdown = (signal: string) => {
@@ -3226,6 +3370,9 @@ async function main() {
     clearInterval(inboxPoll);
     clusterTicker.stop();
     try { upstreamWatchdog?.stop(); } catch { /* ignore */ }
+    // v2.7.35 — stop the diagnostic observer + notification tracker.
+    try { stopWatchdogDiagObserver(); } catch { /* ignore */ }
+    try { stopWatchdogDiagNotificationTracker(); } catch { /* ignore */ }
     try { profilesWatcher.close(); } catch { /* ignore */ }
     if (inboxWatcher) try { inboxWatcher.close(); } catch { /* ignore */ }
     try { stopMasterNotifyListener(); } catch { /* ignore */ }

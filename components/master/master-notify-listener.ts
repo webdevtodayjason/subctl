@@ -71,6 +71,11 @@ import {
   killAllWatchdogs,
 } from "./watchdogs";
 import {
+  listWatchdogDiag,
+  getWatchdogDiag,
+  type WatchdogDiagEntry,
+} from "./watchdog-diag";
+import {
   listNotifications,
   markAllRead as markAllNotificationsRead,
 } from "./notifications";
@@ -708,6 +713,62 @@ function handleTerminalCommand(args: string[]): string {
   ].join("\n");
 }
 
+/**
+ * v2.7.35 — Render one watchdog's full diag entry into a Telegram-safe
+ * plain-text block. Used by `/watchdogs details` (every row) and
+ * `/watchdogs <id> details` (single row). Keep lines reasonably short
+ * so Telegram doesn't truncate on mobile.
+ */
+function formatWatchdogDiagBlock(w: WatchdogDiagEntry): string {
+  const ageStr =
+    w.age_seconds < 60
+      ? `${w.age_seconds}s`
+      : w.age_seconds < 3600
+        ? `${Math.floor(w.age_seconds / 60)}m`
+        : `${(w.age_seconds / 3600).toFixed(1)}h`;
+  const lines: string[] = [];
+  lines.push(`━ ${w.id} (${w.kind}) [${w.status}]`);
+  lines.push(`  age: ${ageStr}`);
+  const expectedLabel =
+    w.expected_interval_seconds === null
+      ? "unknown"
+      : w.expected_interval_seconds < 0
+        ? "long-poll"
+        : `${w.expected_interval_seconds}s`;
+  lines.push(`  expected interval: ${expectedLabel}`);
+  if (w.last_tick_at) {
+    lines.push(`  last tick: ${w.last_tick_at}`);
+    if (w.last_tick_ago_seconds !== null) {
+      lines.push(`             (${w.last_tick_ago_seconds}s ago)`);
+    }
+  } else {
+    lines.push(`  last tick: never`);
+  }
+  lines.push(`  can restart: ${w.can_restart ? "yes" : "no"}`);
+  if (w.tick_history.length > 0) {
+    // Render last 6 tick deltas inline; full 20 would crowd Telegram.
+    const tail = w.tick_history.slice(-6);
+    const fmt = tail
+      .map((t) => (t.delta_ms === null ? "—" : `${(t.delta_ms / 1000).toFixed(1)}s`))
+      .join(" ");
+    lines.push(`  tick deltas (last ${tail.length}/20): ${fmt}`);
+  }
+  if (w.recent_notifications.length > 0) {
+    lines.push(`  notifications (last ${Math.min(3, w.recent_notifications.length)}/${w.recent_notifications.length}):`);
+    // Newest 3 — operator wants the most recent at the top.
+    for (const n of w.recent_notifications.slice(-3).reverse()) {
+      const title = (n.title || n.kind || "(no title)").slice(0, 60);
+      lines.push(`    • [${n.severity}] ${title}`);
+    }
+  }
+  if (w.last_error) {
+    const msg = (w.last_error.message || "(no message)").slice(0, 140);
+    lines.push(`  last error @ ${w.last_error.ts}:`);
+    lines.push(`    ${msg}`);
+  }
+  return lines.join("\n");
+}
+
 function handleWatchdogsCommand(args: string[]): string {
   const sub = (args[0] || "").trim().toLowerCase();
   // No subcommand → list. Mirrors the `/profile` shape (no arg = read).
@@ -724,12 +785,42 @@ function handleWatchdogsCommand(args: string[]): string {
           : w.age_seconds < 3600
             ? `${Math.floor(w.age_seconds / 60)}m`
             : `${(w.age_seconds / 3600).toFixed(1)}h`;
-      lines.push(`• ${w.id} (${w.kind}) — age ${ageStr}`);
+      // v2.7.35 — also surface the status badge here so Telegram-only
+      // operators see degraded/dead at a glance.
+      const diag = listWatchdogDiag().find((d) => d.id === w.id);
+      const statusLabel = diag ? ` [${diag.status}]` : "";
+      lines.push(`• ${w.id} (${w.kind})${statusLabel} — age ${ageStr}`);
     }
     lines.push("");
     lines.push("Kill one: /watchdogs kill <id>");
     lines.push("Kill all (keeps telegram alive): /watchdogs killall");
+    lines.push("Full diag: /watchdogs details            (everything)");
+    lines.push("           /watchdogs <id> details       (one row)");
     return lines.join("\n");
+  }
+
+  // v2.7.35 — /watchdogs details — render the rich diag for every
+  // registered watchdog. Falls back to the bare /watchdogs output when
+  // diag has no entries (registry empty).
+  if (sub === "details") {
+    const all = listWatchdogDiag();
+    if (all.length === 0) return "No watchdogs registered.";
+    const lines: string[] = ["🐕 Watchdog diagnostics:", ""];
+    for (const w of all) {
+      lines.push(formatWatchdogDiagBlock(w));
+      lines.push("");
+    }
+    return lines.join("\n").trimEnd();
+  }
+
+  // v2.7.35 — /watchdogs <id> details — single-row deep dive.
+  if (args.length >= 2 && (args[1] || "").trim().toLowerCase() === "details") {
+    const id = (args[0] || "").trim();
+    const diag = getWatchdogDiag(id);
+    if (!diag) {
+      return `❌ unknown watchdog id: ${id}\n\nRun /watchdogs to see ids.`;
+    }
+    return formatWatchdogDiagBlock(diag);
   }
 
   if (sub === "killall") {
@@ -762,7 +853,7 @@ function handleWatchdogsCommand(args: string[]): string {
     return `❌ ${r.error}`;
   }
 
-  return "Usage:\n/watchdogs              — list\n/watchdogs kill <id>    — kill one\n/watchdogs killall      — kill all (keeps telegram-listener)";
+  return "Usage:\n/watchdogs                    — list\n/watchdogs details            — full diag for every watchdog\n/watchdogs <id> details       — full diag for one\n/watchdogs kill <id>          — kill one\n/watchdogs killall            — kill all (keeps telegram-listener)";
 }
 
 function handleProfileCommand(args: string[]): string {
@@ -814,6 +905,8 @@ function formatHelp(): string {
     "/profile chat          swap to the chat supervisor (gemma — fast, conversational)",
     "/profile heavy         swap to the heavy supervisor (qwen — deep reasoning)",
     "/watchdogs             list active watchdogs",
+    "/watchdogs details     full diag for every watchdog (v2.7.35)",
+    "/watchdogs <id> details   full diag for one (v2.7.35)",
     "/watchdogs kill <id>   kill one watchdog",
     "/watchdogs killall     kill all (keeps telegram-listener alive)",
     "/terminal              web-terminal escape-hatch state",

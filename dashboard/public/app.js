@@ -2783,12 +2783,17 @@
     }, 5000);
   }
 
-  // ── Watchdogs panel (v2.7.19) ─────────────────────────────────────────
-  // Collapsible card on the Orchestration tab. Polls /api/watchdogs every
-  // 10s WHILE OPEN (idle when closed — the master daemon's registry is
-  // cheap but the panel is rarely the operator's focus, and they can
-  // open it on demand). Kill is optimistic: row removes immediately,
-  // server reconciles on the next poll.
+  // ── Watchdogs panel (v2.7.19 + v2.7.35 rich diag) ─────────────────────
+  // Collapsible card on the Orchestration tab. v2.7.35 swapped the
+  // bare /api/watchdogs poll for /api/watchdogs/diag so each row carries
+  // status (healthy/degraded/dead), tick history, recent notifications,
+  // and last error. Each row gets a Details toggle that expands inline
+  // to a sparkline + notification list + error box.
+  //
+  // Polls /api/watchdogs/diag every 10s while open. Kill stays
+  // optimistic (row removes immediately, server reconciles on next
+  // poll). Restart bounces the kill+re-arm round-trip and is only
+  // enabled when the master reports `can_restart: true` for the row.
   function wireWatchdogPanel() {
     const panel = document.getElementById("watchdog-panel");
     const tbody = document.getElementById("watchdog-tbody");
@@ -2799,6 +2804,10 @@
     if (!panel || !tbody) return;
 
     let pollTimer = null;
+    // Track which rows are expanded so refresh() preserves disclosure
+    // state across polls. (Re-rendering the entire tbody is simpler than
+    // diffing; the cost is one Set membership check per row.)
+    const expandedIds = new Set();
 
     function fmtAgeSec(s) {
       if (typeof s !== "number" || !isFinite(s)) return "—";
@@ -2822,13 +2831,120 @@
         .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
     }
 
+    // Map status → { icon, label } pair. Icons are Lucide glyphs.
+    function statusBadge(status) {
+      const iconFn = (typeof window !== "undefined" && typeof window.subctlIcon === "function")
+        ? window.subctlIcon : () => "";
+      if (status === "healthy") {
+        return { iconHtml: iconFn("heart-pulse", { size: 12 }), label: "healthy", cls: "watchdog-status-healthy" };
+      }
+      if (status === "degraded") {
+        return { iconHtml: iconFn("alert-triangle", { size: 12 }), label: "degraded", cls: "watchdog-status-degraded" };
+      }
+      if (status === "dead") {
+        return { iconHtml: iconFn("x-circle", { size: 12 }), label: "dead", cls: "watchdog-status-dead" };
+      }
+      return { iconHtml: iconFn("info", { size: 12 }), label: "unknown", cls: "watchdog-status-unknown" };
+    }
+
+    // Render the inline expand row (sparkline + notifications + error).
+    // Width matches the table header (6 cols).
+    function renderDetailRow(w) {
+      const ticks = Array.isArray(w.tick_history) ? w.tick_history : [];
+      const expected = typeof w.expected_interval_seconds === "number" ? w.expected_interval_seconds : null;
+      // Sparkline: each tick = a bar whose colour reflects how late it
+      // was vs the expected interval. Bar height encodes the delta in
+      // relative terms (clamped). When expected is null/-1 (long-poll
+      // or unknown), every bar gets the neutral healthy colour.
+      const sparkBars = ticks.length === 0
+        ? `<div class="watchdog-sparkline-empty">no ticks observed yet — observer polls every 500ms</div>`
+        : (() => {
+            // Compute max delta for height scaling; if all delta_ms are
+            // null (only one tick) fall back to a uniform short bar.
+            const deltas = ticks.map((t) => (typeof t.delta_ms === "number" ? t.delta_ms : 0));
+            const maxDelta = Math.max(1, ...deltas);
+            const bars = ticks.map((t, i) => {
+              const dms = typeof t.delta_ms === "number" ? t.delta_ms : null;
+              let cls = "";
+              if (expected && expected > 0 && dms !== null) {
+                const ratio = dms / (expected * 1000);
+                if (ratio >= 5) cls = "very-late";
+                else if (ratio >= 2) cls = "late";
+              }
+              const heightPct = dms === null ? 30 : Math.max(10, Math.min(100, (dms / maxDelta) * 100));
+              const title = dms === null
+                ? `first tick @ ${t.ts}`
+                : `tick ${i + 1}/${ticks.length}: +${(dms / 1000).toFixed(2)}s @ ${t.ts}`;
+              return `<div class="watchdog-sparkline-bar ${cls}" style="height:${heightPct}%" title="${escWd(title)}"></div>`;
+            });
+            return `<div class="watchdog-sparkline">${bars.join("")}</div>`;
+          })();
+
+      const notifs = Array.isArray(w.recent_notifications) ? w.recent_notifications : [];
+      const notifList = notifs.length === 0
+        ? `<div class="dim small">no notifications attributed to this watchdog</div>`
+        : `<ul class="watchdog-notif-list">${notifs.slice().reverse().map((n) => `
+            <li>
+              <span class="watchdog-notif-sev ${escWd(n.severity || "info")}">${escWd(n.severity || "info")}</span>
+              <span class="watchdog-notif-ts">${fmtLastTick(n.ts)}</span>
+              <span class="watchdog-notif-title">${escWd(n.title || n.kind || "(no title)")}</span>
+            </li>`).join("")}</ul>`;
+
+      const errBlock = w.last_error
+        ? `<div class="watchdog-detail-section">
+             <h4>Last error · ${escWd(fmtLastTick(w.last_error.ts))}</h4>
+             <div class="watchdog-error-box">${escWd(w.last_error.message || "(no message)")}${w.last_error.stack ? "\n\n" + escWd(w.last_error.stack) : ""}</div>
+           </div>`
+        : "";
+
+      const expectedLabel = expected === null
+        ? "unknown"
+        : expected < 0
+          ? "long-poll (no fixed cadence)"
+          : `${expected}s`;
+
+      return `
+        <tr class="watchdog-detail-row" data-detail-for="${escWd(w.id)}">
+          <td colspan="6">
+            <div class="watchdog-detail-box">
+              <div class="watchdog-detail-section">
+                <h4>Metadata</h4>
+                <dl class="watchdog-meta-kv">
+                  <dt>started_at</dt><dd>${escWd(w.started_at || "—")}</dd>
+                  <dt>last_tick_at</dt><dd>${escWd(w.last_tick_at || "—")}</dd>
+                  <dt>expected interval</dt><dd>${escWd(expectedLabel)}</dd>
+                  <dt>last tick ago</dt><dd>${w.last_tick_ago_seconds == null ? "—" : fmtAgeSec(w.last_tick_ago_seconds)}</dd>
+                  <dt>can restart</dt><dd>${w.can_restart ? "yes" : "no (bounce master to re-arm)"}</dd>
+                </dl>
+              </div>
+              <div class="watchdog-detail-section">
+                <h4>Tick history (last ${ticks.length} of 20)</h4>
+                ${sparkBars}
+              </div>
+              <div class="watchdog-detail-section">
+                <h4>Recent notifications (last ${notifs.length} of 10)</h4>
+                ${notifList}
+              </div>
+              ${errBlock}
+            </div>
+          </td>
+        </tr>`;
+    }
+
     async function refresh() {
       try {
-        const r = await fetch("/api/watchdogs", { cache: "no-store" });
+        const r = await fetch("/api/watchdogs/diag", { cache: "no-store" });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const j = await r.json();
         const list = Array.isArray(j.watchdogs) ? j.watchdogs : [];
-        if (countEl) countEl.textContent = `${list.length} active`;
+        if (countEl) {
+          const dead = list.filter((w) => w.status === "dead").length;
+          const degraded = list.filter((w) => w.status === "degraded").length;
+          const tag = dead > 0 ? `${list.length} active · ${dead} dead`
+            : degraded > 0 ? `${list.length} active · ${degraded} degraded`
+            : `${list.length} active`;
+          countEl.textContent = tag;
+        }
         if (metaEl) metaEl.textContent = `polled ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false })}`;
         if (list.length === 0) {
           if (empty) empty.style.display = "";
@@ -2839,23 +2955,73 @@
         }
         if (empty) empty.style.display = "none";
         if (table) table.hidden = false;
-        // Stable sort: telegram-listener and inbox-poll first (most
-        // operator-relevant), then alphabetical.
-        list.sort((a, b) => {
-          const pri = (k) => k === "telegram-listener" ? 0 : k === "inbox-poll" ? 1 : 2;
-          const dp = pri(a.kind) - pri(b.kind);
-          if (dp !== 0) return dp;
-          return String(a.id).localeCompare(String(b.id));
-        });
-        tbody.innerHTML = list.map((w) => `
-          <tr data-watchdog-id="${escWd(w.id)}">
-            <td><code>${escWd(w.id)}</code></td>
-            <td>${escWd(w.kind)}</td>
-            <td>${fmtAgeSec(w.age_seconds)}</td>
-            <td>${fmtLastTick(w.last_tick_at)}</td>
-            <td><button type="button" class="watchdog-kill-btn" data-kill-id="${escWd(w.id)}">Kill</button></td>
-          </tr>
-        `).join("");
+        // Master already sorts dead-first; preserve that order. Garbage
+        // collect any expandedIds that no longer exist (killed
+        // watchdogs).
+        const liveIds = new Set(list.map((w) => w.id));
+        for (const id of [...expandedIds]) {
+          if (!liveIds.has(id)) expandedIds.delete(id);
+        }
+        tbody.innerHTML = list.map((w) => {
+          const sb = statusBadge(w.status);
+          const expanded = expandedIds.has(w.id);
+          const restartDisabled = w.can_restart ? "" : "disabled title=\"this watchdog kind doesn't support hot-restart\"";
+          const summaryRow = `
+            <tr data-watchdog-id="${escWd(w.id)}" data-watchdog-status="${escWd(w.status)}">
+              <td><code>${escWd(w.id)}</code></td>
+              <td>${escWd(w.kind)}</td>
+              <td><span class="watchdog-status-badge ${sb.cls}">${sb.iconHtml} ${escWd(sb.label)}</span></td>
+              <td>${fmtAgeSec(w.age_seconds)}</td>
+              <td>${fmtLastTick(w.last_tick_at)}</td>
+              <td>
+                <div class="watchdog-row-actions">
+                  <button type="button" class="watchdog-expand-btn" data-expand-id="${escWd(w.id)}">${expanded ? "Hide" : "Details"}</button>
+                  <button type="button" class="watchdog-restart-btn" data-restart-id="${escWd(w.id)}" ${restartDisabled}>Restart</button>
+                  <button type="button" class="watchdog-kill-btn" data-kill-id="${escWd(w.id)}">Kill</button>
+                </div>
+              </td>
+            </tr>`;
+          const detailRow = expanded ? renderDetailRow(w) : "";
+          return summaryRow + detailRow;
+        }).join("");
+
+        // Bind expand toggles. Cheaper to re-render the whole panel on
+        // toggle (matches the refresh flow exactly) than to surgically
+        // insert/remove the detail row.
+        for (const btn of tbody.querySelectorAll("button[data-expand-id]")) {
+          btn.addEventListener("click", () => {
+            const id = btn.getAttribute("data-expand-id");
+            if (!id) return;
+            if (expandedIds.has(id)) expandedIds.delete(id);
+            else expandedIds.add(id);
+            refresh();
+          });
+        }
+
+        // Bind restart buttons. Server returns 404 when no factory is
+        // registered — that should already be reflected by the disabled
+        // attribute, but we surface any unexpected error to the user.
+        for (const btn of tbody.querySelectorAll("button[data-restart-id]:not([disabled])")) {
+          btn.addEventListener("click", async () => {
+            const id = btn.getAttribute("data-restart-id");
+            if (!id) return;
+            btn.disabled = true;
+            btn.textContent = "restarting…";
+            try {
+              const r = await fetch(`/api/watchdogs/${encodeURIComponent(id)}/restart`, { method: "POST" });
+              const j = await r.json().catch(() => ({}));
+              if (!r.ok || j.ok === false) {
+                throw new Error(j && j.error ? j.error : `HTTP ${r.status}`);
+              }
+              setTimeout(refresh, 300);
+            } catch (err) {
+              btn.disabled = false;
+              btn.textContent = "Restart";
+              alert(`restart failed: ${err && err.message ? err.message : err}`);
+            }
+          });
+        }
+
         // Bind kill buttons. Optimistic removal — server reconciles on
         // the next 10s tick. Catches a network failure and re-shows the
         // row by triggering an immediate refresh.
@@ -2863,7 +3029,7 @@
           btn.addEventListener("click", async () => {
             const id = btn.getAttribute("data-kill-id");
             if (!id) return;
-            const ok = window.confirm(`Kill watchdog "${id}"? This is irreversible without a master restart.`);
+            const ok = window.confirm(`Kill watchdog "${id}"? Use Restart instead if you want to bounce + re-arm.`);
             if (!ok) return;
             btn.disabled = true;
             btn.textContent = "killing…";
@@ -2872,6 +3038,7 @@
             try {
               const r = await fetch(`/api/watchdogs/${encodeURIComponent(id)}/kill`, { method: "POST" });
               if (!r.ok && r.status !== 404) throw new Error(`HTTP ${r.status}`);
+              expandedIds.delete(id);
               // Optimistic remove; refresh confirms.
               if (row) row.remove();
               setTimeout(refresh, 200);
