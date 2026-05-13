@@ -13,6 +13,10 @@ description: >-
   The skill enforces: spec is the contract, not a suggestion. Don't gold-plate.
   Don't ask permission for things the spec already decided. Don't leave the
   spec half-done.
+scope: dev-team
+loaded_by_default: []
+created_at: "2026-05-10"
+created_by: operator
 ---
 
 # Spec-Driven Development

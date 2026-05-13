@@ -8,6 +8,10 @@ description: >-
   subctl-managed project. Most subctl projects are Bun-first, but supporting
   utilities, ML code, and external integrations may be Python. These are the
   defaults to apply when the project's local CLAUDE.md doesn't override.
+scope: dev-team
+loaded_by_default: []
+created_at: "2026-05-10"
+created_by: operator
 ---
 
 # Python Conventions

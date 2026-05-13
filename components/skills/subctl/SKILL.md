@@ -15,6 +15,10 @@ description: >-
   session control, OR call Telegram's API directly, OR re-read transcripts
   to figure out what's running on another account. subctl is the canonical
   surface for all of these.
+scope: both
+loaded_by_default: []
+created_at: "2026-05-10"
+created_by: operator
 ---
 
 # subctl — Subscription Central

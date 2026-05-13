@@ -129,6 +129,19 @@ import {
   spawnPtyBridge,
   type PtyBridge,
 } from "./terminal.ts";
+// ── v2.8.1 skills clarity ──
+// Categorized skills listing + Evy-authored draft curation (promote/delete).
+// The legacy /api/skills route stays for the imported-catalog flow; these new
+// routes drive the categorized Skills tab view operator asked for.
+import {
+  listSkills as listAllSkills,
+  promoteEvySkill,
+  deleteEvySkill,
+  templatesUsingSkill,
+  type Skill,
+  type SkillCategory,
+} from "../components/master/skills-registry.ts";
+// ── end v2.8.1 skills clarity ──
 
 const PORT = Number(process.env.PORT ?? 8787);
 const STARTED_AT = Date.now();
@@ -3164,6 +3177,109 @@ const server = Bun.serve({
         output: ((r.stdout || "") + (r.stderr || "")).slice(-500),
       });
     }
+
+    // ── v2.8.1 skills clarity ──
+    //
+    // /api/skills/categorized — single payload powering the redesigned Skills
+    // tab. Returns the full set bucketed by category (evy-loaded,
+    // team-developer, evy-authored, project-local) plus, for team-developer
+    // skills, the list of templates that reference them. The legacy
+    // /api/skills route above stays unchanged so the team-builder modal that
+    // pulls all imported skills doesn't regress.
+    if (url.pathname === "/api/skills/categorized" && req.method === "GET") {
+      try {
+        const skills = listAllSkills({});
+        // Load templates once so we can annotate which templates use each
+        // team-developer skill. The team-templates module exports a sync
+        // listTemplates() that seeds + caches, so this is cheap.
+        let templates: { name: string; lead: { skills: string[] }; developers: { name: string; skills: string[] }[] }[] = [];
+        try {
+          const mod = await import("../components/master/team-templates.ts");
+          const r = mod.listTemplates();
+          templates = r.templates.map((t) => ({
+            name: t.name,
+            lead: { skills: t.lead?.skills ?? [] },
+            developers: (t.developers ?? []).map((d) => ({ name: d.name, skills: d.skills ?? [] })),
+          }));
+        } catch {
+          /* templates dir missing is fine — show skills without annotations */
+        }
+        const byCategory: Record<SkillCategory, Skill[]> = {
+          "evy-loaded": [],
+          "team-developer": [],
+          "evy-authored": [],
+          "project-local": [],
+        };
+        for (const s of skills) byCategory[s.category].push(s);
+        const annotate = (s: Skill) => ({
+          ...s,
+          templates_using: templatesUsingSkill(s.name, templates),
+        });
+        return Response.json({
+          ok: true,
+          counts: {
+            "evy-loaded": byCategory["evy-loaded"].length,
+            "team-developer": byCategory["team-developer"].length,
+            "evy-authored": byCategory["evy-authored"].length,
+            "project-local": byCategory["project-local"].length,
+          },
+          categories: {
+            "evy-loaded": byCategory["evy-loaded"].map(annotate),
+            "team-developer": byCategory["team-developer"].map(annotate),
+            "evy-authored": byCategory["evy-authored"].map(annotate),
+            "project-local": byCategory["project-local"].map(annotate),
+          },
+        });
+      } catch (err) {
+        return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+      }
+    }
+
+    // GET /api/skills/evy/:name — read the full SKILL.md body of an
+    // Evy-authored draft.
+    {
+      const m = url.pathname.match(/^\/api\/skills\/evy\/([^/]+)$/);
+      if (m && req.method === "GET") {
+        const name = decodeURIComponent(m[1]!);
+        const draft = listAllSkills({ category: "evy-authored", skipImported: true })
+          .find((s) => s.name === name);
+        if (!draft) return Response.json({ ok: false, error: `not found: ${name}` }, { status: 404 });
+        try {
+          const content = readFileSync(draft.path, "utf8");
+          return Response.json({ ok: true, skill: draft, content });
+        } catch (err) {
+          return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+        }
+      }
+    }
+
+    // POST /api/skills/evy/:name/promote — promote a draft into
+    // components/skills/<name>/.
+    {
+      const m = url.pathname.match(/^\/api\/skills\/evy\/([^/]+)\/promote$/);
+      if (m && req.method === "POST") {
+        const name = decodeURIComponent(m[1]!);
+        let body: { promoted_by?: string } = {};
+        try { body = await req.json(); } catch { /* allow empty body */ }
+        const promotedBy = (body.promoted_by ?? "operator").toString().slice(0, 80);
+        const r = promoteEvySkill(name, promotedBy);
+        if (!r.ok) return Response.json(r, { status: 400 });
+        return Response.json(r);
+      }
+    }
+
+    // POST /api/skills/evy/:name/delete — discard a draft. POST (not DELETE)
+    // for parity with the rest of this dashboard's curation endpoints.
+    {
+      const m = url.pathname.match(/^\/api\/skills\/evy\/([^/]+)\/delete$/);
+      if (m && (req.method === "POST" || req.method === "DELETE")) {
+        const name = decodeURIComponent(m[1]!);
+        const r = deleteEvySkill(name);
+        if (!r.ok) return Response.json(r, { status: 400 });
+        return Response.json(r);
+      }
+    }
+    // ── end v2.8.1 skills clarity ──
 
     // ── Settings page endpoints ─────────────────────────────────────────
 

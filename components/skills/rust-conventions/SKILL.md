@@ -9,6 +9,10 @@ description: >-
   Rust component (the policy bash-gate kernel) and several adjacent projects
   use Rust for performance-sensitive paths. These are the defaults to apply
   when the project's local CLAUDE.md doesn't override.
+scope: dev-team
+loaded_by_default: []
+created_at: "2026-05-10"
+created_by: operator
 ---
 
 # Rust Conventions
