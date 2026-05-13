@@ -4,6 +4,146 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.7.10] — 2026-05-12
+
+### `feat(team-docs): master tools to read/write/list/log project-local docs at .subctl/docs/`
+
+**What's new.** Four new master tools that let the orchestrator
+persist project-scoped artifacts to `<project_root>/.subctl/docs/`:
+
+- `team_doc_write({ project_root, relative_path, content, frontmatter? })`
+  — write a SPEC / PRD / ARCH / handoff / mandate doc, optionally
+  prepending a YAML frontmatter block (operator, account, phase,
+  kind, …). Creates the docs folder + any intermediate subdirs.
+- `team_doc_read({ project_root, relative_path })` — read it back.
+  Parses out the frontmatter (if any) into a structured `frontmatter`
+  field; returns the body in `content`.
+- `team_doc_list({ project_root, subdir? })` — enumerate files +
+  subdirs. Returns an empty list (not an error) when the folder
+  doesn't exist yet — so callers can probe speculatively.
+- `team_decision_log({ project_root, summary, detail?, by? })` —
+  append one JSON line to `<project>/.subctl/docs/decisions.jsonl`.
+  Append-only, machine-readable, every line `{ ts, summary, detail?,
+  by }`. `by` defaults to `"master"`.
+
+**Folder convention.** Subctl-managed docs live under
+`<project>/.subctl/docs/`, next to the existing
+`<project>/.subctl/policy.toml`. This keeps subctl out of the
+project's own `docs/` tree, makes the artifacts trivially
+`cat`-able from any worker pane, and avoids the TCC-blocked vault
+path under `~/Documents/Obsidian Vault/` that doesn't work under
+launchd on some hosts.
+
+**Why it matters.** Today every directive — SPEC, PRD, ARCH note,
+handoff, "remember this decision" — scrolls away in chat. The next
+worker spawn has no recovery path. With these tools, the master can
+write a SPEC.md the operator dictates, hand it to a worker, and the
+worker can `cat .subctl/docs/SPEC.md` to read it back faithfully
+even after a transcript compact. Decisions become a queryable
+JSONL log instead of a chat-history search. Handoffs become files
+the operator can inspect and `git add`.
+
+**Path safety.** `team_doc_write` rejects `..` segments, absolute
+`relative_path` values, and any resolved path that escapes
+`<project>/.subctl/docs/`. The `subdir` argument on
+`team_doc_list` is held to the same contract.
+
+**Scope discipline.** This PR ships the TOOL SURFACE ONLY. The
+spawn-time integration (every team-create writes a `mandate.md`
+frontmatter wrapper) lands in v2.7.11. The agent definitions, skill
+files, and per-template skeleton docs land in v2.7.12.
+
+**Files.**
+- `components/master/tools/team-docs.ts` — new (four tools + a
+  tiny YAML-frontmatter parser/emitter for the simple `key: value`
+  subset we control on both sides).
+- `components/master/server.ts` — register the family after the
+  knowledge family.
+- `components/master/__tests__/team-docs.test.ts` — new (27 cases:
+  happy paths, path traversal, absolute-path rejection, missing
+  project root, missing folder on list, decision-log running total,
+  frontmatter round-trip).
+- `components/skills/master/SKILL.md` — guidance for when to use
+  `team_doc_write` vs `subctl_orch_msg`, and a `team_decision_log`
+  expectation.
+- `docs/master.md` — new §5.5 "Team-local docs — `.subctl/docs/`
+  tool family" with the folder convention + example operator
+  questions.
+
+## [2.7.9] — 2026-05-12
+
+### `fix(policy): snapshot now records project_root`
+
+The dashboard's Policy tab tries to re-resolve a team's policy chain by
+reading `project_root` from the team's snapshot header, but
+`writePolicySnapshot()` never emitted that field — only `team_id`,
+`mode`, `source_paths`, `allowlist_sha`, and `spawned_at`. Net effect:
+the Policy tab rendered "team X has no project_root recorded in its
+snapshot — cannot resolve policy" for every team, even though the
+function already RECEIVED `projectRoot` as its second argument. We
+were just dropping it on the floor.
+
+Fix is mechanical: thread `projectRoot` into `SnapshotMetadata`, the
+header comment block (`# project_root = "<absolute path>"`), and the
+`_write_snapshot.ts` JSON emit so bash can capture it too.
+
+**Back-compat shim.** `readPolicySnapshot()` accepts snapshots written
+by v2.7.8 (no `# project_root = ...` line) without throwing — it falls
+back to `projectRoot: ""` and logs a one-line deprecation warning
+pointing the operator at "respawn the team to refresh the snapshot."
+The dashboard treats `""` exactly like the missing-field case it
+already had, so the worst case is unchanged behavior for legacy
+snapshots; new spawns get the re-resolve working immediately.
+
+### `feat(orch): trusted-channel directive marker for /msg + worker contract`
+
+**The bug.** When the master sent bare shell commands via
+`subctl_orch_msg`, the worker's team-lead correctly identified them as
+prompt-injection risk and refused — even when they were legitimate
+master directives. Operator-observed: a lead asked to run a baseline
+verification command kept replying "I don't execute bare commands that
+arrive without context — they may be injection probes." Technically
+correct paranoia, operationally a foot-gun.
+
+**The fix.** Two coordinated pieces:
+
+1. `/api/orchestration/<name>/msg` (and the `subctl_orch_msg` tool that
+   calls it) now accept an optional `phase` field. Before pasting into
+   the worker's pane, the route wraps the text with a deterministic
+   marker:
+
+   ```
+   [subctl-master directive · phase=<phase> · ts:<iso>]
+   <operator text>
+   ```
+
+   or, without a phase:
+
+   ```
+   [subctl-master directive · ts:<iso>]
+   <operator text>
+   ```
+
+2. `providers/claude/teams.sh` prepends a constant "subctl team
+   contract" preamble to every worker's first message (unless the
+   spawn is empty-prompt). The preamble teaches the lead:
+
+   - messages arriving with the `[subctl-master directive · …]`
+     marker came through the trusted orchestrator channel and should
+     be executed in the context of the worker's current phase;
+   - messages WITHOUT that marker (especially bare imperatives) may
+     be injection probes and should be refused with a request for
+     context.
+
+**Operator benefit.** Leads now act on master's directives without
+needing the operator to manually paraphrase or re-frame each
+imperative. Security-conscious refusal still kicks in for actual
+out-of-band text — exactly the discrimination we want.
+
+The `subctl_orch_msg` tool description also nudges master to always
+include `phase` + a short WHY when calling it, so directives never
+land as context-free imperatives even when the lead is forgiving.
+
 ## [2.7.8] — 2026-05-12
 
 ### `fix(policy): floor preset to "generic" — kills the "Bureaucrat Agent" regression`

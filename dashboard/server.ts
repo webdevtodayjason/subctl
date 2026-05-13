@@ -5041,6 +5041,10 @@ const server = Bun.serve({
         let body: any = {};
         try { body = await req.json(); } catch {}
         const text = String(body.text ?? "").trim();
+        const phaseRaw = body.phase;
+        const phase = typeof phaseRaw === "string" && phaseRaw.trim().length > 0
+          ? phaseRaw.trim()
+          : null;
         if (!text) {
           return new Response(JSON.stringify({ ok: false, error: "text required" }),
             { status: 400, headers: { "Content-Type": "application/json" } });
@@ -5050,8 +5054,21 @@ const server = Bun.serve({
           return new Response(JSON.stringify({ ok: false, error: "session not found" }),
             { status: 404, headers: { "Content-Type": "application/json" } });
         }
+        // v2.7.9: trusted-channel marker. Wrap the operator's text with a
+        // directive header so the worker's lead can distinguish messages
+        // that came through subctl_orch_msg (a trusted supervisor channel)
+        // from arbitrary text. Without this, security-conscious leads
+        // correctly refuse bare imperatives as prompt-injection probes.
+        // The format contract (consumed by the worker-contract preamble in
+        // providers/claude/teams.sh):
+        //   [subctl-master directive · phase=<phase> · ts:<iso>]\n<text>
+        //   [subctl-master directive · ts:<iso>]\n<text>     (no phase)
+        const marker = phase
+          ? `[subctl-master directive · phase=${phase} · ts:${new Date().toISOString()}]`
+          : `[subctl-master directive · ts:${new Date().toISOString()}]`;
+        const wrapped = `${marker}\n${text}`;
         // Use a tmux buffer so multi-line text injects safely (avoids escape chaos)
-        const r1 = spawnSync(TMUX_BIN, ["set-buffer", "-b", "subctl-msg", text], { encoding: "utf8" });
+        const r1 = spawnSync(TMUX_BIN, ["set-buffer", "-b", "subctl-msg", wrapped], { encoding: "utf8" });
         const r2 = spawnSync(TMUX_BIN, ["paste-buffer", "-t", name, "-b", "subctl-msg"], { encoding: "utf8" });
         // v2.7.8 — give Claude Code's TUI a beat to register the pasted text
         // before sending Enter. Without this delay, the three subprocesses

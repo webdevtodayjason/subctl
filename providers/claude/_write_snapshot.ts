@@ -86,6 +86,7 @@ async function main(): Promise<void> {
   process.stdout.write(
     JSON.stringify({
       team_id: meta.teamId,
+      project_root: meta.projectRoot,
       mode: meta.mode,
       spawned_at: meta.spawnedAt,
       source_paths: meta.sourcePaths,

@@ -59,6 +59,13 @@ export function getSnapshotPath(teamId: string): string {
 
 export interface SnapshotMetadata {
   teamId: string;
+  /**
+   * Absolute path to the team's project root. Round-trips through the header
+   * so the dashboard's Policy tab can re-resolve the policy chain without
+   * stashing it elsewhere. Added in v2.7.9; snapshots written by ≤v2.7.8
+   * lack this line and read back as `""` (see `parseHeader`).
+   */
+  projectRoot: string;
   mode: Mode;
   /** ISO 8601 UTC with millisecond precision. */
   spawnedAt: string;
@@ -120,6 +127,7 @@ export async function writePolicySnapshot(
   const body = stringifyToml(stripForToml(overridden) as Record<string, unknown>);
   const header = buildHeader({
     teamId,
+    projectRoot,
     spawnedAt,
     mode,
     sourcePaths,
@@ -144,6 +152,7 @@ export async function writePolicySnapshot(
 
   return {
     teamId,
+    projectRoot,
     mode,
     spawnedAt,
     sourcePaths,
@@ -233,6 +242,7 @@ function stripForToml(value: unknown): unknown {
 
 interface HeaderMetaInput {
   teamId: string;
+  projectRoot: string;
   spawnedAt: string;
   mode: Mode;
   sourcePaths: string[];
@@ -248,6 +258,7 @@ function buildHeader(meta: HeaderMetaInput): string {
   const lines = [
     `# subctl policy snapshot`,
     `# team_id = ${JSON.stringify(meta.teamId)}`,
+    `# project_root = ${JSON.stringify(meta.projectRoot)}`,
     `# spawned_at = ${JSON.stringify(meta.spawnedAt)}`,
     `# mode = ${JSON.stringify(meta.mode)}`,
   ];
@@ -336,8 +347,27 @@ function parseHeader(headerLines: string[], path: string): Omit<SnapshotMetadata
   const allowlistSha = expectString(parsed.allowlist_sha, "allowlist_sha", path);
   const sourcePaths = expectStringArray(parsed.source_paths, "source_paths", path);
 
+  // v2.7.9: project_root added so the dashboard's Policy tab can re-resolve
+  // policy without an out-of-band stash. Snapshots written by ≤v2.7.8 don't
+  // have this line — fall back to empty string and log a deprecation note
+  // (don't throw; back-compat is the entire point of this branch).
+  let projectRoot = "";
+  if (typeof parsed.project_root === "string") {
+    projectRoot = parsed.project_root;
+  } else if (parsed.project_root !== undefined) {
+    throw new Error(`readPolicySnapshot: header field "project_root" present but not a string in ${path}`);
+  } else {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `readPolicySnapshot: ${path} predates v2.7.9 (no project_root in header). ` +
+      `Returning projectRoot:"" — dashboard policy re-resolve will be skipped for this team. ` +
+      `Respawn the team to refresh the snapshot.`,
+    );
+  }
+
   return {
     teamId,
+    projectRoot,
     spawnedAt,
     mode: mode as Mode,
     sourcePaths,

@@ -395,6 +395,10 @@ function readTeamSnapshotHeader(teamId: string): TeamPolicyRow {
   const mode = find(/^mode\s*=\s*"([^"]+)"/) as Mode | null;
   const allowlistSha = find(/^allowlist_sha\s*=\s*"([^"]+)"/);
   const spawnedAt = find(/^spawned_at\s*=\s*"([^"]+)"/);
+  // v2.7.9: snapshots now record `# project_root = "<abs path>"`. Prefer it
+  // when present; fall back to the source_paths-derived heuristic below for
+  // back-compat with v2.7.8 snapshots.
+  const headerProjectRoot = find(/^project_root\s*=\s*"([^"]+)"/);
 
   // source_paths — multi-line in header. Extract every quoted string between
   // `source_paths = [` and a closing `]`.
@@ -419,14 +423,18 @@ function readTeamSnapshotHeader(teamId: string): TeamPolicyRow {
     if (m) { preset = m[1]!; break; }
   }
 
-  // Derive project_root from the first source path that ends in
-  // `/.subctl/policy.toml`. That's the project-level config in the resolution
-  // chain (PR 4's loadProjectPolicy).
-  let projectRoot: string | null = null;
-  for (const sp of sourcePaths) {
-    if (sp.endsWith("/.subctl/policy.toml")) {
-      projectRoot = sp.slice(0, -"/.subctl/policy.toml".length);
-      break;
+  // Derive project_root. v2.7.9+: the snapshot header records it directly.
+  // v2.7.8 and earlier: fall back to the first source path that ends in
+  // `/.subctl/policy.toml`. That fallback fails for projects with no project
+  // policy file (which is the common case post-v2.7.8 generic-preset floor),
+  // which is exactly why we added the explicit header field.
+  let projectRoot: string | null = headerProjectRoot;
+  if (!projectRoot) {
+    for (const sp of sourcePaths) {
+      if (sp.endsWith("/.subctl/policy.toml")) {
+        projectRoot = sp.slice(0, -"/.subctl/policy.toml".length);
+        break;
+      }
     }
   }
 

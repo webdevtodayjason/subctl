@@ -102,6 +102,7 @@ describe("writePolicySnapshot", () => {
     const read = await readPolicySnapshot("rt-team");
     expect(read).not.toBeNull();
     expect(read!.meta.teamId).toBe(meta.teamId);
+    expect(read!.meta.projectRoot).toBe(meta.projectRoot);
     expect(read!.meta.mode).toBe(meta.mode);
     expect(read!.meta.spawnedAt).toBe(meta.spawnedAt);
     expect(read!.meta.allowlistSha).toBe(meta.allowlistSha);
@@ -211,6 +212,56 @@ substrings = ["rm -rf", "dd if="]
   test("readPolicySnapshot returns null when no snapshot exists", async () => {
     const r = await readPolicySnapshot("never-written");
     expect(r).toBeNull();
+  });
+
+  test("v2.7.9: project_root round-trips through the header", async () => {
+    // The header should record the projectRoot the writer was called with,
+    // and the reader should return the same string verbatim.
+    const meta = await writePolicySnapshot("pr-team", projectRoot, "gated");
+    expect(meta.projectRoot).toBe(projectRoot);
+    const raw = readFileSync(getSnapshotPath("pr-team"), "utf8");
+    expect(raw).toContain(`# project_root = ${JSON.stringify(projectRoot)}`);
+    const read = await readPolicySnapshot("pr-team");
+    expect(read).not.toBeNull();
+    expect(read!.meta.projectRoot).toBe(projectRoot);
+  });
+
+  test("v2.7.9 back-compat: v2.7.8-style snapshot (no project_root) reads as projectRoot=''", async () => {
+    // Hand-construct a snapshot exactly as v2.7.8 would have written it —
+    // header omits the `# project_root = ...` line. The reader must not
+    // throw; it must fall back to "".
+    const path = getSnapshotPath("legacy-team");
+    mkdirSync(join(path, ".."), { recursive: true });
+    writeFileSync(
+      path,
+      `# subctl policy snapshot
+# team_id = "legacy-team"
+# spawned_at = "2026-05-11T00:00:00.000Z"
+# mode = "gated"
+# source_paths = []
+# allowlist_sha = "deadbeef"
+
+default_mode = "gated"
+
+[mode]
+[mode.gated]
+[mode.gated.allow]
+commands = ["ls"]
+`,
+    );
+    // Silence the deprecation console.warn for this test only.
+    const origWarn = console.warn;
+    console.warn = () => {};
+    let read: Awaited<ReturnType<typeof readPolicySnapshot>> = null;
+    try {
+      read = await readPolicySnapshot("legacy-team");
+    } finally {
+      console.warn = origWarn;
+    }
+    expect(read).not.toBeNull();
+    expect(read!.meta.projectRoot).toBe("");
+    expect(read!.meta.teamId).toBe("legacy-team");
+    expect(read!.meta.mode).toBe("gated");
   });
 
   test("readPolicySnapshot throws on malformed body", async () => {

@@ -68,6 +68,7 @@ import { diagTools, bindWatchdogState } from "./tools/diag";
 import { webTools } from "./tools/web";
 import { linearTools } from "./tools/linear";
 import { knowledgeTools } from "./tools/knowledge";
+import { teamDocsTools } from "./tools/team-docs";
 import {
   saveAttachment,
   listAttachments,
@@ -389,6 +390,13 @@ export const toolRegistry: Record<string, InternalTool> = {
   // heavily in Argent and asked for the same pattern here. v2.7.7.
   ...Object.fromEntries(
     Object.entries(knowledgeTools).map(([k, v]) => [k, v as unknown as InternalTool]),
+  ),
+  // team-docs family: write/read/list/append to <project>/.subctl/docs/.
+  // Operator decision (v2.7.10): subctl scopes its docs under .subctl/docs/
+  // alongside the policy.toml — keeps subctl-managed state out of the
+  // project's own docs/ tree.
+  ...Object.fromEntries(
+    Object.entries(teamDocsTools).map(([k, v]) => [k, v as unknown as InternalTool]),
   ),
 };
 

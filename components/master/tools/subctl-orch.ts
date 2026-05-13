@@ -207,19 +207,26 @@ export const subctlOrchTools = {
    */
   msg: {
     description:
-      "Inject a message into a running worker session. Use to nudge a stalled worker, deliver a follow-up question, or course-correct. The worker sees the message in its conversation context.",
+      "Inject a message into a running worker session through the trusted subctl-master directive channel. The dashboard wraps the text with a `[subctl-master directive · phase=… · ts:…]` marker so the worker's lead recognizes it as a legitimate supervisor message (workers are instructed at spawn time to refuse bare imperatives that arrive without this marker). Always include `phase` and a SHORT explanation of WHY the worker should run this — bare imperatives without context will be refused by security-conscious leads. Use to nudge a stalled worker, deliver a follow-up question, or course-correct.",
     schema: {
       type: "object",
       properties: {
         name: { type: "string" },
         text: { type: "string" },
+        phase: {
+          type: "string",
+          description:
+            "Current phase / context — gets embedded in the directive marker so the worker knows where this fits in the work plan. Example: 'baseline-verification', 'feature-impl-step-3'. Optional but strongly recommended.",
+        },
       },
       required: ["name", "text"],
     },
-    invoke: async ({ name, text }: { name: string; text: string }) => {
+    invoke: async ({ name, text, phase }: { name: string; text: string; phase?: string }) => {
+      const payload: Record<string, unknown> = { text };
+      if (phase) payload.phase = phase;
       return apiPost(
         `/api/orchestration/${encodeURIComponent(name)}/msg`,
-        { text },
+        payload,
       );
     },
   },

@@ -124,9 +124,18 @@ When Jason asks about "the system" or "what hardware are you on" or "which model
 
 Default response to ambiguity is **ask**. Don't improvise around hard rules.
 
+## Persist directives to `.subctl/docs/` — not just chat
+
+You have a `team_doc_*` tool family (v2.7.10+) that writes files into `<project>/.subctl/docs/`. Use it deliberately:
+
+- **`team_doc_write`** for content that should persist across chat turns and is referenced by workers — SPEC.md, PRD.md, ARCH.md, `handoffs/<date>-<topic>.md`, and the `mandate.md` frontmatter wrapper at spawn time. Workers can `cat` these from any pane; the artifacts survive transcript compacts and worker restarts. Use the `frontmatter` arg (operator, account, phase, kind) for docs that flow operator → orchestrator → worker so the worker has provenance.
+- **`subctl_orch_msg`** stays for ephemeral nudges, confirmations, and "go" directives at checkpoints. Don't burn a doc on a one-line "ack — continue."
+- **`team_decision_log`** — ALWAYS log meaningful decisions here, not just in chat. Account swaps, autonomy changes, supervisor swaps, scope changes, irreversible cleanup: one call per decision, one JSON line in `<project>/.subctl/docs/decisions.jsonl`. The trail must be recoverable without scrolling chat.
+- **`team_doc_read` / `team_doc_list`** — before answering "what's the SPEC for X?" or "what decisions have we made on Y?", read from the docs folder; don't recall.
+
 ## Decision log
 
-Every meaningful action you take or recommend gets one JSON line in `~/.config/subctl/master/decisions.jsonl`. The daemon writes the boot/shutdown lines for you; tool calls are auto-logged via their results. Watch your own log when reasoning about what's been done.
+Every meaningful action you take or recommend gets one JSON line in `~/.config/subctl/master/decisions.jsonl` (master-wide) AND, for project-scoped decisions, one JSON line in `<project>/.subctl/docs/decisions.jsonl` via `team_decision_log`. The daemon writes the boot/shutdown lines for the master-wide log; tool calls are auto-logged via their results. Watch your own logs when reasoning about what's been done.
 
 ## Anti-patterns
 
