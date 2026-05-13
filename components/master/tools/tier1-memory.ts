@@ -115,7 +115,7 @@ function serializeEntries(entries: Array<{ content: string }>): string {
 export const tier1MemoryTools = {
   memory_show: {
     description:
-      "Show the current contents of master's tier-1 memory: the user profile (~/.config/subctl/master/user.md) and the learned-facts list (~/.config/subctl/master/memory.md). These two files are auto-injected into your system prompt every turn so you always have them in context. Use this tool to see what's there before remembering / updating, or to recall what you previously stored.",
+      "**Use this when** you need to see the current contents of Tier 1 memory before remembering, forgetting, or updating — or to recall what's already filed. Returns the user profile (user.md) and the learned-facts list (memory.md), both auto-injected into your system prompt every turn.",
     schema: { type: "object", properties: {}, required: [] },
     invoke: async () => {
       const memoryFile = readMemory();
@@ -141,7 +141,7 @@ export const tier1MemoryTools = {
 
   memory_remember: {
     description:
-      "Append a fact to master's learned-facts memory (~/.config/subctl/master/memory.md). Use this when you've learned something durable about a project, decision, gotcha, or pattern that you'll want every future turn to know without having to re-discover it. Keep entries SHORT (1-3 sentences) and self-contained — they get injected into every prompt forever, so they cost tokens. Refuses if the total file would exceed the char limit; consolidate or forget old entries first.",
+      "**Use this when** you need to durably commit an operator-asserted fact or learned pattern to Tier 1 (~/.config/subctl/master/memory.md). Conservative — small char budget, injected every turn. Always declare `source_type` so provenance is recoverable. Refuses on overflow; consolidate or forget old entries first.",
     schema: {
       type: "object",
       properties: {
@@ -149,15 +149,43 @@ export const tier1MemoryTools = {
           type: "string",
           description: "The fact to remember. One sentence to one short paragraph. Be specific and self-contained.",
         },
+        source_type: {
+          type: "string",
+          enum: [
+            "operator-asserted",
+            "verified-external",
+            "self-inferred",
+            "agent-reported",
+          ],
+          description:
+            "Required. Provenance tag for this fact: 'operator-asserted' (Jason told me), 'verified-external' (I verified via tool call or external lookup), 'self-inferred' (I reasoned my way to this), 'agent-reported' (a dev-team worker reported it). Stored in the entry's metadata header so it's queryable later.",
+        },
       },
-      required: ["text"],
+      required: ["text", "source_type"],
     },
-    invoke: async ({ text }: { text: string }) => {
+    invoke: async ({ text, source_type }: { text: string; source_type?: string }) => {
       const trimmed = (text ?? "").trim();
       if (!trimmed) return { ok: false, error: "text required" };
+      const allowedSources = [
+        "operator-asserted",
+        "verified-external",
+        "self-inferred",
+        "agent-reported",
+      ];
+      if (!source_type || !allowedSources.includes(source_type)) {
+        return {
+          ok: false,
+          error: `source_type required (one of: ${allowedSources.join(", ")})`,
+        };
+      }
       const current = readMemory();
       const entries = current.entries ?? [];
-      entries.push({ content: trimmed });
+      // Prepend a `[source:<type>]` provenance tag to the stored body so
+      // every entry carries its origin. Tier 1 entries live forever in
+      // every prompt; without a tag, you can't later distinguish operator-
+      // asserted facts from self-inferred ones.
+      const tagged = `[source:${source_type}] ${trimmed}`;
+      entries.push({ content: tagged });
       const newContent = serializeEntries(entries.map((e, i) => ({ ...e, index: i })));
       if (newContent.length > MEMORY_LIMIT) {
         return {
@@ -171,6 +199,7 @@ export const tier1MemoryTools = {
       return {
         ok: true,
         appended_index: entries.length - 1,
+        source_type,
         char_count: newContent.length,
         char_limit: MEMORY_LIMIT,
         message: `remembered (${entries.length} total entries, ${newContent.length}/${MEMORY_LIMIT} chars used)`,
@@ -180,7 +209,7 @@ export const tier1MemoryTools = {
 
   memory_forget: {
     description:
-      "Remove an entry from master's learned-facts memory by index. Use memory_show first to see indexes. Useful for: consolidating duplicates, removing outdated facts, freeing char budget when the file is full.",
+      "**Use this when** you need to remove an entry from Tier 1 learned-facts memory by index (consolidate duplicates, drop outdated facts, free char budget). Destructive — requires `confirmation: true` to proceed. Use memory_show first to see indexes.",
     schema: {
       type: "object",
       properties: {
@@ -188,10 +217,21 @@ export const tier1MemoryTools = {
           type: "number",
           description: "0-based index of the entry to remove (from memory_show's entries array).",
         },
+        confirmation: {
+          type: "boolean",
+          description:
+            "Required. Must be literally `true`. Forces explicit acknowledgement that this entry is being deleted from Tier 1 memory — Evy does not destroy memory without confirmation.",
+        },
       },
-      required: ["index"],
+      required: ["index", "confirmation"],
     },
-    invoke: async ({ index }: { index: number }) => {
+    invoke: async ({ index, confirmation }: { index: number; confirmation?: boolean }) => {
+      if (confirmation !== true) {
+        return {
+          ok: false,
+          error: "memory_forget requires explicit confirmation: true",
+        };
+      }
       const current = readMemory();
       const entries = current.entries ?? [];
       if (typeof index !== "number" || index < 0 || index >= entries.length) {

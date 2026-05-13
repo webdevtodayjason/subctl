@@ -4,6 +4,51 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.7.15] — 2026-05-13
+
+### `feat(persona): Evy lands — SKILL.md rewrite + voice preset + tool-description imperative voice`
+
+The master daemon is now the Evy persona end-to-end. `components/skills/master/SKILL.md` is a verbatim port of the operator-authored system prompt from `docs/persona/evy.md` §1, including the two subctl-added sections ("Tool use is non-negotiable" and "Continuity across model swaps"), followed by a subctl-specific adaptations block that maps the spec's ArgentOS conventions to subctl's actual backends:
+
+- Five-tier memory model named explicitly (Tier 1 MEMORY.md, Tier 2 Obsidian read-only, Tier 3 Memori v2.7.16+ forthcoming, Tier 4 claude-mem corpus, Tier 5 `.subctl/docs/`). Filing convention: name the tier. See [ADR 0005](docs/adr/0005-five-tier-memory-architecture.md).
+- Two-tier family (at-the-desk tools vs back-stacks dev teams), not ArgentOS's flat 29-agent family.
+- Think Tank dropped — no phantom capabilities. See [ADR 0007](docs/adr/0007-think-tank-concept-dropped.md).
+- Style-matching instruction for `subctl_orch_msg`: terse, lowercase, imperative to match operator voice. This is Layer 3 of the trust-marker design from [ADR 0011](docs/adr/0011-trust-marker-hmac-replacement.md) (Layer 1 HMAC ships v2.7.16; Layer 2 web terminal ships v2.7.17).
+
+`components/master/personalities/evy.md` ships as a new voice preset (dry, precise, slightly impatient with hand-holding, owns mistakes plainly, no grovel, no em dashes). The default preset in `components/master/personality.ts` is flipped from `straight-shooter` to `evy`. Existing presets remain available.
+
+Tool descriptions across `memory_*`, `subctl_orch_*`, `team_doc_*`, and `system_*` are rewritten in the "**Use this FIRST when**..." imperative voice. The pattern leads with WHEN to invoke (the trigger), not WHAT it does (the model can read the schema for that). Memory tools also name their tier, so Evy's filing convention is reinforced at the tool-description layer.
+
+See [ADR 0004](docs/adr/0004-evy-persona-librarian-framing.md) for the persona-adoption decision.
+
+### `feat(eval): 24 persona tests on the v2.7.11 harness — bun test components/master/__tests__/evy-eval/`
+
+The Evy persona is load-bearing. Without a measurement loop, every prompt iteration is a gamble. v2.7.15 ships the 24-test eval suite built on top of the harness scaffolded in the prior PR (regex fast-fail → LLM judge → JSON output → bun assertion). Tests cover seven categories:
+
+- Pushback Protocol (4) — pushback shape, override compliance, elaboration on demand, no stacking
+- Verification (3) — clean relay with provenance, send-it-back on bad output, surface conflict
+- Persona Stability (4) — continuity across model swaps, identity probing, curt operator, venting
+- Routing Discipline (4) — desk vs back-stacks, no fan-out, right specialist, name the agent
+- Memory and Provenance (3) — tier-named filing, source_type, no file-without-provenance
+- Error Recovery (3) — own the mistake plainly, route around flaky specialists, no fabrication on tool error
+- Format and Voice (3) — no em dashes, no emojis, no padding
+
+Each test follows the rubric pattern from `docs/persona/evy-eval-rubric-test-1.2.md` §"Test shape in bun": per-test judge prompt inline (3-5 criteria, one binary), regex fast-fail vetoes to FAIL, LLM judge skipped when no `ANTHROPIC_API_KEY` (test tagged `regex-only-pass` instead of `pass` so partial grading is legible in every score-log line).
+
+Tests live under `components/master/__tests__/evy-eval/tests/` (7 files by category). Pipeline boilerplate is centralized in `tests/_helpers.ts` — each test file declares scenarios + judge prompts; the helper handles regex, judge, and score-log writes.
+
+See [ADR 0008](docs/adr/0008-eval-suite-pipeline.md) for the pipeline decision.
+
+### `fix(schema): memory_remember.source_type + memory_forget.confirmation + subctl_orch_kill.confirmation+reason — hard rules at the tool layer`
+
+The persona prompt says Evy resists letting anything into memory without provenance, owns mistakes plainly without grovel, and treats destructive actions as escalations. Three tool schemas now enforce that structurally rather than relying on prompt adherence alone:
+
+- `memory_remember` requires `source_type` (enum: `operator-asserted | verified-external | self-inferred | agent-reported`). Missing or invalid source_type returns `{ ok: false, error: "source_type required" }`. The tag is prepended to the stored entry body so every Tier 1 fact carries its provenance forever.
+- `memory_forget` requires `confirmation: true`. Anything else returns `{ ok: false, error: "memory_forget requires explicit confirmation: true" }`. Evy does not destroy memory without confirmation.
+- `subctl_orch_kill` requires `confirmation: true` AND `reason` (string, ≥10 chars). The reason gets posted with the kill so the destruction is on the record. Workers cost time to spawn; killing them silently makes the audit trail worthless.
+
+Schema validation is enforced in the tool's `invoke()` body — the tool layer is the right place because the model's prompt adherence is best-effort while the schema is a contract.
+
 ## [2.7.14] — 2026-05-12
 
 ### `fix(dashboard/chat): structural header — wrap toolbar + H2 in one sticky band`

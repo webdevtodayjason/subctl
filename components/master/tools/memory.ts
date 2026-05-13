@@ -37,7 +37,7 @@ async function memFetch<T>(path: string, init: RequestInit = {}): Promise<T | nu
 export const memoryTools = {
   memory_search: {
     description:
-      "Semantic search across observations claude-mem has captured from past Claude Code sessions (your dev-team leads, mostly). Use this to recall: \"what was decided about project X's auth flow?\", \"have we hit this error before?\", \"what file did we update last time we touched the billing code?\". Returns a list of matching observations with their session/project/timestamp metadata. Does NOT search master's own conversation transcripts — for that, look at agent.state.messages or ~/.config/subctl/master/decisions.jsonl directly.",
+      "**Use this FIRST when** the operator references past work, asks about prior decisions, or you need historical context (\"what did we decide about X\", \"have we hit this error before\", \"how did we solve Y last time\"). Don't recall from your own context window — query. Returns observations from claude-mem (Tier 4) captured across past Claude Code sessions, with session/project/timestamp provenance. Does NOT search your own conversation transcripts; for that, read agent-state.json or decisions.jsonl directly.",
     schema: {
       type: "object",
       properties: {
@@ -66,7 +66,7 @@ export const memoryTools = {
 
   memory_timeline: {
     description:
-      "Get recent observations from claude-mem in time order — what your dev teams (Claude Code sessions) have been doing recently. Use when asked \"what's been happening?\", \"give me a recap of last week\", or before spawning a team to see if related work was already in progress. Requires either a query (semantic filter) or anchor (timestamp).",
+      "**Use this FIRST when** asked \"what's been happening?\", \"give me a recap of last week\", or before spawning a team to see if related work was already in progress. Don't recall — query. Returns recent observations from claude-mem (Tier 4) in time order. Accepts an optional semantic filter; pass empty to get the most recent overall.",
     schema: {
       type: "object",
       properties: {
@@ -93,7 +93,7 @@ export const memoryTools = {
 
   memory_observations: {
     description:
-      "Paginated raw list of all captured observations. Use sparingly — prefer memory_search or memory_timeline for targeted queries. This is the underlying storage view, ordered by capture time.",
+      "**Use this when** memory_search and memory_timeline aren't enough and you need the raw paginated view. Prefer memory_search (semantic) or memory_timeline (recency-filtered) for targeted queries; this is the underlying storage view from claude-mem (Tier 4), ordered by capture time.",
     schema: {
       type: "object",
       properties: {
@@ -121,7 +121,7 @@ export const memoryTools = {
 
   memory_health: {
     description:
-      "Check whether the claude-mem worker is reachable and report its status (pid, initialized state, platform). Use to verify memory infra is up before relying on it.",
+      "**Use this when** memory_search or memory_timeline returned an unexpected error and you need to confirm whether the claude-mem worker (Tier 4 substrate) is alive. Reports pid, initialized state, platform.",
     schema: { type: "object", properties: {}, required: [] },
     invoke: async () => {
       const r = await memFetch<Record<string, unknown>>("/api/health");

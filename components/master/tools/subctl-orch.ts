@@ -81,7 +81,7 @@ export const subctlOrchTools = {
    */
   status: {
     description:
-      "Get the live state of a specific orchestrator session by name. Use this to detect stalls (no thinking indicator + idle prompt) or check progress.",
+      "**Use this FIRST when** asked about a dev team's state, progress, or whether it's stalled. Don't guess from your context — query the actual pane. Returns pane preview, last activity, attached state, account dir.",
     schema: {
       type: "object",
       properties: { name: { type: "string" } },
@@ -207,7 +207,7 @@ export const subctlOrchTools = {
    */
   msg: {
     description:
-      "Inject a message into a running worker session through the trusted subctl-master directive channel. The dashboard wraps the text with a `[subctl-master directive · phase=… · ts:…]` marker so the worker's lead recognizes it as a legitimate supervisor message (workers are instructed at spawn time to refuse bare imperatives that arrive without this marker). Always include `phase` and a SHORT explanation of WHY the worker should run this — bare imperatives without context will be refused by security-conscious leads. Use to nudge a stalled worker, deliver a follow-up question, or course-correct.",
+      "**Use this when** you need to inject a directive into a running worker — nudge a stalled team, deliver a follow-up, course-correct. Match operator style: terse, lowercase, imperative. Verbose hedged formal phrasing is a red flag workers correctly suspect. The runtime wraps the text in a trust marker (v2.7.16+ adds HMAC authentication) so the worker's lead can verify it as a legitimate supervisor directive. Always include `phase` plus a short WHY — bare imperatives without context get refused.",
     schema: {
       type: "object",
       properties: {
@@ -238,14 +238,49 @@ export const subctlOrchTools = {
    */
   kill: {
     description:
-      "Kill a worker orchestrator session by name. Destroys the tmux session. IRREVERSIBLE — verify the worker has no unsaved working state first via status().",
+      "**Use this when** a worker session must be torn down — confirmed shutdown, deliberate cleanup. Destroys the tmux session. IRREVERSIBLE. Requires `confirmation: true` and a `reason` (≥10 chars) so the destruction is on the record. Verify no unsaved working state first via status().",
     schema: {
       type: "object",
-      properties: { name: { type: "string" } },
-      required: ["name"],
+      properties: {
+        name: { type: "string" },
+        confirmation: {
+          type: "boolean",
+          description:
+            "Required. Must be literally `true`. Forces explicit acknowledgement that the worker is being destroyed — irreversible.",
+        },
+        reason: {
+          type: "string",
+          description:
+            "Required. ≥10 chars. Short rationale for the kill — gets logged so the decision is recoverable later (e.g. 'worker completed deliverable, no longer needed' or 'paranoia-loop, restarting fresh').",
+        },
+      },
+      required: ["name", "confirmation", "reason"],
     },
-    invoke: async ({ name }: { name: string }) => {
-      return apiPost(`/api/orchestration/${encodeURIComponent(name)}/kill`);
+    invoke: async ({
+      name,
+      confirmation,
+      reason,
+    }: {
+      name: string;
+      confirmation?: boolean;
+      reason?: string;
+    }) => {
+      if (confirmation !== true) {
+        return {
+          ok: false,
+          error: "subctl_orch_kill requires explicit confirmation: true",
+        };
+      }
+      if (typeof reason !== "string" || reason.trim().length < 10) {
+        return {
+          ok: false,
+          error:
+            "subctl_orch_kill requires a reason string of at least 10 chars",
+        };
+      }
+      return apiPost(`/api/orchestration/${encodeURIComponent(name)}/kill`, {
+        reason,
+      });
     },
   },
 

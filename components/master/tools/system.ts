@@ -51,7 +51,7 @@ function bytesHuman(n: number): string {
 export const systemTools = {
   hardware: {
     description:
-      "Get hardware info for the host the master is running on (M3 Ultra in Jason's home data center). Returns Mac model, CPU brand, physical core count, total RAM. Use when asked about hardware specs.",
+      "**Use this when** asked about the host's hardware specs. Returns Mac model, CPU brand, physical core count, total RAM, macOS version.",
     schema: { type: "object", properties: {}, required: [] },
     invoke: async () => {
       const model = shell("sysctl -n hw.model");
@@ -76,7 +76,7 @@ export const systemTools = {
 
   load: {
     description:
-      "Current system load and free memory snapshot. Returns load averages, free vs used RAM, swap usage. Use when asked 'is the system under pressure?' or 'how much memory is free?'.",
+      "**Use this when** asked 'is the system under pressure?' or 'how much memory is free?'. Returns load averages and current memory breakdown (free / active / wired / compressed).",
     schema: { type: "object", properties: {}, required: [] },
     invoke: async () => {
       const uptimeOut = shell("uptime");
@@ -137,7 +137,7 @@ export const systemTools = {
 
   lmstudio_models: {
     description:
-      "List ALL models known to the LM Studio server: which are loaded, their type (llm/vlm/embeddings), quantization, max context, capabilities (tool_use, etc.). Use when asked about available models, what's loaded, or to recommend a model for a task.",
+      "**Use this FIRST when** asked which models are loaded or available. State drifts — LM Studio evicts under memory pressure. Returns every model on the local LM Studio server: state (loaded/not), type, quantization, max context, capabilities (tool_use, etc.).",
     schema: { type: "object", properties: {}, required: [] },
     invoke: async () => {
       // Native LM Studio API (richer than OpenAI-compat /v1/models)
@@ -173,7 +173,7 @@ export const systemTools = {
 
   tmux_sessions: {
     description:
-      "List every tmux session on the host (orchestrator + non-orchestrator alike). Returns name, path, attached, age, env CLAUDE_CONFIG_DIR if set. Use when asked what's running or to find a specific session.",
+      "**Use this FIRST when** asked what's running on the host. Don't recall from your context — sessions come and go. Returns every tmux session: name, path, attached, age, and CLAUDE_CONFIG_DIR (set on dev-team sessions).",
     schema: { type: "object", properties: {}, required: [] },
     invoke: async () => {
       const out = shell(
@@ -273,7 +273,7 @@ export const systemTools = {
 
   my_tools: {
     description:
-      "List the tools currently registered in this master daemon's tool registry. Use when asked 'what tools do you have', 'what can you do', or before claiming a specific tool exists. Returns each tool's name + description so you can answer accurately. Names come from the live registry, not from memory — master SKILL anti-hallucination rule #2 (don't claim capabilities you don't have) is enforced by calling this.",
+      "**Use this FIRST when** asked 'what tools do you have' or 'what can you do', or before claiming a specific tool exists. Don't recite from memory — the registry changes between releases. Returns each tool's name + description from the live registry. Anti-hallucination rule #2 (no phantom capabilities) is enforced by calling this.",
     schema: {
       type: "object",
       properties: {

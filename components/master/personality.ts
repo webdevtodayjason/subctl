@@ -26,6 +26,7 @@ const CONFIG_PATH = join(SUBCTL_CONFIG_DIR, "master", "personality.json");
 const PRESETS_DIR = join(import.meta.dir, "personalities");
 
 const PRESETS = [
+  "evy",
   "straight-shooter",
   "witty",
   "sarcastic",
@@ -38,7 +39,13 @@ const PRESETS = [
 export type Preset = (typeof PRESETS)[number];
 
 export const ALL_PRESETS: ReadonlyArray<Preset> = PRESETS;
-export const DEFAULT_PRESET: Preset = "straight-shooter";
+// v2.7.15: default flipped from "straight-shooter" to "evy" — the
+// master daemon is now the Evy persona (see docs/persona/evy.md). The
+// evy.md preset is intentionally compatible with the persona's spec:
+// voice rules in the preset reinforce, never contradict, the SKILL.md
+// prompt. Operators can still opt out by writing
+// ~/.config/subctl/master/personality.json with a different preset.
+export const DEFAULT_PRESET: Preset = "evy";
 
 export function readActivePreset(): Preset {
   try {

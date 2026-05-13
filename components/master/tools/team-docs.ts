@@ -224,7 +224,7 @@ function parseScalar(s: string): unknown {
 
 const team_doc_write = {
   description:
-    "Write a doc (SPEC, PRD, ARCH, handoff, mandate, …) to the team's project-local docs folder at `<project_root>/.subctl/docs/`. Workers can read these via `cat` — that's how you persist directives, specs, and handoffs across chat turns and across worker restarts. Use the optional `frontmatter` object (operator, account, phase, kind, …) for documents that flow operator → orchestrator → worker so the worker has provenance. The destination directory is created if missing. Path traversal (`..`, absolute paths) is rejected. Overwrites if the file already exists — that's the intended behavior for a SPEC that gets revised in place.",
+    "**Use this when** you need to persist a SPEC, PRD, ARCH note, handoff, or mandate to the team's project-local docs (Tier 5, `<project_root>/.subctl/docs/`). Workers `cat` these directly — that's how directives survive chat compaction and worker restarts. Use the `frontmatter` object (operator, account, phase, kind) for docs that flow operator → orchestrator → worker so the worker has provenance. Path traversal rejected. Overwrites in place — that's intentional for revisable SPECs.",
   schema: {
     type: "object",
     properties: {
@@ -308,7 +308,7 @@ const team_doc_write = {
 
 const team_doc_read = {
   description:
-    "Read a doc back from the team's project-local docs folder at `<project_root>/.subctl/docs/<relative_path>`. If the file starts with a `---\\n…\\n---\\n` YAML frontmatter block, it's parsed out into `frontmatter` and the remaining body is returned in `content`. Missing files return ok:false with a sane error — use `team_doc_list` first if you're not sure what's there.",
+    "**Use this FIRST when** asked \"what's the SPEC for X?\" or \"what does the handoff say?\" — read from Tier 5 docs, don't recall. If the file has YAML frontmatter (`---\\n…\\n---\\n`), it's parsed into `frontmatter` and the body returned separately. Use `team_doc_list` first if you're unsure what exists.",
   schema: {
     type: "object",
     properties: {
@@ -369,7 +369,7 @@ interface DocEntry {
 
 const team_doc_list = {
   description:
-    "List files + subdirectories under `<project_root>/.subctl/docs/` (or `.../<subdir>` if provided). Use this to discover what docs the team has — SPEC.md, PRD.md, decisions.jsonl, handoffs/ entries, etc. — before reading them. If the folder doesn't exist (project hasn't been spawned with v2.7.11 docs scaffolding yet) this returns ok:true with an empty `entries` array, NOT an error — so you can call it speculatively.",
+    "**Use this when** you need to discover what Tier 5 docs a team has before reading them — SPEC.md, PRD.md, decisions.jsonl, handoffs/, etc. Safe to call speculatively: a missing folder returns ok:true with empty entries, not an error.",
   schema: {
     type: "object",
     properties: {
@@ -436,7 +436,7 @@ const team_doc_list = {
 
 const team_decision_log = {
   description:
-    "Append one decision to `<project_root>/.subctl/docs/decisions.jsonl` — an append-only, machine-readable trail of meaningful choices the master / orchestrator / operator have made on this project. Use whenever you make a call the operator should be able to scroll back to: account swaps, autonomy changes, scope changes, mode switches, irreversible cleanup, supervisor swaps. The folder is created if missing. `by` defaults to 'master'. Returns the running total so you can confirm the line landed.",
+    "**Use this when** you make or witness a meaningful decision that should be recoverable later — account swaps, autonomy changes, scope changes, mode switches, irreversible cleanup, supervisor swaps. Appends one JSON line per call to `<project_root>/.subctl/docs/decisions.jsonl` (Tier 5). Append-only — the trail must be recoverable without scrolling chat. `by` defaults to 'master'.",
   schema: {
     type: "object",
     properties: {
