@@ -336,3 +336,34 @@ subctl_settings_install_master() {
 
   subctl_ok "master daemon installed (components/master/). Run 'subctl master enable' to start."
 }
+
+# v2.7.21 (ADR 0011 L2): dashboard now has its own package.json (xterm.js +
+# node-pty for the web-terminal escape hatch). Mirrors the master daemon
+# install pattern above.
+subctl_settings_install_dashboard_deps() {
+  local dashboard_dir="$SUBCTL_REPO_ROOT/dashboard"
+  local pkg_json="$dashboard_dir/package.json"
+  [[ ! -f "$pkg_json" ]] && return 0  # nothing to install (pre-v2.7.21)
+
+  if ! command -v bun >/dev/null 2>&1; then
+    subctl_warn "bun missing — dashboard web-terminal vendor deps will not be installed."
+    return 0
+  fi
+
+  # node-pty (a native module) installs prebuilt binaries that bun may
+  # forget to chmod +x. Fix-up is below.
+  if [[ ! -d "$dashboard_dir/node_modules" ]]; then
+    subctl_info "installing dashboard vendor dependencies (xterm.js + node-pty)..."
+    (cd "$dashboard_dir" && bun install >/dev/null 2>&1) \
+      && subctl_ok "dashboard deps installed" \
+      || { subctl_warn "bun install failed in $dashboard_dir — web terminal will be unavailable until fixed"; return 0; }
+  fi
+
+  # node-pty prebuilt spawn-helper binaries: bun's installer sometimes
+  # drops the execute bit. Make them executable so the helper sidecar
+  # can fork its child without a posix_spawnp failure.
+  local prebuilds_root="$dashboard_dir/node_modules/node-pty/prebuilds"
+  if [[ -d "$prebuilds_root" ]]; then
+    find "$prebuilds_root" -name "spawn-helper" -type f -exec chmod +x {} \; 2>/dev/null || true
+  fi
+}

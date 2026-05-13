@@ -4,6 +4,57 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.7.21] — 2026-05-13
+
+### `feat(dashboard): v2.7.21 web terminal escape hatch (ADR 0011 Layer 2)`
+
+Closes ADR 0011 by landing the operator-facing web terminal — the always-available "drop into the worker's pane and type as yourself" escape hatch that the same 2026-05-12 paranoia-loop incident motivating Layer 1's HMAC marker exposed as a real product gap. With v2.7.21, breaking a stuck worker no longer requires SSH from another machine; an "Attach" button on every team card in the orchestration cockpit opens an xterm.js terminal in the browser, proxied through a node-pty sidecar running `tmux attach -t <session>`. Operator types directly into the worker's pane, bypassing master, bypassing HMAC, bypassing the worker's paranoia heuristics.
+
+Layers 1 (HMAC marker, v2.7.20) and 3 (style matching, Evy SKILL.md since v2.7.15) shipped earlier; v2.7.21 makes ADR 0011 complete.
+
+**The threat-model and security gate.** The web terminal exposes a shell-equivalent surface (anything the operator's user can do, including writing into worker tmux panes that bypass HMAC), so it ships default-OFF behind a flag file:
+
+- `~/.config/subctl/terminal.enabled` — file presence = enabled, absence = disabled. No parsing, no schema, deliberately the simplest possible toggle. Touched by `/terminal on` from Telegram or `touch` from the shell.
+- When disabled: `WS /api/terminal/attach` returns HTTP 403 on upgrade; `GET /api/terminal/teams` returns 403; `GET /api/terminal/enabled` returns `{enabled:false,flag_path:...}` (the dashboard UI uses this to hide all Attach buttons + the modal entirely via `body.terminal-disabled` CSS class).
+- When enabled: WS upgrade succeeds; UI shows Attach buttons.
+- **Auth pattern reuses dashboard's existing localhost-bind posture** (`SUBCTL_DASHBOARD_HOST` env, defaults `127.0.0.1`). No new auth surface, no cookies, no headers — the dashboard has no auth middleware today, and adding one here would be inventing policy. As defence-in-depth against DNS rebinding, when the dashboard is bound to a localhost address the WS upgrade additionally rejects requests whose `Host` header isn't a localhost variant. When the operator deliberately opens the dashboard to LAN we trust the listener config and skip the host check (same posture as `/api/orchestration/*` and friends).
+- Team name validated against `[A-Za-z0-9._-]{1,128}` before the upgrade — tmux session names are operator-controlled but the path through the URL is not, so we clamp.
+
+**Node sidecar instead of in-process node-pty.** node-pty under Bun 1.2.x has a known fd-handling bug (ENXIO on pty master read), so the dashboard server (Bun) spawns a tiny Node helper (`dashboard/lib/pty-helper.cjs`) per WS, and the helper owns the actual pty. The two processes speak a framed binary protocol over the helper's stdin/stdout: type byte (DATA / RESIZE / CLOSE / EXIT / ERROR) + 4-byte big-endian length + payload. node-pty works perfectly under Node, so the helper is reliable; the parent Bun process never needs to import node-pty directly.
+
+**Browser wire format.** The xterm.js client (`dashboard/public/terminal.js`) and the server (`dashboard/terminal.ts`) use JSON text frames in the client→server direction and raw binary frames in the server→client direction. Specifically:
+
+- `client → server` JSON only: `{"type":"data","b64":"<base64 keystrokes>"}` and `{"type":"resize","cols":N,"rows":N}`. Base64 in the data frame keeps the upstream direction plain-JSON and trivially inspectable in browser devtools; keystrokes are tiny so the 33% base64 inflation is irrelevant.
+- `server → client` raw binary: pty bytes are handed straight to `xterm.write()`. Tmux redraws routinely emit tens of KB; base64 inflation would matter here, so the high-volume direction stays binary.
+- Resize: a `ResizeObserver` on the terminal container + `xterm-addon-fit` recompute cols/rows whenever the modal resizes; the new geometry is sent as a `{type:"resize"}` frame which the server forwards to the helper as a typed RESIZE frame which calls `pty.resize(cols, rows)`.
+
+**Telegram `/terminal` command.** Reaches the on/off control from a phone, not just the dashboard:
+
+- `/terminal` (or `/terminal status`) — replies "🟢 web terminal is ON" or "⚪ web terminal is OFF (default)" with the flag-file path.
+- `/terminal on` — touches the flag file, replies "refresh the dashboard to see Attach buttons".
+- `/terminal off` — removes the flag file.
+
+**UI surface.** The Attach button sits next to the existing `view` (read-only tmux preview) and `copy ssh attach` (clipboard SSH command) controls on every team card in the orchestration cockpit. Clicking it opens a 70vh modal with the xterm — close via `✕`, click-on-backdrop, or Escape. The whole surface is hidden when the flag file is absent; the operator never sees a 403.
+
+**ADR 0011 closeout.** Status moves from "Accepted (shipped v2.7.20)" to "Accepted (Layer 1 shipped v2.7.20, Layer 2 shipped v2.7.21, complete)". The ADR's "Layer 2: Operator escape hatch (web terminal — v2.7.17)" section was always its motivating sibling to the HMAC marker; v2.7.21 fulfils it. Layer 3 (style matching) was already absorbed into the Evy persona SKILL.md in v2.7.15.
+
+**Files:**
+
+- New: `dashboard/terminal.ts` — pure handlers (`handleEnabled`, `handleTeams`, `evaluateUpgrade`, `originAllowed`, `spawnPtyBridge`), tmux session lister, flag-file resolution, and the WS gate.
+- New: `dashboard/lib/pty-helper.cjs` — Node sidecar that owns node-pty. Speaks framed stdin/stdout to its Bun parent.
+- New: `dashboard/public/terminal.js` — xterm.js client (mount/close/resize) exposed as `window.subctlTerminal`.
+- New: `dashboard/package.json` — declares the new runtime deps (`node-pty`, `xterm`, `xterm-addon-fit`). Mirrors the `components/master/package.json` pattern; `install.sh` runs `bun install` here at install time.
+- New: `dashboard/__tests__/terminal.test.ts` — 17 tests across flag-file behavior, REST handlers (with mocked tmux), upgrade decision matrix (disabled / bad team / bad host / no-such-session / happy path), DNS-rebind host check, and the framed sidecar wire protocol (DATA / RESIZE / CLOSE / EXIT round-trips against a stubbed child process).
+- `dashboard/server.ts` — adds `/api/terminal/enabled`, `/api/terminal/teams`, `/api/terminal/attach` (WS); per-socket PtyBridge map keyed off `ws.data.kind === "terminal"` so terminal and `/api/live` sockets coexist; vendor static-file mappings for xterm.js + xterm-addon-fit served out of `dashboard/node_modules`.
+- `dashboard/public/index.html` — loads `/vendor/xterm/xterm.css|js`, `xterm-addon-fit.js`, `terminal.js`; adds `#terminal-modal` with `#terminal-host` mount target.
+- `dashboard/public/style.css` — `.terminal-shell`, `.terminal-host`, `.attach-web-btn`, plus `body.terminal-disabled .attach-web-btn, body.terminal-disabled #terminal-modal { display: none !important; }` for the disabled-flag path.
+- `dashboard/public/app.js` — `wireWebTerminalGate()` queries `/api/terminal/enabled` on boot and stamps the body class; `openWebTerminal(teamName)` drives the modal; Attach button injected into the per-team card render alongside `view` / `copy ssh attach`.
+- `components/master/master-notify-listener.ts` — `/terminal` command (status/on/off); help text updated.
+- `docs/adr/0011-trust-marker-hmac-replacement.md` — status flipped to "Accepted (Layer 1 shipped v2.7.20, Layer 2 shipped v2.7.21, complete)"; Layer 2 section updated with implementation notes.
+- `docs/adr/README.md` — index entry for ADR 0011 updated to reflect closeout.
+- `docs/master.md` — new "Web terminal escape hatch" section: what it is, how to enable, security model, when to use.
+- `lib/settings.sh` — `subctl_settings_install_dashboard_deps` runs `bun install` in `dashboard/` so the vendored deps land at install time.
+
 ## [2.7.20] — 2026-05-13
 
 ### `feat(master): v2.7.20 HMAC trust marker (ADR 0011 Layer 1)`

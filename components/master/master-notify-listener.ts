@@ -448,9 +448,68 @@ async function handleBotCommand(text: string): Promise<string> {
       // command). The looping-tool incident on 2026-05-13 is the
       // motivating bug; see components/master/watchdogs.ts header.
       return handleWatchdogsCommand(parts.slice(1));
+    case "/terminal":
+      // v2.7.21 (ADR 0011 Layer 2) — operator-facing on/off control for
+      // the web-terminal escape hatch in the dashboard. The dashboard
+      // server checks for `~/.config/subctl/terminal.enabled` on every
+      // /api/terminal/* request; this command just touches/removes that
+      // flag and reports state. Default is OFF.
+      return handleTerminalCommand(parts.slice(1));
     default:
-      return `Unknown command: ${cmd}\n\nTry: /status, /pause, /resume, /profile, /watchdogs, /help`;
+      return `Unknown command: ${cmd}\n\nTry: /status, /pause, /resume, /profile, /watchdogs, /terminal, /help`;
   }
+}
+
+function terminalFlagFilePath(): string {
+  // Mirrors dashboard/terminal.ts terminalFlagPath() — kept in sync.
+  return join(SUBCTL_CONFIG_DIR, "terminal.enabled");
+}
+
+function handleTerminalCommand(args: string[]): string {
+  const sub = (args[0] || "").trim().toLowerCase();
+  const path = terminalFlagFilePath();
+  if (!sub || sub === "status") {
+    const on = existsSync(path);
+    if (on) {
+      return [
+        "🟢 web terminal is ON",
+        "",
+        `flag: ${path}`,
+        "Operator can open an in-browser tmux attach from each team card in",
+        "the dashboard (orchestration cockpit). Bypasses master + HMAC.",
+      ].join("\n");
+    }
+    return [
+      "⚪ web terminal is OFF (default)",
+      "",
+      `flag: ${path}`,
+      "Enable with `/terminal on`, or `touch ${path}` directly.",
+    ].join("\n");
+  }
+  if (sub === "on" || sub === "enable") {
+    try {
+      mkdirSync(SUBCTL_CONFIG_DIR, { recursive: true });
+      writeFileSync(path, new Date().toISOString() + "\n");
+      return "🟢 web terminal enabled — refresh the dashboard to see Attach buttons on team cards.";
+    } catch (e: any) {
+      return `terminal enable failed: ${e?.message || e}`;
+    }
+  }
+  if (sub === "off" || sub === "disable") {
+    try {
+      if (existsSync(path)) unlinkSync(path);
+      return "⚪ web terminal disabled — Attach buttons hidden in the dashboard.";
+    } catch (e: any) {
+      return `terminal disable failed: ${e?.message || e}`;
+    }
+  }
+  return [
+    `Unknown /terminal subcommand: ${sub}`,
+    "",
+    "/terminal               show on/off state",
+    "/terminal on            enable the web terminal escape hatch",
+    "/terminal off           disable",
+  ].join("\n");
 }
 
 function handleWatchdogsCommand(args: string[]): string {
@@ -561,6 +620,8 @@ function formatHelp(): string {
     "/watchdogs             list active watchdogs",
     "/watchdogs kill <id>   kill one watchdog",
     "/watchdogs killall     kill all (keeps telegram-listener alive)",
+    "/terminal              web-terminal escape-hatch state",
+    "/terminal on|off       toggle dashboard's in-browser tmux attach",
     "",
     "Free-text messages are queued for the next agent turn — subctl master",
     "will act on them per its policy and report back.",

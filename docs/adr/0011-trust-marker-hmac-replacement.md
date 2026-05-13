@@ -1,9 +1,9 @@
 # 0011: Replace trust-channel marker with HMAC + operator escape hatch
 
-- **Status:** Accepted (shipped v2.7.20)
+- **Status:** Accepted (Layer 1 shipped v2.7.20, Layer 2 shipped v2.7.21, complete)
 - **Date:** 2026-05-13
 - **Decided by:** Jason Brashear (operator)
-- **Implemented in:** v2.7.20 (Layer 1 only — HMAC marker. Layer 2 web terminal queued for v2.7.21; Layer 3 style matching already in Evy SKILL.md from v2.7.15.)
+- **Implemented in:** v2.7.20 (Layer 1 — HMAC marker) and v2.7.21 (Layer 2 — web terminal escape hatch). Layer 3 (style matching) lives in `components/skills/master/SKILL.md` from v2.7.15.
 - **Supersedes:** [ADR 0002](0002-trust-channel-directive-wrapper.md) — same problem, weaker solution
 
 ## Context
@@ -65,16 +65,25 @@ Per-team shared secret, generated at spawn time, used to compute a message-authe
 - If the prefix's `hmac:` matches, trust.
 - If missing, malformed, or non-matching, refuse and escalate.
 
-### Layer 2: Operator escape hatch (web terminal — v2.7.17)
+### Layer 2: Operator escape hatch (web terminal — shipped v2.7.21)
 
 When HMAC fails for any reason (clock skew, key rotation, file corruption, software bug, worker misinterprets), the operator needs to be able to break out from the browser without needing SSH to another machine.
 
-- xterm.js in the dashboard public dir, `WebSocket` endpoint on dashboard server, `node-pty` spawning `tmux attach -t <session>` server-side.
-- Default-OFF behind `~/.config/subctl/terminal.enabled` flag so it doesn't auto-expose the attack surface.
-- Per-session security gate: operator authenticates to the dashboard, server enforces per-session attach permission.
-- "Attach" button per team on the orchestration card.
+**Status: shipped in v2.7.21.** The "Attach" button now lives on every team card in the orchestration cockpit. Clicking opens an xterm.js terminal in a modal, proxied through a node-pty sidecar running `tmux attach -t <session>`. Operator types directly into the worker's pane — bypassing master, bypassing HMAC, bypassing the worker's paranoia heuristics.
 
-This is the always-available "drop into the pane and type as yourself" escape hatch. Already on the roadmap as v2.7.17; ADR 0011 elevates its priority because of the dependency relationship with Layer 1.
+Implementation notes (the spec sketched above evolved during the implementation; what actually shipped):
+
+- **Default-OFF flag file** — `~/.config/subctl/terminal.enabled`. File presence = on, absence = off. `GET /api/terminal/enabled` reports state; UI hides every Attach button + the modal via `body.terminal-disabled` CSS class when off. `/terminal on|off` Telegram command + plain `touch` from a shell both work.
+- **Three endpoints** —
+  - `GET /api/terminal/enabled` → `{ok, enabled, flag_path}` (always 200, even when disabled — the UI uses the response to decide what to render).
+  - `GET /api/terminal/teams` → `{ok, teams: [{name, session, attached}]}` (403 when disabled). Enumerates tmux sessions; team→session mapping is identity (the team_id IS the tmux session name per `providers/claude/teams.sh`).
+  - `WS /api/terminal/attach?team=<name>&cols=N&rows=N` → tmux-attach proxy (403 disabled, 400 bad team, 404 no-such-session).
+- **Auth pattern: dashboard's existing localhost-bind posture** (`SUBCTL_DASHBOARD_HOST`, default `127.0.0.1`) — no new auth surface, no cookies, no headers. Same as the rest of `/api/*`. Defence-in-depth against DNS rebinding: when bound to localhost, WS upgrade rejects requests whose `Host` header isn't a localhost variant.
+- **Node sidecar instead of in-process node-pty** — Bun 1.2.x has a known fd-handling bug (ENXIO on pty master read) so the dashboard (Bun) spawns `node dashboard/lib/pty-helper.cjs` per WS, and the helper owns the pty. They communicate via a framed binary protocol over stdin/stdout (type byte + 4-byte BE length + payload; types DATA / RESIZE / CLOSE / EXIT / ERROR).
+- **Browser wire format** — JSON client→server (`{type:"data",b64}` / `{type:"resize",cols,rows}`), raw binary server→client (pty bytes handed straight to `xterm.write()`). Resize uses `xterm-addon-fit` + a `ResizeObserver` on the modal container.
+- **Tests** in `dashboard/__tests__/terminal.test.ts` — 17 cases across flag-file behavior, REST handlers (with mocked tmux), upgrade decision matrix, DNS-rebind host check, and the framed sidecar wire protocol (DATA / RESIZE / CLOSE / EXIT round-trips against a stubbed child).
+
+This is the always-available "drop into the pane and type as yourself" escape hatch. Originally roadmapped as v2.7.17; pulled forward and reshaped as Layer 2 of this ADR because of the dependency relationship with Layer 1.
 
 ### Layer 3: Style matching as a counter-signal
 
