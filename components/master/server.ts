@@ -99,6 +99,14 @@ import {
   type CompactDecision,
 } from "./compact-policy";
 import { resolveSecret } from "./secrets";
+import {
+  loadProfiles,
+  setActiveProfile,
+  watchProfiles,
+  PROFILE_NAMES,
+  type ProfileName,
+  type ProfilesFile,
+} from "./profiles";
 
 const HOME = homedir();
 const COMPONENT_DIR = import.meta.dir;
@@ -708,14 +716,43 @@ async function main() {
   );
 
   // ── pi-agent-core wiring ────────────────────────────────────────────────
-  const supervisorCfg = providers.models.supervisor;
-  if (!supervisorCfg) {
+  // v2.7.18: the active supervisor is decided by profiles.json, NOT
+  // providers.json. providers.json still supplies the surrounding
+  // metadata for the supervisor role (provider id, context_length,
+  // max_tokens) — profiles.json just overrides the model id + host so
+  // the operator can switch between a light chat model and a heavy
+  // reasoning model from the dashboard or Telegram without restarting.
+  const supervisorCfgFromProviders = providers.models.supervisor;
+  if (!supervisorCfgFromProviders) {
     console.error(
       `[master] FATAL providers.json missing models.supervisor — cannot boot agent`,
     );
     process.exit(1);
   }
-  const supervisorModel = buildModel(supervisorCfg);
+  let profilesFile: ProfilesFile;
+  try {
+    profilesFile = loadProfiles();
+  } catch (err) {
+    console.error(
+      `[master] FATAL profiles.json load failed: ${(err as Error).message}`,
+    );
+    process.exit(1);
+    throw err; // unreachable, narrows the type
+  }
+  // `supervisorCfg` is the live, profile-overridden view used by the
+  // rest of the daemon (status responses, /diag, /context, LM Studio
+  // pre-flight). Reassigned on profile swap so all readers see the
+  // new model id / host without restart.
+  let supervisorCfg: Providers["models"][string] = {
+    ...supervisorCfgFromProviders,
+    model: profilesFile.profiles[profilesFile.active].supervisor,
+    host: profilesFile.profiles[profilesFile.active].host,
+  };
+  let activeProfile: ProfileName = profilesFile.active;
+  console.error(
+    `[master] profile=${activeProfile} → supervisor=${supervisorCfg.provider}/${supervisorCfg.model}`,
+  );
+  let supervisorModel = buildModel(supervisorCfg);
   const tools = Object.entries(toolRegistry).map(([name, t]) =>
     adaptTool(name, t),
   );
@@ -785,6 +822,72 @@ async function main() {
   //     can reference dispatchToAgent which checks `stopped`) ─────────────
   let stopped = false;
   let promptInFlight = false;
+
+  // v2.7.18: profile-swap state. Watcher fires async on file change
+  // (debounced inside watchProfiles); we set this flag and rebuild the
+  // model at the START of the next prompt processing — never mid-turn.
+  let pendingProfileSwap = false;
+
+  // Apply a profile swap: reassign supervisorCfg, rebuild the pi-ai
+  // model, and re-pin LM Studio at the configured context_length so we
+  // don't fall into the 4K JIT trap on the first prompt with the new
+  // model. Called from processOnePrompt(); safe because promptInFlight
+  // is true by then so nothing else can be reading these.
+  async function applyProfileSwap(reason: string) {
+    let next: ProfilesFile;
+    try {
+      next = loadProfiles();
+    } catch (err) {
+      console.error(`[profile] swap aborted: ${(err as Error).message}`);
+      return;
+    }
+    const prev = activeProfile;
+    const entry = next.profiles[next.active];
+    activeProfile = next.active;
+    supervisorCfg = {
+      ...supervisorCfgFromProviders,
+      model: entry.supervisor,
+      host: entry.host,
+    };
+    supervisorModel = buildModel(supervisorCfg);
+    // pi-agent-core's Agent reads model from `state.model` on each
+    // prompt — reassign and the next agent.prompt() picks it up.
+    (agent.state as any).model = supervisorModel;
+    console.error(
+      `[profile] swapped ${prev} → ${activeProfile} on next prompt (${reason}) — supervisor=${supervisorCfg.provider}/${supervisorCfg.model}`,
+    );
+    broadcast("profile_swapped", {
+      ts: new Date().toISOString(),
+      from: prev,
+      to: activeProfile,
+      supervisor: `${supervisorCfg.provider}/${supervisorCfg.model}`,
+      reason,
+    });
+    logDecision({
+      project: "_master",
+      action: "profile_swapped",
+      rationale: `${prev} → ${activeProfile} (${reason}); supervisor=${supervisorCfg.provider}/${supervisorCfg.model}`,
+    });
+    // Re-pin LM Studio context length. Non-blocking — first prompt
+    // after a profile swap will JIT-load if the pin is still in flight.
+    void ensureModelLoaded(supervisorCfg, "supervisor")
+      .then((r) => console.error(`[profile] ${r.ok ? "ctx-pin" : "ctx-pin FAILED"} supervisor: ${r.detail}`))
+      .catch((err) => console.error(`[profile] ctx-pin error: ${(err as Error).message}`));
+  }
+
+  // Install the watcher. fs.watch on profiles.json → debounce 200ms in
+  // watchProfiles → callback runs here on the reloaded file. We DON'T
+  // swap immediately: set the flag and let processOnePrompt apply the
+  // change at the start of the next turn so a swap can never collide
+  // with a mid-flight pi-agent-core stream.
+  const profilesWatcher = watchProfiles((next) => {
+    if (next.active !== activeProfile) {
+      pendingProfileSwap = true;
+      console.error(
+        `[profile] file change detected (active: ${activeProfile} → ${next.active}); will swap at start of next prompt`,
+      );
+    }
+  });
 
   // ── event bus: agent → SSE subscribers ──────────────────────────────────
   // Every connected /events client gets every agent event (text deltas, tool
@@ -1255,6 +1358,18 @@ async function main() {
 
   async function processOnePrompt(p: PendingPrompt): Promise<{ ok: boolean; error?: string }> {
     try {
+      // ── v2.7.18 profile-swap gate ─────────────────────────────────────
+      // If the watcher (fs.watch on profiles.json) flagged a pending
+      // swap, apply it BEFORE anything else this turn. Runs at the
+      // prompt boundary specifically so it never collides with an
+      // in-flight pi-agent-core stream — pi-agent-core reads
+      // agent.state.model once per prompt, so a swap here lands cleanly
+      // on the next agent.prompt() call.
+      if (pendingProfileSwap) {
+        pendingProfileSwap = false;
+        await applyProfileSwap("watcher");
+      }
+
       // ── v2.7.3 just-in-time compact gate ───────────────────────────────
       // The supervisor must never see a prompt window past compact_tokens.
       // Run this BEFORE composeSystemPrompt() (so the recomposed prompt
@@ -1441,6 +1556,68 @@ async function main() {
           prompt_in_flight: promptInFlight,
           teams_tracked: teamLastActivity.size,
           telegram_listener: masterNotifyListenerStatus(),
+          active_profile: activeProfile,
+        });
+      }
+
+      // ── /profile — supervisor profile API (v2.7.18) ─────────────────────
+      // GET returns the active profile name + the list of profile names.
+      // POST { profile: "chat" | "heavy" } writes profiles.json. The
+      // fs.watch on the file fires the watcher above, which flags
+      // pendingProfileSwap; the actual rebuild happens at the start of
+      // the next prompt so we never disturb an in-flight turn.
+      if (url.pathname === "/profile" && req.method === "GET") {
+        let snapshot: ProfilesFile;
+        try {
+          snapshot = loadProfiles();
+        } catch (err) {
+          return Response.json(
+            { ok: false, error: (err as Error).message },
+            { status: 500 },
+          );
+        }
+        return Response.json({
+          ok: true,
+          active: snapshot.active,
+          profiles: [...PROFILE_NAMES],
+          // Expose the resolved supervisor + host for each profile so
+          // the dashboard can render a tooltip ("chat → gemma-4-31b").
+          // Pure-read endpoint; no secrets surface here.
+          detail: snapshot.profiles,
+        });
+      }
+      if (url.pathname === "/profile" && req.method === "POST") {
+        let body: { profile?: string };
+        try {
+          body = await req.json();
+        } catch {
+          return Response.json({ ok: false, error: "invalid JSON" }, { status: 400 });
+        }
+        const want = (body.profile ?? "").trim();
+        if (!(PROFILE_NAMES as ReadonlyArray<string>).includes(want)) {
+          return Response.json(
+            {
+              ok: false,
+              error: `unknown profile "${want}". valid: ${PROFILE_NAMES.join(", ")}`,
+            },
+            { status: 400 },
+          );
+        }
+        try {
+          setActiveProfile(want);
+        } catch (err) {
+          return Response.json(
+            { ok: false, error: (err as Error).message },
+            { status: 500 },
+          );
+        }
+        // The fs.watch event picks this up and flips pendingProfileSwap.
+        // We don't wait for it: respond immediately with the new active
+        // name so the UI can update optimistically.
+        return Response.json({
+          ok: true,
+          active: want,
+          note: "takes effect on the next prompt — no restart needed",
         });
       }
 
@@ -2337,6 +2514,7 @@ async function main() {
     clearInterval(autoCompactInterval);
     clearInterval(inboxPoll);
     clusterTicker.stop();
+    try { profilesWatcher.close(); } catch { /* ignore */ }
     if (inboxWatcher) try { inboxWatcher.close(); } catch { /* ignore */ }
     try { stopMasterNotifyListener(); } catch { /* ignore */ }
     httpServer.stop(true);

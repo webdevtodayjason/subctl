@@ -58,6 +58,12 @@ import {
 import { join } from "node:path";
 import { homedir } from "node:os";
 
+import {
+  loadProfiles,
+  setActiveProfile,
+  PROFILE_NAMES,
+} from "./profiles";
+
 const HOME = homedir();
 const SUBCTL_CONFIG_DIR =
   process.env.SUBCTL_CONFIG_DIR ?? join(HOME, ".config", "subctl");
@@ -371,8 +377,53 @@ async function handleBotCommand(text: string): Promise<string> {
         return `resume failed: ${e?.message || e}`;
       }
     }
+    case "/profile":
+      // v2.7.18 — read or set the supervisor profile from Telegram.
+      // `/profile`            → report the active profile + its supervisor model
+      // `/profile chat|heavy` → swap to that profile (master picks it up on
+      //                          the next prompt via the profiles.json watcher)
+      // Anything else         → usage help. We don't bounce master; the
+      // fs.watch in components/master/profiles.ts handles propagation.
+      return handleProfileCommand(parts.slice(1));
     default:
-      return `Unknown command: ${cmd}\n\nTry: /status, /pause, /resume, /help`;
+      return `Unknown command: ${cmd}\n\nTry: /status, /pause, /resume, /profile, /help`;
+  }
+}
+
+function handleProfileCommand(args: string[]): string {
+  const subject = (args[0] || "").trim().toLowerCase();
+  if (!subject) {
+    try {
+      const file = loadProfiles();
+      const entry = file.profiles[file.active];
+      return `profile: ${file.active} (${entry.supervisor})`;
+    } catch (e: any) {
+      return `profile read failed: ${e?.message || e}`;
+    }
+  }
+  if (!(PROFILE_NAMES as ReadonlyArray<string>).includes(subject)) {
+    return `Usage: /profile [${PROFILE_NAMES.join("|")}]\n\n${formatProfileList()}`;
+  }
+  try {
+    setActiveProfile(subject);
+    return `swapped → ${subject} on next prompt`;
+  } catch (e: any) {
+    return `profile swap failed: ${e?.message || e}`;
+  }
+}
+
+function formatProfileList(): string {
+  try {
+    const file = loadProfiles();
+    const lines: string[] = [];
+    for (const name of PROFILE_NAMES) {
+      const entry = file.profiles[name];
+      const marker = name === file.active ? "● " : "  ";
+      lines.push(`${marker}${name}: ${entry.supervisor}`);
+    }
+    return lines.join("\n");
+  } catch {
+    return "(profile state unavailable)";
   }
 }
 
@@ -384,6 +435,9 @@ function formatHelp(): string {
     "/status          current daemon state + recent activity",
     "/pause           halt the autonomous review loop",
     "/resume          resume after pause",
+    "/profile         show active supervisor profile",
+    "/profile chat    swap to the chat supervisor (gemma — fast, conversational)",
+    "/profile heavy   swap to the heavy supervisor (qwen — deep reasoning)",
     "",
     "Free-text messages are queued for the next agent turn — subctl master",
     "will act on them per its policy and report back.",

@@ -4,6 +4,37 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.7.18] — 2026-05-13
+
+### `feat(master): supervisor profiles (chat / heavy) with dashboard pill + telegram command`
+
+Two named supervisor profiles — `chat` (default: `google/gemma-4-31b`) and `heavy` (default: `qwen/qwen3.6-35b-a3b`) — that the operator switches between from the dashboard's sticky chat-header pill or via Telegram `/profile chat|heavy` without restarting the master daemon. Replaces the v2.7.16 dashboard model-picker round-trip for the common "use light model for chat, heavy model for hard reasoning" toggle.
+
+**Why.** During a 90-minute drive home on 2026-05-13 the supervisor was `qwen/qwen3.6-35b-a3b` (heavy reasoning model). It got stuck in a tool-call loop and stopped responding to Telegram. The chat profile (gemma-4-31b) would have been responsive. The existing supervisor-switch path bounces the launchd-managed master daemon, which is too heavy for a one-handed in-car toggle. Profiles land the switch at the next prompt boundary, no restart, transcript intact.
+
+**How it works.**
+
+- **State** lives at `~/.config/subctl/profiles.json` (`chmod 600`). Master seeds the file on first boot — if `providers.json.models.supervisor` looks like gemma it becomes the `chat` profile, qwen becomes `heavy`, otherwise both fall back to hardcoded defaults. Default `active: "chat"`.
+- **Module** `components/master/profiles.ts` exports `loadProfiles()`, `getActiveProfile()`, `setActiveProfile(name)`, `watchProfiles(onChange)`. `watchProfiles` uses `fs.watch` on the file with a 200ms debounce (macOS fires the event twice on atomic-rename saves).
+- **Master boot** loads profiles and overrides `models.supervisor.model` + `host` from the active entry, keeping `provider` / `context_length` / `max_tokens` from `providers.json`. The watcher sets `pendingProfileSwap = true`; the actual model rebuild happens at the **start of the next prompt** inside `processOnePrompt` — never mid-turn (pi-agent-core reads `agent.state.model` once per prompt, so a swap at the boundary lands cleanly). On swap, master also re-pins LM Studio at the role's `context_length` to defeat the 4K JIT trap on first use of the new model.
+- **HTTP** `GET /profile` returns `{active, profiles, detail}`; `POST /profile {profile}` writes the file (and `fs.watch` does the rest). `/health` gains an `active_profile` field. Dashboard adds a `/api/profile` pass-through so the pill doesn't have to know about the master port.
+- **Dashboard pill.** Small rounded pill in the sticky `.master-chat-header` next to the Evy h2 — green for `chat`, amber for `heavy`. Click toggles. Refresh: subscribes to the existing `/api/master/events` SSE for the `profile_swapped` event so out-of-band swaps (Telegram, another tab, manual file edit) reflect immediately; 30s poll as a fallback.
+- **Telegram.** `/profile` reports the active profile + its supervisor model. `/profile chat` and `/profile heavy` swap. Anything else replies with usage + the current profile list. Lives in `master-notify-listener.ts` alongside the existing `/status` / `/pause` / `/resume` handlers.
+
+**Constraints honored.** No new ADR — this is tactical config flexibility, not a load-bearing decision. The provider-scoping rule (claude-specific identifiers stay inside `providers/claude/`) is unchanged. The LM Studio token (`sk-Lm-*`) is not logged. Tests live in `components/master/__tests__/profiles.test.ts` and cover the seeding, persistence, invalid-active fallback, throw-on-unknown, and the watcher debounce contract.
+
+**Files:**
+
+- New: `components/master/profiles.ts`
+- New: `components/master/__tests__/profiles.test.ts`
+- `components/master/server.ts`: imports profiles module; supervisorCfg becomes `let` and is rebuilt on swap; `pendingProfileSwap` flag + `applyProfileSwap()` helper at start of `processOnePrompt`; `watchProfiles` subscription with shutdown cleanup; `/profile` GET/POST endpoints; `active_profile` in `/health`.
+- `components/master/master-notify-listener.ts`: `/profile` command handler; `/help` updated.
+- `dashboard/server.ts`: `/api/profile` pass-through to master `/profile`.
+- `dashboard/public/index.html`: `.profile-pill` inside `.master-chat-header` next to the Evy h2.
+- `dashboard/public/style.css`: pill styling (green `chat` / amber `heavy`, pending state, error flash).
+- `dashboard/public/app.js`: `wireProfilePill()` with optimistic toggle, SSE `profile_swapped` listener, 30s poll fallback.
+- `docs/master.md`: "Supervisor profiles" section.
+
 ## [2.7.17] — 2026-05-13
 
 ### `feat(providers): OpenRouter as first-class model provider`

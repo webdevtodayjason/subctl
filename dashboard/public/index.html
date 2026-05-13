@@ -176,6 +176,14 @@
           </div>
           <h2>Evy <span class="panel-hint">conversational dev-team orchestrator on <span class="host-label">this Mac</span> · streams from <code>/api/master/events</code></span>
             <span class="master-conn-state" id="master-conn-state">disconnected</span>
+            <!-- v2.7.18 — supervisor profile pill. One click toggles
+                 between chat (gemma, fast) and heavy (qwen, deep
+                 reasoning). Swap lands on the next prompt — no
+                 daemon restart. Color: green chat / amber heavy. -->
+            <div class="profile-pill" id="profile-pill" title="Click to swap supervisor model" hidden>
+              <span class="profile-pill-label">profile:</span>
+              <span class="profile-pill-value" id="profile-pill-value">chat</span>
+            </div>
           </h2>
         </div>
       <div class="master-log" id="master-log">

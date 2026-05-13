@@ -426,6 +426,7 @@
   wireMemoryTab();
   wireVaultTab();
   wireChatModelSelector();
+  wireProfilePill();
   wireOrchestrationCockpit();
   wireOrchCameraGrid();
   wireSettingsTab();
@@ -1917,6 +1918,107 @@
         await window.notice.error("Switch error", String(err));
       }
     });
+  }
+
+  // ----- Supervisor profile pill (v2.7.18) -----
+  // The pill sits inside .master-chat-header next to the Evy h2 and
+  // shows / toggles the active supervisor profile. Two profiles for
+  // now: "chat" (gemma — fast, conversational) and "heavy" (qwen —
+  // deep reasoning, slower, occasionally loops). Click toggles to the
+  // other; POST /api/profile lands on the master daemon's profiles.json
+  // and the swap takes effect on the next prompt. We piggyback on the
+  // existing SSE stream so the pill updates instantly when something
+  // else (Telegram /profile, another tab, manual edit) flips it.
+  function wireProfilePill() {
+    const pill = $("profile-pill");
+    const valueEl = $("profile-pill-value");
+    if (!pill || !valueEl) return;
+    let known = ["chat", "heavy"];
+    let active = null;
+    let inFlight = false;
+
+    function paint(next) {
+      active = next;
+      valueEl.textContent = next;
+      pill.dataset.active = next;
+      pill.hidden = false;
+      pill.removeAttribute("data-error");
+    }
+    function flashError() {
+      pill.dataset.error = "true";
+      setTimeout(() => pill.removeAttribute("data-error"), 1500);
+    }
+
+    async function refresh() {
+      try {
+        const r = await fetch("/api/profile");
+        const j = await r.json();
+        if (j && j.ok) {
+          if (Array.isArray(j.profiles) && j.profiles.length) known = j.profiles;
+          if (typeof j.active === "string") paint(j.active);
+        }
+      } catch {
+        /* master unreachable — leave pill hidden */
+      }
+    }
+
+    async function toggle() {
+      if (inFlight || !active) return;
+      const next = active === "chat" ? "heavy" : "chat";
+      inFlight = true;
+      pill.dataset.pending = "true";
+      // Optimistic update so the click feels immediate. Reconciled
+      // below with the server's response.
+      const prev = active;
+      paint(next);
+      try {
+        const r = await fetch("/api/profile", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ profile: next }),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!j || !j.ok) {
+          paint(prev);
+          flashError();
+          if (window.notice && window.notice.error) {
+            window.notice.error("Profile swap failed", (j && j.error) || ("HTTP " + r.status));
+          }
+        } else if (typeof j.active === "string") {
+          paint(j.active);
+          if (window.notice) {
+            window.notice("Profile swapped", `Master will use the ${j.active} profile on the next prompt.`);
+          }
+        }
+      } catch (err) {
+        paint(prev);
+        flashError();
+        if (window.notice && window.notice.error) {
+          window.notice.error("Profile swap error", String(err));
+        }
+      } finally {
+        pill.removeAttribute("data-pending");
+        inFlight = false;
+      }
+    }
+    pill.addEventListener("click", toggle);
+
+    // Initial load + 30s poll fallback. We also piggyback on the
+    // existing /api/master/events SSE so out-of-band swaps (Telegram
+    // /profile, manual file edit, another tab) reflect immediately.
+    refresh();
+    setInterval(refresh, 30_000);
+    try {
+      const es = new EventSource("/api/master/events");
+      es.addEventListener("profile_swapped", (e) => {
+        try {
+          const d = JSON.parse(e.data);
+          if (d && typeof d.to === "string") paint(d.to);
+        } catch { /* ignore */ }
+      });
+      // Don't reconnect on error here — the chat panel's connectSSE()
+      // already owns the canonical lifecycle. This is a quiet observer.
+    } catch { /* EventSource unavailable; poll-only fallback is fine */ }
   }
 
   // ----- Vault viewer (Phase 3n) — in-browser Obsidian-flavoured browser ---
