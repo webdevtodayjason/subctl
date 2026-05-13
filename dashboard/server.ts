@@ -113,6 +113,18 @@ import {
 // fails LOUD (refuses to send) — falling back to an unauthenticated
 // marker would teach workers to ignore the auth field.
 import { buildDirectiveMarker } from "../components/master/trust-marker.ts";
+// ── v2.8.0 team templates ──
+import {
+  listTemplates as listV2Templates,
+  loadTemplate as loadV2Template,
+} from "../components/master/team-templates.ts";
+import {
+  resolveDispatchTarget,
+  recordDeveloperPane,
+  readTeamMeta,
+  buildDeveloperBootPrompt,
+  tmuxWindowForDeveloper,
+} from "./lib/team-dispatch.ts";
 // v2.7.24: pi-ai provider catalog — replaces the hand-curated dropdown
 // at /api/providers with the full pi-ai enumeration so new providers
 // (groq, cerebras, openrouter, bedrock, xai, ...) light up automatically.
@@ -5380,6 +5392,14 @@ const server = Bun.serve({
         if (typeof body.template === "string" && body.template) {
           args.push("--template", body.template);
         }
+        // ── v2.8.0 team templates ──
+        // Separate slot from the v2.7.x JSON `template` flag — TOML-shaped
+        // multi-developer rosters consumed by the new subctl_team_dispatch
+        // flow. teams.sh runs the _apply_team_template.ts bridge which
+        // records team_meta.json so the dispatch endpoint can route.
+        if (typeof body.team_template === "string" && body.team_template) {
+          args.push("--team-template", body.team_template);
+        }
       } else if (provider === "pi-coding-agent") {
         // Pi takes a model override via -m; nothing else from the claude
         // grab-bag applies yet (no orchestrator, no resume, no template).
@@ -5442,6 +5462,151 @@ const server = Bun.serve({
       return new Response(JSON.stringify({ orchestrations: buildOrchestrations() }), {
         headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
       });
+    }
+
+    // ── v2.8.0 team templates ──
+    // GET /api/team-templates                  — list templates (parsed)
+    // GET /api/team-templates/<name>           — show one template
+    // POST /api/orchestration/:team/dispatch   — route task to a developer
+    if (url.pathname === "/api/team-templates" && req.method === "GET") {
+      const { templates, errors } = listV2Templates();
+      return new Response(JSON.stringify({ ok: errors.length === 0, count: templates.length, templates, errors }), {
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+      });
+    }
+    {
+      const m = url.pathname.match(/^\/api\/team-templates\/([^/]+)\/?$/);
+      if (m && req.method === "GET") {
+        const name = decodeURIComponent(m[1]!);
+        try {
+          const t = loadV2Template(name);
+          return new Response(JSON.stringify({ ok: true, template: t }), {
+            headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+          });
+        } catch (err) {
+          return new Response(
+            JSON.stringify({ ok: false, error: (err as Error).message }),
+            { status: 404, headers: { "Content-Type": "application/json" } },
+          );
+        }
+      }
+    }
+    {
+      const m = url.pathname.match(/^\/api\/orchestration\/([^/]+)\/dispatch\/?$/);
+      if (m && req.method === "POST") {
+        const teamId = decodeURIComponent(m[1]!);
+        let body: any = {};
+        try { body = await req.json(); } catch {}
+        const developerName = String(body.developer_name ?? "").trim();
+        const task = String(body.task_description ?? "").trim();
+        const phaseRaw = body.phase;
+        const phase = typeof phaseRaw === "string" && phaseRaw.trim().length > 0
+          ? phaseRaw.trim() : null;
+        if (!developerName || !task) {
+          return new Response(JSON.stringify({ ok: false, error: "developer_name + task_description required" }),
+            { status: 400, headers: { "Content-Type": "application/json" } });
+        }
+        if (!listTmuxSessions().some(s => s.name === teamId)) {
+          return new Response(JSON.stringify({ ok: false, error: `team session "${teamId}" not found` }),
+            { status: 404, headers: { "Content-Type": "application/json" } });
+        }
+        const target = resolveDispatchTarget(teamId, developerName);
+        if ("ok" in target && target.ok === false) {
+          const recoverable = (target as { recoverable?: boolean }).recoverable === true;
+          return new Response(JSON.stringify(target), {
+            status: recoverable ? 409 : 400,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        const dispatch = target as Exclude<typeof target, { ok: false }>;
+        // Lazy-spawn the developer's tmux window if it doesn't exist yet.
+        // We use a new tmux WINDOW (not a split-pane) so the lead's pane
+        // stays full-screen and each developer's view is reachable via
+        // tmux window-nav keys / dashboard's window switcher.
+        let spawned = false;
+        if (!dispatch.alreadySpawned) {
+          // First-message body bakes in the developer's persona + skills +
+          // tool scope and the concrete task — so a single paste-into-the-
+          // freshly-spawned-claude is enough to put the developer to work.
+          const firstMessage = buildDeveloperBootPrompt(
+            dispatch.template,
+            dispatch.developer,
+            task,
+          );
+          // Open the window with the same claude command the lead uses.
+          // The window picks up the session-level CLAUDE_CONFIG_DIR /
+          // CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS env from the session
+          // (set in teams.sh new-session), so we don't re-supply it.
+          // Mark SUBCTL_AGENT_ROLE=developer so the developer worker
+          // knows it's NOT a lead (auto-disables orchestrator-mode skill).
+          const rNew = spawnSync(
+            TMUX_BIN,
+            [
+              "new-window",
+              "-t", teamId,
+              "-n", dispatch.windowName,
+              "-e", `SUBCTL_AGENT_ROLE=developer`,
+              "-e", `SUBCTL_DEVELOPER_NAME=${dispatch.developer.name}`,
+              "-e", `SUBCTL_TEAM_TEMPLATE=${dispatch.template.name}`,
+              "command", "claude", "--dangerously-skip-permissions",
+            ],
+            { encoding: "utf8" },
+          );
+          if (rNew.error || (typeof rNew.status === "number" && rNew.status !== 0)) {
+            return new Response(JSON.stringify({
+              ok: false,
+              error: `failed to create developer window: ${rNew.stderr?.slice(0, 400) ?? String(rNew.error)}`,
+            }), { status: 500, headers: { "Content-Type": "application/json" } });
+          }
+          recordDeveloperPane(teamId, dispatch.developer.name, dispatch.windowName);
+          spawned = true;
+          // Wait briefly for Claude's TUI to boot in the new window before
+          // pasting; mirrors the pattern in teams.sh (poll for ❯ marker).
+          // Cap at 8s — developers are simple workers, not the heavy lead
+          // session, so they boot fast.
+          const startMs = Date.now();
+          while (Date.now() - startMs < 8000) {
+            const cap = spawnSync(TMUX_BIN, [
+              "capture-pane", "-t", dispatch.tmuxTarget, "-p",
+            ], { encoding: "utf8" });
+            if (cap.stdout && /^❯/m.test(cap.stdout)) break;
+            await new Promise((r) => setTimeout(r, 200));
+          }
+          // For first dispatch we paste the pre-composed firstMessage
+          // (persona + role + task), no HMAC marker — the developer
+          // doesn't have its HMAC contract until the lead's secret is
+          // distributed. Future hardening: extend trust-marker.ts to
+          // mint per-developer secrets.
+          spawnSync(TMUX_BIN, ["set-buffer", "-b", "subctl-dispatch", firstMessage], { encoding: "utf8" });
+          spawnSync(TMUX_BIN, ["paste-buffer", "-t", dispatch.tmuxTarget, "-b", "subctl-dispatch"], { encoding: "utf8" });
+          await new Promise((r) => setTimeout(r, 200));
+          spawnSync(TMUX_BIN, ["send-keys", "-t", dispatch.tmuxTarget, "Enter"], { encoding: "utf8" });
+        } else {
+          // Re-dispatch: HMAC-wrap and inject into the existing pane.
+          let wrapped: string;
+          try {
+            const { marker } = buildDirectiveMarker({ teamId, phase, body: task });
+            wrapped = `${marker}\n${task}`;
+          } catch (err) {
+            return new Response(JSON.stringify({ ok: false, error: (err as Error).message }),
+              { status: 500, headers: { "Content-Type": "application/json" } });
+          }
+          spawnSync(TMUX_BIN, ["set-buffer", "-b", "subctl-dispatch", wrapped], { encoding: "utf8" });
+          spawnSync(TMUX_BIN, ["paste-buffer", "-t", dispatch.tmuxTarget, "-b", "subctl-dispatch"], { encoding: "utf8" });
+          await new Promise((r) => setTimeout(r, 200));
+          spawnSync(TMUX_BIN, ["send-keys", "-t", dispatch.tmuxTarget, "Enter"], { encoding: "utf8" });
+        }
+        return new Response(JSON.stringify({
+          ok: true,
+          team: teamId,
+          template: dispatch.template.name,
+          developer_name: dispatch.developer.name,
+          window: dispatch.windowName,
+          tmux_target: dispatch.tmuxTarget,
+          spawned,
+          phase,
+        }), { headers: { "Content-Type": "application/json" } });
+      }
     }
 
     // ── /api/orchestration/captures — bulk NVR-style frame fetch ──────────

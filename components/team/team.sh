@@ -25,20 +25,21 @@ subctl_team() {
     report)   subctl_team_report "$@" ;;
     inbox)    subctl_team_inbox "$@" ;;
     list)     subctl_team_list "$@" ;;
+    spawn)    subctl_team_spawn "$@" ;;
     -h|--help|"")
       cat <<EOF
 subctl team <verb> [args]
 
-  Dev-team status reporting. Used by team leads (the lead Claude Code session
-  in a dev-team tmux pane) to push status events back to the master
-  orchestrator. Each event becomes a line in
-    \$SUBCTL_MASTER_INBOX/{team}.jsonl
-  which the master daemon tails and surfaces in the dashboard + chat.
+  Dev-team status reporting + v2.8.0 team-template spawn. Used by team leads
+  (the lead Claude Code session in a dev-team tmux pane) to push status
+  events back to the master orchestrator, and by operators to spawn a
+  template-shaped multi-developer team.
 
 Verbs:
   report   Append a status event for a team
   inbox    Show recent events for a team (or all teams)
   list     List teams that have an inbox file
+  spawn    Spawn a multi-developer team from a v2.8.0 TOML template
 
 Examples:
   subctl team report --team my-team --type progress --text "branch created, running tests"
@@ -46,10 +47,75 @@ Examples:
   subctl team report --team my-team --type done --text "PR ready" --pr "owner/repo#42"
   subctl team inbox my-team --tail 10
   subctl team list
+  subctl team spawn --template full-stack-web --project ~/code/myapp --account claude-titanium
 EOF
       ;;
     *) subctl_die "unknown team verb: $sub" ;;
   esac
+}
+
+# ── v2.8.0 team templates ──
+# subctl team spawn --template <name> --project <path> [--account <alias>]
+#                   [--prompt <text>] [--mode trusted|gated|sealed]
+#
+# Thin wrapper around `subctl teams claude --team-template <name>` that adds
+# operator-facing ergonomics (named flags vs. position; project + account
+# resolution; defaults).
+subctl_team_spawn() {
+  local template="" project="" account="" prompt="" mode=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --template|-t) template="$2"; shift 2 ;;
+      --project|-c) project="$2"; shift 2 ;;
+      --account|-a) account="$2"; shift 2 ;;
+      --prompt|-p)  prompt="$2"; shift 2 ;;
+      --mode)       mode="$2"; shift 2 ;;
+      -h|--help)
+        cat <<EOF
+subctl team spawn --template <name> --project <path> [--account <alias>]
+                  [--prompt <text>] [--mode trusted|gated|sealed]
+
+  Spawn a multi-developer dev team from a v2.8.0 TOML team template. The
+  lead's tmux pane runs the lead persona; developer panes are lazy-created
+  on first dispatch via subctl_team_dispatch.
+
+  --template, -t   Required. Template name (filename without .toml). See
+                   'subctl templates list' for built-ins.
+  --project, -c    Required. Absolute path to the project directory.
+  --account, -a    Account alias to run the lead on. Defaults to the first
+                   claude-provider account in accounts.conf.
+  --prompt, -p     Optional operator scope to append to the template's
+                   composed lead boot prompt.
+  --mode           Optional policy mode override (trusted | gated | sealed).
+
+Examples:
+  subctl team spawn --template full-stack-web --project ~/code/myapp
+  subctl team spawn -t rust-api -c ~/code/svc -a claude-titanium
+EOF
+        return 0
+        ;;
+      *) subctl_die "unknown team spawn flag: $1" ;;
+    esac
+  done
+  [[ -z "$template" ]] && subctl_die "--template required (try: subctl templates list)"
+  [[ -z "$project" ]]  && subctl_die "--project required"
+  [[ ! -d "$project" ]] && subctl_die "project dir not found: $project"
+
+  # Default account: first claude-provider entry in accounts.conf.
+  if [[ -z "$account" ]]; then
+    . "$SUBCTL_REPO_ROOT/lib/core.sh"
+    local accts_conf="${SUBCTL_CONFIG_DIR:-$HOME/.config/subctl}/accounts.conf"
+    if [[ -f "$accts_conf" ]]; then
+      account=$(awk -F'|' '/^[[:space:]]*[^#]/ && $2 == "claude" { print $1; exit }' "$accts_conf")
+    fi
+    [[ -z "$account" ]] && subctl_die "--account required (no claude account in accounts.conf)"
+  fi
+
+  local -a args=(teams claude -a "$account" --team-template "$template" -y)
+  [[ -n "$prompt" ]] && args+=(-p "$prompt")
+  [[ -n "$mode" ]] && args+=(--mode "$mode")
+  # `subctl teams claude` cd's into PWD for the policy + session_name resolution.
+  (cd "$project" && "$SUBCTL_REPO_ROOT/bin/subctl" "${args[@]}")
 }
 
 subctl_team_report() {

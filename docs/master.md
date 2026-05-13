@@ -149,6 +149,69 @@ Separate but adjacent to the skill catalog: `.claude/agents/<name>.md` declares 
 
 CRUD via `subctl templates ...` or the dashboard Teams tab. Currently inert (Phase 3c will wire `subctl orch spawn --template <name>` to actually use them).
 
+#### 2.4.1 v2.8.0 — Multi-developer team templates
+
+The v2.7.x JSON format above describes a single-persona lead. **v2.8.0 introduces the architectural feature subctl was built for**: dev teams as typed rosters — a lead plus N developers, each with their own persona + skills + tool scope.
+
+Templates live at `~/.config/subctl/team-templates/<name>.toml` (note: separate dir from the v2.7.x JSON ones, distinct schema, fully coexisting). Shape:
+
+```toml
+[template]
+name = "full-stack-web"
+description = "Frontend + backend + QA tester"
+
+[lead]
+persona = "evy"
+skills = ["subctl-team-protocol", "handoff-protocol"]
+autonomy = "ask"
+
+[[developers]]
+name = "frontend-dev"
+persona = "expert-react-typescript"
+skills = ["node-conventions", "react-patterns"]
+tools = ["Read", "Edit", "Write", "Bash:bun,npm,git,node"]
+
+[[developers]]
+name = "backend-dev"
+persona = "expert-bun-typescript"
+skills = ["node-conventions", "bun-runtime"]
+tools = ["Read", "Edit", "Write", "Bash:bun,git,curl,jq"]
+```
+
+Five stock templates seed on first list: `full-stack-web`, `rust-api`, `data-pipeline`, `ml-research`, `infrastructure`.
+
+**Spawn flow.** `subctl team spawn --template <name> --project <path>` (or the dashboard Templates tab's "Use this template…" button) calls `subctl teams claude -T <name>` under the hood. The bridge at `providers/claude/_apply_team_template.ts` parses the TOML, records `team_meta.json`, and composes the lead's first-message prompt with a roster preamble naming every developer and a concrete `subctl_team_dispatch` example.
+
+**Dispatch.** When the lead needs to assign work, it calls:
+
+```ts
+subctl_team_dispatch({
+  team: "claude-myproject",
+  developer_name: "frontend-dev",
+  task_description: "Implement /login page with form validation. Done when bun test passes.",
+})
+```
+
+Master validates the developer exists in the team's template, then routes to `/api/orchestration/<team>/dispatch`. First dispatch lazy-spawns a new tmux window in the team session (named `dev-<developer-name>`) with `claude --dangerously-skip-permissions` and pastes the developer's persona + scope + task as the first message. Re-dispatch HMAC-wraps the task and pastes into the existing window.
+
+**Per-developer tool scope.** `tools = ["Read", "Edit", "Bash:bun,git"]` becomes `{ permissions: ["Read","Edit"], bashAllowlist: ["bun","git"] }` via `projectDeveloperToolScope()`. The scope is enforced at the prompt layer today (declared in the developer's boot prompt), with structural foundation on disk (meta.json) for future hard bash-gate enforcement.
+
+**On-disk state.**
+
+| Path | Purpose |
+|---|---|
+| `~/.config/subctl/team-templates/<name>.toml` | Operator-editable templates |
+| `~/.local/state/subctl/teams/<team_id>/meta.json` | Spawn record: `{template, developer_panes, spawned_at}` |
+
+**Files.**
+
+| File | Purpose |
+|---|---|
+| `components/master/team-templates.ts` | TOML loader, validator, cache, stock-template seed, scope projection |
+| `components/master/tools/team-templates.ts` | Master tools: `subctl_team_template_list`, `subctl_team_template_show`, `subctl_team_dispatch` |
+| `dashboard/lib/team-dispatch.ts` | Per-team meta storage + dispatch target resolution + developer boot-prompt composer |
+| `providers/claude/_apply_team_template.ts` | bun bridge invoked from `teams.sh -T <name>` — parse, record meta, emit lead prompt |
+
 ### 2.5 Inbox channel (lead → master)
 
 `~/.config/subctl/master/inbox/<team>.jsonl`. Lead appends one JSON event per status report:
