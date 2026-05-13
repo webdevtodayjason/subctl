@@ -117,12 +117,13 @@ const RL_LOG = process.env.SUBCTL_RL_LOG
 const REPO_ROOT = join(import.meta.dir, "..");
 const PUBLIC_DIR = join(import.meta.dir, "public");
 
-// ---------- version (read once at startup) ----------
+// ---------- version (read on every request — one canonical source) ----------
+// VERSION is read from disk on every render/request so a `git pull` always
+// reflects on the running dashboard without a restart. The VERSION file at
+// repo root is the single source of truth — same file master and lib/core.sh
+// read.
 
 function readSubctlVersion(): string {
-  // Single source of truth: VERSION file at repo root. lib/core.sh and the
-  // master daemon read the same file. Fall back to legacy core.sh literal
-  // for older checkouts that haven't been updated past v1.x yet.
   try {
     const v = readFileSync(join(REPO_ROOT, "VERSION"), "utf8").trim();
     if (v) return v;
@@ -134,7 +135,6 @@ function readSubctlVersion(): string {
   } catch { /* fall through */ }
   return "(unknown)";
 }
-const VERSION = readSubctlVersion();
 
 // ---------- thresholds for session-row coloring ----------
 //
@@ -1519,7 +1519,7 @@ function buildState() {
   };
 
   const state: any = {
-    version: VERSION,
+    version: readSubctlVersion(),
     now: new Date(now).toISOString(),
     service: {
       running: true,
@@ -2207,7 +2207,7 @@ function renderHelpPage(): string {
   <header class="docs-topbar">
     <div class="docs-topbar-brand">
       <a href="/" class="brand-name">subctl</a>
-      <span class="brand-version">v${VERSION}</span>
+      <span class="brand-version">v${readSubctlVersion()}</span>
       <span class="docs-crumb">docs</span>
     </div>
     <div class="docs-topbar-right">
@@ -2230,7 +2230,7 @@ function renderHelpPage(): string {
         <span class="sep">·</span>
         <a href="https://github.com/webdevtodayjason/subctl" target="_blank" rel="noopener">github</a>
         <span class="sep">·</span>
-        <span>subctl v${VERSION}</span>
+        <span>subctl v${readSubctlVersion()}</span>
       </footer>
     </main>
   </div>
@@ -4281,7 +4281,7 @@ const server = Bun.serve({
       });
     }
     if (url.pathname === "/api/version") {
-      return new Response(JSON.stringify({ version: VERSION }), {
+      return new Response(JSON.stringify({ version: readSubctlVersion() }), {
         headers: { "Content-Type": "application/json; charset=utf-8" },
       });
     }
@@ -5310,4 +5310,4 @@ const server = Bun.serve({
   },
 });
 
-console.log(`subctl dashboard v${VERSION} listening on http://${HOSTNAME}:${server.port}`);
+console.log(`subctl dashboard v${readSubctlVersion()} listening on http://${HOSTNAME}:${server.port}`);
