@@ -5626,11 +5626,18 @@
         const sonnetD = a.usage?.seven_day_sonnet?.utilization;
         const fiveResetIso = a.usage?.five_hour?.resets_at;
         const weekResetIso = a.usage?.seven_day?.resets_at;
+        // ── v2.8.1 accounts data fix ──
+        // When the per-account usage payload is missing (fetch failed or
+        // upstream didn't return this alias), the verdict module flags
+        // `data_missing: true` and the server stamps `usage_state` !== "ok".
+        // Render a "no data" pill instead of the normal verdict so the
+        // operator stops seeing a false green "dispatches go".
+        const dataMissing = a.dispatch?.data_missing === true || (a.usage_state && a.usage_state !== "ok");
         tr.append(
           td(acctPill(a.alias, a.color_class)),
           td(a.provider),
           td(authCell(a.auth_status)),
-          td(verdictPill(a.dispatch?.verdict, a.dispatch?.reasons)),
+          td(verdictPill(a.dispatch?.verdict, a.dispatch?.reasons, { dataMissing, usageState: a.usage_state })),
           td(copyAliasButton(a.alias)),
           td(usagePctCellWithReset(fiveH, fiveResetIso, [80, 95]), "num"),
           td(usageBarCellWithReset(sevenD, sonnetD, weekResetIso), "num"),
@@ -5647,6 +5654,25 @@
       warnEl.hidden = false;
     } else {
       warnEl.hidden = true;
+    }
+    // ── v2.8.1 accounts data fix ──
+    // Surface the upstream usage-fetch state as its own banner so the
+    // operator immediately sees "data unavailable" instead of trusting
+    // a stale Accounts table. Distinct from `state.warning`
+    // (accounts.conf-not-found) which is a config error, not a data error.
+    const usageWarnEl = $("usage-fetch-warning");
+    if (usageWarnEl) {
+      const meta = state.usage_fetch;
+      if (meta && meta.ok === false) {
+        const ageMin = Math.floor((meta.age_seconds ?? 0) / 60);
+        const ageLabel = ageMin > 0 ? ` (last attempt ${ageMin}m ago)` : "";
+        const reason = meta.error || "usage data unavailable";
+        const stderr = meta.stderr_excerpt ? ` — ${meta.stderr_excerpt.slice(0, 120)}` : "";
+        setText(usageWarnEl, `⚠ Accounts table cannot be trusted: ${reason}${ageLabel}${stderr}. Run \`subctl usage\` from a terminal to diagnose; click ↻ to retry.`);
+        usageWarnEl.hidden = false;
+      } else {
+        usageWarnEl.hidden = true;
+      }
     }
 
     // Sessions table
@@ -6225,11 +6251,23 @@
     return span;
   }
 
-  function verdictPill(verdict, reasons) {
+  function verdictPill(verdict, reasons, opts) {
     const span = document.createElement("span");
     const v = verdict || "red";
-    span.className = `verdict-pill verdict-${v}`;
-    span.textContent = `${VERDICT_GLYPH[v] || ""} ${VERDICT_TEXT[v] || "—"}`.trim();
+    const dataMissing = opts && opts.dataMissing === true;
+    // ── v2.8.1 accounts data fix ──
+    // When usage data is missing (per-account or global fetch failure),
+    // render the verdict pill in a distinctive "no-data" style — the
+    // verdict colour underneath is still yellow (per the verdict module),
+    // but the label reads "no data" instead of "caution" so the operator
+    // can tell at a glance whether the yellow is real or a data hole.
+    if (dataMissing) {
+      span.className = `verdict-pill verdict-${v} verdict-nodata`;
+      span.textContent = "⚠ no data";
+    } else {
+      span.className = `verdict-pill verdict-${v}`;
+      span.textContent = `${VERDICT_GLYPH[v] || ""} ${VERDICT_TEXT[v] || "—"}`.trim();
+    }
     if (Array.isArray(reasons) && reasons.length > 0) span.title = reasons.join("\n");
     return span;
   }

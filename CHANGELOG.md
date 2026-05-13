@@ -1,3 +1,41 @@
+## [2.8.1] — 2026-05-13
+
+### `fix(dashboard,master): v2.8.1 Accounts surface — real per-account usage + correct dispatch verdict`
+
+Operator reported 2026-05-13: *"The dashboard is broken under Accounts. It shows that every one of the accounts is ready and dispatches go when I know that one of them is 98% and some other ones have percentages used, so this information is not real."* This release fixes the false-positive "all clear" rendering, surfaces upstream data-fetch state honestly, and aligns the verdict thresholds with the team-lead's go / caution / throttle dispatch model.
+
+**Root cause.** `computeAccountVerdict` in `dashboard/server.ts` defaulted to `{ verdict: "green", reasons: [] }` whenever an account was authed but its `usage` payload was `null` — i.e. whenever the `subctl usage --json` subprocess silently returned an empty array (12s timeout, non-zero exit, JSON parse error, no auth bearer) OR whenever the alias just wasn't in the upstream result set. Every authed account therefore rendered as a green "dispatches go" pill even when the upstream Anthropic `/api/oauth/usage` data was several minutes stale and the operator already knew one account was at 98%. The data WAS being tracked correctly — `lib/usage.sh` + the `subctl_usage_fetch` cache work — but the dashboard's failure mode was indistinguishable from "everything is fine."
+
+**Verdict module extracted.** `computeAccountVerdict` now lives in `dashboard/lib/account-verdict.ts` so the logic is unit-testable and the thresholds are co-located with the team-lead's dispatch model. A null `usage` for an authed account now returns `{ verdict: "yellow", data_missing: true, reasons: ["usage data unavailable — has Anthropic OAuth been re-authed?"] }` (or, when the global fetch failed, `["usage fetch failed — check `subctl usage`"]`). The frontend uses the `data_missing` flag to render a dashed-border `⚠ no data` pill instead of the normal `caution` text — distinct enough that the operator can tell at a glance whether the yellow is a real signal or a data hole.
+
+**Threshold realignment.** The 7-day-window yellow/red lines move from 70/90 to 80/95 so both windows (5-hour session and 7-day weekly) share a single 80/95 number that maps to the team-lead's go/caution/throttle model: `go < 80%`, `caution 80–95%`, `throttle ≥ 95%`, `over` past the extra-usage hard limit. The 5-hour thresholds were already 80/95; only the weekly window changes. Reason strings now read `weekly 98% (throttle ≥95%)` instead of `weekly 98% (red ≥90%)` so the label matches the dispatch verb.
+
+**Sonnet + extra-usage signals.** The verdict module now also folds the `seven_day_sonnet` window and `extra_usage.is_enabled && used_credits >= monthly_limit` into the per-account verdict. An account that's 12% on all-models but 88% on the Sonnet-only window now correctly renders as yellow with an explanatory reason — previously hidden because the `seven_day` aggregate was cool. An account past its pay-as-you-go monthly cap renders red with `extra-usage over limit (50.01/50 USD)`.
+
+**Fetch-level surface.** `subctlUsageFetchAll` previously swallowed every error path (spawn failure, non-zero exit, JSON parse failure, non-array payload) into a silent `[]`. It now returns `{ data, meta }` where `meta` carries `ok`, `fetched_at`, `age_seconds`, `accounts_returned`, `accounts_with_usage`, `accounts_with_errors`, plus `error` + `stderr_excerpt` (first 200 chars, no secrets) for diagnosis. The metadata is surfaced as `state.usage_fetch`. When `meta.ok === false`, the dashboard renders a banner above the Accounts table: *"⚠ Accounts table cannot be trusted: subctl usage --json exit=2 (last attempt 14m ago) — run `subctl usage` from a terminal to diagnose; click ↻ to retry."* — no more silent staleness.
+
+**Per-account `usage_state`.** Each account row now carries a tri-state `usage_state`: `"ok"` (payload present and trusted), `"stale"` (fetch succeeded globally but this alias was missing or per-account `ok: false`), or `"fetch_failed"` (global fetch failed entirely). The frontend renders the `⚠ no data` pill for `stale` and `fetch_failed`, and the percentage cells fall back to `—` instead of misleading zeros.
+
+**Tests.** Two new test files, 19 new tests:
+
+- `dashboard/__tests__/account-verdict.test.ts` (16 tests) — auth gate, the null-usage regression (3 tests covering bracket of parameter space), threshold mapping (80/95 boundaries, Sonnet-only window, extra-usage over limit), operational signals (429 hits, parallel sessions, severity monotonicity), and `dispatchLabel` mapping to go/caution/throttle.
+- `dashboard/__tests__/account-summary-integration.test.ts` (3 tests) — verifies the wire-up between `subctlUsageFetchAll` + `buildAccountSummaries` shapes: global fetch failure produces yellow + `fetch_failed` for every alias; partial result (one ok, one ok:false, one absent) produces `ok` / `stale` / `stale` respectively; explicit fixture for the operator's 98% scenario produces red with the 98% reason.
+
+Full dashboard suite: 128 pass / 0 fail. Master suite untouched.
+
+**Files:**
+
+- New: `dashboard/lib/account-verdict.ts` — extracted, unit-testable verdict + threshold constants
+- Modified: `dashboard/server.ts` — `subctlUsageFetchAll` returns `{ data, meta }` with diagnostic fields; `buildAccountSummaries` threads meta + emits `usage_state`; `buildState` adds `state.usage_fetch`; the local verdict function delegates to the extracted module
+- Modified: `dashboard/public/app.js` — `verdictPill` accepts a `dataMissing` opt and renders `⚠ no data` with a dashed border; row render passes `data_missing` + `usage_state`; new banner above the Accounts table when `state.usage_fetch.ok === false`
+- Modified: `dashboard/public/index.html` — new `#usage-fetch-warning` banner element
+- Modified: `dashboard/public/style.css` — `.verdict-pill.verdict-nodata` (dashed neutral) + `.warning.usage-fetch-warning` styles
+- New: `dashboard/__tests__/account-verdict.test.ts` + `dashboard/__tests__/account-summary-integration.test.ts`
+
+**Underlying tracking is fine.** The bash usage fetch (`lib/usage.sh:subctl_usage_fetch_all`) correctly reads `.credentials.json` (Claude Code 2.x) or the macOS Keychain (1.x legacy), calls `/api/oauth/usage` with the per-account bearer, caches to `~/.config/subctl/cache/usage/<hash>.json`, and the dashboard's 5-min history poller has been recording snapshots to `usage-history.jsonl` correctly. The bug was strictly dashboard-side rendering of a missing payload; no upstream changes were needed. If the operator still sees the new "⚠ no data" banner after this release, the next step is `subctl usage` from a terminal to diagnose the bearer extraction / Keychain / network path — the banner now points at exactly that command.
+
+---
+
 ## [2.8.0] — 2026-05-13
 
 ### `feat(voice): v2.8.0 voice layer for Evy — self-hosted TTS, opt-in, redacted (ADR 0017)`
