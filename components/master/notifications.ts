@@ -32,6 +32,8 @@ export interface Notification {
    *   - "team-stale"            — first detection of a stale dev team (legacy)
    *   - "team-nudge-sent"       — auto-nudge dispatched to lead (info)
    *   - "team-unresponsive"     — lead failed to reply to nudge (alert)
+   *   - "team-vanished"         — tracked team's registry dir is gone (alert, v2.7.32)
+   *   - "team-gc'd"             — startup-time GC archived a stale team dir (info, v2.7.32)
    *   - "auto-compact-error"    — compaction tick threw (warn)
    *   - "upstream-available"    — pi-ai / pi-agent-core has a newer
    *                                 version on npm (v2.7.25)
