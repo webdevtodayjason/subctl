@@ -1753,6 +1753,79 @@ When disabled, the dashboard hides every Attach button and the modal entirely (`
 - `components/master/master-notify-listener.ts` — `/terminal status|on|off` Telegram command, help text update.
 - `docs/adr/0011-trust-marker-hmac-replacement.md` + `docs/adr/README.md` — status updated to "complete — L1 v2.7.20, L2 v2.7.21".
 
+### Phase 3o.22 — Notification system + watchdog auto-nudge + auto-compact fix (v2.7.22)
+
+The team-staleness watchdog was synthesizing operator-facing prompts straight into Evy's transcript on every tick — `"[watchdog] 1 dev team(s) appear stale: claude-osint-cve-monitor (221min ago). Decide whether to ping the lead via subctl_orch_msg, escalate to Jason via telegram_send, or take corrective action."` That string is doing three bad things at once: it interleaves with the operator conversation, pays an LLM call per tick to "decide", and asks the supervisor to do a cheap remediation it should have done itself. v2.7.22 fixes all three with a dedicated notification channel, an auto-nudge state machine, and an observability fix for the auto-compact watchdog that uncovered the bug.
+
+#### Notification channel
+
+The master now owns an in-memory **notification ring buffer** (`components/master/notifications.ts`, N=200). Watchdogs and other periodic checkers call `emitNotification({ kind, severity, title, body, team_id? })` instead of pushing synthetic prompts into the agent. The ring is fed by:
+
+- The team-staleness watchdog (auto-nudge + escalation paths below).
+- The auto-compact safety-net ticker (errors emit `severity:"warn"` `auto-compact-error`).
+- Anything else that wants an operator-visible alert without going through Evy.
+
+Notification shape: `{ id, kind, severity ("info"|"warn"|"alert"), title (<80 chars), body, team_id?, ts, read_at }`. Newest-first iteration. The buffer caps at 200 and drops oldest on overflow — that's ~16 hours of "everything is fine" telemetry at the 5-min tick, more than enough for the dashboard tray. The state is in-memory; restart wipes it intentionally, so every "is this still happening?" signal is rebuilt on the next tick.
+
+Three operator surfaces consume the ring:
+
+- **Dashboard tray.** Bell icon (`#notif-bell`) in the topbar with an unread badge; click opens a 380px drawer (`#notif-tray`) showing the last 20, with per-item "mark read" + a "mark all read" header button. The frontend (`dashboard/public/app.js → initNotificationTray`) seeds state via `GET /api/notifications` on first open and keeps an `EventSource` open on `GET /api/notifications/stream` for live deltas. CSS distinguishes severities (`.sev-info` blue / `.sev-warn` amber / `.sev-alert` red).
+- **Telegram push.** `severity:"alert"` ALSO pushes to the operator's master-bot via `sendTelegramOutbound`. `info` / `warn` stay in the tray only. The split is intentional: a Telegram buzz means "you actually need to look at this", not "another team is briefly idle". Subscribe site is in `server.ts` so the dashboard tray + Telegram pusher are independent — neither blocks the other.
+- **Telegram `/notifications` command.** `/notifications` returns the last 5 (with severity glyph + read marker + relative time). `/notifications read` marks all read. Mirrors `/watchdogs` and `/terminal` in shape.
+
+Master HTTP routes (proxied by the dashboard under `/api/notifications/*`):
+
+- `GET /notifications?since=<iso>&limit=N` → `{ ok, notifications: [...] }` (default limit 50, max 200).
+- `POST /notifications/:id/read` → `{ ok, found }`.
+- `POST /notifications/read-all` → `{ ok, marked }`.
+- `GET /notifications/stream` → `text/event-stream`. Each new notification emits one `event: notification` frame with the full record. 25s `: keepalive` comments. No replay — clients should GET first to seed, then keep the stream open for live deltas.
+
+#### Watchdog auto-nudge
+
+The state machine lives in `components/master/auto-nudge.ts` (extracted from `server.ts` for unit testability — the master daemon owns I/O, the module owns policy).
+
+Per-team state:
+```ts
+type TeamNudgeState = { last_nudge_at_ms: number };
+```
+
+Per tick, for each team in `teamLastActivity`:
+
+1. **Fresh** (idle ≤ staleness threshold, default 15 min): clear any prior nudge state. Subsequent staleness counts as a fresh first nudge.
+2. **First-nudge** (stale, no prior `last_nudge_at`): POST `[auto-nudge] You've been inactive for N min. Last visible action: <type>. Reply with current status, or if you're stuck on something operator-facing, say so.` to the dashboard's `/api/orchestration/:name/msg` route (HMAC-signed via v2.7.20's trust marker, same path the `subctl_orch_msg` master tool takes). Record `last_nudge_at_ms = now`. Emit `severity:"info"` `team-nudge-sent` notification — operator sees the nudge happened but doesn't get paged.
+3. **Hold** (stale, last nudge < 30 min ago): do nothing. The team has the chance to reply without the operator being interrupted.
+4. **Escalate** (stale, last nudge ≥ 30 min ago): emit `severity:"alert"` `team-unresponsive` notification (which the Telegram push picks up) AND re-nudge with an escalated body (`[auto-nudge · escalated] No response for N min. Total idle M min. Status?`). Update `last_nudge_at_ms = now`. The cycle continues until the team replies (state clears) or the operator intervenes.
+
+Operator only gets paged via Telegram on step 4. Steps 1–3 surface in the dashboard tray (info) or not at all (hold).
+
+The dashboard `/api/orchestration/:name/msg` route signs every message with the team-specific HMAC marker (v2.7.20), so the worker's lead cryptographically verifies the auto-nudge as a legitimate supervisor directive — same trust path as the master tool. If the dashboard is unreachable, `sendAutoNudge` returns `{ok:false, error}` without throwing; the watchdog still records `last_nudge_at` so we don't tight-loop on a downed dashboard, and the info notification body notes the delivery failure.
+
+#### Auto-compact watchdog fix
+
+The pre-v2.7.22 wiring had two observability bugs:
+
+1. The boot-time `setTimeout(() => runAutoCompactTick(), 30_000)` early-fire called the tick body WITHOUT `touchWatchdog("auto-compact")`. The periodic 5-min `setInterval` callback did call `touchWatchdog`, but OUTSIDE `runAutoCompactTick`. Net effect: if the master was inspected within the first 5 min of boot, `watchdog_list` showed `last_tick_at: null` even though the early-fire had already run.
+2. Any error inside `runAutoCompactTick` was a `console.error` that never reached the operator.
+
+v2.7.22 fixes both:
+
+- `touchWatchdog("auto-compact")` runs at the TOP of `runAutoCompactTick`, before the `stopped` / `autoCompactInFlight` / `promptInFlight` gates. Every tick path bumps freshness, regardless of what happens next.
+- The tick body is wrapped in a try/catch that emits a `severity:"warn"` `auto-compact-error` notification on failure (and the `compactTranscriptInline` error-return path emits the same shape). Operator sees compaction failures in the tray instead of grepping `master.log`.
+- The boot-time early-fire dropped from 30s to 15s, so the watchdog's `last_tick_at` lights up well inside the operator-observable boot window. The test suite asserts this contract (`__tests__/auto-compact.test.ts`).
+
+The JIT compact gate inside `processOnePrompt` (`runJitCompactCheck`) is unchanged — that's the primary defense. The 5-min ticker remains the safety net for transcripts that grow due to tool output after prompt composition.
+
+#### Files
+
+- New: `components/master/notifications.ts` — ring buffer + pub/sub API.
+- New: `components/master/auto-nudge.ts` — `decideTeamAction` (pure) + `runStaleTeamSweep` (with side-effect callbacks).
+- New: `components/master/__tests__/notifications.test.ts`, `auto-nudge.test.ts`, `auto-compact.test.ts` — 22 tests total.
+- `components/master/server.ts` — imports notifications + auto-nudge modules; `runWatchdogTick` no longer dispatches to the agent (the synth-prompt + `dispatchToAgent(synthPrompt, "watchdog")` are removed); subscribes to alert-severity notifications and pushes via `sendTelegramOutbound`; new `/notifications/*` HTTP routes; `runAutoCompactTick` bumps `touchWatchdog` at the top and wraps the body in try/catch with warn-notification emit; early-fire 30s → 15s.
+- `components/master/master-notify-listener.ts` — `/notifications` Telegram command.
+- `dashboard/server.ts` — `/api/notifications/*` proxy (REST + SSE pass-through).
+- `dashboard/public/index.html`, `style.css`, `app.js` — bell + badge + drawer + `initNotificationTray` driver.
+- `CHANGELOG.md` — v2.7.22 entry.
+
 ---
 
 ## 4a. Persona — Evy (v2.7.15+)

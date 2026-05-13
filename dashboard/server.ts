@@ -4736,6 +4736,50 @@ const server = Bun.serve({
     // Returns { current_tokens, loaded_ctx, util_pct, warn_at, compact_at,
     // decision } for the 4-state context-budget banner. No special handling
     // here — the generic proxy below relays it.
+    // ── /api/notifications/* — proxy to master's notification channel (v2.7.22)
+    // Operator-facing alerts (team-staleness auto-nudge, auto-compact
+    // errors). The master owns the in-memory ring buffer; this just
+    // forwards REST + SSE so the dashboard tray + xtab readers don't have
+    // to know the master's port. Mirrors /api/master/events SSE handling.
+    if (url.pathname.startsWith("/api/notifications")) {
+      const masterPort = process.env.SUBCTL_MASTER_PORT ?? "8788";
+      const masterUrl = `http://127.0.0.1:${masterPort}${url.pathname.replace(/^\/api\/notifications/, "/notifications")}${url.search}`;
+      try {
+        if (url.pathname === "/api/notifications/stream" && req.method === "GET") {
+          const upstream = await fetch(masterUrl, {
+            headers: { Accept: "text/event-stream" },
+            signal: req.signal,
+          });
+          return new Response(upstream.body, {
+            status: upstream.status,
+            headers: {
+              "Content-Type": "text/event-stream",
+              "Cache-Control": "no-cache, no-transform",
+              "Connection": "keep-alive",
+            },
+          });
+        }
+        const init: RequestInit = {
+          method: req.method,
+          headers: { "Content-Type": "application/json" },
+        };
+        if (req.method !== "GET" && req.method !== "HEAD") {
+          init.body = await req.text();
+        }
+        const upstream = await fetch(masterUrl, init);
+        const body = await upstream.text();
+        return new Response(body, {
+          status: upstream.status,
+          headers: { "Content-Type": upstream.headers.get("Content-Type") ?? "application/json" },
+        });
+      } catch (err) {
+        return Response.json(
+          { ok: false, error: `master daemon unreachable: ${(err as Error).message}` },
+          { status: 502 },
+        );
+      }
+    }
+
     if (url.pathname.startsWith("/api/master/")) {
       const masterPort = process.env.SUBCTL_MASTER_PORT ?? "8788";
       const masterUrl = `http://127.0.0.1:${masterPort}${url.pathname.replace(/^\/api\/master/, "")}${url.search}`;
