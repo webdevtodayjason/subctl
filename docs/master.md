@@ -127,6 +127,35 @@ Two surfaces, same on-disk format (`SKILL.md` with YAML frontmatter declaring `n
 
 Team templates (Phase 3b, v2.8.0) reference both surfaces by skill ID. First-party skill IDs are bare names (`node-conventions`); imported skills use the `<source>/<category>/<name>` form (`mattpocock/engineering/grill-with-docs`).
 
+#### v2.8.1 — Skills clarity + Evy-authored drafts
+
+Every `SKILL.md` (first-party + drafts + project-local) now carries extended frontmatter so the Skills tab can render WHO loads each skill and WHERE it came from:
+
+```yaml
+---
+name: <kebab>
+description: <one line>
+scope: dev-team | evy | both | project
+loaded_by_default: ["evy", ...]    # personas / template names that auto-load
+created_at: "<ISO>"
+created_by: operator | evy
+promoted_by: <name>                # only set on Evy-authored → repo promotion
+promoted_at: "<ISO>"
+---
+```
+
+`components/master/skills-registry.ts` is the single registry that reads all four sources (repo, imported, Evy-authored, project-local), parses the frontmatter, and surfaces a `category` per skill for the UI: `evy-loaded` · `team-developer` · `evy-authored` · `project-local`. The dashboard Skills tab renders one collapsible section per category with a `[?]` info popover explaining the bucket; project-local skills are scoped to a single project under `<project>/.subctl/skills/` per ADR 0003.
+
+**Evy-authored drafts** are the v2.8.1 curation channel for skills Evy creates from conversation patterns. The flow:
+
+1. Evy calls `evy_author_skill({name, description, body, scope, reason})` — required `reason` is the operator-facing audit trail explaining WHY the pattern is worth capturing.
+2. The draft lands as `~/.local/state/subctl/evy-skills/<name>/SKILL.md` with `created_by: evy` frontmatter.
+3. A `severity: info, kind: "evy-authored-skill"` notification fires (tray + Telegram see it immediately) and the reason appends to `~/.local/state/subctl/audit/evy-skills.jsonl`.
+4. Operator reviews in dashboard Skills tab → "Evy-authored skills", or via `/skills evy` on Telegram, or `subctl skills list --category evy-authored`.
+5. Operator's curation actions: **Promote** copies the draft into `components/skills/<name>/` (canonical, git-tracked — does NOT auto-commit; review the diff in your git client); **Delete** discards it.
+
+This is distinct from the legacy `skill_create` family (`components/master/tools/skill-author.ts`) — that older tool writes into a private master-only source under the imported-catalog tree. It remains for backward compat but new patterns should use `evy_author_skill` so they surface in the operator-visible "Evy-authored" section.
+
 #### Agent definitions
 
 Separate but adjacent to the skill catalog: `.claude/agents/<name>.md` declares named sub-agent personas (frontmatter lists which skills the agent loads at spawn time). Shipped in v2.7.33: `expert-bun-typescript`, `expert-react-typescript`, `expert-rust-systems`, `expert-devops-mac`, `tester-bun`. The v2.8.0 team-templates wave consumes these by name in template `developers` rosters.

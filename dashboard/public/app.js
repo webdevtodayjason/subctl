@@ -1485,7 +1485,221 @@
       const panel = document.querySelector("section[data-tab=\"skills\"]");
       if (panel && getComputedStyle(panel).display !== "none") refresh();
     }, 30000);
+
+    // ── v2.8.1 skills clarity ──
+    // Layer the category-aware view on top of the legacy flat list. Reads
+    // /api/skills/categorized + renders the four buckets with promote/delete
+    // affordances on evy-authored drafts. Info popovers explain what each
+    // category means so operator stops asking "what does this tab actually
+    // do?".
+    wireSkillsClarityView();
+    // ── end v2.8.1 skills clarity ──
   }
+
+  // ── v2.8.1 skills clarity ──
+  const SKILLS_INFO_COPY = {
+    "evy-loaded":
+      "<strong>Evy's loaded skills</strong> are folded into Evy's master system prompt at every turn. They define how she communicates, handles tools, and operates. To change them, edit <code>components/skills/master/SKILL.md</code> (Evy persona) or the persona spec at <code>docs/persona/evy.md</code>.",
+    "team-developer":
+      "<strong>Team-developer skills</strong> get loaded into dev workers' system prompts at spawn time. A team template's <code>skills = [...]</code> array per developer decides which they get. Edit a template in the <a href=\"#\" data-tab-link=\"templates\">Templates</a> tab to assign skills to workers.",
+    "evy-authored":
+      "<strong>Evy-authored skills</strong> are drafts Evy created during conversations when she learned a reusable pattern. They start under <code>~/.local/state/subctl/evy-skills/</code>. Operator decides: <em>Promote</em> moves the file into <code>components/skills/</code> (canonical, git-tracked); <em>Delete</em> discards it.",
+    "project-local":
+      "<strong>Project-local skills</strong> are scoped to one project under <code>&lt;project&gt;/.subctl/skills/</code> per ADR 0003. Loaded only when Claude Code is operating inside that project's directory.",
+  };
+
+  function wireSkillsClarityView() {
+    const popover = document.getElementById("skills-info-popover");
+
+    document.querySelectorAll(".skills-info-btn").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.preventDefault();
+        const key = btn.getAttribute("data-info");
+        if (!key || !popover) return;
+        popover.innerHTML = SKILLS_INFO_COPY[key] || "";
+        // Position just below the clicked [?] button
+        const rect = btn.getBoundingClientRect();
+        popover.style.top = (window.scrollY + rect.bottom + 6) + "px";
+        popover.style.left = Math.max(8, rect.left - 12) + "px";
+        popover.hidden = false;
+      });
+    });
+    document.addEventListener("click", (e) => {
+      if (!popover || popover.hidden) return;
+      if (e.target.closest(".skills-info-popover") || e.target.closest(".skills-info-btn")) return;
+      popover.hidden = true;
+    });
+
+    async function refreshCategorized() {
+      try {
+        const r = await fetch("/api/skills/categorized");
+        const j = await r.json();
+        if (!j.ok) return;
+        for (const cat of ["evy-loaded", "team-developer", "evy-authored", "project-local"]) {
+          const list = j.categories[cat] || [];
+          const countEl = document.getElementById("skills-count-" + cat);
+          const listEl = document.getElementById("skills-list-" + cat);
+          if (countEl) countEl.textContent = list.length;
+          if (!listEl) continue;
+          if (!list.length) {
+            listEl.innerHTML = `<div class="dim small" style="padding:12px">${emptyCopyForCategory(cat)}</div>`;
+            continue;
+          }
+          listEl.innerHTML = "";
+          for (const s of list) {
+            listEl.appendChild(renderSkillCard(s, cat, refreshCategorized));
+          }
+        }
+      } catch (err) {
+        console.warn("[skills-clarity] refresh failed:", err);
+      }
+    }
+
+    refreshCategorized();
+    // Refresh when the tab becomes visible too; auto-refresh while visible
+    // catches Evy authoring or promoting a skill during the session.
+    setInterval(() => {
+      const panel = document.querySelector("section[data-tab=\"skills\"]");
+      if (panel && getComputedStyle(panel).display !== "none") refreshCategorized();
+    }, 15000);
+    // Expose for external triggers (e.g. SSE evy-authored-skill events)
+    window.__skillsClarityRefresh = refreshCategorized;
+  }
+
+  function emptyCopyForCategory(cat) {
+    if (cat === "evy-authored") return "no drafts yet — Evy hasn't authored any skills";
+    if (cat === "project-local") return "no project-local skills detected (no <code>.subctl/skills/</code> in registered projects)";
+    if (cat === "evy-loaded") return "no Evy-loaded skills resolved — check <code>components/skills/master/SKILL.md</code>";
+    return "no skills in this bucket";
+  }
+
+  function renderSkillCard(s, category, refresh) {
+    const card = document.createElement("div");
+    card.className = "skill-card";
+    const head = document.createElement("div");
+    head.className = "skill-card-head";
+    const name = document.createElement("div");
+    name.className = "skill-card-name";
+    name.textContent = s.name;
+    head.appendChild(name);
+    const scopePill = document.createElement("span");
+    scopePill.className = "skill-scope-pill scope-" + (s.scope || "unknown");
+    scopePill.textContent = s.scope || "?";
+    head.appendChild(scopePill);
+    if (s.created_by === "evy") {
+      const ev = document.createElement("span");
+      ev.className = "skill-scope-pill scope-evy-authored";
+      ev.textContent = "by evy";
+      head.appendChild(ev);
+    }
+    card.appendChild(head);
+
+    if (s.description) {
+      const desc = document.createElement("div");
+      desc.className = "skill-card-desc";
+      desc.textContent = s.description;
+      card.appendChild(desc);
+    }
+
+    // Where-it's-used annotation
+    const where = document.createElement("div");
+    where.className = "skill-card-where dim small";
+    where.innerHTML = whereCopyFor(s, category);
+    card.appendChild(where);
+
+    // Templates using this team-developer skill
+    if (category === "team-developer" && Array.isArray(s.templates_using) && s.templates_using.length) {
+      const tu = document.createElement("div");
+      tu.className = "skill-card-templates dim small";
+      tu.innerHTML = "Used by: " + s.templates_using
+        .map((t) => `<code>${escapeText(t.template)}</code> (${t.roles.join(", ")})`).join(", ");
+      card.appendChild(tu);
+    }
+
+    // Curation actions (Evy-authored only)
+    if (category === "evy-authored") {
+      const actions = document.createElement("div");
+      actions.className = "skill-card-actions";
+      const view = document.createElement("button");
+      view.type = "button";
+      view.className = "secondary-btn";
+      view.textContent = "View";
+      view.addEventListener("click", () => showEvySkillBody(s.name));
+      const promote = document.createElement("button");
+      promote.type = "button";
+      promote.className = "primary-btn";
+      promote.textContent = "Promote to repo";
+      promote.addEventListener("click", async () => {
+        if (!confirm(`Promote '${s.name}' to components/skills/${s.name}/?\n\nThis writes the file but does NOT auto-commit — you'll review the diff in git.`)) return;
+        promote.disabled = true; promote.textContent = "promoting…";
+        try {
+          const r = await fetch(`/api/skills/evy/${encodeURIComponent(s.name)}/promote`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ promoted_by: "operator" }),
+          });
+          const j = await r.json();
+          if (!j.ok) { alert("Promotion failed: " + (j.error || "unknown")); promote.disabled = false; promote.textContent = "Promote to repo"; return; }
+          alert("Promoted → " + (j.to || ""));
+          refresh && refresh();
+        } catch (err) { alert("Error: " + err); promote.disabled = false; promote.textContent = "Promote to repo"; }
+      });
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "danger-btn";
+      del.textContent = "Delete";
+      del.addEventListener("click", async () => {
+        if (!confirm(`Delete draft '${s.name}'? This cannot be undone.`)) return;
+        del.disabled = true; del.textContent = "deleting…";
+        try {
+          const r = await fetch(`/api/skills/evy/${encodeURIComponent(s.name)}/delete`, { method: "POST" });
+          const j = await r.json();
+          if (!j.ok) { alert("Delete failed: " + (j.error || "unknown")); del.disabled = false; del.textContent = "Delete"; return; }
+          refresh && refresh();
+        } catch (err) { alert("Error: " + err); del.disabled = false; del.textContent = "Delete"; }
+      });
+      actions.appendChild(view);
+      actions.appendChild(promote);
+      actions.appendChild(del);
+      card.appendChild(actions);
+    }
+
+    return card;
+  }
+
+  function whereCopyFor(s, category) {
+    if (category === "evy-loaded") return "Loaded into Evy's master system prompt at every turn";
+    if (category === "team-developer") return "Available for team templates' developer rosters";
+    if (category === "evy-authored") {
+      const when = s.created_at ? ` · ${new Date(s.created_at).toLocaleString()}` : "";
+      return `Draft under <code>~/.local/state/subctl/evy-skills/${escapeText(s.name)}/</code>${when}`;
+    }
+    if (category === "project-local") {
+      return `Scoped to project <code>${escapeText(s.project || "?")}</code>`;
+    }
+    return "";
+  }
+
+  async function showEvySkillBody(name) {
+    try {
+      const r = await fetch(`/api/skills/evy/${encodeURIComponent(name)}`);
+      const j = await r.json();
+      if (!j.ok) { alert("Load failed: " + (j.error || "?")); return; }
+      // Reuse a simple alert-style viewer — keeps the diff small. A
+      // future iteration can plug into the existing skill-detail pane.
+      const win = window.open("", "_blank", "width=720,height=600");
+      if (win) {
+        win.document.title = "SKILL.md — " + name;
+        win.document.body.style.fontFamily = "ui-monospace, monospace";
+        win.document.body.style.whiteSpace = "pre-wrap";
+        win.document.body.style.padding = "16px";
+        win.document.body.textContent = j.content;
+      } else {
+        alert(j.content);
+      }
+    } catch (err) { alert("Error: " + err); }
+  }
+  // ── end v2.8.1 skills clarity ──
 
   // ----- Settings tab -----
   function wireSettingsTab() {

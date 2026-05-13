@@ -11,6 +11,10 @@ description: >-
 
   Lead agents (orchestrators / team-leads) also load this skill so the two
   sides of every message agree on shape.
+scope: dev-team
+loaded_by_default: []
+created_at: "2026-05-10"
+created_by: operator
 ---
 
 # Subctl Team Protocol

@@ -4719,3 +4719,168 @@ tr.team-stale-red td           { background: rgba(214, 108, 108, 0.06); }
   color: var(--red, #f85149);
   font-family: var(--mono);
 }
+
+/* ── v2.8.1 skills clarity ── */
+.skills-clarity {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 20px 4px 20px;
+}
+.skills-section {
+  background: var(--bg-mute, #161b22);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 6px;
+  padding: 0;
+}
+.skills-section > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid transparent;
+}
+.skills-section[open] > summary {
+  border-bottom-color: var(--border, #30363d);
+}
+.skills-section > summary::-webkit-details-marker { display: none; }
+.skills-section > summary::before {
+  content: "▸";
+  color: var(--fg-mute, #8b949e);
+  transition: transform 0.12s ease;
+  display: inline-block;
+}
+.skills-section[open] > summary::before { content: "▾"; }
+.skills-section-title {
+  font-weight: 600;
+  color: var(--fg, #e6edf3);
+}
+.skills-section-count {
+  font-size: 11px;
+  color: var(--fg-mute, #8b949e);
+  background: rgba(255,255,255,0.05);
+  border-radius: 10px;
+  padding: 1px 8px;
+}
+.skills-info-btn {
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  color: var(--fg-mute, #8b949e);
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.skills-info-btn:hover { color: var(--blue, #58a6ff); }
+.skills-info-popover {
+  position: absolute;
+  z-index: 1000;
+  max-width: 480px;
+  background: var(--bg, #0d1117);
+  border: 1px solid var(--blue, #58a6ff);
+  border-radius: 6px;
+  padding: 12px 14px;
+  color: var(--fg, #e6edf3);
+  font-size: 13px;
+  line-height: 1.45;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+}
+.skills-info-popover code { background: rgba(255,255,255,0.07); padding: 1px 4px; border-radius: 3px; font-size: 11.5px; }
+.skills-info-popover a { color: var(--blue, #58a6ff); }
+.skills-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 10px;
+  padding: 12px 14px 14px 14px;
+}
+.skill-card {
+  background: var(--bg, #0d1117);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 5px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.skill-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.skill-card-name {
+  font-family: var(--mono);
+  font-weight: 600;
+  color: var(--fg, #e6edf3);
+}
+.skill-scope-pill {
+  font-size: 10.5px;
+  font-family: var(--mono);
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: rgba(255,255,255,0.05);
+  color: var(--fg-mute, #8b949e);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.skill-scope-pill.scope-evy { background: rgba(189, 147, 249, 0.15); color: #d2a8ff; }
+.skill-scope-pill.scope-dev-team { background: rgba(88, 166, 255, 0.15); color: #79c0ff; }
+.skill-scope-pill.scope-both { background: rgba(126, 231, 135, 0.15); color: #7ee787; }
+.skill-scope-pill.scope-project { background: rgba(255, 166, 87, 0.15); color: #ffa657; }
+.skill-scope-pill.scope-evy-authored { background: rgba(255, 215, 0, 0.15); color: #ffd700; }
+.skill-card-desc {
+  font-size: 12.5px;
+  color: var(--fg, #e6edf3);
+  line-height: 1.4;
+}
+.skill-card-where {
+  font-size: 11px;
+  color: var(--fg-mute, #8b949e);
+}
+.skill-card-where code,
+.skill-card-templates code {
+  font-size: 10.5px;
+  background: rgba(255,255,255,0.05);
+  padding: 0 3px;
+  border-radius: 3px;
+}
+.skill-card-templates {
+  font-size: 11px;
+  color: var(--fg-mute, #8b949e);
+}
+.skill-card-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+.skill-card-actions button {
+  font-size: 11.5px;
+  padding: 3px 9px;
+}
+.danger-btn {
+  background: transparent;
+  border: 1px solid var(--red, #f85149);
+  color: var(--red, #f85149);
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.danger-btn:hover { background: rgba(248, 81, 73, 0.1); }
+.danger-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.skills-divider {
+  margin: 18px 20px 4px 20px;
+  border: none;
+  border-top: 1px dashed var(--border, #30363d);
+}
+.skills-imported-h3 {
+  margin: 14px 20px 4px 20px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--fg, #e6edf3);
+}
+.skills-imported-h3 .small { font-weight: 400; }
+.skills-section-evy-authored summary { background: rgba(255, 215, 0, 0.03); }
+/* ── end v2.8.1 skills clarity ── */

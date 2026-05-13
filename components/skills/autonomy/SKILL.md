@@ -10,6 +10,10 @@ description: >-
 
   Activate proactively whenever an orchestrator session is running with the
   user away (no message in last 5+ minutes) and there is non-trivial backlog.
+scope: both
+loaded_by_default: []
+created_at: "2026-05-10"
+created_by: operator
 ---
 
 # Autonomy doctrine

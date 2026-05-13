@@ -65,6 +65,12 @@ import {
   type RouterDecision,
 } from "./skill-router";
 import { skillAuthorTools } from "./tools/skill-author";
+// ── v2.8.1 skills clarity ──
+import {
+  evySkillsAuthorTools,
+  bindSkillsAuthorBroadcast,
+} from "./tools/skills-author";
+// ── end v2.8.1 skills clarity ──
 import { notifyTools, bindNotifyBroadcast } from "./tools/notify";
 import { specforgeTools } from "./tools/specforge";
 import { schedulerTools, popDueFollowups } from "./tools/scheduler";
@@ -412,6 +418,17 @@ export const toolRegistry: Record<string, InternalTool> = {
       v as unknown as InternalTool,
     ]),
   ),
+  // ── v2.8.1 skills clarity ──
+  // Evy-curated authoring channel — writes drafts under
+  // ~/.local/state/subctl/evy-skills/ for operator review (promote/delete).
+  // Distinct from legacy skill-author.ts (private master-only catalog).
+  ...Object.fromEntries(
+    Object.entries(evySkillsAuthorTools).map(([k, v]) => [
+      k, // evy_author_skill / evy_list_authored_skills / evy_promote_skill / evy_delete_authored_skill
+      v as unknown as InternalTool,
+    ]),
+  ),
+  // ── end v2.8.1 skills clarity ──
   ...Object.fromEntries(
     Object.entries(notifyTools).map(([k, v]) => [
       k, // notify_dashboard
@@ -1112,6 +1129,11 @@ async function main() {
   }
   // Let the notify tool publish to the SSE bus via the same broadcast.
   bindNotifyBroadcast(broadcast);
+  // ── v2.8.1 skills clarity ──
+  // Same broadcast bus for evy-authored skill events so the dashboard's
+  // Skills tab refreshes the moment Evy authors / promotes / deletes.
+  bindSkillsAuthorBroadcast(broadcast);
+  // ── end v2.8.1 skills clarity ──
 
   // v2.8.0 — voice config watcher (defined after `broadcast` so the SSE
   // bus is available to the callback). The watcher only logs + emits

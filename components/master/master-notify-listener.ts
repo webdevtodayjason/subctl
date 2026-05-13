@@ -86,6 +86,14 @@ import {
   recallEntries as recallMemoryEntries,
   redactEntryForEgress,
 } from "./memory";
+// ── v2.8.1 skills clarity ──
+import {
+  listSkills as listAllSkills,
+  promoteEvySkill,
+  deleteEvySkill,
+  type Skill,
+} from "./skills-registry";
+// ── end v2.8.1 skills clarity ──
 // v2.8.0 voice layer — Telegram /voice + /say
 import { loadVoiceConfig, saveVoiceConfig } from "./voice-config";
 import { renderVoice, probeTtsServer } from "./tools/voice-render";
@@ -535,10 +543,115 @@ async function handleBotCommand(text: string): Promise<string> {
       //   /prefs set <category>.<key> v   → write (by=operator)
       //   /prefs reset                    → confirm-then-seed
       return handlePrefsCommand(parts.slice(1));
+    case "/skills":
+      // ── v2.8.3 skills clarity ──
+      // Category-aware skills surface for Telegram. Mirrors the dashboard
+      // Skills tab: list all (grouped), list a category, promote / delete
+      // an Evy-authored draft.
+      return handleSkillsCommand(parts.slice(1));
     default:
-      return `Unknown command: ${cmd}\n\nTry: /status, /pause, /resume, /profile, /watchdogs, /terminal, /notifications, /upstreams, /secrets, /memory, /remember, /voice, /say, /prefs, /help`;
+      return `Unknown command: ${cmd}\n\nTry: /status, /pause, /resume, /profile, /watchdogs, /terminal, /notifications, /upstreams, /secrets, /memory, /remember, /voice, /say, /prefs, /skills, /help`;
   }
 }
+
+// ── v2.8.1 skills clarity ──
+function handleSkillsCommand(args: string[]): string {
+  const sub = (args[0] || "").toLowerCase();
+  if (!sub) return formatSkillsSummary();
+  if (sub === "evy") return formatSkillsCategory("evy-authored");
+  if (sub === "team" || sub === "dev-team") return formatSkillsCategory("team-developer");
+  if (sub === "loaded") return formatSkillsCategory("evy-loaded");
+  if (sub === "project") return formatSkillsCategory("project-local");
+  if (sub === "promote") {
+    const name = args[1];
+    if (!name) return "Usage: /skills promote <name>\n\n(see /skills evy for draft names)";
+    const r = promoteEvySkill(name, "operator");
+    return r.ok
+      ? `✅ promoted ${name}\n  ${r.to}\n\nReview the file in git before committing.`
+      : `❌ promote failed: ${r.error}`;
+  }
+  if (sub === "delete" || sub === "rm") {
+    const name = args[1];
+    if (!name) return "Usage: /skills delete <name>";
+    const r = deleteEvySkill(name);
+    return r.ok ? `🗑 deleted ${name}` : `❌ delete failed: ${r.error}`;
+  }
+  if (sub === "help") return formatSkillsHelp();
+  return `Unknown /skills subcommand: ${sub}\n\n${formatSkillsHelp()}`;
+}
+
+function formatSkillsSummary(): string {
+  const all = listAllSkills({ skipImported: true });
+  const groups: Record<string, Skill[]> = {
+    "evy-loaded": [],
+    "team-developer": [],
+    "evy-authored": [],
+    "project-local": [],
+  };
+  for (const s of all) groups[s.category]?.push(s);
+  const lines: string[] = ["📚 Skills (v2.8.1)\n"];
+  lines.push(`Evy-loaded:      ${groups["evy-loaded"].length}`);
+  lines.push(`Team-developer:  ${groups["team-developer"].length}`);
+  lines.push(`Evy-authored:    ${groups["evy-authored"].length}${groups["evy-authored"].length ? "  ← review!" : ""}`);
+  lines.push(`Project-local:   ${groups["project-local"].length}`);
+  lines.push("");
+  if (groups["evy-authored"].length) {
+    lines.push("Drafts awaiting review:");
+    for (const s of groups["evy-authored"]) {
+      lines.push(`  • ${s.name} — ${truncate(s.description, 60)}`);
+    }
+    lines.push("");
+  }
+  lines.push("/skills evy       — Evy-authored drafts (promote/delete)");
+  lines.push("/skills team      — team-developer skills");
+  lines.push("/skills loaded    — Evy's loaded persona skills");
+  lines.push("/skills project   — project-local skills");
+  lines.push("/skills promote <name>");
+  lines.push("/skills delete  <name>");
+  return lines.join("\n");
+}
+
+function formatSkillsCategory(category: Skill["category"]): string {
+  const skills = listAllSkills({ category, skipImported: true });
+  const labelMap: Record<Skill["category"], string> = {
+    "evy-loaded": "🧠 Evy's loaded skills",
+    "team-developer": "👥 Team-developer skills",
+    "evy-authored": "✨ Evy-authored drafts",
+    "project-local": "📁 Project-local skills",
+  };
+  if (!skills.length) {
+    return `${labelMap[category]}\n\n(none in this category)`;
+  }
+  const lines: string[] = [`${labelMap[category]} · ${skills.length}\n`];
+  for (const s of skills) {
+    lines.push(`• ${s.name}  [${s.scope}]`);
+    if (s.description) lines.push(`    ${truncate(s.description, 100)}`);
+    if (category === "evy-authored") {
+      lines.push(`    /skills promote ${s.name}   ·   /skills delete ${s.name}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+function formatSkillsHelp(): string {
+  return [
+    "📚 /skills — skill catalog + Evy-authored draft curation",
+    "",
+    "/skills                  summary across all categories",
+    "/skills evy              Evy-authored drafts (with promote/delete hints)",
+    "/skills team             team-developer skills (loaded into dev workers)",
+    "/skills loaded           Evy's persona-loaded skills",
+    "/skills project          project-local skills (per ADR 0003)",
+    "/skills promote <name>   promote an Evy draft into the repo",
+    "/skills delete  <name>   discard an Evy draft",
+  ].join("\n");
+}
+
+function truncate(s: string, n: number): string {
+  if (!s) return "";
+  return s.length > n ? s.slice(0, n - 1) + "…" : s;
+}
+// ── end v2.8.1 skills clarity ──
 
 function handleSecretsCommand(): string {
   const s = describeBackendChain();
@@ -1101,6 +1214,8 @@ function formatHelp(): string {
     "/prefs get <cat>.<key> show one value",
     "/prefs set <cat>.<key> <value>   write one value",
     "/prefs reset confirm   reset to seeded defaults",
+    "/skills                show skill catalog summary (v2.8.3)",
+    "/skills evy            review Evy-authored drafts (promote/delete)",
     "",
     "Free-text messages are queued for the next agent turn — subctl master",
     "will act on them per its policy and report back.",
