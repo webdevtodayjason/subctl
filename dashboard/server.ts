@@ -4813,6 +4813,37 @@ const server = Bun.serve({
       }
     }
 
+    // ── v2.7.29 plan approvals ──
+    // Proxy /api/plan-approvals/* to the master's /plan-approvals/*
+    // surface. Same shape as /api/notifications: no auth, dashboard runs
+    // on localhost. The master owns the queue + JSONL log; this just
+    // forwards REST so the Plans tab in app.js doesn't have to know
+    // master's port.
+    if (url.pathname.startsWith("/api/plan-approvals")) {
+      const masterPort = process.env.SUBCTL_MASTER_PORT ?? "8788";
+      const masterUrl = `http://127.0.0.1:${masterPort}${url.pathname.replace(/^\/api\/plan-approvals/, "/plan-approvals")}${url.search}`;
+      try {
+        const init: RequestInit = {
+          method: req.method,
+          headers: { "Content-Type": "application/json" },
+        };
+        if (req.method !== "GET" && req.method !== "HEAD") {
+          init.body = await req.text();
+        }
+        const upstream = await fetch(masterUrl, init);
+        const body = await upstream.text();
+        return new Response(body, {
+          status: upstream.status,
+          headers: { "Content-Type": upstream.headers.get("Content-Type") ?? "application/json" },
+        });
+      } catch (err) {
+        return Response.json(
+          { ok: false, error: `master daemon unreachable: ${(err as Error).message}` },
+          { status: 502 },
+        );
+      }
+    }
+
     // ── /api/memory/* — proxy to master's Evy Memory (v2.7.23) ──────────
     // Tier 3 conversational memory: operator-Evy chat, decisions, captured
     // notifications, shipped events. The master owns the SQLite store

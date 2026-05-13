@@ -4,6 +4,47 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.7.29] — 2026-05-13
+
+### `feat(master): v2.7.29 plan-approval workflow (dashboard + telegram)`
+
+Worker-proposed plans now surface to the operator instead of dying silently in tmux panes. The subctl orchestrator team protocol already supported `plan_approval_request` / `plan_approval_response` between workers and the team lead, but the OPERATOR-facing layer — where Jason actually sees the plan and approves or rejects from anywhere — didn't exist. v2.7.29 closes that loop end-to-end.
+
+**Flow:**
+
+1. Worker emits `plan_approval_request` to its team lead.
+2. Team lead forwards it into the master daemon by appending a JSONL line to `~/.config/subctl/master/inbox/<team>.jsonl` with `{"type":"plan-approval-request", "request_id":..., "worker_name":..., "plan_summary":..., "plan_body":...}`.
+3. Master records the request in the pending-approvals queue (persisted JSONL log at `~/.local/state/subctl/plan-approvals.jsonl`) and emits a `severity:"alert"` notification — which fans out to the dashboard tray AND the operator's Telegram via the existing notification channel.
+4. Operator decides from anywhere:
+   - **Dashboard Plans tab:** card per pending plan, expandable body, `[Approve]` / `[Reject]` (modal feedback) buttons.
+   - **Telegram:** `/plans`, `/plans approve <id>`, `/plans reject <id> <feedback>`.
+5. Master forwards the `plan_approval_response` back to the team lead via the HMAC-authenticated dashboard `/msg` route — same trust path the auto-nudge uses.
+6. Anything sitting in `pending` >60 minutes auto-rejects with feedback `"auto-expired"`; operator can re-request from the worker if they still want the work.
+
+**Files (new):**
+
+- `components/master/plan-approvals.ts` — queue module: `recordApprovalRequest()`, `listPending()`, `listDecided()`, `approveRequest()`, `rejectRequest()`, `expireOldRequests()`. Append-only JSONL log + in-memory state. Concurrency-safe (second writer hits `ApprovalError /not-pending`). plan_body is never written to stderr at default logging level (may contain secrets).
+- `components/master/__tests__/plan-approvals.test.ts` — 10 pins: record/list/approve/reject round-trips, concurrent approve race, expire threshold, persistence replay, summary truncation, race-after-reject.
+
+**Files (modified):**
+
+- `components/master/server.ts` — imports the queue, handles `plan-approval-request` events in `tailInboxFile()`, exposes `/plan-approvals` REST (list, approve, reject, expire), and registers a 5-min watchdog ticker that calls `expireOldRequests()`. The approve/reject paths emit a `severity:"info"` notification on each decision so the operator sees the action landed, and forward the response back to the team via `/api/orchestration/:name/msg`.
+- `components/master/master-notify-listener.ts` — adds `/plans`, `/plans approve <id-prefix>`, `/plans reject <id-prefix> <feedback>` Telegram commands. Prefix-match against pending ids so operators don't have to paste a full uuid; ambiguous prefixes return an error listing the matches.
+- `dashboard/server.ts` — `/api/plan-approvals/*` proxy to master (mirrors the `/api/notifications` shape; localhost only).
+- `dashboard/public/index.html` — new sidebar nav button with pending-count badge, new `<section data-tab="plans">` with pending/decided cards + reject-feedback modal.
+- `dashboard/public/app.js` — `initPlansTab()`: renders the queue, wires approve/reject buttons, refreshes on tab activation + every notification SSE event + 30s poll.
+- `dashboard/public/style.css` — `.plan-card-*` styling: pending = amber left-border, approved = green, rejected = red, expired = grey. Expandable plan body (`<details>`).
+- `docs/master.md` — new "Plan approvals (v2.7.29)" section documenting the contract.
+- `VERSION` → `2.7.29`.
+
+**Security / safety notes:**
+
+- The plan_body field is NEVER logged to stderr by default — workers may paste secrets, partial commits, or unredacted snippets. Master truncates to a 60-char summary in any console output.
+- `~/.local/state/subctl/plan-approvals.jsonl` lives under XDG_STATE_HOME (or `~/.local/state`); inherits the operator's umask. Operators on shared boxes should chmod 600 manually until the next pass.
+- The `/msg` delivery path back to the worker reuses the v2.7.20 HMAC trust marker — workers verify the response as a legitimate supervisor directive.
+
+---
+
 ## [2.7.24] — 2026-05-13
 
 ### `feat(dashboard): v2.7.24 pi-ai provider catalog (dynamic dropdown) — pi-ai + pi-agent declared first-class upstreams`

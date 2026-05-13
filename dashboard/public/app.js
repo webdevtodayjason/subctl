@@ -6943,6 +6943,314 @@
     initNotificationTray();
   }
 
+  // ── v2.7.29 Plans tab ──
+  // Renders worker-proposed plans awaiting approval. Sources:
+  //   GET  /api/plan-approvals                  → { ok, pending, decided }
+  //   POST /api/plan-approvals/:id/approve      → { ok, approval }
+  //   POST /api/plan-approvals/:id/reject       → body { feedback } → { ok, approval }
+  // We refresh on:
+  //   1. Tab activation (MutationObserver on data-active-tab).
+  //   2. Manual click of the refresh button.
+  //   3. Every notification SSE event (the master emits a notification on
+  //      each new request / decision, so the bell tray's SSE doubles as
+  //      our change-feed).
+  function initPlansTab() {
+    const pendingEl = document.getElementById("plans-pending-list");
+    const decidedEl = document.getElementById("plans-decided-list");
+    const pendingCountEl = document.getElementById("plans-pending-count");
+    const decidedCountEl = document.getElementById("plans-decided-count");
+    const navBadgeEl = document.getElementById("plans-nav-badge");
+    const refreshBtn = document.getElementById("plans-refresh-btn");
+    const rejectModal = document.getElementById("plans-reject-modal");
+    const rejectForm = document.getElementById("plans-reject-form");
+    const rejectFeedback = document.getElementById("plans-reject-feedback");
+    const rejectIdInput = document.getElementById("plans-reject-id");
+    const rejectClose = document.getElementById("plans-reject-close");
+    const rejectCancel = document.getElementById("plans-reject-cancel");
+    if (!pendingEl || !decidedEl) return;
+
+    function fmtTs(iso) {
+      if (!iso) return "—";
+      try {
+        const d = new Date(iso);
+        return d.toLocaleString();
+      } catch { return iso; }
+    }
+
+    function ageLabel(iso) {
+      if (!iso) return "";
+      const ms = Date.now() - Date.parse(iso);
+      if (!Number.isFinite(ms) || ms < 0) return "";
+      const min = Math.floor(ms / 60000);
+      if (min < 1) return "just now";
+      if (min < 60) return `${min}m ago`;
+      const hr = Math.floor(min / 60);
+      if (hr < 24) return `${hr}h ago`;
+      return `${Math.floor(hr / 24)}d ago`;
+    }
+
+    function renderPendingCard(entry) {
+      const card = document.createElement("div");
+      card.className = "plan-card plan-card-pending";
+      card.dataset.planId = entry.id;
+
+      const head = document.createElement("div");
+      head.className = "plan-card-head";
+      const headLeft = document.createElement("div");
+      headLeft.className = "plan-card-head-left";
+      const worker = document.createElement("span");
+      worker.className = "plan-card-worker";
+      worker.textContent = entry.worker_name;
+      const team = document.createElement("span");
+      team.className = "plan-card-team";
+      team.textContent = entry.team_id;
+      headLeft.appendChild(worker);
+      headLeft.appendChild(team);
+      const age = document.createElement("span");
+      age.className = "plan-card-age";
+      age.textContent = ageLabel(entry.created_at);
+      age.title = fmtTs(entry.created_at);
+      head.appendChild(headLeft);
+      head.appendChild(age);
+      card.appendChild(head);
+
+      const summary = document.createElement("div");
+      summary.className = "plan-card-summary";
+      summary.textContent = entry.plan_summary || "(no summary)";
+      card.appendChild(summary);
+
+      // Expandable body. Default collapsed so the operator scanning the
+      // list doesn't get blasted with multi-page plans.
+      const bodyWrap = document.createElement("details");
+      bodyWrap.className = "plan-card-body-wrap";
+      const sum = document.createElement("summary");
+      sum.textContent = "show full plan";
+      bodyWrap.appendChild(sum);
+      const body = document.createElement("pre");
+      body.className = "plan-card-body";
+      body.textContent = entry.plan_body || "(empty plan body)";
+      bodyWrap.appendChild(body);
+      card.appendChild(bodyWrap);
+
+      const meta = document.createElement("div");
+      meta.className = "plan-card-meta";
+      const reqId = document.createElement("span");
+      reqId.className = "dim small";
+      reqId.textContent = `request_id: ${entry.request_id} · approval_id: ${entry.id}`;
+      meta.appendChild(reqId);
+      card.appendChild(meta);
+
+      const actions = document.createElement("div");
+      actions.className = "plan-card-actions";
+      const approveBtn = document.createElement("button");
+      approveBtn.type = "button";
+      approveBtn.className = "primary-btn plan-approve-btn";
+      approveBtn.textContent = "approve";
+      approveBtn.dataset.planAction = "approve";
+      approveBtn.dataset.planId = entry.id;
+      const rejectBtn = document.createElement("button");
+      rejectBtn.type = "button";
+      rejectBtn.className = "secondary-btn plan-reject-btn";
+      rejectBtn.textContent = "reject";
+      rejectBtn.dataset.planAction = "reject";
+      rejectBtn.dataset.planId = entry.id;
+      actions.appendChild(approveBtn);
+      actions.appendChild(rejectBtn);
+      card.appendChild(actions);
+      return card;
+    }
+
+    function renderDecidedCard(entry) {
+      const card = document.createElement("div");
+      card.className = `plan-card plan-card-decided plan-card-${entry.status}`;
+
+      const head = document.createElement("div");
+      head.className = "plan-card-head";
+      const headLeft = document.createElement("div");
+      headLeft.className = "plan-card-head-left";
+      const worker = document.createElement("span");
+      worker.className = "plan-card-worker";
+      worker.textContent = entry.worker_name;
+      const team = document.createElement("span");
+      team.className = "plan-card-team";
+      team.textContent = entry.team_id;
+      const status = document.createElement("span");
+      status.className = `plan-card-status plan-card-status-${entry.status}`;
+      status.textContent = entry.status;
+      headLeft.appendChild(worker);
+      headLeft.appendChild(team);
+      headLeft.appendChild(status);
+      const age = document.createElement("span");
+      age.className = "plan-card-age";
+      age.textContent = ageLabel(entry.decided_at || entry.created_at);
+      age.title = fmtTs(entry.decided_at || entry.created_at);
+      head.appendChild(headLeft);
+      head.appendChild(age);
+      card.appendChild(head);
+
+      const summary = document.createElement("div");
+      summary.className = "plan-card-summary";
+      summary.textContent = entry.plan_summary || "(no summary)";
+      card.appendChild(summary);
+
+      if (entry.feedback) {
+        const fb = document.createElement("div");
+        fb.className = "plan-card-feedback";
+        fb.textContent = `feedback: ${entry.feedback}`;
+        card.appendChild(fb);
+      }
+      return card;
+    }
+
+    async function refresh() {
+      try {
+        const r = await fetch("/api/plan-approvals");
+        if (!r.ok) {
+          pendingEl.textContent = `error: HTTP ${r.status}`;
+          return;
+        }
+        const j = await r.json();
+        if (!j.ok) {
+          pendingEl.textContent = `error: ${j.error || "unknown"}`;
+          return;
+        }
+        const pending = Array.isArray(j.pending) ? j.pending : [];
+        const decided = Array.isArray(j.decided) ? j.decided : [];
+        pendingCountEl.textContent = String(pending.length);
+        decidedCountEl.textContent = String(decided.length);
+        if (navBadgeEl) {
+          if (pending.length > 0) {
+            navBadgeEl.hidden = false;
+            navBadgeEl.textContent = String(pending.length);
+          } else {
+            navBadgeEl.hidden = true;
+          }
+        }
+        if (pending.length === 0) {
+          pendingEl.innerHTML = '<div class="dim small">no pending plans — workers will surface here when they request approval</div>';
+        } else {
+          pendingEl.innerHTML = "";
+          for (const entry of pending) pendingEl.appendChild(renderPendingCard(entry));
+        }
+        if (decided.length === 0) {
+          decidedEl.innerHTML = '<div class="dim small">no decisions yet</div>';
+        } else {
+          decidedEl.innerHTML = "";
+          for (const entry of decided) decidedEl.appendChild(renderDecidedCard(entry));
+        }
+      } catch (err) {
+        pendingEl.textContent = `error: ${err && err.message ? err.message : err}`;
+      }
+    }
+
+    async function approve(id) {
+      try {
+        const r = await fetch(`/api/plan-approvals/${encodeURIComponent(id)}/approve`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || !j.ok) {
+          alert(`approve failed: ${j.error || `HTTP ${r.status}`}`);
+        }
+      } catch (err) {
+        alert(`approve failed: ${err && err.message ? err.message : err}`);
+      } finally {
+        refresh();
+      }
+    }
+
+    function openRejectModal(id) {
+      if (!rejectModal) return;
+      rejectIdInput.value = id;
+      rejectFeedback.value = "";
+      rejectModal.hidden = false;
+      rejectFeedback.focus();
+    }
+
+    function closeRejectModal() {
+      if (!rejectModal) return;
+      rejectModal.hidden = true;
+      rejectIdInput.value = "";
+      rejectFeedback.value = "";
+    }
+
+    async function submitReject(ev) {
+      ev.preventDefault();
+      const id = rejectIdInput.value;
+      const feedback = rejectFeedback.value.trim();
+      if (!id) {
+        closeRejectModal();
+        return;
+      }
+      try {
+        const r = await fetch(`/api/plan-approvals/${encodeURIComponent(id)}/reject`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ feedback }),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || !j.ok) {
+          alert(`reject failed: ${j.error || `HTTP ${r.status}`}`);
+          return;
+        }
+      } catch (err) {
+        alert(`reject failed: ${err && err.message ? err.message : err}`);
+        return;
+      } finally {
+        closeRejectModal();
+        refresh();
+      }
+    }
+
+    pendingEl.addEventListener("click", (ev) => {
+      const btn = ev.target.closest("button[data-plan-action]");
+      if (!btn) return;
+      const id = btn.dataset.planId;
+      if (!id) return;
+      const action = btn.dataset.planAction;
+      if (action === "approve") {
+        if (confirm("Approve this plan? The worker will be notified and proceed.")) {
+          approve(id);
+        }
+      } else if (action === "reject") {
+        openRejectModal(id);
+      }
+    });
+
+    if (refreshBtn) refreshBtn.addEventListener("click", refresh);
+    if (rejectClose) rejectClose.addEventListener("click", closeRejectModal);
+    if (rejectCancel) rejectCancel.addEventListener("click", closeRejectModal);
+    if (rejectForm) rejectForm.addEventListener("submit", submitReject);
+
+    // Refresh on tab activation.
+    const observer = new MutationObserver(() => {
+      if (document.body.getAttribute("data-active-tab") === "plans") refresh();
+    });
+    observer.observe(document.body, { attributes: true, attributeFilter: ["data-active-tab"] });
+    if (document.body.getAttribute("data-active-tab") === "plans") refresh();
+
+    // Always refresh the badge in the background — operators may be on a
+    // different tab when a plan arrives, and the badge needs to flag it.
+    refresh();
+    setInterval(refresh, 30_000);
+
+    // Piggyback on the notifications SSE stream: any new event likely
+    // changed the approval queue (record / decide / expire all emit one),
+    // so re-pull. EventSource shares the connection if already open.
+    try {
+      const sse = new EventSource("/api/notifications/stream");
+      sse.addEventListener("notification", refresh);
+    } catch {
+      /* fallback to 30s poll above */
+    }
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initPlansTab, { once: true });
+  } else {
+    initPlansTab();
+  }
+
   // Kick off — also try polling immediately so first paint isn't blocked
   // on the WS handshake.
   startPolling();

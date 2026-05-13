@@ -150,6 +150,10 @@
         <button type="button" class="nav-btn" data-tab="providers">
           <span class="nav-icon">◐</span><span class="nav-label">Providers</span>
         </button>
+        <button type="button" class="nav-btn" data-tab="plans">
+          <span class="nav-icon">✓</span><span class="nav-label">Plans</span>
+          <span class="nav-badge" id="plans-nav-badge" hidden>0</span>
+        </button>
         <button type="button" class="nav-btn" data-tab="memory">
           <span class="nav-icon">✦</span><span class="nav-label">Memory</span>
         </button>
@@ -671,6 +675,58 @@
     </section>
 
     <!-- ── Memory tab ──────────────────────────────────────────────── -->
+    <!-- ── Plans tab — v2.7.29 plan-approval workflow ──────────────────── -->
+    <section class="plans-screen" data-tab="plans">
+      <header class="screen-header">
+        <h2>Plans <span class="screen-sub">worker-proposed plans awaiting operator approval · approve / reject from here or via <code>/plans</code> on Telegram</span></h2>
+        <button type="button" class="primary-btn" id="plans-refresh-btn" title="Reload from /api/plan-approvals">refresh</button>
+      </header>
+
+      <section class="plans-section">
+        <div class="plans-section-head">
+          <h3>Pending <span class="dim" id="plans-pending-count">0</span></h3>
+          <span class="dim small">auto-expire at 60 min</span>
+        </div>
+        <div class="plans-list" id="plans-pending-list">
+          <div class="dim small">no pending plans — workers will surface here when they request approval</div>
+        </div>
+      </section>
+
+      <section class="plans-section">
+        <div class="plans-section-head">
+          <h3>Recently decided <span class="dim" id="plans-decided-count">0</span></h3>
+          <span class="dim small">last 20</span>
+        </div>
+        <div class="plans-list plans-list-decided" id="plans-decided-list">
+          <div class="dim small">no decisions yet</div>
+        </div>
+      </section>
+
+      <!-- Reject feedback modal — populated by app.js when the operator
+           clicks Reject on a pending card. -->
+      <div class="modal-backdrop" id="plans-reject-modal" hidden>
+        <div class="modal" role="dialog">
+          <header class="modal-header">
+            <h3>Reject plan</h3>
+            <button type="button" class="modal-close" id="plans-reject-close">✕</button>
+          </header>
+          <form class="modal-body" id="plans-reject-form">
+            <div class="form-row">
+              <label>Feedback for the worker</label>
+              <textarea id="plans-reject-feedback" rows="5" placeholder="why this plan needs revision — the worker will see this verbatim"></textarea>
+              <div class="form-hint">Empty feedback is allowed but discouraged. Be specific so the worker can revise.</div>
+            </div>
+            <input type="hidden" id="plans-reject-id" />
+            <div class="form-actions">
+              <button type="button" class="secondary-btn" id="plans-reject-cancel">cancel</button>
+              <button type="submit" class="primary-btn">reject</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+    <!-- ── /Plans ─────────────────────────────────────────────────────── -->
+
     <section class="memory-screen" data-tab="memory">
       <header class="screen-header">
         <h2>Memory <span class="screen-sub">tier 1 MEMORY.md · tier 2 Obsidian · tier 3 Evy Memory (sqlite) · tier 4 claude-mem · tier 5 project artifacts</span></h2>

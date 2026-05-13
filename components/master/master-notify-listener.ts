@@ -74,6 +74,14 @@ import {
   listNotifications,
   markAllRead as markAllNotificationsRead,
 } from "./notifications";
+// ── v2.7.29 plan approvals ──
+import {
+  listPending as listPendingApprovals,
+  getApproval as getPlanApproval,
+  approveRequest as approvePlanRequest,
+  rejectRequest as rejectPlanRequest,
+  ApprovalError as PlanApprovalError,
+} from "./plan-approvals";
 import {
   recordEntry as recordMemoryEntry,
   recallEntries as recallMemoryEntries,
@@ -471,6 +479,13 @@ async function handleBotCommand(text: string): Promise<string> {
       // here on emit; this command lets the operator scrollback / clear
       // without opening the dashboard.
       return handleNotificationsCommand(parts.slice(1));
+    case "/plans":
+      // v2.7.29 — operator-facing approve/reject for worker-proposed
+      // plans waiting on supervisor signoff. `/plans` lists pending;
+      // `/plans approve <id>` approves; `/plans reject <id> <feedback>`
+      // rejects with feedback. The id is the approval queue id
+      // (first 8 chars suffice — we prefix-match).
+      return handlePlansCommand(parts.slice(1));
     case "/memory":
       // v2.7.23 — operator-facing query of Evy Memory (Tier 3).
       //   /memory <query>   → top 3 most-relevant matches
@@ -485,7 +500,114 @@ async function handleBotCommand(text: string): Promise<string> {
       // with the id (so /memory <text> can find it back).
       return handleRememberCommand(text.slice("/remember".length));
     default:
-      return `Unknown command: ${cmd}\n\nTry: /status, /pause, /resume, /profile, /watchdogs, /terminal, /notifications, /memory, /remember, /help`;
+      return `Unknown command: ${cmd}\n\nTry: /status, /pause, /resume, /profile, /watchdogs, /terminal, /notifications, /plans, /memory, /remember, /help`;
+  }
+}
+
+// ── v2.7.29 /plans command handler ───────────────────────────────────────
+// Approve/reject worker-proposed plans from Telegram.
+//   /plans                         → list pending (last 10)
+//   /plans approve <id|prefix>     → approve the plan with that id
+//   /plans reject  <id|prefix> ... → reject with the remaining text as feedback
+//
+// We accept the FIRST 8+ characters of the uuid (or a unique prefix) to
+// keep Telegram-friendly. Ambiguous prefix → error reply listing matches.
+//
+// The response back to the worker reuses the same dashboard /msg HMAC
+// path that the dashboard buttons use, via the master's own HTTP endpoint
+// — kept loose-coupled so the dashboard owns the trust marker and we
+// don't duplicate it here.
+function handlePlansCommand(args: string[]): string {
+  const sub = (args[0] || "").trim().toLowerCase();
+  if (!sub || sub === "list") {
+    const pending = listPendingApprovals();
+    if (pending.length === 0) return "(no pending plan approvals)";
+    const lines: string[] = [`📋 ${pending.length} pending plan(s):`, ""];
+    for (const p of pending.slice(0, 10)) {
+      const idShort = p.id.slice(0, 8);
+      const when = p.created_at.slice(11, 16);
+      lines.push(`• [${idShort}] ${when} · ${p.worker_name}@${p.team_id}`);
+      lines.push(`  ${p.plan_summary}`);
+    }
+    lines.push("");
+    lines.push("Approve: /plans approve <id>");
+    lines.push("Reject:  /plans reject <id> <feedback>");
+    return lines.join("\n");
+  }
+  if (sub !== "approve" && sub !== "reject") {
+    return "Usage:\n/plans                       — list pending\n/plans approve <id>          — approve\n/plans reject <id> <feedback> — reject";
+  }
+  const idArg = (args[1] || "").trim();
+  if (!idArg) {
+    return `Usage: /plans ${sub} <id>${sub === "reject" ? " <feedback>" : ""}\n\nRun /plans to see ids.`;
+  }
+  // Prefix-match against pending approvals — operators on Telegram won't
+  // paste a full uuid.
+  const pending = listPendingApprovals();
+  const matches = pending.filter((p) => p.id.startsWith(idArg));
+  if (matches.length === 0) {
+    return `❌ no pending approval matches "${idArg}". /plans to see ids.`;
+  }
+  if (matches.length > 1) {
+    const list = matches.map((p) => `  • ${p.id.slice(0, 12)} · ${p.worker_name}`).join("\n");
+    return `❌ "${idArg}" is ambiguous (${matches.length} matches):\n${list}\n\nUse a longer prefix.`;
+  }
+  const target = matches[0]!;
+  try {
+    if (sub === "approve") {
+      const updated = approvePlanRequest(target.id);
+      void dispatchPlanApprovalResponse(updated.team_id, updated.request_id, true, "");
+      return `✅ approved [${target.id.slice(0, 8)}] ${target.worker_name}@${target.team_id}\n${target.plan_summary}`;
+    } else {
+      const feedback = args.slice(2).join(" ").trim();
+      if (!feedback) {
+        return `Usage: /plans reject <id> <feedback>\n\nThe worker needs to know why so it can revise.`;
+      }
+      const updated = rejectPlanRequest(target.id, feedback);
+      void dispatchPlanApprovalResponse(updated.team_id, updated.request_id, false, feedback);
+      return `🛑 rejected [${target.id.slice(0, 8)}] ${target.worker_name}@${target.team_id}\nfeedback: ${feedback}`;
+    }
+  } catch (err) {
+    if (err instanceof PlanApprovalError) {
+      const existing = getPlanApproval(target.id);
+      return `❌ ${err.message}${existing ? ` (status=${existing.status})` : ""}`;
+    }
+    return `❌ ${(err as Error).message}`;
+  }
+}
+
+/**
+ * Deliver the plan_approval_response back to the team lead via the
+ * dashboard's HMAC-signed /msg route. Best-effort — the queue update
+ * is authoritative; if the dashboard is unreachable the operator's
+ * decision still stuck and the worker will see it when the dashboard
+ * comes back (or via re-request).
+ *
+ * Mirrors the server.ts sendAutoNudge() shape and the dashboard HTTP
+ * approve/reject route — kept here so /plans replies don't go through
+ * a second hop on master's own HTTP port.
+ */
+async function dispatchPlanApprovalResponse(
+  team_id: string,
+  request_id: string,
+  approve: boolean,
+  feedback: string,
+): Promise<void> {
+  const api = process.env.SUBCTL_API ?? "http://127.0.0.1:8787";
+  const text = approve
+    ? `[plan_approval_response] request_id=${request_id} approve=true`
+    : `[plan_approval_response] request_id=${request_id} approve=false feedback=${feedback || "(no feedback)"}`;
+  try {
+    await fetch(`${api}/api/orchestration/${encodeURIComponent(team_id)}/msg`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, phase: "plan-approval-response" }),
+      signal: AbortSignal.timeout(5_000),
+    });
+  } catch (err) {
+    console.error(
+      `[plan-approvals] /plans delivery failed (${request_id}): ${(err as Error).message}`,
+    );
   }
 }
 
@@ -748,6 +870,9 @@ function formatHelp(): string {
     "/terminal on|off       toggle dashboard's in-browser tmux attach",
     "/notifications         show last 5 operator notifications",
     "/notifications read    mark all notifications read",
+    "/plans                 list worker plans awaiting approval",
+    "/plans approve <id>    approve a pending plan",
+    "/plans reject <id> <feedback>   reject with feedback",
     "/memory <query>        search Evy Memory (Tier 3) — top 3 hits",
     "/memory recent         show last 5 memory entries",
     "/remember <text>       save a durable note into Evy Memory",

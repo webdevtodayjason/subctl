@@ -4465,3 +4465,107 @@ tr.team-stale-red td           { background: rgba(214, 108, 108, 0.06); }
   color: var(--fg-mute);
   font-size: 11px;
 }
+
+/* ── v2.7.29 plan-approval workflow ────────────────────────────────────── */
+
+/* Sidebar badge — pending plan count. Hidden when zero. */
+.nav-btn .nav-badge {
+  margin-left: auto;
+  background: #d66c6c;
+  color: #fff;
+  font-size: 9.5px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 8px;
+  min-width: 16px;
+  text-align: center;
+}
+
+.plans-screen { display: flex; flex-direction: column; gap: 18px; padding: 18px; }
+.plans-section { border: 1px solid var(--line-2); border-radius: 6px; background: var(--bg-1); }
+.plans-section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line-2);
+}
+.plans-section-head h3 { margin: 0; font-size: 13px; }
+.plans-section-head h3 .dim { color: #777; font-size: 11px; margin-left: 6px; }
+
+.plans-list { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; }
+.plans-list .dim.small { color: #666; font-size: 11px; }
+
+.plan-card {
+  border: 1px solid var(--line-2);
+  border-radius: 5px;
+  padding: 12px 14px;
+  background: var(--bg-2);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.plan-card-pending { border-left: 3px solid #d6c46c; }
+.plan-card-decided { opacity: 0.85; }
+.plan-card-approved { border-left: 3px solid #6cae6c; }
+.plan-card-rejected { border-left: 3px solid #d66c6c; }
+.plan-card-expired { border-left: 3px solid #777; }
+
+.plan-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 6px;
+  gap: 10px;
+}
+.plan-card-head-left { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.plan-card-worker { font-weight: 600; color: var(--ink); }
+.plan-card-team { color: #888; font-size: 11px; }
+.plan-card-age { color: #888; font-size: 11px; font-variant-numeric: tabular-nums; }
+
+.plan-card-status {
+  text-transform: uppercase;
+  font-size: 9.5px;
+  letter-spacing: 0.5px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-weight: 600;
+}
+.plan-card-status-approved { background: rgba(108, 174, 108, 0.18); color: #6cae6c; }
+.plan-card-status-rejected { background: rgba(214, 108, 108, 0.18); color: #d66c6c; }
+.plan-card-status-expired  { background: rgba(120, 120, 120, 0.18); color: #999; }
+
+.plan-card-summary { color: var(--ink); margin: 4px 0 8px; font-size: 12px; }
+
+.plan-card-body-wrap { margin: 4px 0 8px; }
+.plan-card-body-wrap > summary {
+  cursor: pointer;
+  color: #888;
+  font-size: 11px;
+  user-select: none;
+}
+.plan-card-body-wrap > summary:hover { color: var(--ink); }
+.plan-card-body {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  background: var(--bg-0, #0d0d0d);
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 480px;
+  overflow: auto;
+}
+.plan-card-meta { font-size: 10px; color: #777; margin-bottom: 8px; }
+.plan-card-feedback {
+  font-size: 11px;
+  color: #c89c5b;
+  margin-top: 6px;
+  padding: 6px 8px;
+  background: rgba(200, 156, 91, 0.08);
+  border-left: 2px solid #c89c5b;
+}
+
+.plan-card-actions { display: flex; gap: 8px; margin-top: 6px; }
+.plan-approve-btn { /* primary-btn already covers core styling */ }
+.plan-reject-btn  { /* secondary-btn already covers core styling */ }

@@ -134,6 +134,39 @@ CRUD via `subctl templates ...` or the dashboard Teams tab. Currently inert (Pha
 
 Master tails the dir (2s poll, plus `fs.watch` opportunistic), broadcasts a `team_event` SSE, and **auto-prompts itself on `blocked`/`error`** so it can decide whether to ping the lead or escalate to operator. `subctl team report --team <t> --type <kind> --text "..."` is the lead-side helper.
 
+#### Plan approvals (v2.7.29)
+
+The lead can ALSO route a worker's `plan_approval_request` to the operator by appending an event of type `plan-approval-request`:
+
+```jsonc
+{
+  "ts": "2026-05-13T12:34:56Z",
+  "type": "plan-approval-request",
+  "request_id": "abc-123",
+  "worker_name": "profiles-impl",
+  "plan_summary": "Refactor profile loader to use new schema",
+  "plan_body": "1. Move config\n2. Add tests\n3. ..."
+}
+```
+
+Master records the request in the pending-approvals queue (`~/.local/state/subctl/plan-approvals.jsonl`) and emits a `severity:"alert"` notification — the dashboard tray and the operator's Telegram both surface it. The operator decides from:
+
+- **Dashboard Plans tab** — `[Approve]` / `[Reject]` (with feedback modal) per pending card.
+- **Telegram** — `/plans`, `/plans approve <id-prefix>`, `/plans reject <id-prefix> <feedback>`.
+
+The decision is forwarded back to the team lead via the HMAC-authenticated dashboard `/msg` route as a `[plan_approval_response]` line (worker echoes `request_id`, sets `approve=true|false`, includes feedback when rejected). Pending entries auto-reject with feedback `"auto-expired"` after 60 minutes; the operator can re-request from the worker if they still want the work.
+
+The queue endpoints (proxied by the dashboard under `/api/plan-approvals/*`):
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| `GET`  | `/plan-approvals`                    | —             | `{ ok, pending, decided }` |
+| `POST` | `/plan-approvals/:id/approve`        | —             | `{ ok, approval }` |
+| `POST` | `/plan-approvals/:id/reject`         | `{ feedback }`| `{ ok, approval }` |
+| `POST` | `/plan-approvals/expire`             | —             | `{ ok, expired }` (manual sweep; the watchdog runs every 5 min) |
+
+**Security note:** `plan_body` may contain secrets a worker pasted into its plan. Master never logs the body to stderr at the default level — only a short summary preview. The on-disk JSONL log lives under XDG_STATE_HOME (or `~/.local/state`) and inherits the operator's umask.
+
 ### 2.6 Config files
 
 | Path | Purpose |
