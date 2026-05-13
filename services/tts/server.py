@@ -102,25 +102,43 @@ def _voxcpm_render(text: str, voice_id: str, model: str) -> tuple[bytes, str, in
 
     if _VOXCPM_MODEL is None:
         load_started = time.time()
-        # Model id: caller passes "voxcpm-0.5b" friendly name, but
-        # VoxCPM.from_pretrained needs the HuggingFace repo id.
-        hf_id = "openbmb/VoxCPM-0.5B" if model == "voxcpm-0.5b" else model
-        LOG.info("voxcpm loading model %s (first request — may take 30-60s)", hf_id)
+        # Model id: caller passes a friendly name, mapped to HuggingFace repo:
+        #   "voxcpm-0.5b"  → openbmb/VoxCPM-0.5B   (v1 — transcript-required cloning)
+        #   "voxcpm2"      → openbmb/VoxCPM2       (v2 — transcript-free cloning, preferred)
+        #   "voxcpm1.5"    → openbmb/VoxCPM1.5
+        model_map = {
+            "voxcpm2": "openbmb/VoxCPM2",
+            "voxcpm-2": "openbmb/VoxCPM2",
+            "voxcpm-0.5b": "openbmb/VoxCPM-0.5B",
+            "voxcpm1.5": "openbmb/VoxCPM1.5",
+        }
+        hf_id = model_map.get(model, model)
+        LOG.info("voxcpm loading model %s (first request — may take 30-90s)", hf_id)
         _VOXCPM_MODEL = VoxCPM.from_pretrained(hf_id)
         LOG.info("voxcpm model loaded in %.1fs", time.time() - load_started)
+        # Detect VoxCPM2 vs v1 for the cloning code path below.
+        _VOXCPM_MODEL._subctl_is_v2 = "VoxCPM2" in hf_id
 
     ref_dir = os.path.join(VOICES_DIR, voice_id)
     ref_wav = os.path.join(ref_dir, "reference.wav")
     transcript_path = os.path.join(ref_dir, "transcript.txt")
+    is_v2 = getattr(_VOXCPM_MODEL, "_subctl_is_v2", False)
+
     gen_kwargs: dict = {"text": text}
     if os.path.exists(ref_wav):
-        gen_kwargs["reference_wav_path"] = ref_wav
-    if os.path.exists(transcript_path):
-        with open(transcript_path) as f:
-            transcript_text = f.read().strip()
-        if transcript_text:
-            gen_kwargs["prompt_wav_path"] = ref_wav
-            gen_kwargs["prompt_text"] = transcript_text
+        if is_v2:
+            # VoxCPM2: ref_audio tokens, no transcript needed.
+            gen_kwargs["reference_wav_path"] = ref_wav
+        else:
+            # VoxCPM v1: cloning requires prompt_wav_path + prompt_text. If
+            # transcript.txt is missing, fall back to default-voice render.
+            if os.path.exists(transcript_path):
+                with open(transcript_path) as f:
+                    transcript_text = f.read().strip()
+                if transcript_text:
+                    gen_kwargs["prompt_wav_path"] = ref_wav
+                    gen_kwargs["prompt_text"] = transcript_text
+            # else: render uncloned; v1 alone with no transcript can't clone.
 
     started = time.time()
     audio = _VOXCPM_MODEL.generate(**gen_kwargs)  # returns np.ndarray, float32 [-1,1]
