@@ -429,6 +429,10 @@
   wireProfilePill();
   wireOrchestrationCockpit();
   wireOrchCameraGrid();
+  // v2.7.21 (ADR 0011 L2): web terminal escape hatch — query the flag-
+  // file gate on boot. If disabled, stamp `terminal-disabled` on body so
+  // CSS hides every Attach button + the modal entirely.
+  wireWebTerminalGate();
   wireSettingsTab();
   wireSkillsTab();
   wireProvidersTab();
@@ -2571,7 +2575,7 @@
             meta.textContent = "no reports yet";
             card.appendChild(meta);
           }
-          // Per-team actions: view live tmux + copy ssh attach
+          // Per-team actions: view live tmux + web-attach + copy ssh attach
           const actions = document.createElement("div");
           actions.className = "actions";
           const viewBtn = document.createElement("button");
@@ -2579,11 +2583,21 @@
           viewBtn.textContent = "view";
           viewBtn.title = "Live read-only preview of this team's tmux pane (polled every 2s)";
           viewBtn.addEventListener("click", () => openTmuxPreview(t.name));
+          // v2.7.21 (ADR 0011 L2): in-browser tmux attach. Hidden by CSS
+          // whenever /api/terminal/enabled returned false (body has
+          // .terminal-disabled). Bypasses master + HMAC — the operator
+          // types directly into the worker's pane as themselves.
+          const webAttachBtn = document.createElement("button");
+          webAttachBtn.className = "attach-web-btn";
+          webAttachBtn.textContent = "attach";
+          webAttachBtn.title = "Open in-browser terminal attached to this team's tmux session (operator escape hatch, v2.7.21)";
+          webAttachBtn.addEventListener("click", () => openWebTerminal(t.name));
           const attachBtn = document.createElement("button");
           attachBtn.textContent = "copy ssh attach";
           attachBtn.title = "Copy SSH command to attach to this team's tmux directly";
           attachBtn.addEventListener("click", () => copyAttachCommand(t.name, attachBtn));
           actions.appendChild(viewBtn);
+          actions.appendChild(webAttachBtn);
           actions.appendChild(attachBtn);
           card.appendChild(actions);
           return card;
@@ -2935,6 +2949,60 @@
   // wants to surface these affordances on a row.
   window.__subctlOpenTmuxPreview = openTmuxPreview;
   window.__subctlCopyAttachCommand = copyAttachCommand;
+
+  // ---------- v2.7.21 (ADR 0011 L2): web terminal modal driver ----------
+  // The Attach (web terminal) button per team card calls openWebTerminal,
+  // which mounts xterm.js (via window.subctlTerminal.mount from
+  // /terminal.js) into #terminal-host and shows the modal.
+  let _termModalKeyHandler = null;
+  function openWebTerminal(teamName) {
+    const modal = document.getElementById("terminal-modal");
+    const host = document.getElementById("terminal-host");
+    const nameEl = document.getElementById("terminal-modal-name");
+    const closeBtn = document.getElementById("terminal-modal-close");
+    if (!modal || !host || !window.subctlTerminal) return;
+    nameEl.textContent = teamName;
+    modal.hidden = false;
+    // Wait one frame so the host element has its final size, then mount.
+    requestAnimationFrame(() => {
+      window.subctlTerminal.mount(host, teamName);
+    });
+    function close() {
+      try { window.subctlTerminal.close(); } catch (_) {}
+      modal.hidden = true;
+      closeBtn.removeEventListener("click", close);
+      modal.removeEventListener("click", onBackdrop);
+      if (_termModalKeyHandler) {
+        document.removeEventListener("keydown", _termModalKeyHandler);
+        _termModalKeyHandler = null;
+      }
+    }
+    function onBackdrop(e) { if (e.target === modal) close(); }
+    _termModalKeyHandler = (e) => { if (e.key === "Escape") close(); };
+    closeBtn.addEventListener("click", close);
+    modal.addEventListener("click", onBackdrop);
+    document.addEventListener("keydown", _termModalKeyHandler);
+  }
+  window.__subctlOpenWebTerminal = openWebTerminal;
+
+  // Gate: hit /api/terminal/enabled once on boot. If the flag file is
+  // absent (default OFF), apply body.terminal-disabled so CSS hides
+  // every Attach button + the modal.
+  async function wireWebTerminalGate() {
+    const apply = (enabled) => {
+      document.body.classList.toggle("terminal-disabled", !enabled);
+    };
+    apply(false); // start hidden, flip on if the server says yes
+    try {
+      const r = await fetch("/api/terminal/enabled");
+      const j = await r.json();
+      apply(Boolean(j && j.ok && j.enabled));
+    } catch (_) {
+      // Fail closed — leave the disabled class on.
+    }
+  }
+  // Hoist for the boot block above (it references this before declaration).
+  window.__subctlWireWebTerminalGate = wireWebTerminalGate;
 
   // ---------- notice/confirm modal ----------
   // Replaces browser alert() and confirm() so popups match the dashboard

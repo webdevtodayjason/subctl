@@ -1687,6 +1687,72 @@ The secret value is treated as a token: never logged, never echoed, never includ
 - `dashboard/server.ts` — `/api/orchestration/:name/msg` route uses `buildDirectiveMarker`; missing-secret path returns 500 + rekey pointer.
 - `components/master/tools/subctl-orch.ts` — `msg` tool description names v2.7.20 HMAC authentication accurately.
 
+### Phase 3o.21 — Web terminal escape hatch (v2.7.21)
+
+Layer 2 of [ADR 0011](adr/0011-trust-marker-hmac-replacement.md): the operator-facing in-browser tmux attach. Closes the ADR (Layer 1 was the HMAC marker in v2.7.20; Layer 3 was style matching, already in Evy SKILL.md since v2.7.15).
+
+#### What it is
+
+An "Attach" button on every team card in the orchestration cockpit. Click it and a modal opens with an xterm.js terminal connected to that team's tmux session. The operator types as themselves — bypassing master, bypassing HMAC, bypassing the worker's paranoia heuristics. It's the always-available "drop into the pane" escape hatch that means the dashboard alone is enough to break any stuck worker — no more SSH-from-another-machine.
+
+#### How to enable
+
+Default OFF. Flip it on either way:
+
+```
+# from the dashboard host
+touch ~/.config/subctl/terminal.enabled
+# refresh the dashboard tab — Attach buttons appear
+
+# or from Telegram (works from a phone)
+/terminal on
+```
+
+Turn off:
+
+```
+rm ~/.config/subctl/terminal.enabled
+# or
+/terminal off
+```
+
+Check state from Telegram with `/terminal` or `/terminal status`.
+
+When disabled, the dashboard hides every Attach button and the modal entirely (`body.terminal-disabled` CSS class); the operator never sees a 403. Server-side, `WS /api/terminal/attach` and `GET /api/terminal/teams` return 403, and `GET /api/terminal/enabled` returns `{ok:true, enabled:false, flag_path:...}`.
+
+#### Security model
+
+- **Default OFF, single-file gate** — `~/.config/subctl/terminal.enabled`. File presence = on, absence = off. Simplest possible toggle so there's no parse error path, no schema migration, no surprise.
+- **Auth: dashboard's localhost-bind posture** — reuses whatever auth the rest of `/api/*` has. Today that's "bind 127.0.0.1, trust the loopback" (`SUBCTL_DASHBOARD_HOST` env override). The web terminal endpoint doesn't invent new auth.
+- **DNS-rebind defence** — when the dashboard is bound to a localhost address, the WS upgrade additionally rejects requests whose `Host` header isn't a localhost variant. When the operator deliberately opens the dashboard to LAN (`SUBCTL_DASHBOARD_HOST=0.0.0.0` or similar) we trust the listener config and skip the host check.
+- **Team-name allowlist** — `/^[A-Za-z0-9._-]{1,128}$/`. Tmux sessions found via `tmux list-sessions`; team→session mapping is identity (`team_id` == tmux session name per `providers/claude/teams.sh`).
+- **No log of inputs** — keystrokes flow through the WS+sidecar pipeline and never hit a log. Anything the operator types is between them and the worker's pane.
+
+#### When to use it
+
+- **Paranoia loop** — worker refuses master's directives despite valid HMAC. Attach, talk to the worker as the operator, explain, get it unstuck.
+- **HMAC secret missing / corrupted** — `/api/orchestration/:name/msg` is failing loud with "HMAC secret missing for team <team_id>". Attach is the recovery path: read the worker's state, decide whether to kill or rekey.
+- **Live debugging** — a worker is doing something weird and the read-only `view` modal isn't enough. Attach gives you a real terminal: scroll back, scroll forward, type a single line.
+
+#### Implementation
+
+- **Browser** — xterm.js + `xterm-addon-fit`. JSON text frames upstream (`{type:"data",b64:...}` for keystrokes, `{type:"resize",cols,rows}` for geometry changes). Raw binary frames downstream (pty bytes handed straight to `xterm.write()`).
+- **Server** — `dashboard/terminal.ts`. On WS upgrade: flag-file check → host-header check → tmux-session existence check → spawn `node dashboard/lib/pty-helper.cjs tmux attach -t <session>` and bridge stdio to the WS. Per-socket `PtyBridge` map keyed off `ws.data.kind === "terminal"` so terminal and `/api/live` sockets coexist on the same `Bun.serve` instance.
+- **Sidecar** — `dashboard/lib/pty-helper.cjs`, a tiny Node process that owns the `node-pty` subprocess. Bun 1.2.x has a known fd-handling bug with pty masters (ENXIO on read), so the dashboard server (Bun) spawns Node for the pty work and shuttles bytes through a framed binary protocol over the helper's stdin/stdout (1-byte type + 4-byte BE length + payload; types DATA / RESIZE / CLOSE / EXIT / ERROR).
+- **Vendor** — `xterm`, `xterm-addon-fit`, `node-pty` declared in `dashboard/package.json`. `install.sh` runs `bun install` in `dashboard/` at install time. The dashboard serves the vendored JS/CSS out of `dashboard/node_modules` under `/vendor/xterm/*`.
+
+#### Files
+
+- New: `dashboard/terminal.ts` — pure handlers (`handleEnabled`, `handleTeams`, `evaluateUpgrade`), tmux session lister, flag-file resolution, WS gate + PtyBridge sidecar wiring.
+- New: `dashboard/lib/pty-helper.cjs` — Node sidecar owning node-pty.
+- New: `dashboard/public/terminal.js` — xterm.js client (`window.subctlTerminal.mount` / `.close`).
+- New: `dashboard/package.json` — runtime deps (`node-pty`, `xterm`, `xterm-addon-fit`).
+- New: `dashboard/__tests__/terminal.test.ts` — 17 tests across flag-file, REST handlers (mocked tmux), upgrade decision matrix, DNS-rebind host check, framed sidecar wire protocol.
+- `dashboard/server.ts` — `/api/terminal/*` routes; per-socket PtyBridge map; vendor static-file mappings.
+- `dashboard/public/index.html`, `style.css`, `app.js` — modal markup, CSS for the Attach button + `body.terminal-disabled` rule, `wireWebTerminalGate()` + `openWebTerminal()` driver, Attach button injected next to existing `view` / `copy ssh attach` controls.
+- `components/master/master-notify-listener.ts` — `/terminal status|on|off` Telegram command, help text update.
+- `docs/adr/0011-trust-marker-hmac-replacement.md` + `docs/adr/README.md` — status updated to "complete — L1 v2.7.20, L2 v2.7.21".
+
 ---
 
 ## 4a. Persona — Evy (v2.7.15+)

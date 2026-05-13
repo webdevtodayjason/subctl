@@ -6,6 +6,10 @@
   <title>subctl</title>
   <link rel="icon" type="image/png" href="/logo.png">
   <link rel="stylesheet" href="/style.css">
+  <!-- v2.7.21 (ADR 0011 L2): web terminal escape hatch — xterm.js
+       vendored from dashboard/node_modules. server.ts serves these
+       under /vendor/xterm/* (see STATIC_FILES). -->
+  <link rel="stylesheet" href="/vendor/xterm/xterm.css">
 </head>
 <body>
   <!-- Live tmux pane preview modal. Polls /api/orchestration/<name> every
@@ -25,6 +29,27 @@
           <button type="button" class="secondary-btn" id="tmux-preview-attach">copy ssh attach command</button>
         </div>
         <pre class="tmux-preview-pane" id="tmux-preview-pane">loading…</pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- v2.7.21 (ADR 0011 L2): web terminal escape hatch modal.
+       xterm.js mounts inside #terminal-host. Driven by terminal.js (the
+       window.subctlTerminal singleton) which opens a WS to
+       /api/terminal/attach?team=<name>. Default OFF: the body gets a
+       `terminal-disabled` class on load when /api/terminal/enabled
+       reports false, and CSS hides every Attach button + this modal. -->
+  <div class="modal-backdrop terminal-modal" id="terminal-modal" hidden>
+    <div class="modal modal-wide terminal-shell">
+      <header class="modal-header">
+        <h3>Terminal · <span class="dim small" id="terminal-modal-name">—</span></h3>
+        <button type="button" class="modal-close" id="terminal-modal-close" aria-label="close">✕</button>
+      </header>
+      <div class="modal-body">
+        <div class="terminal-toolbar">
+          <span class="dim small">Direct tmux attach — type as the operator. Bypasses master + HMAC.</span>
+        </div>
+        <div class="terminal-host" id="terminal-host"></div>
       </div>
     </div>
   </div>
@@ -1218,6 +1243,12 @@
        Pinned to 13.0.0 because Marked changed its API surface in v14. The
        Vault tab calls window.marked.parse(md, {...}). -->
   <script src="https://cdn.jsdelivr.net/npm/marked@13.0.0/marked.min.js"></script>
+  <!-- v2.7.21 (ADR 0011 L2): web terminal escape hatch. xterm.js + the
+       fit addon are served from dashboard/node_modules via STATIC_FILES.
+       terminal.js (own code) drives the mount/teardown. -->
+  <script src="/vendor/xterm/xterm.js"></script>
+  <script src="/vendor/xterm/xterm-addon-fit.js"></script>
+  <script src="/terminal.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

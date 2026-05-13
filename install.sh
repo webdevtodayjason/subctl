@@ -502,6 +502,12 @@ component_install() {
   subctl_info "installing master daemon (components/master/)"
   $DRY_RUN || subctl_settings_install_master
 
+  # v2.7.21 (ADR 0011 L2): dashboard now ships its own package.json
+  # (xterm.js + node-pty for the web-terminal escape hatch). The helper
+  # is a no-op on pre-v2.7.21 layouts that lack dashboard/package.json.
+  subctl_info "installing dashboard vendor deps (web terminal — xterm.js + node-pty)"
+  $DRY_RUN || subctl_settings_install_dashboard_deps
+
   # shell aliases
   if ! $NO_SHELL; then
     subctl_info "shell aliases"

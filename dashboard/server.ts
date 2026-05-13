@@ -102,6 +102,20 @@ import {
 // fails LOUD (refuses to send) — falling back to an unauthenticated
 // marker would teach workers to ignore the auth field.
 import { buildDirectiveMarker } from "../components/master/trust-marker.ts";
+// v2.7.21 (ADR 0011 Layer 2): web terminal escape hatch. Routes are gated
+// by a flag file at ~/.config/subctl/terminal.enabled; absent = OFF (the
+// default). When enabled, the dashboard upgrades a WebSocket to a node
+// sidecar running `tmux attach -t <session>` so the operator can break
+// out of any worker paranoia loop directly from the browser. See
+// docs/adr/0011-trust-marker-hmac-replacement.md.
+import {
+  terminalEnabled,
+  handleEnabled as handleTerminalEnabled,
+  handleTeams as handleTerminalTeams,
+  evaluateUpgrade as evaluateTerminalUpgrade,
+  spawnPtyBridge,
+  type PtyBridge,
+} from "./terminal.ts";
 
 const PORT = Number(process.env.PORT ?? 8787);
 const STARTED_AT = Date.now();
@@ -1541,13 +1555,21 @@ function buildState() {
 
 // ---------- static file serving ----------
 
+// v2.7.21 (ADR 0011 L2): xterm.js + xterm-addon-fit vendored from
+// dashboard/node_modules. We deliberately don't commit the vendor blobs;
+// `bun install` in dashboard/ (run by install.sh) lands them.
+const NODE_MODULES_DIR = join(import.meta.dir, "node_modules");
 const STATIC_FILES: Record<string, { path: string; type: string }> = {
   "/":            { path: join(PUBLIC_DIR, "index.html"), type: "text/html; charset=utf-8" },
   "/index.html":  { path: join(PUBLIC_DIR, "index.html"), type: "text/html; charset=utf-8" },
   "/style.css":   { path: join(PUBLIC_DIR, "style.css"),  type: "text/css; charset=utf-8" },
   "/app.js":      { path: join(PUBLIC_DIR, "app.js"),     type: "application/javascript; charset=utf-8" },
+  "/terminal.js": { path: join(PUBLIC_DIR, "terminal.js"), type: "application/javascript; charset=utf-8" },
   "/logo.png":    { path: join(PUBLIC_DIR, "logo.png"),   type: "image/png" },
   "/tool-display.json": { path: join(PUBLIC_DIR, "tool-display.json"), type: "application/json; charset=utf-8" },
+  "/vendor/xterm/xterm.js":  { path: join(NODE_MODULES_DIR, "xterm", "lib", "xterm.js"),  type: "application/javascript; charset=utf-8" },
+  "/vendor/xterm/xterm.css": { path: join(NODE_MODULES_DIR, "xterm", "css", "xterm.css"), type: "text/css; charset=utf-8" },
+  "/vendor/xterm/xterm-addon-fit.js": { path: join(NODE_MODULES_DIR, "xterm-addon-fit", "lib", "xterm-addon-fit.js"), type: "application/javascript; charset=utf-8" },
 };
 
 function serveStatic(pathname: string): Response | null {
@@ -2308,6 +2330,12 @@ function renderHelpPage(): string {
 // ---------- WebSocket fan-out ----------
 
 const sockets = new Set<any>();
+// v2.7.21 (ADR 0011 Layer 2): per-socket PtyBridge map for /api/terminal/attach
+// WebSockets. Lives alongside `sockets` (which tracks the /api/live state-push
+// fan-out) so we can route close/message events back through the right bridge.
+// Each entry is created in the websocket.open handler when the ws.data marks
+// it as a terminal session, and disposed in close.
+const ptyBridges = new Map<any, PtyBridge>();
 let pushTimer: ReturnType<typeof setInterval> | null = null;
 
 function startPushLoop() {
@@ -2361,6 +2389,42 @@ const server = Bun.serve({
     const url = new URL(req.url);
     if (url.pathname === "/api/live") {
       if (srv.upgrade(req)) return undefined as any;
+      return new Response("Upgrade failed", { status: 400 });
+    }
+
+    // ── /api/terminal/* — web terminal escape hatch (v2.7.21, ADR 0011 L2)
+    //
+    // /api/terminal/enabled  GET  → { enabled, flag_path }   (always 200)
+    // /api/terminal/teams    GET  → { teams: [...] }         (403 when disabled)
+    // /api/terminal/attach   WS   tmux-attach proxy          (403 when disabled,
+    //                                                          400 bad team,
+    //                                                          404 no session)
+    //
+    // The enabled-check is a flag file existence check at
+    // ~/.config/subctl/terminal.enabled — default OFF. See terminal.ts.
+    if (url.pathname === "/api/terminal/enabled" && req.method === "GET") {
+      return handleTerminalEnabled();
+    }
+    if (url.pathname === "/api/terminal/teams" && req.method === "GET") {
+      return handleTerminalTeams();
+    }
+    if (url.pathname === "/api/terminal/attach") {
+      const decision = evaluateTerminalUpgrade({ req, url, bindHost: HOSTNAME });
+      if (!decision.ok) {
+        return new Response(JSON.stringify({ ok: false, error: decision.reason ?? "denied" }), {
+          status: decision.status ?? 403,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      const cols = Math.max(2, Math.min(500, parseInt(url.searchParams.get("cols") ?? "80", 10)));
+      const rows = Math.max(2, Math.min(500, parseInt(url.searchParams.get("rows") ?? "24", 10)));
+      // ws.data lets us identify "this WS is a terminal session" in the
+      // websocket.open/message/close hooks below — separate from the
+      // /api/live fan-out path.
+      const upgraded = srv.upgrade(req, {
+        data: { kind: "terminal", session: decision.session!, cols, rows },
+      });
+      if (upgraded) return undefined as any;
       return new Response("Upgrade failed", { status: 400 });
     }
     if (url.pathname === "/api/state") {
@@ -5301,12 +5365,48 @@ const server = Bun.serve({
   },
   websocket: {
     open(ws) {
+      const data = (ws as any).data;
+      if (data && data.kind === "terminal") {
+        // v2.7.21 (ADR 0011 L2): terminal-attach websocket. Spawn the node
+        // pty-helper sidecar and wire it to this socket.
+        try {
+          const bridge = spawnPtyBridge({
+            session: data.session,
+            cols: data.cols,
+            rows: data.rows,
+            sinks: {
+              sendBinary: (chunk) => { try { ws.send(chunk); } catch { /* socket closing */ } },
+              closeSocket: () => { try { ws.close(); } catch { /* already closing */ } },
+            },
+          });
+          ptyBridges.set(ws, bridge);
+        } catch (err) {
+          console.log(`[terminal] failed to spawn bridge: ${(err as Error).message}`);
+          try { ws.close(); } catch {}
+        }
+        return;
+      }
       sockets.add(ws);
       try { ws.send(JSON.stringify(buildState())); } catch { /* ignore */ }
       startPushLoop();
     },
-    message(_ws, _msg) { /* no client->server messages */ },
-    close(ws) { sockets.delete(ws); },
+    message(ws, msg) {
+      const bridge = ptyBridges.get(ws);
+      if (bridge) {
+        bridge.onClientMessage(msg);
+        return;
+      }
+      // /api/live: no client→server messages on the state-push socket.
+    },
+    close(ws) {
+      const bridge = ptyBridges.get(ws);
+      if (bridge) {
+        ptyBridges.delete(ws);
+        try { bridge.close(); } catch {}
+        return;
+      }
+      sockets.delete(ws);
+    },
   },
 });
 
