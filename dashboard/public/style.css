@@ -4461,6 +4461,14 @@ tr.team-stale-red td           { background: rgba(214, 108, 108, 0.06); }
   display: flex;
   flex-direction: column;
 }
+/* v2.8.5: the [hidden] attribute UA default is display:none, but our
+   .notif-tray rule above explicitly sets display:flex which wins in
+   specificity. Without this override, tray.hidden=true (set by the bell /
+   X / click-outside handlers) is ignored and the tray renders permanently.
+   This selector has higher specificity than .notif-tray alone, so it wins. */
+.notif-tray[hidden] {
+  display: none;
+}
 .notif-tray-head {
   display: flex;
   align-items: center;
