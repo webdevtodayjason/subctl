@@ -37,6 +37,7 @@ Most recent first. When adding a new ADR, append to this list.
 
 | # | Title | Status |
 |---|---|---|
+| [0017](0017-voice-layer-tts.md) | Voice layer (TTS) for Evy — self-hosted, opt-in, redacted | Accepted (ships v2.8.0) |
 | [0016](0016-lucide-icon-library.md) | Lucide icon library — replace emoji across dashboard surfaces | Accepted (ships v2.7.25) |
 | [0015](0015-pi-ai-and-pi-agent-as-first-class-upstreams.md) | Pi-ai + pi-agent as first-class upstreams (always-latest) | Accepted (ships v2.7.24) |
 | [0014](0014-evy-memory-ts-port-of-memori.md) | Evy Memory — TS port of Memori for Tier 3 conversational memory | Accepted (ships v2.7.23) |

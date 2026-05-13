@@ -1,38 +1,54 @@
 ## [2.8.0] — 2026-05-13
 
-### `feat(master): v2.8.0 team templates — multi-developer rosters, dispatch, lazy pane spawn`
+### `feat(voice): v2.8.0 voice layer for Evy — self-hosted TTS, opt-in, redacted (ADR 0017)`
 
-The architectural feature subctl was built for: dev teams expressed as a typed roster (lead + developers + per-role skills + per-role tool scope) instead of a single-persona blob the lead has to negotiate from a freeform prompt. Templates are TOML, stored at `~/.config/subctl/team-templates/<name>.toml`. Five stock templates seed on first list: `full-stack-web`, `rust-api`, `data-pipeline`, `ml-research`, `infrastructure`.
+`docs/persona/voice-future.md` was authored 2026-05-12 as a parking-lot for "after text-Evy is stable." v2.7.30 added the 16 feature-coverage eval tests that closed the v2.7.18–v2.7.24 surface (16 + the original 24 = 40 across fourteen categories), and the persona-grader trend was healthy enough for the operator to surface the voice layer as the v2.8.0 promotion. This release ships it. Self-hosted-only (ADR 0009 extends to TTS — no ElevenLabs / OpenAI TTS / Azure egress), opt-in (defaults OFF in `voice.json`), redacted at the tool boundary (the same `redactForEgress` used for Telegram + dashboard quoting runs BEFORE bytes leave master to the TTS server).
 
-**Template schema.** A `[template]` block (name + description), a `[lead]` block (persona + skills + autonomy + optional boot_prompt), and one or more `[[developers]]` entries (name + persona + skills + tools allowlist). Strict validation on load — invalid templates surface in the dashboard's Templates tab as errors[] without breaking the listing.
+**TTS service.** Lives in `services/tts/` as a separate launchd job (`com.subctl.tts`) bound to 127.0.0.1:8789. `services/tts/server.py` is a thin BaseHTTPServer wrapper that hands `(text, voice_id, model)` to the configured backend. Three backends behind one HTTP surface (POST /render returns audio bytes plus `X-Audio-Format` + `X-Audio-Duration-Ms` headers):
 
-**Loader.** `components/master/team-templates.ts` — `listTemplates()`, `loadTemplate(name)`, `validateTemplate(parsed)`, plus an in-memory cache keyed by template name. Cache invalidates on fs.watch events (debounced 250 ms) and on mtime change at read time. `seedStockTemplates()` ships 5 ready-to-use templates as files (operator-editable, never overwritten).
+- `voxcpm` — operator's primary lean per voice-future.md (~0.5B model, cloning + streaming, Apple Silicon capable). Requires `pip install voxcpm` plus model weights and a ~10s reference clip + transcript at `services/tts/voices/<voice_id>/`. License: Apache 2.0.
+- `kokoro` — Kokoro-82M fallback. ~325MB, CPU-friendly, good for the mini nodes. License: Apache 2.0.
+- `mock` — default. 1-second silent WAV. Lets the rest of the pipeline (master tool, dashboard 🔊 button, Telegram `/say`, CLI, cache, redaction, tests) be developed and tested without committing to a real backend. `install.sh` ships the mock backend by default so first-run install stays fast; the operator picks `voxcpm` or `kokoro` interactively or via env override on the plist.
 
-**Lead-side roster injection.** When spawning a template-shaped team, the lead's boot prompt is prepended with a roster preamble naming every developer and a concrete `subctl_team_dispatch({ team, developer_name, task_description })` example. The lead doesn't have to guess what developers exist or what to call them.
+**Master daemon tool.** `voice_render({text, voice_id?})` → `{audio_url, format, duration_ms, cached, hash, voice_id, model}`. Egress redaction runs before the POST to the TTS server, then bytes cache to `~/.local/state/subctl/voice/cache/<sha256(model|voice_id|text)[:24]>.<fmt>` with a 24h TTL. Second render of the same line hits cache (no second TTS roundtrip). A companion `voice_status` tool reports `voice.json` state + TTS reachability + latency probe. Master also exposes HTTP routes `POST /voice/render`, `GET /voice/audio/<hash>.<fmt>`, `GET /voice/status`, `POST /voice/config` (allowlist-gated patch) — dashboard + CLI hit these via the existing `/api/master/*` proxy pattern with a dedicated `/api/voice/*` prefix.
 
-**`subctl_team_dispatch` master tool.** New tool that routes a concrete task to a named developer in a template-spawned team. Validates the developer exists, then either lazy-spawns a new tmux window (first dispatch) or HMAC-wraps and pastes into the existing window (re-dispatch). Lazy spawn composes a developer boot prompt that bakes in the persona, skills, and tool scope — so a single paste puts the developer to work.
+**Config + hot reload.** `~/.config/subctl/voice.json` holds `{enabled, default_voice_id, model, tts_server}`. `loadVoiceConfig()` reads on every call — no in-memory cache. The operator's "VERSION is the canonical source" rule (feedback 2026-05-11) extends to voice config: toggling `enabled` from the dashboard or CLI must affect the very next render. `watchVoiceConfig()` exists for SSE-side propagation (the master broadcasts a `voice_config` SSE event on change so the dashboard's 🔊 button toggles live without a refresh), not for caching.
 
-**Per-developer tool scoping.** `tools = ["Read", "Edit", "Bash:bun,git"]` declares the developer's tool surface. `projectDeveloperToolScope()` projects the array into `{ permissions, bashAllowlist }`. Today the scope is enforced at the prompt layer (declared in the developer's boot prompt). Foundation for hard bash-gate enforcement via per-window settings.local.json is in place — the meta.json on disk records the scope so future iterations can read it without rerunning template parsing.
+**Telegram.** New `telegram_send_voice` tool uploads rendered audio via `sendVoice` multipart. Wraps `voice_render` so the same redaction + cache path applies. New `/voice` (status / `/voice on` / `/voice off`) and `/say <text>` slash commands let the operator drive the voice layer from their phone. `/voice on|off` writes `voice.json#enabled` and the master's file watcher picks the change up immediately. `/say` renders + uploads in one shot.
 
-**Storage on disk.**
-- `~/.config/subctl/team-templates/<name>.toml` — templates (operator-editable)
-- `~/.local/state/subctl/teams/<team_id>/meta.json` — per-team spawn record (template name + developer→window map). Read by the dispatch endpoint to route, and by the status endpoint so master tools know a team is template-shaped.
+**Dashboard.** Each Evy assistant bubble gains a 🔊 button (Lucide volume-2 inline SVG — keeps with ADR 0016). Click → POST `/api/voice/render`, swap an autoplay `<audio>` element into the bubble footer. Visibility tracks `voice.json#enabled` via initial fetch + live SSE `voice_config` events. CSS mirrors the v2.7.21 tool-pill accent palette.
 
-**Dashboard surface.**
-- `GET  /api/team-templates` — list templates (parsed + errors)
-- `GET  /api/team-templates/<name>` — show one template
-- `POST /api/orchestration/<team>/dispatch` — dispatch task to developer (lazy-spawns pane on first call)
-- New "Templates" tab in the sidebar showing the roster + a "Use this template" button per project.
+**CLI.** New `subctl voice [status|test|render <text>|on|off]` sanity surface routes through the dashboard's `/api/voice/*` proxy. `subctl voice test` renders a canned line and plays it locally via `afplay`. Wired into bin/subctl + lib/cli.sh + help text.
 
-**CLI.** `subctl team spawn --template <name> --project <path> [--account <alias>] [--prompt <text>] [--mode trusted|gated|sealed]`. Account defaults to the first claude-provider entry in accounts.conf. Foundational v2.7.28 CLI is preserved — `subctl team` just gets one new verb.
+**Install.** `install.sh` grows an opt-in voice prompt that defaults to the `mock` backend (no pip install required). For `voxcpm` / `kokoro` operators, `services/tts/README.md` documents the manual pip install + model-weight + reference-clip steps; the plist's `SUBCTL_TTS_BACKEND` placeholder gets substituted by `lib/voice.sh:subctl_voice_install`. `voice.json` seeded with `enabled: false` — operator opts in explicitly.
 
-**teams.sh integration.** New `-T|--team-template <name>` flag (separate from the legacy `-t|--template` JSON flow). Triggers a bun bridge (`providers/claude/_apply_team_template.ts`) that loads the TOML, writes the team_meta record, and composes the lead's boot prompt. Policy gate + HMAC team-contract wrap downstream stay untouched.
+**Tests.** `voice-config.test.ts` (11 tests): seed-on-missing, normalize-missing-fields, malformed JSON fallback, save merges, watch debounce, watch close. `voice-render.test.ts` (12 tests): disabled gate, empty/oversized text, secrets-redacted-before-TTS-server (mocked Bun.serve verifies the raw `sk-*` token never reaches the server), cache hit on second render, TTS HTTP error propagation, unreachable server handling, `resolveCachedAudio` path-traversal resistance, `probeTtsServer` reachable/unreachable shape. 23 voice-specific tests; 783 total master tests pass after the additions (was 760).
 
-**Backward compat.** The v2.7.x single-persona JSON templates at `~/.config/subctl/master/team-templates/<name>.json` and the legacy `subctl_orch_spawn_template` master tool continue to work unchanged. They share no state with the new TOML loader; the two flows coexist and can be migrated incrementally.
+**Files:**
 
-**Tests.** 23 new bun tests in `components/master/__tests__/team-templates.test.ts` — parse/validate (7 cases), tool scope projection (3 cases), list/load with cache + mtime invalidation, broken-template error surfacing, roster preamble, dispatch routing (4 cases), boot-prompt composition, and meta round-trip. 783 total bun tests pass.
-
-**Scope discipline.** New TS additions are pure modules; `master/server.ts` only gets the tool registry append behind a `// ── v2.8.0 team templates ──` marker. `claude_code` outside `providers/claude/` = zero hits. No secrets logged.
+- New: `components/master/voice-config.ts` — voice.json loader + saver + fs.watch
+- New: `components/master/tools/voice-render.ts` — `voice_render` + `voice_status` tools + `renderVoice`/`resolveCachedAudio`/`probeTtsServer` helpers consumed by the HTTP surface
+- New: `components/master/__tests__/voice-config.test.ts`
+- New: `components/master/__tests__/voice-render.test.ts`
+- New: `services/tts/server.py` — three-backend HTTP server stub
+- New: `services/tts/launchd/com.subctl.tts.plist` — launchd template (com.subctl.tts)
+- New: `services/tts/voices/evy-rachel-weisz/README.md` — voice-cloning reference instructions
+- New: `services/tts/README.md` — backend selection + manual install notes
+- New: `lib/voice.sh` — `subctl_voice_install` / `subctl_voice_disable` (matches lib/master.sh pattern)
+- New: `docs/adr/0017-voice-layer-tts.md` — voice layer architecture decision
+- Modified: `components/master/server.ts` — voice tool registration, HTTP routes, watcher boot + shutdown hooks
+- Modified: `components/master/tools/telegram.ts` — `sendTelegramVoice` helper + `telegram_send_voice` tool
+- Modified: `components/master/master-notify-listener.ts` — `/voice` + `/say` slash commands + help text
+- Modified: `dashboard/server.ts` — `/api/voice/*` proxy (including audio passthrough)
+- Modified: `dashboard/public/app.js` — 🔊 button injection + SSE `voice_config` listener + initial status probe
+- Modified: `dashboard/public/style.css` — voice button + audio player styling
+- Modified: `bin/subctl` — `voice` verb dispatch + usage text
+- Modified: `lib/cli.sh` — `subctl_cli_voice` (status / test / render / on / off)
+- Modified: `install.sh` — opt-in voice install prompt + backend picker
+- Modified: `docs/adr/README.md` — ADR 0017 row appended
+- Modified: `ROADMAP.md` — voice layer promoted from "future" to "currently shipping v2.8.0"
+- Modified: `docs/master.md` — new "Voice layer (TTS)" section
+- Modified: `VERSION` → 2.8.0
 
 ## [2.7.31] — 2026-05-13
 

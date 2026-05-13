@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  subctl TTS (Evy voice layer) launchd template — v2.8.0.
+
+  Template — placeholders substituted at install time by
+  lib/voice.sh (added in v2.8.0):
+    __OWNER__       reverse-DNS prefix (e.g. com.subctl)
+    __PYTHON__      absolute path to the python3 binary (>=3.10)
+    __SERVER_PY__   absolute path to services/tts/server.py
+    __HOME__        absolute path to user's $HOME
+    __BACKEND__     SUBCTL_TTS_BACKEND value (mock | voxcpm | kokoro)
+    __VOICES_DIR__  absolute path to services/tts/voices
+
+  Stays on 127.0.0.1 — ADR 0009 self-hosted-only floor.
+  Logs to ~/Library/Logs/subctl/tts.log (single file, stdout+stderr merged).
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>__OWNER__.tts</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PYTHON__</string>
+        <string>__SERVER_PY__</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>SUBCTL_TTS_HOST</key>
+        <string>127.0.0.1</string>
+        <key>SUBCTL_TTS_PORT</key>
+        <string>8789</string>
+        <key>SUBCTL_TTS_BACKEND</key>
+        <string>__BACKEND__</string>
+        <key>SUBCTL_TTS_VOICES_DIR</key>
+        <string>__VOICES_DIR__</string>
+    </dict>
+
+    <key>WorkingDirectory</key>
+    <string>__HOME__</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Match the master + dashboard plist patterns: restart on crash,
+         don't relaunch after a clean disable. -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+        <key>Crashed</key>
+        <true/>
+    </dict>
+
+    <!-- ThrottleInterval 30s — the TTS model load can be slow on first
+         start (weights swap into MPS device), so don't thrash relaunches. -->
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <key>ExitTimeOut</key>
+    <integer>20</integer>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/Library/Logs/subctl/tts.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Library/Logs/subctl/tts.log</string>
+</dict>
+</plist>

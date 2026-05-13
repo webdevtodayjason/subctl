@@ -4774,6 +4774,14 @@
     }
 
     function endAssistantBubble() {
+      // v2.8.0 — attach a 🔊 button to the just-finished Evy bubble so
+      // the operator can click to render+play the text. The button is
+      // only added if voice is enabled (cached probe lives on window).
+      // The audio renders lazily on first click; subsequent clicks
+      // replay the cached audio.
+      if (activeAssistantEl && activeAssistantText && window.__subctlVoiceEnabled) {
+        attachVoicePlayButton(activeAssistantEl, activeAssistantText);
+      }
       activeAssistantEl = null;
       activeAssistantText = "";
       // Seal the tool-pill row so the next assistant turn opens a new one
@@ -4784,6 +4792,79 @@
       // deltas + zero tool calls) clean it up here.
       hideChatThinking(log);
     }
+
+    // v2.8.0 — voice play button injected onto Evy's bubble body.
+    // Click → POST /api/voice/render with the text; on success swap a
+    // <audio controls autoplay> into the bubble's footer. Errors stay
+    // visible inline.
+    function attachVoicePlayButton(bubbleBody, text) {
+      const footer = document.createElement("div");
+      footer.className = "voice-footer";
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "voice-play-btn";
+      btn.title = "render and play (Evy voice)";
+      btn.setAttribute("aria-label", "Play this turn as voice");
+      // Lucide volume-2 icon shape — keeps with v2.7.26 icon adoption.
+      btn.innerHTML =
+        '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+        '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>' +
+        '<path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>' +
+        '<path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path>' +
+        "</svg>";
+      btn.addEventListener("click", async () => {
+        if (btn.disabled) return;
+        btn.disabled = true;
+        btn.classList.add("voice-play-btn--loading");
+        try {
+          const r = await fetch("/api/voice/render", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text }),
+          });
+          const j = await r.json();
+          if (!j.ok) {
+            footer.appendChild(renderVoiceError(j.error || "render failed"));
+            return;
+          }
+          const audio = document.createElement("audio");
+          audio.controls = true;
+          audio.autoplay = true;
+          audio.preload = "auto";
+          audio.src = j.audio_url.startsWith("/voice/")
+            ? "/api" + j.audio_url
+            : j.audio_url;
+          audio.className = "voice-audio";
+          btn.remove();
+          footer.appendChild(audio);
+        } catch (err) {
+          footer.appendChild(renderVoiceError(String(err)));
+        } finally {
+          btn.classList.remove("voice-play-btn--loading");
+        }
+      });
+      footer.appendChild(btn);
+      bubbleBody.appendChild(footer);
+    }
+    function renderVoiceError(msg) {
+      const e = document.createElement("span");
+      e.className = "voice-err";
+      e.textContent = "voice: " + msg;
+      return e;
+    }
+    // Probe master's voice config once on connect; mirror it on window so
+    // endAssistantBubble can decide whether to attach the button. Updates
+    // live via the `voice_config` SSE event (master broadcasts on
+    // voice.json change).
+    function refreshVoiceEnabled() {
+      fetch("/api/voice/status", { cache: "no-store" })
+        .then((r) => r.ok ? r.json() : null)
+        .then((j) => {
+          if (j && j.config) window.__subctlVoiceEnabled = !!j.config.enabled;
+        })
+        .catch(() => { /* leave whatever value was last set */ });
+    }
+    refreshVoiceEnabled();
 
     let es = null;
     let backoffMs = 1000;
@@ -4925,6 +5006,14 @@
           if (window.__subctlPushNotification) {
             window.__subctlPushNotification(d.kind || "info", d.summary || "", d.team);
           }
+        } catch {}
+      });
+      // v2.8.0 — master broadcasts on voice.json change so the 🔊 button
+      // toggles live without a refresh.
+      es.addEventListener("voice_config", (e) => {
+        try {
+          const d = JSON.parse(e.data);
+          window.__subctlVoiceEnabled = !!d.enabled;
         } catch {}
       });
       es.addEventListener("team_event", (e) => {

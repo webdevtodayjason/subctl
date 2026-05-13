@@ -70,8 +70,6 @@ import { tinyfishTools } from "./tools/tinyfish";
 import { linearTools } from "./tools/linear";
 import { knowledgeTools } from "./tools/knowledge";
 import { teamDocsTools } from "./tools/team-docs";
-// ── v2.8.0 team templates ──
-import { teamTemplateTools } from "./tools/team-templates";
 import {
   saveAttachment,
   listAttachments,
@@ -124,18 +122,6 @@ import {
 } from "./watchdogs";
 import { watchdogTools } from "./tools/watchdogs";
 import {
-  startWatchdogDiagObserver,
-  startWatchdogDiagNotificationTracker,
-  stopWatchdogDiagObserver,
-  stopWatchdogDiagNotificationTracker,
-  registerRestartFactory,
-  runRestartFactory,
-  canRestart,
-  recordWatchdogError,
-  listWatchdogDiag,
-  getWatchdogDiag,
-} from "./watchdog-diag";
-import {
   recordToolResult,
   shouldRefuseToolCall,
   synthesizeRefusal,
@@ -155,11 +141,6 @@ import {
   type TeamSnapshot,
 } from "./auto-nudge";
 import {
-  runStartupTeamGC,
-  DEFAULT_AUDIT_MAX_AGE_DAYS,
-  DEFAULT_SNAPSHOT_MAX_AGE_DAYS,
-} from "./team-gc";
-import {
   recordEntry as recordMemoryEntry,
   recallEntries as recallMemoryEntries,
   deleteEntry as deleteMemoryEntry,
@@ -171,12 +152,20 @@ import { evyMemoryTools } from "./tools/evy-memory";
 import {
   startUpstreamWatchdog,
   describeUpstreamState,
-  readUpdateHistory,
-  runManualUpdate,
-  setAutoUpdateEnabled,
-  isAutoUpdateEnabled,
   type UpstreamWatchdogHandle,
 } from "./upstream-check";
+// ── v2.8.0 voice layer ──
+import {
+  voiceTools,
+  renderVoice,
+  resolveCachedAudio,
+  probeTtsServer,
+} from "./tools/voice-render";
+import {
+  loadVoiceConfig,
+  saveVoiceConfig,
+  watchVoiceConfig,
+} from "./voice-config";
 
 const HOME = homedir();
 const COMPONENT_DIR = import.meta.dir;
@@ -184,34 +173,6 @@ const SUBCTL_CONFIG_DIR =
   process.env.SUBCTL_CONFIG_DIR ?? join(HOME, ".config", "subctl");
 const MASTER_STATE_DIR = join(SUBCTL_CONFIG_DIR, "master");
 const MASTER_LOG = join(HOME, "Library", "Logs", "subctl", "master.log");
-
-/**
- * v2.7.32 — Resolve `tmux` to an absolute path.
- *
- * Operator hit `tmux: command not found` over SSH because non-login shells
- * don't source `~/.zshrc`, so Homebrew's `/opt/homebrew/bin` wasn't on PATH
- * when the master daemon (or a CLI invocation routed through SSH) tried to
- * shell out. We follow the same probe-then-fallback pattern dashboard/
- * server.ts uses for the same binary: walk well-known Apple-Silicon-first
- * paths, then PATH lookup, then surrender to bare `"tmux"` (so the original
- * "not found" error still surfaces verbatim if every candidate misses).
- *
- * Overridable via SUBCTL_TMUX_BIN for tests / unusual installs (matches the
- * env var dashboard/terminal.ts already consumes).
- */
-const TMUX_BIN: string = (() => {
-  if (process.env.SUBCTL_TMUX_BIN) return process.env.SUBCTL_TMUX_BIN;
-  const candidates = [
-    "/opt/homebrew/bin/tmux",
-    "/usr/local/bin/tmux",
-    "/usr/bin/tmux",
-    "/bin/tmux",
-  ];
-  for (const p of candidates) {
-    if (existsSync(p)) return p;
-  }
-  return "tmux";
-})();
 
 // Single source of truth: VERSION file at repo root. lib/core.sh reads the
 // same file so bash + dashboard + master daemon all agree on the version.
@@ -534,13 +495,13 @@ export const toolRegistry: Record<string, InternalTool> = {
   ...Object.fromEntries(
     Object.entries(evyMemoryTools).map(([k, v]) => [k, v as unknown as InternalTool]),
   ),
-  // ── v2.8.0 team templates ──
-  // Roster-aware dispatch over multi-developer team templates (TOML).
-  // Keys are fully-qualified (subctl_team_template_list,
-  // subctl_team_template_show, subctl_team_dispatch). Coexists with the
-  // legacy single-persona JSON template flow (subctl_orch_spawn_template).
+  // voice family (v2.8.0): voice_render synthesizes Evy's text reply to
+  // audio via the local self-hosted TTS server (ADR 0017). voice_status
+  // is a quick read of voice.json + TTS reachability. Disabled by default
+  // — operator opts in via voice.json or the dashboard /voice toggle.
+  // Keys are fully-qualified (voice_render, voice_status).
   ...Object.fromEntries(
-    Object.entries(teamTemplateTools).map(([k, v]) => [k, v as unknown as InternalTool]),
+    Object.entries(voiceTools).map(([k, v]) => [k, v as unknown as InternalTool]),
   ),
 };
 
@@ -1089,6 +1050,19 @@ async function main() {
     }
   });
 
+  // ── v2.8.0 voice layer ────────────────────────────────────────────────
+  // voice.json hot-reload. The voice_render tool reads the config on every
+  // call (no in-memory cache; same "VERSION is the canonical source" rule
+  // the operator pinned 2026-05-11), so the watcher's only job is logging
+  // the change so the operator can see in master.log that the toggle took
+  // effect immediately. SSE bus also notifies the dashboard so the chat
+  // panel's 🔊 button can hide itself live.
+  const voiceConfigInitial = loadVoiceConfig();
+  console.error(
+    `[voice] booted: enabled=${voiceConfigInitial.enabled} voice=${voiceConfigInitial.default_voice_id} model=${voiceConfigInitial.model} server=${voiceConfigInitial.tts_server}`,
+  );
+  // Watcher registration deferred until after `broadcast` is defined (TDZ).
+
   // ── event bus: agent → SSE subscribers ──────────────────────────────────
   // Every connected /events client gets every agent event (text deltas, tool
   // calls, decisions, watchdog firings) as Server-Sent Events. Persist the
@@ -1103,6 +1077,17 @@ async function main() {
   }
   // Let the notify tool publish to the SSE bus via the same broadcast.
   bindNotifyBroadcast(broadcast);
+
+  // v2.8.0 — voice config watcher (defined after `broadcast` so the SSE
+  // bus is available to the callback). The watcher only logs + emits
+  // a `voice_config` SSE event; voice_render itself reads the file on
+  // every call.
+  const voiceWatcher = watchVoiceConfig((next) => {
+    console.error(
+      `[voice] config reloaded: enabled=${next.enabled} voice=${next.default_voice_id} model=${next.model}`,
+    );
+    broadcast("voice_config", next);
+  });
 
   agent.subscribe((event) => {
     // Stream every event to subscribers — the dashboard chat panel renders
@@ -1827,14 +1812,6 @@ async function main() {
       const url = new URL(req.url);
 
       if (url.pathname === "/health") {
-        // v2.7.32 — surface the resolved supervisor model id alongside
-        // `active_profile`. Prior to v2.7.18 the /health response carried
-        // `supervisor_model: <id>`; v2.7.18 replaced it with `active_profile`
-        // (a name like "chat" / "heavy") and dropped the model id, which
-        // made the operator's "which model is actually running right now?"
-        // question require a second /profile fetch. Putting both back here
-        // keeps /health one-stop. supervisorCfg is reassigned by the
-        // pendingProfileSwap path, so this is always live, never stale.
         return Response.json({
           ok: true,
           version: SUBCTL_VERSION,
@@ -1845,8 +1822,6 @@ async function main() {
           teams_tracked: teamLastActivity.size,
           telegram_listener: masterNotifyListenerStatus(),
           active_profile: activeProfile,
-          supervisor_model: supervisorCfg.model,
-          supervisor_provider: supervisorCfg.provider,
         });
       }
 
@@ -1911,42 +1886,18 @@ async function main() {
         });
       }
 
-      // ── /watchdogs — watchdog kill controls (v2.7.19) + diag (v2.7.35) ──
-      // GET    /watchdogs              → { ok, count, watchdogs: [...] }
-      // GET    /watchdogs/diag         → { ok, count, watchdogs: [<rich>...] }
-      // GET    /watchdogs/:id/diag     → { ok, watchdog: <rich> } | 404
-      // POST   /watchdogs/:id/kill     → { ok, killed_id } | { ok:false, error }
-      // POST   /watchdogs/:id/restart  → { ok } | { ok:false, error }
-      // POST   /watchdogs/killall      → { ok, killed: [...], preserved: [...] }
+      // ── /watchdogs — watchdog kill controls (v2.7.19) ────────────────────
+      // GET    /watchdogs           → { ok, count, watchdogs: [...] }
+      // POST   /watchdogs/:id/kill  → { ok, killed_id } | { ok:false, error }
+      // POST   /watchdogs/killall   → { ok, killed: [...], preserved: [...] }
       //
       // killall preserves kind="telegram-listener" so the operator's
       // command path doesn't sever itself when invoked from Telegram.
       // The dashboard's /api/watchdogs (in dashboard/server.ts) proxies
       // these — keep paths in sync if you rename.
-      //
-      // v2.7.35 — /diag returns the rich shape from watchdog-diag.ts:
-      // tick history, recent notifications, last error, status badge.
       if (url.pathname === "/watchdogs" && req.method === "GET") {
         const watchdogs = listWatchdogs();
         return Response.json({ ok: true, count: watchdogs.length, watchdogs });
-      }
-      if (url.pathname === "/watchdogs/diag" && req.method === "GET") {
-        const watchdogs = listWatchdogDiag();
-        return Response.json({ ok: true, count: watchdogs.length, watchdogs });
-      }
-      {
-        const m = url.pathname.match(/^\/watchdogs\/([A-Za-z0-9_.-]+)\/diag\/?$/);
-        if (m && req.method === "GET") {
-          const id = m[1]!;
-          const entry = getWatchdogDiag(id);
-          if (!entry) {
-            return Response.json(
-              { ok: false, error: `unknown watchdog id: ${id}` },
-              { status: 404 },
-            );
-          }
-          return Response.json({ ok: true, watchdog: entry });
-        }
       }
       {
         const m = url.pathname.match(/^\/watchdogs\/([A-Za-z0-9_.-]+)\/kill\/?$/);
@@ -1955,41 +1906,6 @@ async function main() {
           const result = killWatchdog(id);
           const status = result.ok ? 200 : 404;
           return Response.json(result, { status });
-        }
-      }
-      {
-        // v2.7.35 — restart endpoint. Two paths:
-        //   1. If the watchdog is still registered, kill it first then
-        //      run the restart factory. Equivalent to "bounce".
-        //   2. If it's already killed, just run the factory.
-        // Returns 404 when no factory is registered for the id — not
-        // every watchdog kind has an opt-in restart path (telegram-listener,
-        // cli-prompt-poll, inbox-poll are tightly coupled to closure state).
-        const m = url.pathname.match(/^\/watchdogs\/([A-Za-z0-9_.-]+)\/restart\/?$/);
-        if (m && req.method === "POST") {
-          const id = m[1]!;
-          if (!canRestart(id)) {
-            return Response.json(
-              {
-                ok: false,
-                error: `no restart factory for: ${id} — this watchdog kind doesn't support hot-restart; bounce the master daemon instead.`,
-              },
-              { status: 404 },
-            );
-          }
-          // Kill if still registered. Ignore failure — id might already
-          // be killed (caller wants restart-only).
-          const liveSnap = listWatchdogs().find((w) => w.id === id);
-          if (liveSnap) killWatchdog(id);
-          const result = runRestartFactory(id);
-          if (!result.ok) {
-            return Response.json(result, { status: 500 });
-          }
-          return Response.json({
-            ok: true,
-            id,
-            killed_first: !!liveSnap,
-          });
         }
       }
       if (url.pathname === "/watchdogs/killall" && req.method === "POST") {
@@ -2118,17 +2034,13 @@ async function main() {
         return Response.json({ ok: true, cleared });
       }
 
-      // ── /upstreams — pi-ai + pi-agent-core tracker (v2.7.25 + v2.7.37) ──
+      // ── /upstreams — pi-ai + pi-agent-core tracker (v2.7.25 Scope C) ────
       // ADR 0015 "always-latest" policy. The dashboard proxies these under
       // /api/upstreams; Telegram's /upstreams reads describeUpstreamState()
       // directly via master-notify-listener. Routes:
       //
-      //   GET  /upstreams                    → state snapshot
-      //   POST /upstreams/check              → runs the watchdog once
-      //   POST /upstreams/update             → manual auto-update (v2.7.37,
-      //                                        bypasses 24h throttle)
-      //   GET  /upstreams/history            → recent audit-log entries
-      //   POST /upstreams/auto-update/toggle → flip the gate flag file
+      //   GET  /upstreams        → { ok, checked_at, results[], auto_update_enabled, auto_update_flag_path }
+      //   POST /upstreams/check  → runs the watchdog once, returns the same shape
       if (url.pathname === "/upstreams" && req.method === "GET") {
         const state = describeUpstreamState();
         return Response.json({ ok: true, ...state });
@@ -2153,63 +2065,6 @@ async function main() {
         }
         const state = describeUpstreamState();
         return Response.json({ ok: true, ...state });
-      }
-      if (url.pathname === "/upstreams/update" && req.method === "POST") {
-        // v2.7.37 — manual auto-update trigger. Bypasses the 24h
-        // throttle. Body { package?: string } — when omitted, every
-        // tracked upstream with a newer version is attempted.
-        let body: { package?: string } = {};
-        try {
-          if (req.headers.get("content-type")?.includes("application/json")) {
-            body = (await req.json()) as { package?: string };
-          }
-        } catch {
-          /* tolerate empty / malformed body — defaults are fine */
-        }
-        try {
-          const summary = await runManualUpdate({
-            packageJsonPath: join(COMPONENT_DIR, "package.json"),
-            package: body.package,
-          });
-          return Response.json({ ok: true, summary });
-        } catch (err) {
-          return Response.json(
-            { ok: false, error: (err as Error).message },
-            { status: 500 },
-          );
-        }
-      }
-      if (url.pathname === "/upstreams/history" && req.method === "GET") {
-        const limitRaw = url.searchParams.get("limit");
-        const limit = limitRaw ? Math.max(1, Math.min(500, Number(limitRaw))) : 50;
-        const entries = readUpdateHistory({ limit });
-        return Response.json({ ok: true, count: entries.length, entries });
-      }
-      if (
-        url.pathname === "/upstreams/auto-update/toggle" &&
-        req.method === "POST"
-      ) {
-        // v2.7.37 — flip the flag file. Body { enabled: boolean }.
-        let body: { enabled?: unknown };
-        try {
-          body = (await req.json()) as { enabled?: unknown };
-        } catch {
-          return Response.json(
-            { ok: false, error: "expected JSON body { enabled: boolean }" },
-            { status: 400 },
-          );
-        }
-        if (typeof body.enabled !== "boolean") {
-          return Response.json(
-            { ok: false, error: "field `enabled` must be boolean" },
-            { status: 400 },
-          );
-        }
-        const ok = setAutoUpdateEnabled(body.enabled);
-        return Response.json({
-          ok,
-          enabled: isAutoUpdateEnabled(),
-        });
       }
 
       // ── /memory/* — Evy Memory (Tier 3) operator surface (v2.7.23) ──────
@@ -2594,7 +2449,7 @@ async function main() {
           // 5. tmux installed (needed to spawn dev teams)
           (async () => {
             try {
-              const proc = Bun.spawnSync([TMUX_BIN, "-V"], { stdout: "pipe", stderr: "pipe" });
+              const proc = Bun.spawnSync(["tmux", "-V"], { stdout: "pipe", stderr: "pipe" });
               if (proc.exitCode === 0) {
                 return { name: "tmux", ok: true, detail: proc.stdout.toString().trim() };
               }
@@ -2906,6 +2761,88 @@ async function main() {
         });
       }
 
+      // ── v2.8.0 voice layer routes ────────────────────────────────────
+      // Dashboard + CLI hit these directly via the master HTTP surface.
+      // The TTS server itself stays on 8789 and is never reached from the
+      // browser; this layer brokers cache, redaction, and config.
+      if (url.pathname === "/voice/render" && req.method === "POST") {
+        let body: { text?: string; voice_id?: string };
+        try {
+          body = (await req.json()) as { text?: string; voice_id?: string };
+        } catch {
+          return Response.json({ ok: false, error: "bad json" }, { status: 400 });
+        }
+        const out = await renderVoice({
+          text: body.text ?? "",
+          voice_id: body.voice_id,
+        });
+        if (!out.ok) {
+          // Disabled is a 200-with-ok:false — operator-facing state, not a server error.
+          return Response.json(out, {
+            status: out.error?.includes("disabled") ? 200 : 502,
+          });
+        }
+        // Strip the absolute path before returning to the network.
+        const { audio_path: _omit, ...rest } = out;
+        void _omit;
+        return Response.json(rest);
+      }
+
+      if (url.pathname === "/voice/status" && req.method === "GET") {
+        const cfg = loadVoiceConfig();
+        const probe = await probeTtsServer();
+        return Response.json({
+          ok: true,
+          config: cfg,
+          tts_reachable: probe.reachable,
+          tts_url: probe.url,
+          latency_ms: probe.ms ?? null,
+          error: probe.error,
+        });
+      }
+
+      if (url.pathname === "/voice/config" && req.method === "POST") {
+        let body: Record<string, unknown>;
+        try {
+          body = (await req.json()) as Record<string, unknown>;
+        } catch {
+          return Response.json({ ok: false, error: "bad json" }, { status: 400 });
+        }
+        // Allowlist the fields the dashboard can set — drop anything else.
+        const patch: Record<string, unknown> = {};
+        for (const k of ["enabled", "default_voice_id", "model", "tts_server"]) {
+          if (k in body) patch[k] = body[k];
+        }
+        const next = saveVoiceConfig(patch);
+        return Response.json({ ok: true, config: next });
+      }
+
+      {
+        const m = url.pathname.match(/^\/voice\/audio\/([a-f0-9]+\.[a-z0-9]+)$/i);
+        if (m && req.method === "GET") {
+          const hit = resolveCachedAudio(m[1]!);
+          if (!hit) {
+            return Response.json({ ok: false, error: "not found" }, { status: 404 });
+          }
+          try {
+            const buf = readFileSync(hit.path);
+            const ctype = hit.format === "wav" ? "audio/wav" : "audio/mpeg";
+            return new Response(buf, {
+              headers: {
+                "Content-Type": ctype,
+                "Cache-Control": "public, max-age=3600",
+                "Content-Disposition": `inline; filename="evy.${hit.format}"`,
+              },
+            });
+          } catch (err) {
+            return Response.json(
+              { ok: false, error: (err as Error).message },
+              { status: 500 },
+            );
+          }
+        }
+      }
+
       return new Response("not found", { status: 404 });
     },
   });
@@ -2973,45 +2910,6 @@ async function main() {
     }
   });
 
-  // ── startup team-dir GC (v2.7.32) ─────────────────────────────────────
-  // Walk ~/.local/state/subctl/teams/ once at boot, archive any team dir
-  // whose policy.snapshot.toml mtime > 14 days AND whose audit log has
-  // been quiet for > 7 days. Archived dirs go to teams/.killed/ — they're
-  // not deleted, just moved out of the watchdog's scanning surface. Runs
-  // synchronously before the watchdog ticker is armed so we never race
-  // against a freshly-started scan.
-  {
-    const gcStateDir =
-      process.env.SUBCTL_STATE_DIR ?? join(HOME, ".local", "state", "subctl");
-    const gcDecisions = runStartupTeamGC(
-      {
-        teams_dir: join(gcStateDir, "teams"),
-        audit_dir: join(gcStateDir, "audit"),
-        snapshot_max_age_ms: DEFAULT_SNAPSHOT_MAX_AGE_DAYS * 86_400_000,
-        audit_max_age_ms: DEFAULT_AUDIT_MAX_AGE_DAYS * 86_400_000,
-        now_ms: Date.now(),
-      },
-      {
-        emitNotification: (input) =>
-          emitNotification({
-            kind: "team-gc'd",
-            severity: "info",
-            title: input.title,
-            body: input.body,
-            team_id: input.team_id,
-          }),
-        logDecision: (team_id, action, rationale) =>
-          logDecision({ project: team_id, action, rationale }),
-      },
-    );
-    const archived = gcDecisions.filter((d) => d.action === "archived").length;
-    if (archived > 0) {
-      console.error(
-        `[master] startup team-gc: archived ${archived}/${gcDecisions.length} team dir(s) to .killed/`,
-      );
-    }
-  }
-
   // ── watchdog ticker ────────────────────────────────────────────────────
   // Master's KPI is "keep projects moving forward". Periodically scan open
   // dev teams + tracked projects; if anything looks stuck (no lead report
@@ -3050,7 +2948,7 @@ async function main() {
     try {
       // 1. Enumerate sessions whose names start with "claude-" (the
       //    subctl spawn naming convention).
-      const ls = Bun.spawnSync([TMUX_BIN, "list-sessions", "-F", "#{session_name}"], {
+      const ls = Bun.spawnSync(["tmux", "list-sessions", "-F", "#{session_name}"], {
         stdout: "pipe", stderr: "pipe",
       });
       if (ls.exitCode !== 0) return;
@@ -3060,7 +2958,7 @@ async function main() {
       const now = Date.now();
       for (const session of sessions) {
         const cap = Bun.spawnSync(
-          [TMUX_BIN, "capture-pane", "-p", "-t", `${session}:0`, "-S", "-50"],
+          ["tmux", "capture-pane", "-p", "-t", `${session}:0`, "-S", "-50"],
           { stdout: "pipe", stderr: "pipe" },
         );
         if (cap.exitCode !== 0) continue;
@@ -3214,18 +3112,6 @@ async function main() {
       });
     }
 
-    // v2.7.32 — reconcile against the on-disk team registry. Resolves the
-    // 2026-05-13 spam case where claude-osint-cve-monitor was archived to
-    // teams/.killed/ but the in-memory teamLastActivity kept the entry
-    // (tmux session pruning only fires when the session itself is dead;
-    // a session can outlive its registry archive). Predicate is mirrored
-    // from trust-marker.ts' resolveStateDir() convention so SUBCTL_STATE_DIR
-    // override is respected in dev/test environments.
-    const teamsStateDir =
-      process.env.SUBCTL_STATE_DIR ?? join(HOME, ".local", "state", "subctl");
-    const teamRegistryExists = (teamId: string): boolean =>
-      existsSync(join(teamsStateDir, "teams", teamId));
-
     const actions = await runStaleTeamSweep({
       teams,
       state: teamNudgeState,
@@ -3241,25 +3127,10 @@ async function main() {
           emitNotification({ kind: "team-nudge-sent", severity: "info", title, body, team_id }),
         emitAlert: (team_id, title, body) =>
           emitNotification({ kind: "team-unresponsive", severity: "alert", title, body, team_id }),
-        emitVanished: (team_id, title, body) =>
-          emitNotification({ kind: "team-vanished", severity: "alert", title, body, team_id }),
-        teamRegistryExists,
         logDecision: (team_id, action, rationale) =>
           logDecision({ project: team_id, action, rationale }),
       },
     });
-
-    // v2.7.32 — drop vanished teams from the in-memory trackers so the
-    // alert is one-shot. runStaleTeamSweep already cleared teamNudgeState
-    // (it owns that map); these in-server maps are not visible to the
-    // sweep, so we mop them up here.
-    const vanishedIds = actions
-      .filter((a) => a.action === "vanished")
-      .map((a) => a.team_id);
-    for (const id of vanishedIds) {
-      teamLastActivity.delete(id);
-      teamPaneHash.delete(id);
-    }
 
     const stale = actions.filter((a) => a.action !== "fresh");
     if (stale.length === 0) {
@@ -3290,31 +3161,15 @@ async function main() {
     });
   }
 
-  // v2.7.35 — wrap the arming in a re-runnable factory so the dashboard's
-  // Restart button can re-register a killed watchdog without bouncing the
-  // entire master daemon. The `let` + reassign pattern keeps the kill
-  // closure pointing at whichever interval is currently active.
-  let watchdog = setInterval(() => {
+  const watchdog = setInterval(() => {
     touchWatchdog("team-staleness");
     void runWatchdogTick();
   }, watchdogIntervalMs);
-  function armTeamStalenessWatchdog() {
-    watchdog = setInterval(() => {
-      touchWatchdog("team-staleness");
-      void runWatchdogTick();
-    }, watchdogIntervalMs);
-    registerWatchdog({
-      id: "team-staleness",
-      kind: "team-staleness",
-      kill: () => clearInterval(watchdog),
-    });
-  }
   registerWatchdog({
     id: "team-staleness",
     kind: "team-staleness",
     kill: () => clearInterval(watchdog),
   });
-  registerRestartFactory("team-staleness", armTeamStalenessWatchdog);
   console.error(
     `[master] watchdog armed — interval=${watchdogIntervalMin}m, staleness_threshold=${stalenessThresholdMin}m`,
   );
@@ -3346,28 +3201,15 @@ async function main() {
       await dispatchToAgent(synthPrompt, "watchdog");
     }
   }
-  // v2.7.35 — re-runnable factory for the dashboard Restart button.
-  let followupTicker = setInterval(() => {
+  const followupTicker = setInterval(() => {
     touchWatchdog("followup-scheduler");
     void runFollowupTick();
   }, 60_000);
-  function armFollowupScheduler() {
-    followupTicker = setInterval(() => {
-      touchWatchdog("followup-scheduler");
-      void runFollowupTick();
-    }, 60_000);
-    registerWatchdog({
-      id: "followup-scheduler",
-      kind: "followup-scheduler",
-      kill: () => clearInterval(followupTicker),
-    });
-  }
   registerWatchdog({
     id: "followup-scheduler",
     kind: "followup-scheduler",
     kill: () => clearInterval(followupTicker),
   });
-  registerRestartFactory("followup-scheduler", armFollowupScheduler);
   console.error(`[master] scheduled-followup ticker armed — every 60s`);
 
   // ── auto-compact watchdog (v2.7.3: SAFETY NET) ─────────────────────────
@@ -3445,10 +3287,6 @@ async function main() {
       }
     } catch (err) {
       console.error(`[master] safety-net compact error: ${(err as Error).message}`);
-      // v2.7.35 — also attribute the error to the watchdog id so the
-      // dashboard's per-watchdog `last_error` field surfaces this. The
-      // notification still emits independently for the global tray.
-      recordWatchdogError("auto-compact", err);
       emitNotification({
         kind: "auto-compact-error",
         severity: "warn",
@@ -3459,26 +3297,14 @@ async function main() {
       autoCompactInFlight = false;
     }
   }
-  // v2.7.35 — re-runnable factory for the dashboard Restart button.
-  let autoCompactInterval = setInterval(() => {
+  const autoCompactInterval = setInterval(() => {
     void runAutoCompactTick();
   }, 5 * 60 * 1000);
-  function armAutoCompactWatchdog() {
-    autoCompactInterval = setInterval(() => {
-      void runAutoCompactTick();
-    }, 5 * 60 * 1000);
-    registerWatchdog({
-      id: "auto-compact",
-      kind: "auto-compact",
-      kill: () => clearInterval(autoCompactInterval),
-    });
-  }
   registerWatchdog({
     id: "auto-compact",
     kind: "auto-compact",
     kill: () => clearInterval(autoCompactInterval),
   });
-  registerRestartFactory("auto-compact", armAutoCompactWatchdog);
   // Also run shortly after boot so a freshly-restarted daemon catches an
   // already-bloated transcript without waiting 5 minutes. v2.7.22 lowered
   // this from 30s to 15s so the watchdog's last_tick_at lights up well
@@ -3493,27 +3319,14 @@ async function main() {
   // hitting policy denials in clusters (>5 in 60s OR >3 of the same
   // rule_path in 5min), fire a synthetic [verifier] correction prompt at
   // the worker. See components/master/tools/policy/verifier-cluster.ts.
-  // v2.7.35 — re-runnable factory. The ticker returns a {stop} handle,
-  // so the kill closure just forwards to handle.stop().
-  let clusterTicker = startClusterTicker({
+  const clusterTicker = startClusterTicker({
     onTick: () => touchWatchdog("verifier-cluster"),
   });
-  function armVerifierClusterWatchdog() {
-    clusterTicker = startClusterTicker({
-      onTick: () => touchWatchdog("verifier-cluster"),
-    });
-    registerWatchdog({
-      id: "verifier-cluster",
-      kind: "verifier-cluster",
-      kill: () => clusterTicker.stop(),
-    });
-  }
   registerWatchdog({
     id: "verifier-cluster",
     kind: "verifier-cluster",
     kill: () => clusterTicker.stop(),
   });
-  registerRestartFactory("verifier-cluster", armVerifierClusterWatchdog);
   console.error("[master] verifier denial-cluster ticker armed — interval=30s, burst=>5/60s, stuck=>3/5min");
 
   // ── upstream-check watchdog (v2.7.25 Scope C) ───────────────────────────
@@ -3526,22 +3339,7 @@ async function main() {
   upstreamWatchdog = startUpstreamWatchdog({
     packageJsonPath: join(COMPONENT_DIR, "package.json"),
   });
-  // v2.7.35 — re-runnable factory so the dashboard Restart button can
-  // re-arm a killed upstream-check watchdog without bouncing master.
-  registerRestartFactory("upstream-check", () => {
-    upstreamWatchdog = startUpstreamWatchdog({
-      packageJsonPath: join(COMPONENT_DIR, "package.json"),
-    });
-  });
   console.error("[master] upstream-check watchdog armed — interval=6h, packages=pi-ai + pi-agent-core");
-
-  // v2.7.35 — start the diagnostic observer + notification correlator.
-  // These are sibling background tasks that watch the registry passively
-  // and tag notifications by source watchdog. Both are idempotent +
-  // disposed on shutdown below.
-  startWatchdogDiagObserver();
-  startWatchdogDiagNotificationTracker();
-  console.error("[master] watchdog-diag observer + notification tracker armed");
 
   // ── graceful shutdown ───────────────────────────────────────────────────
   const shutdown = (signal: string) => {
@@ -3554,10 +3352,8 @@ async function main() {
     clearInterval(inboxPoll);
     clusterTicker.stop();
     try { upstreamWatchdog?.stop(); } catch { /* ignore */ }
-    // v2.7.35 — stop the diagnostic observer + notification tracker.
-    try { stopWatchdogDiagObserver(); } catch { /* ignore */ }
-    try { stopWatchdogDiagNotificationTracker(); } catch { /* ignore */ }
     try { profilesWatcher.close(); } catch { /* ignore */ }
+    try { voiceWatcher.close(); } catch { /* ignore */ }
     if (inboxWatcher) try { inboxWatcher.close(); } catch { /* ignore */ }
     try { stopMasterNotifyListener(); } catch { /* ignore */ }
     httpServer.stop(true);
