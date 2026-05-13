@@ -143,6 +143,11 @@ import {
   type MemoryEntry,
 } from "./memory";
 import { evyMemoryTools } from "./tools/evy-memory";
+import {
+  startUpstreamWatchdog,
+  describeUpstreamState,
+  type UpstreamWatchdogHandle,
+} from "./upstream-check";
 
 const HOME = homedir();
 const COMPONENT_DIR = import.meta.dir;
@@ -1740,6 +1745,12 @@ async function main() {
   // public traffic. Keeps the agent off the open LAN by default.
   const masterHost = process.env.SUBCTL_MASTER_HOST ?? "127.0.0.1";
 
+  // Forward-declared so the fetch handler can capture it; assignment
+  // happens after the watchdog ticker block below. The /upstreams/check
+  // route guards on null to handle the (vanishingly small) window
+  // between Bun.serve() returning and the watchdog being armed.
+  let upstreamWatchdog: UpstreamWatchdogHandle | null = null;
+
   const httpServer = Bun.serve({
     port: masterPort,
     hostname: masterHost,
@@ -1935,6 +1946,39 @@ async function main() {
             "Connection": "keep-alive",
           },
         });
+      }
+
+      // ── /upstreams — pi-ai + pi-agent-core tracker (v2.7.25 Scope C) ────
+      // ADR 0015 "always-latest" policy. The dashboard proxies these under
+      // /api/upstreams; Telegram's /upstreams reads describeUpstreamState()
+      // directly via master-notify-listener. Routes:
+      //
+      //   GET  /upstreams        → { ok, checked_at, results[], auto_update_enabled, auto_update_flag_path }
+      //   POST /upstreams/check  → runs the watchdog once, returns the same shape
+      if (url.pathname === "/upstreams" && req.method === "GET") {
+        const state = describeUpstreamState();
+        return Response.json({ ok: true, ...state });
+      }
+      if (url.pathname === "/upstreams/check" && req.method === "POST") {
+        // Trigger a manual tick. Forward-declared above; null only in
+        // the brief window between Bun.serve() returning and the
+        // watchdog being armed a few lines below.
+        if (!upstreamWatchdog) {
+          return Response.json(
+            { ok: false, error: "upstream watchdog not yet armed" },
+            { status: 503 },
+          );
+        }
+        try {
+          await upstreamWatchdog.runNow();
+        } catch (err) {
+          return Response.json(
+            { ok: false, error: (err as Error).message },
+            { status: 500 },
+          );
+        }
+        const state = describeUpstreamState();
+        return Response.json({ ok: true, ...state });
       }
 
       // ── /memory/* — Evy Memory (Tier 3) operator surface (v2.7.23) ──────
@@ -3117,6 +3161,18 @@ async function main() {
   });
   console.error("[master] verifier denial-cluster ticker armed — interval=30s, burst=>5/60s, stuck=>3/5min");
 
+  // ── upstream-check watchdog (v2.7.25 Scope C) ───────────────────────────
+  // ADR 0015 declared pi-ai + pi-agent-core first-class upstreams under
+  // an "always-latest" policy. This watchdog polls npm every 6h, emits
+  // notifications when a newer version is available, and (when the
+  // ~/.config/subctl/auto-update-upstreams.enabled flag is set)
+  // attempts the upgrade itself with a bun install + bun test gate.
+  // See components/master/upstream-check.ts.
+  upstreamWatchdog = startUpstreamWatchdog({
+    packageJsonPath: join(COMPONENT_DIR, "package.json"),
+  });
+  console.error("[master] upstream-check watchdog armed — interval=6h, packages=pi-ai + pi-agent-core");
+
   // ── graceful shutdown ───────────────────────────────────────────────────
   const shutdown = (signal: string) => {
     if (stopped) return;
@@ -3127,6 +3183,7 @@ async function main() {
     clearInterval(autoCompactInterval);
     clearInterval(inboxPoll);
     clusterTicker.stop();
+    try { upstreamWatchdog?.stop(); } catch { /* ignore */ }
     try { profilesWatcher.close(); } catch { /* ignore */ }
     if (inboxWatcher) try { inboxWatcher.close(); } catch { /* ignore */ }
     try { stopMasterNotifyListener(); } catch { /* ignore */ }

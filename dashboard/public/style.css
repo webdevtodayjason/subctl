@@ -4318,12 +4318,15 @@ tr.team-stale-red td           { background: rgba(214, 108, 108, 0.06); }
   50%      { opacity: 1.0; }
 }
 
-/* ── v2.7.22 notification tray ────────────────────────────────────────
-   Bell + badge in topbar, drawer drops from below the header. Drawer is
-   absolute-positioned within #app so it overlays content without
-   shifting layout. Distinct from .orch-notify-* (the per-team activity
-   ring inside the orchestration tab) — this is the SYSTEM-level alert
-   surface fed by the master's notification ring buffer. */
+/* ── v2.7.25 notification surface ─────────────────────────────────────
+   Replaces the v2.7.22 always-on panel. Two surfaces now:
+     1. .notif-tray — dropdown anchored under the inbox icon, opened
+        on click, last 20 entries with copy-prompt + per-row dismiss.
+     2. .notif-toast-stack — top-right corner toast slide-ins for live
+        notifications; auto-fade so they don't accumulate.
+   Distinct from .orch-notify-* (the per-team activity ring in the
+   orchestration tab). Severity colors mirror the rest of the dashboard
+   (--blue for info, --amber for warn, --red for alert). */
 .notif-bell {
   position: relative;
   display: inline-flex;
@@ -4336,13 +4339,18 @@ tr.team-stale-red td           { background: rgba(214, 108, 108, 0.06); }
   height: 30px;
   cursor: pointer;
   color: var(--fg-mute);
-  font-size: 14px;
   line-height: 1;
   padding: 0;
 }
 .notif-bell:hover { color: var(--ink); border-color: var(--ink-dim); }
 .notif-bell.has-alert { border-color: var(--red, #f85149); color: var(--red, #f85149); }
-.notif-bell-icon { font-size: 13px; }
+.notif-bell-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+}
+.notif-bell-icon svg { display: block; }
 .notif-bell-badge {
   position: absolute;
   top: -4px;
@@ -4363,7 +4371,7 @@ tr.team-stale-red td           { background: rgba(214, 108, 108, 0.06); }
   position: absolute;
   top: 52px;
   right: 12px;
-  width: 380px;
+  width: 400px;
   max-height: 540px;
   background: var(--bg-1, #0d1117);
   border: 1px solid var(--line-2);
@@ -4395,9 +4403,11 @@ tr.team-stale-red td           { background: rgba(214, 108, 108, 0.06); }
   background: transparent;
   border: none;
   color: var(--fg-mute);
-  font-size: 13px;
   cursor: pointer;
-  padding: 0 4px;
+  padding: 2px 4px;
+  display: inline-flex;
+  align-items: center;
+  line-height: 0;
 }
 .notif-tray-close:hover { color: var(--ink); }
 .notif-tray-list {
@@ -4410,17 +4420,17 @@ tr.team-stale-red td           { background: rgba(214, 108, 108, 0.06); }
   padding: 8px 12px;
   border-bottom: 1px solid var(--line-2);
   display: grid;
-  grid-template-columns: 14px 1fr auto;
+  grid-template-columns: 18px 1fr 18px;
   gap: 8px;
   align-items: start;
   cursor: default;
 }
 .notif-item:last-child { border-bottom: none; }
 .notif-item.unread { background: rgba(110, 168, 254, 0.07); }
+.notif-item.read { opacity: 0.55; }
 .notif-item-glyph {
-  font-size: 11px;
-  font-family: var(--mono);
-  line-height: 1.4;
+  line-height: 0;
+  padding-top: 2px;
 }
 .notif-item.sev-info  .notif-item-glyph { color: var(--blue, #58a6ff); }
 .notif-item.sev-warn  .notif-item-glyph { color: var(--amber, #d29922); }
@@ -4430,15 +4440,21 @@ tr.team-stale-red td           { background: rgba(214, 108, 108, 0.06); }
   font-size: 11.5px;
   color: var(--ink);
   word-wrap: break-word;
+  font-weight: 500;
 }
-.notif-item.read .notif-item-title { color: var(--fg-mute); }
+.notif-item.read .notif-item-title { color: var(--fg-mute); font-weight: 400; }
 .notif-item-detail {
   font-size: 10.5px;
   color: var(--fg-mute);
   margin-top: 2px;
-  white-space: pre-wrap;
   word-wrap: break-word;
   font-family: var(--mono);
+}
+.notif-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
 }
 .notif-item-when {
   font-size: 10px;
@@ -4446,7 +4462,7 @@ tr.team-stale-red td           { background: rgba(214, 108, 108, 0.06); }
   font-family: var(--mono);
   white-space: nowrap;
 }
-.notif-item-read-btn {
+.notif-item-copy {
   background: transparent;
   border: 1px solid var(--line-2);
   color: var(--fg-mute);
@@ -4454,14 +4470,149 @@ tr.team-stale-red td           { background: rgba(214, 108, 108, 0.06); }
   padding: 2px 6px;
   border-radius: 3px;
   cursor: pointer;
-  grid-column: 1 / -1;
-  justify-self: end;
-  margin-top: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  line-height: 1;
 }
-.notif-item-read-btn:hover { color: var(--ink); border-color: var(--ink-dim); }
+.notif-item-copy:hover { color: var(--ink); border-color: var(--ink-dim); }
+.notif-item-copy svg { display: block; }
+.notif-item-copy-label { font-family: var(--mono); }
+.notif-item-dismiss {
+  background: transparent;
+  border: none;
+  color: var(--fg-mute);
+  cursor: pointer;
+  padding: 2px;
+  display: inline-flex;
+  align-items: center;
+  line-height: 0;
+  border-radius: 3px;
+}
+.notif-item-dismiss:hover { color: var(--red, #f85149); background: rgba(248, 81, 73, 0.08); }
 .notif-tray-empty {
   padding: 20px 12px;
   text-align: center;
   color: var(--fg-mute);
   font-size: 11px;
+}
+
+/* ── Toast stack ──────────────────────────────────────────────────────
+   Lives top-right, fixed-position, above tray. Toasts slide in from
+   right with `transform: translateX(0)`, hold, then drop translateX
+   + fade out. Sorting/queueing handled by JS — CSS just owns the
+   transition. */
+.notif-toast-stack {
+  position: fixed;
+  top: 56px;
+  right: 16px;
+  z-index: 2500;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+  max-width: 360px;
+}
+.notif-toast {
+  pointer-events: auto;
+  display: grid;
+  grid-template-columns: 18px 1fr 18px;
+  gap: 8px;
+  align-items: start;
+  padding: 10px 12px;
+  border: 1px solid var(--line-2);
+  border-left-width: 3px;
+  border-radius: 6px;
+  background: var(--bg-1, #0d1117);
+  box-shadow: 0 4px 14px rgba(0,0,0,0.45);
+  transform: translateX(120%);
+  opacity: 0;
+  transition: transform 200ms ease-out, opacity 200ms ease-out;
+  min-width: 260px;
+}
+.notif-toast.show { transform: translateX(0); opacity: 1; }
+.notif-toast.leaving { transform: translateX(120%); opacity: 0; transition: transform 250ms ease-in, opacity 250ms ease-in; }
+.notif-toast.sev-info  { border-left-color: var(--blue, #58a6ff); }
+.notif-toast.sev-warn  { border-left-color: var(--amber, #d29922); }
+.notif-toast.sev-alert { border-left-color: var(--red, #f85149); }
+.notif-toast-glyph { line-height: 0; padding-top: 2px; }
+.notif-toast.sev-info  .notif-toast-glyph { color: var(--blue, #58a6ff); }
+.notif-toast.sev-warn  .notif-toast-glyph { color: var(--amber, #d29922); }
+.notif-toast.sev-alert .notif-toast-glyph { color: var(--red, #f85149); }
+.notif-toast-confirm   .notif-toast-glyph { color: var(--green, #6cd697); }
+.notif-toast-body { min-width: 0; }
+.notif-toast-title {
+  font-size: 11.5px;
+  color: var(--ink);
+  font-weight: 500;
+  word-wrap: break-word;
+}
+.notif-toast-detail {
+  font-size: 10.5px;
+  color: var(--fg-mute);
+  margin-top: 2px;
+  font-family: var(--mono);
+  word-wrap: break-word;
+}
+.notif-toast-close {
+  background: transparent;
+  border: none;
+  color: var(--fg-mute);
+  cursor: pointer;
+  padding: 2px;
+  display: inline-flex;
+  align-items: center;
+  line-height: 0;
+  border-radius: 3px;
+}
+.notif-toast-close:hover { color: var(--ink); }
+
+/* ── Upstream card (v2.7.25 Scope C) ──────────────────────────────────
+   Small card surfaced in the Memory tab below the Evy Memory panel.
+   Shows current pinned versions + last-checked + "Check now" button. */
+.upstreams-card .upstreams-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 8px;
+}
+.upstreams-card .upstream-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  background: rgba(255,255,255,0.02);
+}
+.upstreams-card .upstream-row .upstream-icon {
+  line-height: 0;
+  color: var(--blue, #58a6ff);
+}
+.upstreams-card .upstream-row .upstream-name {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink);
+  flex: 1;
+  min-width: 0;
+  word-break: break-all;
+}
+.upstreams-card .upstream-row .upstream-version {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--fg-mute);
+}
+.upstreams-card .upstream-row.has-update .upstream-version {
+  color: var(--amber, #d29922);
+}
+.upstreams-card .upstreams-actions {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.upstreams-card .upstreams-last-checked {
+  font-size: 10px;
+  color: var(--fg-mute);
+  font-family: var(--mono);
 }

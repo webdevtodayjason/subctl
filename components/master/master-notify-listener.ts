@@ -74,6 +74,7 @@ import {
   listNotifications,
   markAllRead as markAllNotificationsRead,
 } from "./notifications";
+import { describeUpstreamState } from "./upstream-check";
 import {
   recordEntry as recordMemoryEntry,
   recallEntries as recallMemoryEntries,
@@ -471,6 +472,12 @@ async function handleBotCommand(text: string): Promise<string> {
       // here on emit; this command lets the operator scrollback / clear
       // without opening the dashboard.
       return handleNotificationsCommand(parts.slice(1));
+    case "/upstreams":
+      // v2.7.25 — pi-ai + pi-agent-core watchdog state. `/upstreams`
+      // returns the most recent check; the watchdog ticks every 6h on
+      // its own. See ADR 0015 (always-latest policy) +
+      // components/master/upstream-check.ts.
+      return handleUpstreamsCommand();
     case "/memory":
       // v2.7.23 — operator-facing query of Evy Memory (Tier 3).
       //   /memory <query>   → top 3 most-relevant matches
@@ -485,8 +492,40 @@ async function handleBotCommand(text: string): Promise<string> {
       // with the id (so /memory <text> can find it back).
       return handleRememberCommand(text.slice("/remember".length));
     default:
-      return `Unknown command: ${cmd}\n\nTry: /status, /pause, /resume, /profile, /watchdogs, /terminal, /notifications, /memory, /remember, /help`;
+      return `Unknown command: ${cmd}\n\nTry: /status, /pause, /resume, /profile, /watchdogs, /terminal, /notifications, /upstreams, /memory, /remember, /help`;
   }
+}
+
+function handleUpstreamsCommand(): string {
+  const state = describeUpstreamState();
+  const lines: string[] = ["📦 Upstreams (ADR 0015 always-latest):", ""];
+  if (!state.checked_at) {
+    lines.push("(no check yet — watchdog fires on boot+20s, then every 6h)");
+    return lines.join("\n");
+  }
+  const when = state.checked_at.slice(11, 19);
+  lines.push(`Last check: ${when}Z`);
+  lines.push("");
+  for (const r of state.results) {
+    if (r.error) {
+      lines.push(`• ${r.package}: ⚠ ${r.error}`);
+      continue;
+    }
+    if (r.has_update) {
+      lines.push(
+        `• ${r.package}: ${r.pinned} → ${r.latest} (${r.bump_kind})`,
+      );
+    } else {
+      lines.push(`• ${r.package}: ${r.pinned} (latest)`);
+    }
+  }
+  lines.push("");
+  lines.push(
+    state.auto_update_enabled
+      ? `Auto-update gate: ON (${state.auto_update_flag_path})`
+      : `Auto-update gate: OFF — touch ${state.auto_update_flag_path} to enable`,
+  );
+  return lines.join("\n");
 }
 
 function handleMemoryCommand(args: string[]): string {
@@ -748,6 +787,7 @@ function formatHelp(): string {
     "/terminal on|off       toggle dashboard's in-browser tmux attach",
     "/notifications         show last 5 operator notifications",
     "/notifications read    mark all notifications read",
+    "/upstreams             pi-ai + pi-agent-core check state (ADR 0015)",
     "/memory <query>        search Evy Memory (Tier 3) — top 3 hits",
     "/memory recent         show last 5 memory entries",
     "/remember <text>       save a durable note into Evy Memory",

@@ -300,6 +300,69 @@ Both are pinned with `^` in `components/master/package.json` so `bun install` re
 
 **What stays the same.** Pi-agent-core's role as the agent runtime is unchanged in v2.7.24 — the master daemon still imports `Agent` and drives the agent loop exactly as before. The integration glue under `providers/<name>/` (tmux launchers, OAuth helpers) is unchanged. The v2.7.24 change formalises both pi-mono packages as tracked upstreams + finally consumes pi-ai's catalog from the dashboard.
 
+### 3.5c Upstream tracking (v2.7.25 Scope C)
+
+v2.7.25 closes the enforcement gap on ADR 0015's always-latest policy. A new watchdog — `upstream-check`, registered in the same registry the operator's `/watchdogs` kill command sees — polls npm for `@earendil-works/pi-ai` and `@earendil-works/pi-agent-core` every 6 hours.
+
+**How it works.**
+
+1. Read `components/master/package.json` for the floor-pinned versions (`^0.74.0` → `0.74.0`).
+2. Fetch each package's `dist-tags.latest` from `https://registry.npmjs.org/<package>`.
+3. Classify the bump as `same` / `patch` / `minor` / `major` via a small in-house semver parser (`parseSemver` + `classifyBump` in `components/master/upstream-check.ts`).
+4. Newer → emit notification. `severity:"info"` for patch/minor, `severity:"warn"` for major (per ADR 0015: `^` won't cross the major boundary on its own; majors go through manual review). Notification metadata: `{package, from, to, bump_kind}` — flows through to the dashboard's Copy-prompt button so the operator can hand the LLM a structured "should I update this?" prompt with one click.
+
+**Manual mode (default).** Notification only. The operator reviews, runs `bun install` and `bun test` by hand, commits, pushes.
+
+**Auto-update gate.** Create the flag file `~/.config/subctl/auto-update-upstreams.enabled` (any file at that path is sufficient — `touch` is the canonical activation) to let the watchdog ATTEMPT the upgrade itself on each tick:
+
+1. Write the new pin (preserving `^` / `~`) into `components/master/package.json`
+2. `bun install` in `components/master/`
+3. `bun test` in `components/master/`
+4. Tests pass → `severity:"info"` notification "pi-ai auto-updated 0.74.0 → 0.75.0 (tests passing)". Operator reviews the diff and commits + pushes manually.
+5. Tests fail → revert `package.json` + `severity:"alert"` notification "pi-ai auto-update 0.74.0 → 0.75.0 failed tests; reverted".
+
+**The watchdog never auto-commits and never auto-pushes.** The operator's eyeball on the diff is the explicit gate. The fact that something went into git history needs to be a conscious operator decision — not a side effect of a 6-hour cron.
+
+**Operator surfaces:**
+
+- **Dashboard.** The Memory tab carries an "Upstreams" card showing current pinned versions, the most-recent check timestamp, and a "Check now" button (POSTs to `/api/upstreams/check`, runs one tick on demand).
+- **Telegram.** `/upstreams` replies with the current pinned versions + latest check result + auto-update-gate state.
+- **API.** `/api/upstreams` (GET state) and `/api/upstreams/check` (POST manual tick) on the dashboard proxy through to the master.
+
+**Notification kinds added:** `upstream-available`, `upstream-auto-updated`, `upstream-update-failed`, `upstream-check-error`. All flow through the same v2.7.22 ring buffer + SSE stream + dashboard tray.
+
+### 3.5d Notification system (v2.7.25 UX)
+
+v2.7.22 shipped the master-side notification channel (ring buffer + SSE stream + Telegram push for `severity:"alert"`). v2.7.25 reshapes the dashboard surface after operator feedback that the v2.7.22 panel rendered always-on and could not be collapsed or dismissed.
+
+**Topbar.** A single Lucide `inbox` icon. Click to open a dropdown showing the last 20 notifications. Badge count reflects unread only; the icon ring goes red when an unread `severity:"alert"` is present.
+
+**Toasts (live arrivals).** New SSE-driven toast stack in the top-right corner. Slides in from the right, holds ~5s (8s for `severity:"alert"`), then slides back + fades. Up to 3 visible — older ones drop as new ones arrive. Each toast carries the severity icon + title + truncated body + manual close.
+
+**Dropdown row.** Severity icon (Lucide `info` / `alert-triangle` / `alert-octagon`), title, truncated body (full body on hover via `title="…"`), relative timestamp, per-row `[×]` dismiss (Lucide `x`). For `severity:"warn"` / `"alert"` and kinds matching `error|failed|fail|unresponsive|vanished|circuit-breaker|tripped|denied|stuck` a `[clipboard] Copy prompt` button appears. Click → copy a structured prompt to clipboard:
+
+```
+Notification (severity: alert): <title>
+
+<body>
+
+Context:
+- Team: <team_id if any>
+- Time: <ts>
+- Kind: <kind>
+- Metadata: <JSON of metadata>
+
+Please suggest a fix or appropriate escalation.
+```
+
+A brief "Prompt copied" toast confirms. The structured shape pastes into any LLM (Claude, ChatGPT, the operator's local supervisor) with predictable context.
+
+**Read semantics.** Read notifications stay visible at 0.55 opacity until the operator explicitly dismisses them via `[×]`. The bell badge counts unread only. "Mark all read" stays in the dropdown header.
+
+### 3.5e Icon library (ADR 0016)
+
+`dashboard/public/icons.js` exposes `icon(name, opts?)` — a static-baked SVG helper using Lucide v0.474.0 (MIT). The `lucide` npm dep is the source-of-truth checksum; the runtime serves only `public/*` files verbatim (no build step). Adding a new icon: copy the SVG path body from `dashboard/node_modules/lucide/dist/esm/icons/<name>.js` into the `ICONS` table in `icons.js`. See ADR 0016 for the full audit + what's deliberately NOT replaced (tool-family content icons, sidebar nav geometric glyphs, verdict 🟢🟡🔴 indicators).
+
 ### 3.6 Personal skills authoring (Phase 3d, planned)
 
 Hermes lets the agent **add its own skills** under `optional-skills/<category>/<name>/SKILL.md`. We adopt the same with constraints:

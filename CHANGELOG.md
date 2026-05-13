@@ -4,6 +4,69 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.7.25] — 2026-05-13
+
+### `feat(dashboard): v2.7.25 Lucide icons + notification UX polish + upstream-tracker watchdog`
+
+Three bundled scopes, one PR (operator's explicit request). All three were surfaced after v2.7.22 + v2.7.24 shipped: the notification panel had stayed always-on with no dismiss path, the emoji-as-icon chrome was producing platform-rendering-roulette ("Wingdings, crappy things like that"), and ADR 0015's "always-latest" policy had no enforcement mechanism beyond a process commitment.
+
+**Scope A — Lucide icon library (ADR 0016).** New `dashboard/public/icons.js` exposes `icon(name, opts?)` returning an SVG string. Static-baked from Lucide v0.474.0 (MIT) — `lucide` added to `dashboard/package.json` as the source-of-truth dep, but the runtime serving model stays build-step-free (the dashboard serves `public/*` verbatim). The bell `🔔` becomes Lucide `inbox`; the master chat attach button `📎` becomes `paperclip`; notification severity icons become `info` / `alert-triangle` / `alert-octagon`; the dropdown's dismiss and close glyphs become `x`; the copy-prompt button uses `clipboard`; the upstream card uses `package`. ADR 0016 documents what's deliberately NOT replaced (tool-family icons in `tool-display.json` — content config, not chrome; sidebar nav glyphs — unicode geometric shapes, not emoji; verdict 🟢🟡🔴 — colored content indicators rendered via `setText()`, surrounding CSS class carries the color signal anyway).
+
+**Scope B — Notification UX polish.** The v2.7.22 panel rendered always-on with no collapse or dismiss — notifications piled up, the panel always showed. Rewritten as:
+
+- The inbox icon in the topbar is the only persistent surface. Click → dropdown showing the last 20 notifications. Empty state: "No notifications".
+- New live-arrival **toast** stack in the top-right corner. Slides in from right, holds ~5s (8s for `severity:"alert"`), fades out + slides back. Max 3 visible — older ones drop as new ones arrive. Driven by the same SSE stream the dropdown subscribes to.
+- Each dropdown row carries a severity icon (info / alert-triangle / alert-octagon), title, body (truncated to ~80 chars with the full body in the title-attribute tooltip), relative timestamp ("3min ago"), per-row `[×]` dismiss button, and (for `severity:"warn"` / `"alert"` / kinds matching `error|failed|fail|unresponsive|vanished|circuit-breaker|tripped|denied|stuck`) a `[clipboard] Copy prompt` button.
+- The copy-prompt button assembles a structured "ask an LLM to triage this" prompt (severity / title / body / team_id / ts / kind / metadata) and writes it to clipboard. Brief "Prompt copied" toast confirms.
+- Read notifications stay visible at 0.55 opacity until explicitly dismissed via `[×]`. The badge count reflects unread only. "Mark all read" stays in the dropdown header.
+- `Notification.metadata` field added to `components/master/notifications.ts` — optional structured payload that flows through to the dropdown's copy-prompt builder. Used by Scope C's upstream-available notifications to carry `{package, from, to, bump_kind}`.
+
+**Scope C — Upstream-tracking watchdog (`upstream-check`).** Closes the enforcement gap on ADR 0015's always-latest policy. New `components/master/upstream-check.ts`:
+
+- Registers a watchdog `id: "upstream-check"`, `kind: "upstream-check"` (registry — same `components/master/watchdogs.ts` surface the operator's `/watchdogs` kill command sees). Ticks every 6h (`SUBCTL_UPSTREAM_CHECK_INTERVAL_MIN` env override). Fires once at boot + 20s so `/api/upstreams` returns real data on the first dashboard visit.
+- Reads `components/master/package.json` for the floor-pinned `@earendil-works/pi-agent-core` and `@earendil-works/pi-ai` versions, fetches each package's `dist-tags.latest` from `https://registry.npmjs.org/<package>`, compares via a small semver parser, classifies the bump as `same` / `patch` / `minor` / `major`.
+- Newer → notification. `severity:"info"` for patch/minor bumps, `severity:"warn"` for major (the `^` pin won't cross the boundary on its own per ADR 0015). Title: `pi-ai 0.74.0 → 0.75.0 available`. Metadata: `{package, from, to, bump_kind}` flows into the dropdown's copy-prompt format.
+- **Auto-update gate (default OFF).** Manual operator action is the default — notification only. Setting `~/.config/subctl/auto-update-upstreams.enabled` (any file at that path is sufficient — `touch` is the canonical activation) promotes the watchdog to ADDITIONALLY:
+  1. Write the new pin (preserving `^` / `~`) into `components/master/package.json`
+  2. `bun install` in `components/master/`
+  3. `bun test` in `components/master/`
+  4. Pass → `severity:"info"` notification "pi-ai auto-updated 0.74.0 → 0.75.0 (tests passing)"; review the diff and commit/push manually.
+  5. Fail → revert `package.json` + `severity:"alert"` notification "pi-ai auto-update 0.74.0 → 0.75.0 failed tests; reverted".
+- The watchdog **never auto-commits** and **never auto-pushes**. The operator's eyeball on the diff is the explicit gate.
+- New `/upstreams` (GET) + `/upstreams/check` (POST) master routes; dashboard proxy at `/api/upstreams` + `/api/upstreams/check`.
+- New "Upstreams" card in the dashboard Memory tab — current pinned versions, last-checked timestamp, "Check now" button.
+- New `/upstreams` Telegram command — replies with the latest tick state + auto-update-gate flag location.
+
+**Files:**
+
+- New: `dashboard/public/icons.js` — Lucide-backed `icon(name, opts)` helper. ~10 baked icons (`inbox`, `x`, `clipboard`, `clipboard-check`, `info`, `alert-triangle`, `alert-octagon`, `check`, `package`, `refresh-cw`, `paperclip`, `bell`). Also exposes `window.subctlIcon` for the classic-script `app.js`.
+- New: `dashboard/__tests__/icons.test.ts` — 10 tests covering catalog membership, SVG shape, size/className/strokeWidth options, the empty-string fallback for unknown names.
+- New: `components/master/upstream-check.ts` — `runUpstreamCheck`, `startUpstreamWatchdog`, `defaultAutoUpdateRunner`, `describeUpstreamState`, plus pure helpers (`parseSemver`, `classifyBump`, `pinFloor`, `preserveCaret`, `readPinnedVersion`, `writePinnedVersion`).
+- New: `components/master/__tests__/upstream-check.test.ts` — covers the pure helpers, a mocked-registry round-trip (info for minor bump, warn for major, no notification when versions match), and the auto-update gate (off by default → runner not called; on + success → package.json rewritten + info notif; on + fail → revert + alert notif).
+- New: `docs/adr/0016-lucide-icon-library.md` — the decision record. Index updated.
+- `components/master/notifications.ts` — `Notification.metadata?` field added; `EmitNotificationInput.metadata?` plumbs through `emitNotification()`.
+- `components/master/server.ts` — imports `startUpstreamWatchdog` + `describeUpstreamState`, arms the watchdog after the verifier-cluster ticker, adds `/upstreams` GET + `/upstreams/check` POST routes, hooks shutdown.
+- `components/master/master-notify-listener.ts` — adds `/upstreams` Telegram command + help-line entry; "Unknown command" hint updated.
+- `dashboard/server.ts` — `/api/upstreams` and `/api/upstreams/check` proxy routes; `/icons.js` registered in `STATIC_FILES`.
+- `dashboard/public/index.html` — bell icon span gets an id (filled by JS); old emoji `🔔` removed; tray drawer + toast stack restructured; attach button is now icon-driven; new "Upstreams" card section in the Memory tab; `<script type="module" src="/icons.js">` loaded ahead of `app.js`.
+- `dashboard/public/app.js` — full rewrite of `initNotificationTray` (dropdown + toast stack + copy-prompt + dismiss + read-stays-visible); new `initLucideChrome` (paperclip swap); new `initUpstreamsCard` (lazy-loads on Memory tab activation).
+- `dashboard/public/style.css` — v2.7.22 panel rules replaced with v2.7.25 dropdown + toast styles; `.upstreams-card` styles added.
+- `dashboard/package.json` — `"lucide": "^0.474.0"` dep added.
+- `docs/master.md` — new sections "Notification system (v2.7.25 UX)", "Icon library (ADR 0016)", "Upstream tracking (v2.7.25 Scope C)".
+- `VERSION` → `2.7.25`.
+
+**Notification kinds added (forward-compat with the v2.7.22 ring):**
+
+- `upstream-available` — newer pi-ai or pi-agent-core on npm (info patch/minor, warn major)
+- `upstream-auto-updated` — auto-update gate ran successfully (info)
+- `upstream-update-failed` — auto-update gate ran but tests failed; reverted (alert)
+- `upstream-check-error` — watchdog tick threw (warn, swallowed so the daemon keeps running)
+
+**Out of scope, deferred:**
+
+- Replacing tool-family emoji icons in `tool-display.json` and the verdict glyphs in the dispatcher (see ADR 0016 § Deliberately NOT replaced for reasoning).
+- An automated `subctl auth github-copilot <alias>` OAuth wiring (deferred from v2.7.24 per ADR 0015's open questions).
+
 ## [2.7.24] — 2026-05-13
 
 ### `feat(dashboard): v2.7.24 pi-ai provider catalog (dynamic dropdown) — pi-ai + pi-agent declared first-class upstreams`

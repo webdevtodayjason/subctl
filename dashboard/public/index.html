@@ -10,6 +10,11 @@
        vendored from dashboard/node_modules. server.ts serves these
        under /vendor/xterm/* (see STATIC_FILES). -->
   <link rel="stylesheet" href="/vendor/xterm/xterm.css">
+  <!-- v2.7.25 (Scope A, ADR 0016): Lucide-backed icon helper. Module
+       script so the file's `export { icon, listIcons }` works, but it
+       also assigns `window.subctlIcon` / `window.subctlListIcons` so
+       classic scripts (app.js) can call it directly. -->
+  <script type="module" src="/icons.js"></script>
 </head>
 <body>
   <!-- Live tmux pane preview modal. Polls /api/orchestration/<name> every
@@ -97,10 +102,14 @@
       <span class="uptime" id="uptime">running --</span>
       <span class="clock" id="clock">--:--:--</span>
       <button class="refresh-btn" id="refresh-btn" title="Force a fresh /api/oauth/usage call (bypasses 5-min cache)" aria-label="Refresh usage">↻</button>
-      <!-- v2.7.22 notification tray. Bell + badge unread count. Click to
-           open the drawer below. JS in app.js binds load + SSE. -->
+      <!-- v2.7.25 notification tray. v2.7.22 originally used 🔔; the
+           operator's "Wingdings, crappy things like that" call surfaced
+           the platform-rendering-roulette problem with emoji-as-icon.
+           Replaced with Lucide's `inbox` — initNotificationTray() in
+           app.js fills the .notif-bell-icon span using subctlIcon().
+           Badge unread count + ●/▲ alert ring overlay handled there. -->
       <button class="notif-bell" id="notif-bell" type="button" aria-label="Notifications" title="Operator notifications">
-        <span class="notif-bell-icon" aria-hidden="true">🔔</span>
+        <span class="notif-bell-icon" id="notif-bell-icon" aria-hidden="true"></span>
         <span class="notif-bell-badge" id="notif-bell-badge" hidden>0</span>
       </button>
       <span class="status-pill" id="status-pill">
@@ -110,18 +119,33 @@
     </div>
   </header>
 
-  <!-- v2.7.22 notification tray drawer. Positioned absolute under the
-       bell; JS toggles .open. List rendered into #notif-tray-list. -->
+  <!-- v2.7.25 notification dropdown. The v2.7.22 surface rendered an
+       always-on panel that piled up — operator: "renders always-on,
+       can't be collapsed or dismissed." Replaced with:
+         • A bell drawer hidden by default, opened by clicking the inbox
+           icon in the topbar. Caps the visible list at 20 entries.
+         • Per-row [×] dismiss (Lucide x) + "mark all read" + Copy-prompt
+           button for warn/alert rows.
+         • Empty state when there's nothing to show.
+       Toast surface for live arrivals lives in its own container below
+       (#notif-toast-stack) so a notification arriving while the drawer
+       is closed is still visible. -->
   <div class="notif-tray" id="notif-tray" hidden>
     <header class="notif-tray-head">
       <strong>Notifications</strong>
       <button type="button" class="notif-tray-readall" id="notif-tray-readall" title="Mark all read">mark all read</button>
-      <button type="button" class="notif-tray-close" id="notif-tray-close" aria-label="close">✕</button>
+      <button type="button" class="notif-tray-close" id="notif-tray-close" aria-label="close"></button>
     </header>
     <div class="notif-tray-list" id="notif-tray-list">
-      <div class="dim small" style="padding: 12px">loading…</div>
+      <div class="notif-tray-empty">No notifications</div>
     </div>
   </div>
+
+  <!-- v2.7.25 toast stack. Up to 3 visible at once; older ones fade out
+       as new ones arrive. Positioned top-right via CSS. Driven by
+       initNotificationToasts() in app.js — it subscribes to the same
+       SSE stream the dropdown does. -->
+  <div class="notif-toast-stack" id="notif-toast-stack" aria-live="polite" aria-atomic="false"></div>
 
   <div class="app-shell">
     <aside class="sidebar" id="sidebar">
@@ -238,7 +262,9 @@
       <div class="master-attachments" id="master-attachments" hidden></div>
       <form class="master-input" id="master-input-form" autocomplete="off">
         <input type="file" id="master-attach-file" hidden multiple>
-        <button type="button" class="master-attach-btn" id="master-attach-btn" title="Attach a document (or drag-drop onto the chat — large pastes auto-attach)">📎</button>
+        <!-- v2.7.25 (Scope A): Lucide `paperclip` replaces the 📎 emoji.
+             Filled by initLucideChrome() in app.js using window.subctlIcon. -->
+        <button type="button" class="master-attach-btn" id="master-attach-btn" title="Attach a document (or drag-drop onto the chat — large pastes auto-attach)" aria-label="Attach a document"></button>
         <input type="text" id="master-input" placeholder="message subctl master… (enter to send · drop or paste a doc to attach)" autocomplete="off">
         <button type="submit" id="master-send">send</button>
       </form>
@@ -742,6 +768,27 @@
               <button type="button" class="secondary-btn" id="evy-mem-refresh-btn">recent</button>
             </div>
             <div class="evy-mem-list" id="evy-mem-list">loading…</div>
+          </div>
+        </section>
+
+        <!-- v2.7.25 — Upstream-check (ADR 0015 always-latest policy).
+             Small card showing current pinned versions of pi-ai +
+             pi-agent-core, with a "Check now" button that pokes the
+             watchdog. Driven by initUpstreamsCard() in app.js. -->
+        <section class="memory-card memory-card-wide upstreams-card" id="upstreams-card">
+          <div class="memory-card-head">
+            <h3>Upstreams <span class="dim small">always-latest pi-mono packages — see ADR 0015</span></h3>
+            <span class="upstreams-last-checked" id="upstreams-last-checked">never checked</span>
+          </div>
+          <div class="memory-card-body">
+            <p class="memory-card-doc">Pinned versions of <code>@earendil-works/pi-ai</code> + <code>@earendil-works/pi-agent-core</code> in <code>components/master/package.json</code>, compared against npm <code>dist-tags.latest</code> every 6h. Newer-than-pinned → notification (info for minor/patch, warn for major). Manual update by default; create <code>~/.config/subctl/auto-update-upstreams.enabled</code> to let the watchdog run <code>bun install</code> + <code>bun test</code> on each bump.</p>
+            <div class="upstreams-grid" id="upstreams-grid">
+              <div class="dim small">loading…</div>
+            </div>
+            <div class="upstreams-actions">
+              <button type="button" class="primary-btn" id="upstreams-check-btn">Check now</button>
+              <span class="upstreams-last-checked" id="upstreams-status">—</span>
+            </div>
           </div>
         </section>
       </div>

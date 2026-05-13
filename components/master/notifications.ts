@@ -29,10 +29,14 @@ export interface Notification {
   id: string;
   /**
    * Stable kind string so consumers can filter/group. Known values:
-   *   - "team-stale"        — first detection of a stale dev team (legacy)
-   *   - "team-nudge-sent"   — auto-nudge dispatched to lead (info)
-   *   - "team-unresponsive" — lead failed to reply to nudge (alert)
-   *   - "auto-compact-error"— compaction tick threw (warn)
+   *   - "team-stale"            — first detection of a stale dev team (legacy)
+   *   - "team-nudge-sent"       — auto-nudge dispatched to lead (info)
+   *   - "team-unresponsive"     — lead failed to reply to nudge (alert)
+   *   - "auto-compact-error"    — compaction tick threw (warn)
+   *   - "upstream-available"    — pi-ai / pi-agent-core has a newer
+   *                                 version on npm (v2.7.25)
+   *   - "upstream-auto-updated" — auto-update gate ran successfully (info)
+   *   - "upstream-update-failed"— auto-update gate ran but tests failed (alert)
    *   - anything else (forward-compat, unknown kinds render as generic)
    */
   kind: string;
@@ -44,6 +48,13 @@ export interface Notification {
   ts: string; // ISO 8601 emit time
   /** Marked-read timestamp; null until read. */
   read_at: string | null;
+  /**
+   * Optional bag of structured fields the dashboard / Telegram / copy-prompt
+   * surface can consume verbatim. Keep values JSON-serializable — the tray
+   * renders this via JSON.stringify when building the LLM triage prompt.
+   * Added v2.7.25 (Scope B copy-prompt + Scope C upstream-check from/to).
+   */
+  metadata?: Record<string, unknown>;
 }
 
 export interface EmitNotificationInput {
@@ -52,6 +63,8 @@ export interface EmitNotificationInput {
   title: string;
   body: string;
   team_id?: string;
+  /** Optional structured payload — see Notification.metadata for usage. */
+  metadata?: Record<string, unknown>;
 }
 
 export type NotificationSubscriber = (n: Notification) => void;
@@ -76,6 +89,7 @@ export function emitNotification(input: EmitNotificationInput): Notification {
     team_id: input.team_id,
     ts: new Date().toISOString(),
     read_at: null,
+    metadata: input.metadata,
   };
   _ring.push(n);
   // Cap at RING_LIMIT — drop oldest. The watchdog's heartbeat rate means
