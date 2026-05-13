@@ -211,6 +211,57 @@ Hermes uses literal `<memory-context>` tags + a `StreamingContextScrubber` to en
 
 Manual triggers: chat toolbar `compact` button, banner action when `>100%`, `POST /api/master/transcript/compact`.
 
+### 3.4.1 Evy Memory (Tier 3) — v2.7.23+
+
+Distinct from §3.4 ("compactable transcript", which is the in-process agent state pi-agent-core works on). Evy Memory is the **persistent, queryable record of what was said, decided, and shipped between operator and Evy across sessions** — the load-bearing fix for "51st date syndrome": when the master daemon is restarted tomorrow, the last things Evy remembers come from this store.
+
+**Substrate.** Native TypeScript module backed by `bun:sqlite` with FTS5. See [ADR 0014](adr/0014-evy-memory-ts-port-of-memori.md) for the substrate decision (supersedes [ADR 0006](adr/0006-memori-byodb-sqlite-for-tier-3.md) which named the Python Memori SDK). DB path: `~/.local/state/subctl/memory/evy.db` (chmod 600, parent dir chmod 700). The file never egresses without operator action; egress surfaces (Telegram, dashboard) pass entries through a redaction helper that masks `sk-*` keys, `Bearer …` tokens, 64-char hex blobs (HMAC marks per the v2.7.20 trust-marker), and `hmac:<team>:<hex>` structured marks.
+
+**Schema.**
+
+```sql
+CREATE TABLE entries (
+  id TEXT PRIMARY KEY,
+  ts TEXT NOT NULL,
+  team_id TEXT,          -- null = Evy-global; set = team-scoped
+  role TEXT NOT NULL,    -- system | user | assistant | tool | event
+  kind TEXT NOT NULL,    -- message | tool-call | notification | shipped | decision | operator-note | evy-note | synthetic-prompt
+  content TEXT NOT NULL,
+  metadata_json TEXT
+);
+CREATE VIRTUAL TABLE entries_fts USING fts5(id UNINDEXED, content);
+-- Triggers keep entries_fts in sync with entries.
+-- Indices: idx_entries_ts, idx_entries_team_kind, idx_entries_kind.
+```
+
+Inspired by Memori's `memori_conversation_message` (role + content + timestamps + scope). Memori's broader entity-fact knowledge-graph layer (subject/predicate/object triples, embeddings, entity_fact extraction) is intentionally NOT replicated in v1 — it requires LLM-driven extraction and is queued as a v2 enhancement.
+
+**API (`components/master/memory.ts`).**
+
+- `recordEntry({ role, kind, content, team_id?, metadata? })` — append. Content >16 KB is truncated with a searchable mark.
+- `recallEntries({ query?, team_id?, kind?, since?, limit? })` — search. FTS5 with bm25 ranking when a query is provided; LIKE fallback when FTS5 isn't compiled in. Multi-token AND semantics with prefix matching by default; raw FTS5 syntax (`"exact phrase"`, `foo OR bar`) is honored.
+- `recentEntries(limit?)` — newest-first slice.
+- `purgeBefore(iso)`, `deleteEntry(id)` — operator surfaces.
+- `memoryStats()` — count / oldest_ts / newest_ts / bytes / fts5 / path. Used by the dashboard tray.
+- `redactForEgress(s)` / `redactEntryForEgress(e)` — egress masking helpers.
+
+**Capture (turn boundaries, wired in `server.ts`).** Every operator-Evy turn writes:
+
+- User message → `role:"user", kind:"message"` (or `event/synthetic-prompt` for watchdog/verifier re-entries).
+- Assistant response → `role:"assistant", kind:"message"` (skipped for synthetic re-entries).
+- Tool call → `role:"tool", kind:"tool-call"`, content = `tool_name(short_args)`.
+- Notification emitted → `role:"event", kind:"notification"`, severity + body in metadata.
+
+Failures are swallowed and logged to stderr — memory never blocks an operator reply.
+
+**Recall surfaces.**
+
+- **Evy's tools.** `evy_recall(query?, team_id?, kind?, since_days?, limit?)` and `evy_remember(content, kind?, team_id?)`. Tool descriptions name the Tier 3 vs Tier 4 distinction so Evy routes between Evy Memory (operator-Evy chat) and `memory_search` (claude-mem cross-session observation corpus, [ADR 0010](adr/0010-claude-mem-stays-parallel.md)).
+- **Dashboard.** `GET /api/memory/search`, `/api/memory/recent`, `/api/memory/stats`; `POST /api/memory/entries`; `DELETE /api/memory/entries/:id`. Subpath-only so the existing `/api/memory` (Obsidian vault status) route is untouched. Memory tab has an "Evy Memory" card with search + kind filter + recent + per-entry forget.
+- **Telegram.** `/memory <query>` (top 3 matches), `/memory recent` (last 5), `/remember <text>` (save kind=operator-note).
+
+**Tier 4 boundary (preserved).** This module reads zero claude-mem state. The Tier 4 tools (`memory_search`, `memory_timeline`, `memory_observations`, `memory_health`) keep working unchanged; they query the claude-mem worker at `localhost:37701` per `components/master/tools/memory.ts`. The persona surfaces both — Evy chooses based on whether the operator's question is about the conversation (Tier 3) or about Claude Code work history across sessions (Tier 4).
+
 ### 3.5 Provider abstraction (future, Phase 3f+)
 
 Hermes separates `MemoryProvider` (tier 2) from `ContextEngine` (tier 3 compaction). We've conflated them. If/when we want pluggable memory backends (Honcho, Mem0, Supermemory), we should split:

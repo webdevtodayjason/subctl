@@ -4780,6 +4780,41 @@ const server = Bun.serve({
       }
     }
 
+    // ── /api/memory/* — proxy to master's Evy Memory (v2.7.23) ──────────
+    // Tier 3 conversational memory: operator-Evy chat, decisions, captured
+    // notifications, shipped events. The master owns the SQLite store
+    // (~/.local/state/subctl/memory/evy.db); this just forwards REST so the
+    // dashboard Memory panel + the operator can search/recall without
+    // touching the master's port directly.
+    //
+    // Subpath-only — `/api/memory` (no suffix) stays mapped to the existing
+    // Obsidian vault status endpoint farther up. We only proxy when there's
+    // a real subpath ("/search", "/recent", "/stats", "/entries", …).
+    if (url.pathname.startsWith("/api/memory/")) {
+      const masterPort = process.env.SUBCTL_MASTER_PORT ?? "8788";
+      const masterUrl = `http://127.0.0.1:${masterPort}${url.pathname.replace(/^\/api\/memory/, "/memory")}${url.search}`;
+      try {
+        const init: RequestInit = {
+          method: req.method,
+          headers: { "Content-Type": "application/json" },
+        };
+        if (req.method !== "GET" && req.method !== "HEAD") {
+          init.body = await req.text();
+        }
+        const upstream = await fetch(masterUrl, init);
+        const body = await upstream.text();
+        return new Response(body, {
+          status: upstream.status,
+          headers: { "Content-Type": upstream.headers.get("Content-Type") ?? "application/json" },
+        });
+      } catch (err) {
+        return Response.json(
+          { ok: false, error: `master daemon unreachable: ${(err as Error).message}` },
+          { status: 502 },
+        );
+      }
+    }
+
     if (url.pathname.startsWith("/api/master/")) {
       const masterPort = process.env.SUBCTL_MASTER_PORT ?? "8788";
       const masterUrl = `http://127.0.0.1:${masterPort}${url.pathname.replace(/^\/api\/master/, "")}${url.search}`;

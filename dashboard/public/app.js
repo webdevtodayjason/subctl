@@ -3828,6 +3828,136 @@
       const panel = $("memory-panel");
       if (panel && getComputedStyle(panel).display !== "none") refresh();
     }, 30000);
+
+    // v2.7.23 — wire the Evy Memory (Tier 3) card. Lives in the same Memory
+    // tab but pulls from /api/memory/recent + /api/memory/search.
+    wireEvyMemoryCard();
+  }
+
+  // v2.7.23 — Evy Memory (Tier 3) dashboard wiring. Conversational memory
+  // captured at master turn boundaries; queryable via FTS5. See ADR 0014.
+  function wireEvyMemoryCard() {
+    const card = $("evy-memory-card");
+    if (!card) return;
+    const list = $("evy-mem-list");
+    const meta = $("evy-mem-meta");
+    const search = $("evy-mem-search");
+    const kindSel = $("evy-mem-kind");
+    const searchBtn = $("evy-mem-search-btn");
+    const refreshBtn = $("evy-mem-refresh-btn");
+    if (!list) return;
+
+    function esc(s) {
+      return String(s == null ? "" : s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function renderEntries(entries) {
+      if (!entries || entries.length === 0) {
+        list.innerHTML = "<p class=\"dim\">(no entries)</p>";
+        return;
+      }
+      const rows = entries
+        .map((e) => {
+          const when = (e.ts || "").slice(0, 10) + " " + (e.ts || "").slice(11, 16);
+          const team = e.team_id ? `<span class="evy-mem-team">@${esc(e.team_id)}</span>` : "";
+          return (
+            `<div class="evy-mem-item" data-id="${esc(e.id)}">` +
+              `<div class="evy-mem-head">` +
+                `<span class="evy-mem-when">${esc(when)}</span> ` +
+                `<span class="evy-mem-role">${esc(e.role)}</span>` +
+                `<span class="evy-mem-kind">${esc(e.kind)}</span>` +
+                team +
+                `<button type="button" class="evy-mem-del" data-id="${esc(e.id)}" title="forget this entry">✕</button>` +
+              `</div>` +
+              `<div class="evy-mem-body">${esc(e.content)}</div>` +
+            `</div>`
+          );
+        })
+        .join("");
+      list.innerHTML = rows;
+      list.querySelectorAll(".evy-mem-del").forEach((btn) => {
+        btn.addEventListener("click", async (ev) => {
+          ev.preventDefault();
+          const id = btn.getAttribute("data-id");
+          if (!id) return;
+          if (!confirm("Forget this memory entry?")) return;
+          try {
+            const r = await fetch(`/api/memory/entries/${encodeURIComponent(id)}`, { method: "DELETE" });
+            if (r.ok || r.status === 404) loadRecent();
+          } catch (err) {
+            console.error("[evy-mem] delete failed", err);
+          }
+        });
+      });
+    }
+
+    async function loadStats() {
+      try {
+        const r = await fetch("/api/memory/stats");
+        const j = await r.json();
+        if (!j.ok || !j.stats) return;
+        const s = j.stats;
+        const sizeKb = Math.round((s.bytes || 0) / 1024);
+        meta.textContent = `${s.count} entries · ${sizeKb} KB · fts5=${s.fts5 ? "on" : "off"}`;
+      } catch {
+        meta.textContent = "— entries";
+      }
+    }
+
+    async function loadRecent() {
+      list.innerHTML = "<p class=\"dim\">loading…</p>";
+      try {
+        const r = await fetch("/api/memory/recent?limit=25");
+        const j = await r.json();
+        if (!j.ok) {
+          list.innerHTML = "<p class=\"dim\">unreachable</p>";
+          return;
+        }
+        renderEntries(j.entries || []);
+        loadStats();
+      } catch (err) {
+        list.innerHTML = `<p class="dim">fetch error: ${esc(err)}</p>`;
+      }
+    }
+
+    async function runSearch() {
+      const q = (search.value || "").trim();
+      const k = (kindSel.value || "").trim();
+      const params = new URLSearchParams();
+      if (q) params.set("query", q);
+      if (k) params.set("kind", k);
+      params.set("limit", "50");
+      list.innerHTML = "<p class=\"dim\">searching…</p>";
+      try {
+        const r = await fetch(`/api/memory/search?${params.toString()}`);
+        const j = await r.json();
+        if (!j.ok) {
+          list.innerHTML = "<p class=\"dim\">unreachable</p>";
+          return;
+        }
+        renderEntries(j.entries || []);
+      } catch (err) {
+        list.innerHTML = `<p class="dim">fetch error: ${esc(err)}</p>`;
+      }
+    }
+
+    if (searchBtn) searchBtn.addEventListener("click", runSearch);
+    if (refreshBtn) refreshBtn.addEventListener("click", loadRecent);
+    if (search) {
+      search.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          runSearch();
+        }
+      });
+    }
+    if (kindSel) kindSel.addEventListener("change", runSearch);
+
+    loadRecent();
   }
 
   // ----- Master chat (SSE-backed conversation with the master daemon) -----

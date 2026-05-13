@@ -74,6 +74,11 @@ import {
   listNotifications,
   markAllRead as markAllNotificationsRead,
 } from "./notifications";
+import {
+  recordEntry as recordMemoryEntry,
+  recallEntries as recallMemoryEntries,
+  redactEntryForEgress,
+} from "./memory";
 
 const HOME = homedir();
 const SUBCTL_CONFIG_DIR =
@@ -466,8 +471,93 @@ async function handleBotCommand(text: string): Promise<string> {
       // here on emit; this command lets the operator scrollback / clear
       // without opening the dashboard.
       return handleNotificationsCommand(parts.slice(1));
+    case "/memory":
+      // v2.7.23 — operator-facing query of Evy Memory (Tier 3).
+      //   /memory <query>   → top 3 most-relevant matches
+      //   /memory recent    → last 5 entries (terse)
+      // Memory entries pass through redactEntryForEgress on the way out
+      // so an HMAC mark / sk-* / bearer token can't leak through chat
+      // even if the operator searched a noisy term.
+      return handleMemoryCommand(parts.slice(1));
+    case "/remember":
+      // v2.7.23 — operator-facing save into Evy Memory. Everything after
+      // "/remember " becomes a kind="operator-note" entry. Replies "saved"
+      // with the id (so /memory <text> can find it back).
+      return handleRememberCommand(text.slice("/remember".length));
     default:
-      return `Unknown command: ${cmd}\n\nTry: /status, /pause, /resume, /profile, /watchdogs, /terminal, /notifications, /help`;
+      return `Unknown command: ${cmd}\n\nTry: /status, /pause, /resume, /profile, /watchdogs, /terminal, /notifications, /memory, /remember, /help`;
+  }
+}
+
+function handleMemoryCommand(args: string[]): string {
+  const sub = (args[0] || "").trim().toLowerCase();
+  // `/memory recent` — last 5 entries, terse.
+  if (sub === "recent" || sub === "") {
+    if (sub === "" && args.length === 0) {
+      // No args at all → recent
+    }
+    if (sub === "recent" || args.length === 0) {
+      const last = recallMemoryEntries({ limit: 5 });
+      if (last.length === 0) return "(no memory entries)";
+      const lines: string[] = ["📒 Last 5 memory entries:", ""];
+      for (const e of last.map(redactEntryForEgress)) {
+        lines.push(formatMemoryLine(e));
+      }
+      lines.push("");
+      lines.push("Search: /memory <query>");
+      lines.push("Save:   /remember <text>");
+      return lines.join("\n");
+    }
+  }
+  // `/memory <query>` — text search, top 3.
+  const query = args.join(" ").trim();
+  if (!query) {
+    return "Usage:\n/memory <query>   — top 3 matches\n/memory recent    — last 5 entries";
+  }
+  const hits = recallMemoryEntries({ query, limit: 3 });
+  if (hits.length === 0) {
+    return `🔍 no memory matches for: ${query}`;
+  }
+  const lines: string[] = [`🔍 Top ${hits.length} for "${query}":`, ""];
+  for (const e of hits.map(redactEntryForEgress)) {
+    lines.push(formatMemoryLine(e));
+  }
+  return lines.join("\n");
+}
+
+function formatMemoryLine(e: {
+  ts: string;
+  role: string;
+  kind: string;
+  team_id?: string | null;
+  content: string;
+}): string {
+  // YYYY-MM-DD HH:MM — short and absolute so it works across timezones
+  // without the operator doing arithmetic. Telegram font is tight; keep
+  // each entry on one logical block.
+  const when = e.ts.slice(0, 10) + " " + e.ts.slice(11, 16);
+  const scope = e.team_id ? `@${e.team_id}` : "·";
+  const head = `${when} ${scope} [${e.role}/${e.kind}]`;
+  const body =
+    e.content.length > 220 ? e.content.slice(0, 217) + "…" : e.content;
+  return `${head}\n${body}\n`;
+}
+
+function handleRememberCommand(rest: string): string {
+  const content = rest.trim();
+  if (!content) {
+    return "Usage: /remember <text>\n\nSaves the text into Evy Memory under kind=operator-note. Recall later with /memory <query>.";
+  }
+  try {
+    const entry = recordMemoryEntry({
+      role: "user",
+      kind: "operator-note",
+      content,
+      metadata: { source: "telegram" },
+    });
+    return `💾 saved (${entry.id.slice(0, 8)})`;
+  } catch (e: any) {
+    return `remember failed: ${e?.message || e}`;
   }
 }
 
@@ -658,6 +748,9 @@ function formatHelp(): string {
     "/terminal on|off       toggle dashboard's in-browser tmux attach",
     "/notifications         show last 5 operator notifications",
     "/notifications read    mark all notifications read",
+    "/memory <query>        search Evy Memory (Tier 3) — top 3 hits",
+    "/memory recent         show last 5 memory entries",
+    "/remember <text>       save a durable note into Evy Memory",
     "",
     "Free-text messages are queued for the next agent turn — subctl master",
     "will act on them per its policy and report back.",
