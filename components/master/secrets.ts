@@ -60,6 +60,7 @@ export const SECRET_KEYS = [
   "firecrawl_api_key",
   "linear_api_key",
   "context7_api_key",
+  "tinyfish_api_key",
 ] as const;
 export type SecretKey = (typeof SECRET_KEYS)[number];
 
@@ -266,6 +267,8 @@ export function envVarFor(key: string): string {
       return "LINEAR_API_KEY";
     case "context7_api_key":
       return "CONTEXT7_API_KEY";
+    case "tinyfish_api_key":
+      return "TINYFISH_API_KEY";
     default:
       // Best-effort uppercase fallback so a hand-added secret name still
       // resolves predictably (`foo_api_key` → `FOO_API_KEY`).

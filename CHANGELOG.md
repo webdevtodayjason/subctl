@@ -4,6 +4,37 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.7.16] — 2026-05-13
+
+### `feat(tools): TinyFish first-class — tinyfish_search + tinyfish_fetch as native master tools`
+
+Two new master tools land alongside the existing `web_search` (Brave) and `web_fetch` (Firecrawl): `tinyfish_search` and `tinyfish_fetch`, integrated first-class via HTTP rather than MCP passthrough. Master is a daemon and can't pop a browser for OAuth, so the REST API path is the right surface — the MCP endpoint's browser-OAuth flow is a separate auth surface and isn't viable here. The tools show up in `/diag`, the dashboard, and Evy's tool list as native master tools.
+
+**Endpoints (verified against https://docs.tinyfish.ai on 2026-05-13):**
+
+- Search: `GET https://api.search.tinyfish.ai` — params `query` (required), `location`, `language`, `page` (0–10). Response shape: `{ query, results: [{position, site_name, title, snippet, url}], total_results, page }`.
+- Fetch: `POST https://api.fetch.tinyfish.ai` — body `{ urls: [url], format: "markdown"|"html"|"json", links?: bool, image_links?: bool }`. Response: `{ results: [{url, final_url, title, description, language, author, published_date, text, latency_ms, format}], errors: [{url, error, status?}] }`. Per-URL failures surface as structured errors (e.g. `robots_blocked` with status 403).
+- Auth: `X-API-Key` header (NOT `Authorization: Bearer` — the brief assumed OAuth, but TinyFish's REST API uses an API key minted at https://agent.tinyfish.ai). Free tier is 30 req/min and search + fetch do not consume credits.
+
+**Operator setup (one-time):** sign in at https://agent.tinyfish.ai and mint an API key, then paste it via the dashboard Settings → API Tokens panel (writes `~/.config/subctl/secrets.json` chmod 600) under `tinyfish_api_key`, OR set `TINYFISH_API_KEY` in `~/Library/LaunchAgents/com.subctl.master.plist` EnvironmentVariables followed by `launchctl kickstart -k gui/$UID/com.subctl.master`. The v2.7.4 priority chain (env > secrets.json > absent) applies. Until the secret is configured, both tools return `{ ok: false, error: "TINYFISH_API_KEY not configured", ... }` with an actionable hint — they never throw.
+
+**Fallback hierarchy:** try TinyFish first for current-events search (different index + freshness signal vs Brave) and for clean article extraction with structured metadata (author + published_date land in the response). Fall back to `web_search` / `web_fetch` if results are sparse, the URL is robots-blocked, or the rate limit trips a 429. All HTTP failures (4xx, 5xx, 429, network, timeout) surface as structured `{ ok: false, error, status, retry_after? }` payloads. 401 includes a `hint` to re-mint the key at agent.tinyfish.ai.
+
+**Naming note.** The dispatch brief specified `tinyfish_oauth_token` as the secret key under the assumption that TinyFish auth was OAuth. Verifying the docs revealed the REST API uses `X-API-Key` instead, so the secret is named `tinyfish_api_key` to match the actual auth surface and the existing `brave_api_key` / `firecrawl_api_key` / `linear_api_key` pattern. The MCP endpoint (`https://agent.tinyfish.ai/mcp`) still uses browser OAuth — that flow is unaffected by this integration.
+
+**Scope discipline.** Browser automation, batch operations, and structured-extraction tiers from TinyFish are not integrated — those are paid surfaces and out of scope for v2.7.16. HMAC trust marker stays slated for v2.7.17. Web terminal stays slated for v2.7.18. `components/skills/master/SKILL.md` was not touched.
+
+**Files:**
+
+- New: `components/master/tools/tinyfish.ts` (two tools, injectable `fetchHttp` dep matches `web.ts` pattern).
+- New: `components/master/tools/__tests__/tinyfish.test.ts` (21 hermetic tests — no real HTTP).
+- `components/master/secrets.ts`: `tinyfish_api_key` added to `SECRET_KEYS`; `envVarFor("tinyfish_api_key") → "TINYFISH_API_KEY"`.
+- `components/master/server.ts`: import + register the family after the web family.
+- `dashboard/server.ts` and `dashboard/public/app.js`: `TINYFISH_API_KEY` row added to the Settings → API Tokens panel.
+- `docs/master.md`: Phase 3o.16 section documents the new family.
+
+Master tool count: **71 → 73**. Test count: **537 → 558** (+21).
+
 ## [2.7.15] — 2026-05-13
 
 ### `feat(persona): Evy lands — SKILL.md rewrite + voice preset + tool-description imperative voice`

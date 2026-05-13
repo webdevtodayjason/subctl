@@ -1460,6 +1460,23 @@ shows the conflict UI.
 - Persistent-skills SKILL.md test for master: when claude-mem captures a recurring pattern, master should propose a skill via `notify_dashboard` and let operator approve before writing.
 - `subctl update` end-to-end test: pull, rebuild, restart launchd jobs, doctor on the way out.
 
+### Phase 3o.16 — TinyFish first-class (v2.7.16)
+
+Two new master tools land in v2.7.16, parallel to the existing web family:
+
+**TinyFish** (`components/master/tools/tinyfish.ts`, read-only, free tier):
+
+- `tinyfish_search` — TinyFish Search (query → results with title + URL + snippet + site_name + position). `GET https://api.search.tinyfish.ai`, `X-API-Key` header.
+- `tinyfish_fetch` — TinyFish Fetch (URL → markdown + title/description/author/published_date/language). `POST https://api.fetch.tinyfish.ai`, `X-API-Key` header.
+
+Operator decided to integrate TinyFish first-class rather than via MCP passthrough so the tools live in the registry alongside `web_search` (Brave) and `web_fetch` (Firecrawl) and show up in `/diag`, the dashboard, and Evy's tool list. Master is a daemon and can't pop a browser for OAuth; the OAuth flow only applies to TinyFish's MCP endpoint. The REST API uses an API key minted at https://agent.tinyfish.ai. The key lives in `~/.config/subctl/secrets.json` under `tinyfish_api_key` (or `TINYFISH_API_KEY` env var per the v2.7.4 priority chain).
+
+**Free tier scope:** search + fetch only. Browser automation, batch operations, and structured-extraction tiers are not currently integrated — those are paid surfaces. Search and fetch do not consume credits.
+
+**Fallback hierarchy:** try TinyFish first for current-events search (different index + freshness signal vs Brave) and for clean article extraction with structured metadata (author + published_date). Fall back to `web_search` / `web_fetch` if TinyFish results are sparse, the URL is robots-blocked, or the rate limit (30 req/min on free) trips a 429. All HTTP failures surface as structured `{ ok: false, error, status }` payloads with `retry_after` on 429 — tools never throw.
+
+Dashboard `/api/settings/keys` gains a `TINYFISH_API_KEY` row; the Settings → API Tokens panel shows the secret status with the same Set / Not set / env-override pills as the other keys. Master tool count: **71 → 73**.
+
 ---
 
 ## 4a. Persona — Evy (v2.7.15+)

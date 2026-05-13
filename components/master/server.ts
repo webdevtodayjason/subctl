@@ -66,6 +66,7 @@ import { vaultLinkTools } from "./tools/vault-link";
 import { policyTools } from "./tools/policy";
 import { diagTools, bindWatchdogState } from "./tools/diag";
 import { webTools } from "./tools/web";
+import { tinyfishTools } from "./tools/tinyfish";
 import { linearTools } from "./tools/linear";
 import { knowledgeTools } from "./tools/knowledge";
 import { teamDocsTools } from "./tools/team-docs";
@@ -377,6 +378,15 @@ export const toolRegistry: Record<string, InternalTool> = {
   // Telegram on 2026-05-12. v2.7.2.
   ...Object.fromEntries(
     Object.entries(webTools).map(([k, v]) => [k, v as unknown as InternalTool]),
+  ),
+  // tinyfish family: search + fetch via TinyFish API. Free tier; API
+  // key in ~/.config/subctl/secrets.json under `tinyfish_api_key`.
+  // Parallel to web_* (Brave + Firecrawl). v2.7.16.
+  ...Object.fromEntries(
+    Object.entries(tinyfishTools).map(([k, v]) => [
+      k,
+      v as unknown as InternalTool,
+    ]),
   ),
   // linear family: keys are already fully-qualified `linear_*` (list, search,
   // create_issue, update_issue). Operator-funded Linear API access in the
