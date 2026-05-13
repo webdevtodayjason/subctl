@@ -104,7 +104,32 @@ assistant turn will appear.
 
 ### 2.3 Skill catalog
 
-`~/.config/subctl/skills/<source>/skills/<category>/<name>/SKILL.md` (Claude Code skill format). Imported via `subctl skills import owner/repo`. Currently shipping with `mattpocock/skills` (27 skills) optional + the master's own SKILL.md.
+Two surfaces, same on-disk format (`SKILL.md` with YAML frontmatter declaring `name` + `description`, markdown body):
+
+1. **First-party skills** — shipped in the repo under `components/skills/<name>/SKILL.md`. Versioned alongside the master daemon; the v2.8.0 team-templates wave references them by name in TOML rosters. Shipped as of v2.7.33:
+
+   | Skill | Loaded by | Purpose |
+   |---|---|---|
+   | `master` | master daemon at boot | Evy persona — canonical spec at `docs/persona/evy.md` |
+   | `orchestrator-mode` | operator's Claude Code session | Activate multi-pane orchestrator + team-agent workflow |
+   | `autonomy` | master daemon + workers | Operator autonomy levels (`auto` / `ask` / `manual`) |
+   | `subctl` | any agent driving subctl | CLI surface — verbs, flags, config paths |
+   | `subctl-team-protocol` | leads + workers | Wire protocol — `SendMessage`, shutdown_request, plan_approval, task lifecycle, idle state |
+   | `handoff-protocol` | workers | Mid-task handoff format and escalation thresholds |
+   | `spec-driven-dev` | workers | Workflow: read spec → implement smallest slice → verify DONE WHEN → report back |
+   | `node-conventions` | workers on `.ts`/`.tsx` | Bun + TS house style |
+   | `python-conventions` | workers on `.py` | uv / ruff / pytest defaults |
+   | `rust-conventions` | workers on `.rs` | cargo / clippy / thiserror+anyhow / tokio |
+
+   The `README.md` next to these directories enumerates the full catalog and the naming conventions.
+
+2. **Imported catalog** — `~/.config/subctl/skills/<source>/skills/<category>/<name>/SKILL.md`. Imported via `subctl skills import owner/repo` (see `components/skills/skills.sh`). Currently importable from `mattpocock/skills` (27 skills) and similar public repos.
+
+Team templates (Phase 3b, v2.8.0) reference both surfaces by skill ID. First-party skill IDs are bare names (`node-conventions`); imported skills use the `<source>/<category>/<name>` form (`mattpocock/engineering/grill-with-docs`).
+
+#### Agent definitions
+
+Separate but adjacent to the skill catalog: `.claude/agents/<name>.md` declares named sub-agent personas (frontmatter lists which skills the agent loads at spawn time). Shipped in v2.7.33: `expert-bun-typescript`, `expert-react-typescript`, `expert-rust-systems`, `expert-devops-mac`, `tester-bun`. The v2.8.0 team-templates wave consumes these by name in template `developers` rosters.
 
 ### 2.4 Team templates
 

@@ -4,6 +4,59 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.7.33] — 2026-05-13
+
+### `feat(skills): v2.7.33 skill bundles + agent definitions baseline`
+
+Originally planned as v2.7.14 and v2.7.15 in `docs/roadmap.md` — those slots got reassigned to higher-priority work (persona, memory, plan approvals) and the skill-bundles foundation was queued. This release ships the queued scope: six first-party skills plus five named agent personas, both consumed by the v2.8.0 team-templates wave.
+
+**Why this matters.** v2.8.0 team templates declare a roster and per-role skills (`skills = ["node-conventions", "spec-driven-dev"]` in TOML). Until v2.7.33, those skill names referenced nothing on disk — templates would have to inline their own conventions or each worker would reinvent house style. This release makes the skill names canonical strings.
+
+**Architecture.** First-party skills live under `components/skills/<name>/SKILL.md` (one directory per skill, frontmatter `name` + `description`, markdown body). This is the same on-disk format as the imported third-party catalog at `~/.config/subctl/skills/` (managed by `skills.sh`), but first-party skills ship in the repo so they're versioned, reviewable, and consumable by team templates at spawn time without a separate import step.
+
+Agent definitions live under `.claude/agents/<name>.md` with frontmatter that lists the skills the agent loads when spawned. The v2.8.0 template loader reads this metadata to assemble the worker's spawn prompt.
+
+**Skills shipped (6).**
+
+- **`components/skills/subctl-team-protocol/SKILL.md`** — the wire protocol between team leads and workers. Documents `SendMessage`, `shutdown_request` / `shutdown_response`, `plan_approval_request` / `plan_approval_response` (per the v2.7.29 workflow), `TaskCreate` / `TaskUpdate` lifecycle, idle state, peer DMs. Both leads and workers load this so message shapes never drift.
+- **`components/skills/handoff-protocol/SKILL.md`** — mid-task handoff between agents. Canonical `HANDOFF` message format (GOAL / STATUS / DONE / PENDING / WORK-IN-PROGRESS LOCATIONS / KEY DECISIONS / OPEN QUESTIONS / CONSTRAINTS / NEXT STEP), worktree + branch hygiene before handoff, escalation thresholds.
+- **`components/skills/spec-driven-dev/SKILL.md`** — the workflow used by tonight's v2.7.18-v2.7.31 PRs. Read spec → ask one question only for real ambiguity → implement smallest verifiable slice first → verify against DONE WHEN → report back. Anti-patterns enumerated ("while I was in there...", speculative flags, skipped tests).
+- **`components/skills/node-conventions/SKILL.md`** — Bun + TS house style. Runtime defaults (Bun.spawn argv-safe, bun:sqlite, bun:test), strict TS, `Result<T>` at boundaries, `[scope]` log prefixes, conventional commits.
+- **`components/skills/python-conventions/SKILL.md`** — uv / ruff / pytest, Python 3.12+, typed by default, `thiserror`-equivalent module exceptions, `logging` with lazy `%s` formatting.
+- **`components/skills/rust-conventions/SKILL.md`** — cargo / clippy / rustfmt, edition 2021, `thiserror` for libs / `anyhow` for binaries, tokio for async, no-unwrap-in-production-paths rule.
+
+**Agent definitions shipped (5).**
+
+- **`.claude/agents/expert-bun-typescript.md`** — Bun + TS specialist for master modules, dashboard server routes, CLI scripts. Loads `node-conventions`, `spec-driven-dev`, `subctl-team-protocol`.
+- **`.claude/agents/expert-react-typescript.md`** — React + TS specialist for dashboard frontend, Next.js, hooks, components.
+- **`.claude/agents/expert-rust-systems.md`** — Rust systems programmer for performance paths and CLI tools. Loads `rust-conventions`.
+- **`.claude/agents/expert-devops-mac.md`** — macOS DevOps for launchd, tmux, install.sh, Homebrew, M3 fleet. Encodes operator's auto-memory feedback (`feedback_deploy_both_services.md`, `$(id -u)` vs `$UID`).
+- **`.claude/agents/tester-bun.md`** — `bun:test` specialist for coverage, flake diagnosis, contract-shaped tests.
+
+**Index.** `components/skills/README.md` — full table of shipped skills with one-line descriptions, plus the agent definitions table. Includes the naming-conventions section so future contributors don't introduce a third name for an existing concept.
+
+**Integration with v2.8.0 team-templates.** The skill names in this release are the canonical strings that templates' TOML files reference. The five agent definitions are the personas templates will name in their `developers` rosters. Sibling PR working on `components/master/team-templates.ts` (Task #106-114) coordinates: TOML schema declares `skills: string[]` per role and `agent: string` per developer; loader reads `components/skills/<skill>/SKILL.md` and `.claude/agents/<agent>.md` at spawn time.
+
+**Docs.** `docs/master.md` §2.3 (Skill catalog) extended to enumerate first-party skills alongside the imported catalog at `~/.config/subctl/skills/`. Roadmap `docs/roadmap.md` rows for 2.7.14 and 2.7.15 noted as folded into 2.7.33.
+
+**Files:**
+
+- New: `components/skills/subctl-team-protocol/SKILL.md`
+- New: `components/skills/handoff-protocol/SKILL.md`
+- New: `components/skills/spec-driven-dev/SKILL.md`
+- New: `components/skills/node-conventions/SKILL.md`
+- New: `components/skills/python-conventions/SKILL.md`
+- New: `components/skills/rust-conventions/SKILL.md`
+- New: `components/skills/README.md`
+- New: `.claude/agents/expert-bun-typescript.md`
+- New: `.claude/agents/expert-react-typescript.md`
+- New: `.claude/agents/expert-rust-systems.md`
+- New: `.claude/agents/expert-devops-mac.md`
+- New: `.claude/agents/tester-bun.md`
+- Modified: `VERSION` (2.7.32 → 2.7.33)
+- Modified: `docs/master.md` §2.3 (Skills section extended)
+- Modified: `docs/roadmap.md` (2.7.14/15 rows noted as folded into 2.7.33)
+
 ## [2.7.32] — 2026-05-13
 
 ### `chore(cleanup): v2.7.32 watchdog reconciliation + CLI PATH + tmux SSH + /health cleanup + stale-team gc + CHANGELOG sort`
