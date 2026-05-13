@@ -2338,6 +2338,36 @@ body[data-active-tab="policy"] section[data-tab]:not([data-tab="policy"]) { disp
 }
 .chat-toolbar-hint { color: #666; font-size: 11px; }
 
+/* v2.7.18 — supervisor profile pill (chat / heavy).
+   Sits next to the "Evy" h2 in .master-chat-header. Click toggles the
+   active profile via /api/profile. Color tone signals the model class:
+   green = light chat model (responsive, conversational), amber = heavy
+   reasoning model (deep thinking, can be slower / loopier).
+   Reverts to red border briefly on swap error (see app.js). */
+.profile-pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-left: 10px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  letter-spacing: 0.04em;
+  border-radius: 11px;
+  border: 1px solid transparent;
+  user-select: none;
+  cursor: pointer;
+  vertical-align: middle;
+  transition: box-shadow 120ms ease, background-color 120ms ease;
+}
+.profile-pill-label { color: rgba(255, 255, 255, 0.75); text-transform: uppercase; }
+.profile-pill-value { color: #fff; font-weight: 600; }
+.profile-pill[data-active="chat"]  { background: #2ea043; }
+.profile-pill[data-active="heavy"] { background: #d29922; }
+.profile-pill[data-pending="true"] { opacity: 0.75; cursor: progress; }
+.profile-pill[data-error="true"]   { border-color: #f85149; box-shadow: 0 0 0 1px #f85149 inset; }
+.profile-pill:hover                 { box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.25); }
+
 /* Full-screen chat: hide topbar + sidebar + sidecar, expand chat to viewport */
 body.chat-fullscreen .topbar,
 body.chat-fullscreen .sidebar,

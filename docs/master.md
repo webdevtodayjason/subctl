@@ -1503,6 +1503,49 @@ OpenRouter is a unified gateway for hundreds of AI models (incl. a free preview 
 
 **Trade-offs vs local runtimes:** higher and more variable latency (cloud round-trip + model load on OpenRouter's side), model availability changes (vendors can deprecate or reroute IDs without notice), per-model rate limits. Trade-off vs direct vendor SDKs: one key + one billing relationship instead of N; uniform OpenAI-compat surface instead of per-vendor quirks.
 
+### Phase 3o.18 — Supervisor profiles (v2.7.18)
+
+The supervisor model becomes a **profile**, not a single value. v2.7.18 introduces two named profiles — `chat` and `heavy` — that the operator switches between from the dashboard's sticky chat-header pill or via Telegram `/profile chat|heavy` without restarting master. The switch lands at the start of the next prompt, never mid-turn, so an in-flight pi-agent-core stream is never disturbed.
+
+The two profiles are intentionally tied to a use-case, not a vendor:
+
+- **`chat`** — light, conversational, low-latency model. Default: `google/gemma-4-31b` on LM Studio. This is the daily-driver profile: dashboard chat, Telegram check-ins, watchdog reactions, anything where responsiveness beats reasoning depth.
+- **`heavy`** — deep-reasoning model with a thinking budget. Default: `qwen/qwen3.6-35b-a3b` on LM Studio. Use for hard planning, multi-step refactors, code review on a tricky PR. Reasoning models can occasionally loop on tool calls; if Telegram stops answering, swap back to `chat`.
+
+```
+~/.config/subctl/profiles.json (chmod 600)
+{
+  "active": "chat",
+  "profiles": {
+    "chat":  { "supervisor": "google/gemma-4-31b",   "host": "http://localhost:1234/v1" },
+    "heavy": { "supervisor": "qwen/qwen3.6-35b-a3b", "host": "http://localhost:1234/v1" }
+  }
+}
+```
+
+**How to switch.**
+
+- **Dashboard pill** — the small rounded pill next to the "Evy" h2 in the sticky chat header. Green = `chat`, amber = `heavy`. Click to toggle. The pill optimistically repaints, then reconciles with the master response; on error it flashes a red border and reverts.
+- **Telegram** — message `/profile` to your master bot to read the active profile; `/profile chat` or `/profile heavy` to swap. The reply confirms (`"swapped → heavy on next prompt"`) but doesn't bounce the daemon. The next message you send goes to the new supervisor.
+- **Manual file edit** — `vim ~/.config/subctl/profiles.json`, set `active`. Master's `fs.watch` (200ms debounce) catches the change and the switch lands on the next prompt.
+
+**What v2.7.18 explicitly does NOT do.** Profiles are tactical config flexibility, not a new abstraction layer:
+
+- No third profile or per-role profiles (reviewer/router still come from `providers.json`).
+- No automatic switching based on prompt type or load — operator-driven only.
+- No ADR — load-bearing decisions get ADRs; this is one config file and one boundary check.
+
+The profile state is the source of truth for `models.supervisor.model` + `host`. Provider, `context_length`, and `max_tokens` continue to come from `providers.json` so a profile swap re-pins LM Studio at the configured context window automatically (defeating the 4K JIT trap on first use of the new model). The dashboard's existing `/api/master/supervisor` endpoint still works for explicit-model swaps; profiles are a faster surface for the common case.
+
+**Files:**
+
+- New: `components/master/profiles.ts` — `loadProfiles`, `getActiveProfile`, `setActiveProfile`, `watchProfiles`.
+- New: `components/master/__tests__/profiles.test.ts`.
+- `components/master/server.ts` — supervisorCfg overridden from profile at boot; `pendingProfileSwap` flag set by the watcher and consumed at the top of `processOnePrompt`; `/profile` HTTP endpoints; `active_profile` in `/health`.
+- `components/master/master-notify-listener.ts` — `/profile` Telegram command + `/help` update.
+- `dashboard/server.ts` — `/api/profile` pass-through.
+- `dashboard/public/{index.html,style.css,app.js}` — pill markup, CSS (green chat / amber heavy), `wireProfilePill` with optimistic toggle and SSE `profile_swapped` listener.
+
 ---
 
 ## 4a. Persona — Evy (v2.7.15+)

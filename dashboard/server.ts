@@ -4568,6 +4568,43 @@ const server = Bun.serve({
       }
     }
 
+    // ── /api/profile — supervisor profile (v2.7.18) ─────────────────────
+    // Thin pass-through to the master daemon's /profile endpoint. Master
+    // owns the source of truth (~/.config/subctl/profiles.json) and its
+    // fs.watch on the file triggers the swap-on-next-prompt behavior;
+    // the dashboard just needs a stable surface for the pill in the
+    // sticky chat header to call. GET → { active, profiles }; POST
+    // { profile } → { ok, active }.
+    if (url.pathname === "/api/profile") {
+      if (req.method !== "GET" && req.method !== "POST") {
+        return Response.json({ ok: false, error: "method not allowed" }, { status: 405 });
+      }
+      const masterPort = process.env.SUBCTL_MASTER_PORT ?? "8788";
+      const masterUrl = `http://127.0.0.1:${masterPort}/profile`;
+      try {
+        const init: RequestInit = {
+          method: req.method,
+          headers: { "Content-Type": "application/json" },
+        };
+        if (req.method === "POST") {
+          init.body = await req.text();
+        }
+        const upstream = await fetch(masterUrl, init);
+        const body = await upstream.text();
+        return new Response(body, {
+          status: upstream.status,
+          headers: {
+            "Content-Type": upstream.headers.get("Content-Type") ?? "application/json",
+          },
+        });
+      } catch (err) {
+        return Response.json(
+          { ok: false, error: `master daemon unreachable: ${(err as Error).message}` },
+          { status: 502 },
+        );
+      }
+    }
+
     // ── master proxy: /api/master/* → http://127.0.0.1:8788/* ────────────
     // The master daemon listens locally; the dashboard fronts it for the
     // browser. POST /api/master/chat forwards the JSON body. GET
