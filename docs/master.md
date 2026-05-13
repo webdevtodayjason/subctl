@@ -1576,7 +1576,77 @@ The TOON file is part of every `subctl update` so the breakdown
 always matches the deployed version. Module-load caching means the
 daemon reads the file exactly once per restart.
 
-### 5.5 Adding a new account
+### 5.5 Team-local docs — `.subctl/docs/` tool family (v2.7.10+)
+
+The master ships a `team_doc_*` tool family that writes project-scoped
+artifacts into `<project_root>/.subctl/docs/`. The folder sits next to
+the existing `.subctl/policy.toml`, so subctl-managed state stays out
+of the project's own `docs/` tree, the artifacts are trivially
+`cat`-able from any worker pane, and they're inspectable + gitable
+without going through the TCC-blocked Obsidian vault path.
+
+| Tool | Purpose |
+|------|---------|
+| `team_doc_write({ project_root, relative_path, content, frontmatter? })` | Write a SPEC / PRD / ARCH / handoff / mandate doc. Creates intermediate subdirs. Optionally prepends a YAML frontmatter block (operator, account, phase, kind, …). Path traversal (`..`) and absolute paths are rejected. |
+| `team_doc_read({ project_root, relative_path })` | Read back. Parses frontmatter if present; returns body in `content`. |
+| `team_doc_list({ project_root, subdir? })` | Enumerate files + subdirs under `.subctl/docs/`. Returns an empty list when the folder doesn't exist (not an error — safe to probe). |
+| `team_decision_log({ project_root, summary, detail?, by? })` | Append one JSON line to `<project>/.subctl/docs/decisions.jsonl`. Append-only, machine-readable. `by` defaults to `"master"`. |
+
+```jsonc
+// Persist the operator's mandate for a fresh team — frontmatter wraps it.
+team_doc_write({
+  project_root: "/Users/sem/code/osint-cve-monitor",
+  relative_path: "SPEC.md",
+  content: "# osint-cve-monitor\n\nWatch NVD + GitHub Advisories…",
+  frontmatter: { operator: "jason", account: "claude-jason", phase: "baseline", kind: "spec" }
+})
+// → { ok: true, path: ".../.subctl/docs/SPEC.md", bytes_written: 412, frontmatter_keys: [...] }
+
+// Log a meaningful decision for the operator to scroll back to.
+team_decision_log({
+  project_root: "/Users/sem/code/osint-cve-monitor",
+  summary: "swapped supervisor from openai-jason to claude-jason — 5h limit on openai",
+  by: "master"
+})
+// → { ok: true, total_decisions: 4, ts: "2026-05-12T…" }
+```
+
+**Folder layout** under any project root:
+
+```
+<project_root>/
+├─ .subctl/
+│  ├─ policy.toml            ← v2.7.0 policy snapshot
+│  └─ docs/                  ← v2.7.10 team-local docs
+│     ├─ SPEC.md
+│     ├─ PRD.md
+│     ├─ ARCH.md
+│     ├─ mandate.md          ← v2.7.11 spawn-time wrapper (planned)
+│     ├─ decisions.jsonl     ← append-only via team_decision_log
+│     └─ handoffs/
+│        └─ 2026-05-12-baseline.md
+```
+
+**Example operator questions this family answers correctly:**
+
+- "Show me the SPEC for osint-cve-monitor." → `team_doc_read({
+  project_root, relative_path: "SPEC.md" })`.
+- "What decisions has the team made on this project today?" →
+  `team_doc_read({ project_root, relative_path: "decisions.jsonl" })`
+  (or list first via `team_doc_list`).
+- "What handoffs do we have on holace this week?" →
+  `team_doc_list({ project_root, subdir: "handoffs" })` →
+  `team_doc_read` the one of interest.
+- "Persist the architecture decision we just walked through." →
+  `team_doc_write({ ..., relative_path: "ARCH.md", content, frontmatter })`
+  followed by `team_decision_log({ ..., summary: "ARCH.md written" })`.
+
+**Scope discipline.** v2.7.10 ships the tool surface only. The
+spawn-time mandate.md wrapper (every team-create writes the operator
+mandate + provenance into `mandate.md`) lands in v2.7.11. Per-template
+doc skeletons + worker-side agent definitions land in v2.7.12.
+
+### 5.6 Adding a new account
 
 ```bash
 # Edit accounts.conf manually OR use the dashboard's Providers tab
@@ -1589,7 +1659,7 @@ subctl auth openai <alias>             # device-code flow if SSH'd in
                                        # (auto-detected via SSH_CONNECTION)
 ```
 
-### 5.6 Spawning a dev team manually (pre Phase 3c)
+### 5.7 Spawning a dev team manually (pre Phase 3c)
 
 ```bash
 subctl orch spawn --account claude-jason \
