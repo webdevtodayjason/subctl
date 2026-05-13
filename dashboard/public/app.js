@@ -6791,44 +6791,147 @@
     }[c]));
   }
 
-  // ── v2.7.22 notification tray ─────────────────────────────────────────
-  // Bell + drawer fed by the master's in-memory notification ring buffer.
-  // Distinct from the per-team activity ring under .orch-notify-* — this
-  // surface is for OPERATOR-FACING alerts (team-unresponsive, auto-compact
-  // errors). REST seed on load + SSE for live deltas.
+  // ── v2.7.25 notification tray + toasts (rewritten) ───────────────────
+  // The v2.7.22 surface rendered a permanent panel — operator's feedback
+  // (2026-05-13): "renders always-on, can't be collapsed or dismissed.
+  // Notifications pile up, the panel always shows." Re-shipped as:
+  //
+  //   • An inbox icon (Lucide `inbox`) in the topbar. Click to open a
+  //     dropdown showing the last 20 notifications.
+  //   • Toasts that slide in from the top-right corner for incoming
+  //     notifications, regardless of whether the dropdown is open. Auto
+  //     fade-out after ~5s, max 3 visible.
+  //   • Severity icons (info / warn / alert) come from Lucide, not
+  //     emoji-of-platform-renderer-roulette.
+  //   • Warn / alert / error notifications get a [Copy prompt] button
+  //     that copies a structured "ask an LLM to fix this" prompt to
+  //     clipboard.
+  //   • [×] per row dismisses that one notification; "mark all read"
+  //     stays in the header. Read entries stay visible at reduced
+  //     opacity until explicitly dismissed.
+  //
+  // Severity → Lucide icon name:
+  //   info  → "info"
+  //   warn  → "alert-triangle"
+  //   alert → "alert-octagon"
+  //
+  // "Errorish" notification detection (drives the Copy-prompt button):
+  //   severity in {warn, alert} OR kind matches one of the patterns in
+  //   ERRORISH_KIND_RE. Add new patterns there as new alert kinds land.
+  function getIcon(name, opts) {
+    // window.subctlIcon is provided by /icons.js (ADR 0016); guard so
+    // this file stays usable even if icons.js fails to load.
+    return (typeof window !== "undefined" && typeof window.subctlIcon === "function")
+      ? window.subctlIcon(name, opts)
+      : "";
+  }
+
+  const ERRORISH_KIND_RE = /(error|failed|fail|unresponsive|vanished|circuit-breaker|tripped|denied|stuck)/i;
+
+  function isErrorishNotification(n) {
+    if (!n) return false;
+    if (n.severity === "warn" || n.severity === "alert") return true;
+    if (typeof n.kind === "string" && ERRORISH_KIND_RE.test(n.kind)) return true;
+    return false;
+  }
+
+  function severityIconName(sev) {
+    if (sev === "alert") return "alert-octagon";
+    if (sev === "warn")  return "alert-triangle";
+    return "info";
+  }
+
+  function fmtRelative(iso) {
+    try {
+      const ms = Date.now() - Date.parse(iso);
+      if (Number.isNaN(ms) || ms < 0) return "just now";
+      if (ms < 60_000) return Math.floor(ms / 1000) + "s ago";
+      if (ms < 3600_000) return Math.floor(ms / 60_000) + "m ago";
+      if (ms < 86_400_000) return Math.floor(ms / 3600_000) + "h ago";
+      return Math.floor(ms / 86_400_000) + "d ago";
+    } catch { return ""; }
+  }
+
+  function truncateBody(s, max) {
+    if (!s) return "";
+    if (s.length <= max) return s;
+    return s.slice(0, max - 1) + "…";
+  }
+
+  function buildCopyPrompt(n) {
+    // Spec-fixed format. Keeping the field order stable so operators
+    // can pattern-match it in chat history if they paste this into the
+    // same model multiple times.
+    const meta = n.metadata
+      ? (() => { try { return JSON.stringify(n.metadata); } catch { return "(unserializable)"; } })()
+      : "(none)";
+    const sev = n.severity || "info";
+    const lines = [
+      "Notification (severity: " + sev + "): " + (n.title || "(no title)"),
+      "",
+      n.body || "(no body)",
+      "",
+      "Context:",
+      "- Team: " + (n.team_id || "(none)"),
+      "- Time: " + (n.ts || "(unknown)"),
+      "- Kind: " + (n.kind || "(unknown)"),
+      "- Metadata: " + meta,
+      "",
+      "Please suggest a fix or appropriate escalation.",
+    ];
+    return lines.join("\n");
+  }
+
+  async function copyTextToClipboard(text) {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch { /* fall through */ }
+    // Fallback for older browsers / non-secure contexts.
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return ok;
+    } catch { return false; }
+  }
+
+  // Shared item store keyed by id. Both the dropdown render and the
+  // toast surface read from this — so a notification dismissed via the
+  // toast is also gone from the dropdown.
+  const _notifItems = new Map(); // id → notification
+
   function initNotificationTray() {
     const bell = document.getElementById("notif-bell");
+    const bellIcon = document.getElementById("notif-bell-icon");
     const badge = document.getElementById("notif-bell-badge");
     const tray = document.getElementById("notif-tray");
     const list = document.getElementById("notif-tray-list");
     const closeBtn = document.getElementById("notif-tray-close");
     const readAllBtn = document.getElementById("notif-tray-readall");
+    const toastStack = document.getElementById("notif-toast-stack");
     if (!bell || !badge || !tray || !list) return;
 
-    // Notifications keyed by id so SSE deltas can dedupe / merge.
-    const items = new Map(); // id → notification
+    // Paint the inbox icon into the bell button + close glyph. Done
+    // here (not in the static HTML) so a missing /icons.js still leaves
+    // the dropdown clickable — getIcon() returns '' and the button is
+    // empty but functional.
+    if (bellIcon) bellIcon.innerHTML = getIcon("inbox", { size: 16 });
+    if (closeBtn) closeBtn.innerHTML = getIcon("x", { size: 14 });
+
     let trayOpen = false;
     let sse = null;
 
-    function fmtRelative(iso) {
-      try {
-        const ms = Date.now() - Date.parse(iso);
-        if (Number.isNaN(ms) || ms < 0) return "now";
-        if (ms < 60_000) return Math.floor(ms / 1000) + "s ago";
-        if (ms < 3600_000) return Math.floor(ms / 60_000) + "m ago";
-        if (ms < 86_400_000) return Math.floor(ms / 3600_000) + "h ago";
-        return Math.floor(ms / 86_400_000) + "d ago";
-      } catch { return ""; }
-    }
-
-    function severityGlyph(sev) {
-      if (sev === "alert") return "●";
-      if (sev === "warn")  return "▲";
-      return "·";
-    }
-
     function render() {
-      const sorted = [...items.values()].sort((a, b) => (a.ts < b.ts ? 1 : -1));
+      const sorted = [..._notifItems.values()].sort((a, b) => (a.ts < b.ts ? 1 : -1));
       const unread = sorted.filter((n) => !n.read_at).length;
       const hasAlert = sorted.some((n) => n.severity === "alert" && !n.read_at);
       bell.classList.toggle("has-alert", hasAlert);
@@ -6839,30 +6942,44 @@
         badge.hidden = true;
       }
       if (sorted.length === 0) {
-        list.innerHTML = '<div class="notif-tray-empty">no notifications yet</div>';
+        list.innerHTML = '<div class="notif-tray-empty">No notifications</div>';
         return;
       }
       const top = sorted.slice(0, 20);
-      list.innerHTML = top
-        .map((n) => {
-          const cls = ["notif-item", "sev-" + (n.severity || "info"), n.read_at ? "read" : "unread"].join(" ");
-          const detail = n.body ? `<div class="notif-item-detail">${escapeHtml(n.body)}</div>` : "";
-          const readBtn = n.read_at
-            ? ""
-            : `<button type="button" class="notif-item-read-btn" data-notif-read="${escapeHtml(n.id)}">mark read</button>`;
-          return [
-            `<div class="${cls}" data-notif-id="${escapeHtml(n.id)}">`,
-            `  <div class="notif-item-glyph">${severityGlyph(n.severity)}</div>`,
-            `  <div class="notif-item-body">`,
-            `    <div class="notif-item-title">${escapeHtml(n.title || "(no title)")}</div>`,
-            detail,
-            `  </div>`,
-            `  <div class="notif-item-when" title="${escapeHtml(n.ts || "")}">${escapeHtml(fmtRelative(n.ts))}</div>`,
-            readBtn,
-            `</div>`,
-          ].join("");
-        })
-        .join("");
+      list.innerHTML = top.map((n) => {
+        const cls = ["notif-item", "sev-" + (n.severity || "info"), n.read_at ? "read" : "unread"].join(" ");
+        const sevIcon = getIcon(severityIconName(n.severity), { size: 14 });
+        const detail = n.body
+          ? '<div class="notif-item-detail" title="' + escapeHtml(n.body) + '">' + escapeHtml(truncateBody(n.body, 80)) + '</div>'
+          : "";
+        const dismissBtn =
+          '<button type="button" class="notif-item-dismiss" data-notif-dismiss="' +
+          escapeHtml(n.id) +
+          '" title="Dismiss" aria-label="Dismiss">' +
+          getIcon("x", { size: 12 }) +
+          '</button>';
+        const copyBtn = isErrorishNotification(n)
+          ? '<button type="button" class="notif-item-copy" data-notif-copy="' +
+            escapeHtml(n.id) +
+            '" title="Copy a prompt for an LLM to triage">' +
+            getIcon("clipboard", { size: 12 }) +
+            ' <span class="notif-item-copy-label">Copy prompt</span></button>'
+          : "";
+        return [
+          '<div class="' + cls + '" data-notif-id="' + escapeHtml(n.id) + '">',
+          '  <div class="notif-item-glyph">' + sevIcon + '</div>',
+          '  <div class="notif-item-body">',
+          '    <div class="notif-item-title">' + escapeHtml(n.title || "(no title)") + '</div>',
+              detail,
+          '    <div class="notif-item-meta">',
+          '      <span class="notif-item-when" title="' + escapeHtml(n.ts || "") + '">' + escapeHtml(fmtRelative(n.ts)) + '</span>',
+                copyBtn,
+          '    </div>',
+          '  </div>',
+              dismissBtn,
+          '</div>',
+        ].join("");
+      }).join("");
     }
 
     async function loadInitial() {
@@ -6870,10 +6987,69 @@
         const r = await fetch("/api/notifications?limit=50");
         const j = await r.json();
         if (j && j.ok && Array.isArray(j.notifications)) {
-          for (const n of j.notifications) items.set(n.id, n);
+          for (const n of j.notifications) _notifItems.set(n.id, n);
         }
       } catch { /* offline; SSE will pick up live */ }
       render();
+    }
+
+    function spawnToast(n) {
+      if (!toastStack) return;
+      // Cap at 3 visible — remove oldest as new ones arrive.
+      while (toastStack.children.length >= 3) {
+        toastStack.removeChild(toastStack.firstElementChild);
+      }
+      const wrap = document.createElement("div");
+      wrap.className = "notif-toast sev-" + (n.severity || "info");
+      wrap.setAttribute("role", n.severity === "alert" ? "alert" : "status");
+      wrap.innerHTML = [
+        '<div class="notif-toast-glyph">' + getIcon(severityIconName(n.severity), { size: 14 }) + '</div>',
+        '<div class="notif-toast-body">',
+        '  <div class="notif-toast-title">' + escapeHtml(n.title || "(no title)") + '</div>',
+        n.body ? '<div class="notif-toast-detail">' + escapeHtml(truncateBody(n.body, 120)) + '</div>' : "",
+        '</div>',
+        '<button type="button" class="notif-toast-close" aria-label="Close">' + getIcon("x", { size: 12 }) + '</button>',
+      ].join("");
+      toastStack.appendChild(wrap);
+      // Trigger the slide-in.
+      requestAnimationFrame(() => wrap.classList.add("show"));
+      const dismiss = () => {
+        wrap.classList.remove("show");
+        wrap.classList.add("leaving");
+        // 250ms CSS fade-out — drop the node after.
+        setTimeout(() => {
+          if (wrap.parentNode === toastStack) toastStack.removeChild(wrap);
+        }, 250);
+      };
+      const closeBtnT = wrap.querySelector(".notif-toast-close");
+      if (closeBtnT) closeBtnT.addEventListener("click", dismiss);
+      // Auto-dismiss after 5s for info/warn; alerts hold 8s.
+      const holdMs = n.severity === "alert" ? 8000 : 5000;
+      setTimeout(dismiss, holdMs);
+    }
+
+    // Spawn a transient "prompt copied" confirmation. Reuses the toast
+    // stack so it queues correctly with notification toasts.
+    function spawnConfirmToast(label) {
+      if (!toastStack) return;
+      const wrap = document.createElement("div");
+      wrap.className = "notif-toast sev-info notif-toast-confirm";
+      wrap.setAttribute("role", "status");
+      wrap.innerHTML = [
+        '<div class="notif-toast-glyph">' + getIcon("check", { size: 14 }) + '</div>',
+        '<div class="notif-toast-body">',
+        '  <div class="notif-toast-title">' + escapeHtml(label) + '</div>',
+        '</div>',
+      ].join("");
+      toastStack.appendChild(wrap);
+      requestAnimationFrame(() => wrap.classList.add("show"));
+      setTimeout(() => {
+        wrap.classList.remove("show");
+        wrap.classList.add("leaving");
+        setTimeout(() => {
+          if (wrap.parentNode === toastStack) toastStack.removeChild(wrap);
+        }, 250);
+      }, 1800);
     }
 
     function openSse() {
@@ -6883,15 +7059,18 @@
         sse.addEventListener("notification", (ev) => {
           try {
             const n = JSON.parse(ev.data);
-            if (n && n.id) {
-              items.set(n.id, n);
-              render();
-            }
-          } catch {}
+            if (!n || !n.id) return;
+            const isNew = !_notifItems.has(n.id);
+            _notifItems.set(n.id, n);
+            render();
+            // Only spawn a toast on FIRST sight of a notification — SSE
+            // re-deliveries shouldn't re-toast. Also don't toast for
+            // entries that arrive already-read (e.g. backfill).
+            if (isNew && !n.read_at) spawnToast(n);
+          } catch { /* malformed payload — skip */ }
         });
         sse.addEventListener("error", () => {
-          // EventSource reconnects automatically; nothing to do here
-          // beyond letting the browser retry.
+          // EventSource reconnects automatically; nothing to do here.
         });
       } catch { /* SSE unsupported; REST seed still works */ }
     }
@@ -6910,20 +7089,33 @@
         await fetch("/api/notifications/read-all", { method: "POST" });
       } catch {}
       const now = new Date().toISOString();
-      for (const n of items.values()) if (!n.read_at) n.read_at = now;
+      for (const n of _notifItems.values()) if (!n.read_at) n.read_at = now;
       render();
     });
+
     list.addEventListener("click", async (ev) => {
-      const btn = ev.target.closest("button[data-notif-read]");
-      if (!btn) return;
-      const id = btn.getAttribute("data-notif-read");
-      if (!id) return;
-      try {
-        await fetch(`/api/notifications/${encodeURIComponent(id)}/read`, { method: "POST" });
-      } catch {}
-      const n = items.get(id);
-      if (n) n.read_at = new Date().toISOString();
-      render();
+      // Dismiss → POST /:id/read + drop from local map.
+      const dismissBtn = ev.target.closest("button[data-notif-dismiss]");
+      if (dismissBtn) {
+        const id = dismissBtn.getAttribute("data-notif-dismiss");
+        if (!id) return;
+        try {
+          await fetch("/api/notifications/" + encodeURIComponent(id) + "/read", { method: "POST" });
+        } catch {}
+        _notifItems.delete(id);
+        render();
+        return;
+      }
+      // Copy prompt → build prompt string + clipboard + confirm toast.
+      const copyBtn = ev.target.closest("button[data-notif-copy]");
+      if (copyBtn) {
+        const id = copyBtn.getAttribute("data-notif-copy");
+        const n = id ? _notifItems.get(id) : null;
+        if (!n) return;
+        const ok = await copyTextToClipboard(buildCopyPrompt(n));
+        spawnConfirmToast(ok ? "Prompt copied" : "Copy failed");
+        return;
+      }
     });
 
     // Click outside the tray closes it (but not when clicking the bell).
@@ -6943,312 +7135,139 @@
     initNotificationTray();
   }
 
-  // ── v2.7.29 Plans tab ──
-  // Renders worker-proposed plans awaiting approval. Sources:
-  //   GET  /api/plan-approvals                  → { ok, pending, decided }
-  //   POST /api/plan-approvals/:id/approve      → { ok, approval }
-  //   POST /api/plan-approvals/:id/reject       → body { feedback } → { ok, approval }
-  // We refresh on:
-  //   1. Tab activation (MutationObserver on data-active-tab).
-  //   2. Manual click of the refresh button.
-  //   3. Every notification SSE event (the master emits a notification on
-  //      each new request / decision, so the bell tray's SSE doubles as
-  //      our change-feed).
-  function initPlansTab() {
-    const pendingEl = document.getElementById("plans-pending-list");
-    const decidedEl = document.getElementById("plans-decided-list");
-    const pendingCountEl = document.getElementById("plans-pending-count");
-    const decidedCountEl = document.getElementById("plans-decided-count");
-    const navBadgeEl = document.getElementById("plans-nav-badge");
-    const refreshBtn = document.getElementById("plans-refresh-btn");
-    const rejectModal = document.getElementById("plans-reject-modal");
-    const rejectForm = document.getElementById("plans-reject-form");
-    const rejectFeedback = document.getElementById("plans-reject-feedback");
-    const rejectIdInput = document.getElementById("plans-reject-id");
-    const rejectClose = document.getElementById("plans-reject-close");
-    const rejectCancel = document.getElementById("plans-reject-cancel");
-    if (!pendingEl || !decidedEl) return;
-
-    function fmtTs(iso) {
-      if (!iso) return "—";
-      try {
-        const d = new Date(iso);
-        return d.toLocaleString();
-      } catch { return iso; }
-    }
-
-    function ageLabel(iso) {
-      if (!iso) return "";
-      const ms = Date.now() - Date.parse(iso);
-      if (!Number.isFinite(ms) || ms < 0) return "";
-      const min = Math.floor(ms / 60000);
-      if (min < 1) return "just now";
-      if (min < 60) return `${min}m ago`;
-      const hr = Math.floor(min / 60);
-      if (hr < 24) return `${hr}h ago`;
-      return `${Math.floor(hr / 24)}d ago`;
-    }
-
-    function renderPendingCard(entry) {
-      const card = document.createElement("div");
-      card.className = "plan-card plan-card-pending";
-      card.dataset.planId = entry.id;
-
-      const head = document.createElement("div");
-      head.className = "plan-card-head";
-      const headLeft = document.createElement("div");
-      headLeft.className = "plan-card-head-left";
-      const worker = document.createElement("span");
-      worker.className = "plan-card-worker";
-      worker.textContent = entry.worker_name;
-      const team = document.createElement("span");
-      team.className = "plan-card-team";
-      team.textContent = entry.team_id;
-      headLeft.appendChild(worker);
-      headLeft.appendChild(team);
-      const age = document.createElement("span");
-      age.className = "plan-card-age";
-      age.textContent = ageLabel(entry.created_at);
-      age.title = fmtTs(entry.created_at);
-      head.appendChild(headLeft);
-      head.appendChild(age);
-      card.appendChild(head);
-
-      const summary = document.createElement("div");
-      summary.className = "plan-card-summary";
-      summary.textContent = entry.plan_summary || "(no summary)";
-      card.appendChild(summary);
-
-      // Expandable body. Default collapsed so the operator scanning the
-      // list doesn't get blasted with multi-page plans.
-      const bodyWrap = document.createElement("details");
-      bodyWrap.className = "plan-card-body-wrap";
-      const sum = document.createElement("summary");
-      sum.textContent = "show full plan";
-      bodyWrap.appendChild(sum);
-      const body = document.createElement("pre");
-      body.className = "plan-card-body";
-      body.textContent = entry.plan_body || "(empty plan body)";
-      bodyWrap.appendChild(body);
-      card.appendChild(bodyWrap);
-
-      const meta = document.createElement("div");
-      meta.className = "plan-card-meta";
-      const reqId = document.createElement("span");
-      reqId.className = "dim small";
-      reqId.textContent = `request_id: ${entry.request_id} · approval_id: ${entry.id}`;
-      meta.appendChild(reqId);
-      card.appendChild(meta);
-
-      const actions = document.createElement("div");
-      actions.className = "plan-card-actions";
-      const approveBtn = document.createElement("button");
-      approveBtn.type = "button";
-      approveBtn.className = "primary-btn plan-approve-btn";
-      approveBtn.textContent = "approve";
-      approveBtn.dataset.planAction = "approve";
-      approveBtn.dataset.planId = entry.id;
-      const rejectBtn = document.createElement("button");
-      rejectBtn.type = "button";
-      rejectBtn.className = "secondary-btn plan-reject-btn";
-      rejectBtn.textContent = "reject";
-      rejectBtn.dataset.planAction = "reject";
-      rejectBtn.dataset.planId = entry.id;
-      actions.appendChild(approveBtn);
-      actions.appendChild(rejectBtn);
-      card.appendChild(actions);
-      return card;
-    }
-
-    function renderDecidedCard(entry) {
-      const card = document.createElement("div");
-      card.className = `plan-card plan-card-decided plan-card-${entry.status}`;
-
-      const head = document.createElement("div");
-      head.className = "plan-card-head";
-      const headLeft = document.createElement("div");
-      headLeft.className = "plan-card-head-left";
-      const worker = document.createElement("span");
-      worker.className = "plan-card-worker";
-      worker.textContent = entry.worker_name;
-      const team = document.createElement("span");
-      team.className = "plan-card-team";
-      team.textContent = entry.team_id;
-      const status = document.createElement("span");
-      status.className = `plan-card-status plan-card-status-${entry.status}`;
-      status.textContent = entry.status;
-      headLeft.appendChild(worker);
-      headLeft.appendChild(team);
-      headLeft.appendChild(status);
-      const age = document.createElement("span");
-      age.className = "plan-card-age";
-      age.textContent = ageLabel(entry.decided_at || entry.created_at);
-      age.title = fmtTs(entry.decided_at || entry.created_at);
-      head.appendChild(headLeft);
-      head.appendChild(age);
-      card.appendChild(head);
-
-      const summary = document.createElement("div");
-      summary.className = "plan-card-summary";
-      summary.textContent = entry.plan_summary || "(no summary)";
-      card.appendChild(summary);
-
-      if (entry.feedback) {
-        const fb = document.createElement("div");
-        fb.className = "plan-card-feedback";
-        fb.textContent = `feedback: ${entry.feedback}`;
-        card.appendChild(fb);
-      }
-      return card;
-    }
-
-    async function refresh() {
-      try {
-        const r = await fetch("/api/plan-approvals");
-        if (!r.ok) {
-          pendingEl.textContent = `error: HTTP ${r.status}`;
-          return;
-        }
-        const j = await r.json();
-        if (!j.ok) {
-          pendingEl.textContent = `error: ${j.error || "unknown"}`;
-          return;
-        }
-        const pending = Array.isArray(j.pending) ? j.pending : [];
-        const decided = Array.isArray(j.decided) ? j.decided : [];
-        pendingCountEl.textContent = String(pending.length);
-        decidedCountEl.textContent = String(decided.length);
-        if (navBadgeEl) {
-          if (pending.length > 0) {
-            navBadgeEl.hidden = false;
-            navBadgeEl.textContent = String(pending.length);
-          } else {
-            navBadgeEl.hidden = true;
-          }
-        }
-        if (pending.length === 0) {
-          pendingEl.innerHTML = '<div class="dim small">no pending plans — workers will surface here when they request approval</div>';
-        } else {
-          pendingEl.innerHTML = "";
-          for (const entry of pending) pendingEl.appendChild(renderPendingCard(entry));
-        }
-        if (decided.length === 0) {
-          decidedEl.innerHTML = '<div class="dim small">no decisions yet</div>';
-        } else {
-          decidedEl.innerHTML = "";
-          for (const entry of decided) decidedEl.appendChild(renderDecidedCard(entry));
-        }
-      } catch (err) {
-        pendingEl.textContent = `error: ${err && err.message ? err.message : err}`;
-      }
-    }
-
-    async function approve(id) {
-      try {
-        const r = await fetch(`/api/plan-approvals/${encodeURIComponent(id)}/approve`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-        });
-        const j = await r.json().catch(() => ({}));
-        if (!r.ok || !j.ok) {
-          alert(`approve failed: ${j.error || `HTTP ${r.status}`}`);
-        }
-      } catch (err) {
-        alert(`approve failed: ${err && err.message ? err.message : err}`);
-      } finally {
-        refresh();
-      }
-    }
-
-    function openRejectModal(id) {
-      if (!rejectModal) return;
-      rejectIdInput.value = id;
-      rejectFeedback.value = "";
-      rejectModal.hidden = false;
-      rejectFeedback.focus();
-    }
-
-    function closeRejectModal() {
-      if (!rejectModal) return;
-      rejectModal.hidden = true;
-      rejectIdInput.value = "";
-      rejectFeedback.value = "";
-    }
-
-    async function submitReject(ev) {
-      ev.preventDefault();
-      const id = rejectIdInput.value;
-      const feedback = rejectFeedback.value.trim();
-      if (!id) {
-        closeRejectModal();
-        return;
-      }
-      try {
-        const r = await fetch(`/api/plan-approvals/${encodeURIComponent(id)}/reject`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ feedback }),
-        });
-        const j = await r.json().catch(() => ({}));
-        if (!r.ok || !j.ok) {
-          alert(`reject failed: ${j.error || `HTTP ${r.status}`}`);
-          return;
-        }
-      } catch (err) {
-        alert(`reject failed: ${err && err.message ? err.message : err}`);
-        return;
-      } finally {
-        closeRejectModal();
-        refresh();
-      }
-    }
-
-    pendingEl.addEventListener("click", (ev) => {
-      const btn = ev.target.closest("button[data-plan-action]");
-      if (!btn) return;
-      const id = btn.dataset.planId;
-      if (!id) return;
-      const action = btn.dataset.planAction;
-      if (action === "approve") {
-        if (confirm("Approve this plan? The worker will be notified and proceed.")) {
-          approve(id);
-        }
-      } else if (action === "reject") {
-        openRejectModal(id);
-      }
-    });
-
-    if (refreshBtn) refreshBtn.addEventListener("click", refresh);
-    if (rejectClose) rejectClose.addEventListener("click", closeRejectModal);
-    if (rejectCancel) rejectCancel.addEventListener("click", closeRejectModal);
-    if (rejectForm) rejectForm.addEventListener("submit", submitReject);
-
-    // Refresh on tab activation.
-    const observer = new MutationObserver(() => {
-      if (document.body.getAttribute("data-active-tab") === "plans") refresh();
-    });
-    observer.observe(document.body, { attributes: true, attributeFilter: ["data-active-tab"] });
-    if (document.body.getAttribute("data-active-tab") === "plans") refresh();
-
-    // Always refresh the badge in the background — operators may be on a
-    // different tab when a plan arrives, and the badge needs to flag it.
-    refresh();
-    setInterval(refresh, 30_000);
-
-    // Piggyback on the notifications SSE stream: any new event likely
-    // changed the approval queue (record / decide / expire all emit one),
-    // so re-pull. EventSource shares the connection if already open.
-    try {
-      const sse = new EventSource("/api/notifications/stream");
-      sse.addEventListener("notification", refresh);
-    } catch {
-      /* fallback to 30s poll above */
+  // ── v2.7.25 chrome icons (ADR 0016) ──────────────────────────────────
+  // Replace remaining emoji-as-icon in static chrome with Lucide SVGs.
+  // The bell + tray are owned by initNotificationTray() above; this is
+  // for the rest of the surface that the audit identified:
+  //   • Master chat attach button (📎 → paperclip)
+  //
+  // Tool-family icons (🔧 🖥 🧠 …) live in /tool-display.json which is
+  // operator-editable CONTENT config, not chrome — left alone. Sidebar
+  // nav glyphs (◉ ⚙ ▣ …) are unicode geometric shapes, not emoji, and
+  // render consistently across platforms — left alone. Verdict glyphs
+  // (🟢 🟡 🔴) are operator-facing state indicators rendered into
+  // textContent and don't suffer the bell's render-roulette problem —
+  // left alone (the surrounding `.dispatch-verdict.green/yellow/red`
+  // CSS classes carry the color signal too).
+  function initLucideChrome() {
+    const attachBtn = document.getElementById("master-attach-btn");
+    if (attachBtn && !attachBtn.innerHTML.trim()) {
+      attachBtn.innerHTML = getIcon("paperclip", { size: 14 });
     }
   }
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", initPlansTab, { once: true });
+    document.addEventListener("DOMContentLoaded", initLucideChrome, { once: true });
   } else {
-    initPlansTab();
+    initLucideChrome();
+  }
+
+  // ── v2.7.25 (Scope C) — Upstreams card ──────────────────────────────
+  // Surfaces the master's upstream-check watchdog state in the Memory
+  // tab. Loads once when the Memory tab becomes active (cheap GET, no
+  // SSE); "Check now" pokes the master's manual-tick endpoint.
+  function initUpstreamsCard() {
+    const card = document.getElementById("upstreams-card");
+    if (!card) return;
+    const grid = document.getElementById("upstreams-grid");
+    const lastChecked = document.getElementById("upstreams-last-checked");
+    const status = document.getElementById("upstreams-status");
+    const btn = document.getElementById("upstreams-check-btn");
+    if (!grid || !btn) return;
+
+    let loaded = false;
+
+    function fmtAgo(iso) {
+      if (!iso) return "never checked";
+      try {
+        const ms = Date.now() - Date.parse(iso);
+        if (Number.isNaN(ms) || ms < 0) return "just now";
+        if (ms < 60_000) return "checked " + Math.floor(ms / 1000) + "s ago";
+        if (ms < 3600_000) return "checked " + Math.floor(ms / 60_000) + "m ago";
+        if (ms < 86_400_000) return "checked " + Math.floor(ms / 3600_000) + "h ago";
+        return "checked " + Math.floor(ms / 86_400_000) + "d ago";
+      } catch { return "never checked"; }
+    }
+
+    function render(payload) {
+      if (!payload || !Array.isArray(payload.results)) {
+        grid.innerHTML = '<div class="dim small">no data yet — click Check now</div>';
+        lastChecked.textContent = "never checked";
+        return;
+      }
+      lastChecked.textContent = fmtAgo(payload.checked_at);
+      if (payload.results.length === 0) {
+        grid.innerHTML = '<div class="dim small">no packages tracked</div>';
+        return;
+      }
+      grid.innerHTML = payload.results.map((r) => {
+        const cls = r.has_update ? "upstream-row has-update" : "upstream-row";
+        const ver = r.error
+          ? '<span class="upstream-version" title="' + escapeHtml(r.error) + '">error</span>'
+          : (r.has_update
+            ? '<span class="upstream-version" title="bump: ' + escapeHtml(r.bump_kind) + '">' + escapeHtml(r.pinned) + ' → ' + escapeHtml(r.latest) + '</span>'
+            : '<span class="upstream-version">' + escapeHtml(r.pinned) + ' (latest)</span>');
+        return [
+          '<div class="' + cls + '">',
+          '  <span class="upstream-icon">' + getIcon("package", { size: 14 }) + '</span>',
+          '  <span class="upstream-name">' + escapeHtml(r.package) + '</span>',
+              ver,
+          '</div>',
+        ].join("");
+      }).join("");
+      const auto = payload.auto_update_enabled
+        ? "auto-update gate: ON (" + escapeHtml(payload.auto_update_flag_path || "") + ")"
+        : "auto-update gate: OFF";
+      status.textContent = auto;
+    }
+
+    async function load() {
+      try {
+        const r = await fetch("/api/upstreams");
+        const j = await r.json();
+        if (j && j.ok) render(j);
+      } catch (err) {
+        grid.innerHTML = '<div class="dim small">master unreachable: ' + escapeHtml(String(err && err.message || err)) + '</div>';
+      }
+    }
+
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      const orig = btn.textContent;
+      btn.textContent = "checking…";
+      try {
+        const r = await fetch("/api/upstreams/check", { method: "POST" });
+        const j = await r.json();
+        if (j && j.ok) render(j);
+      } catch (err) {
+        if (status) status.textContent = "check failed: " + String(err && err.message || err);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = orig;
+      }
+    });
+
+    // Lazy-load on Memory tab activation. The tab switcher sets
+    // document.body.dataset.activeTab — observe it. If we're already
+    // on memory at boot, load immediately.
+    function maybeLoad() {
+      if (loaded) return;
+      const active = document.body && document.body.dataset && document.body.dataset.activeTab;
+      if (active !== "memory") return;
+      loaded = true;
+      load();
+    }
+    maybeLoad();
+    if (typeof MutationObserver === "function") {
+      new MutationObserver(maybeLoad).observe(document.body, {
+        attributes: true,
+        attributeFilter: ["data-active-tab"],
+      });
+    }
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initUpstreamsCard, { once: true });
+  } else {
+    initUpstreamsCard();
   }
 
   // Kick off — also try polling immediately so first paint isn't blocked

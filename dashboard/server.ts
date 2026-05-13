@@ -1578,6 +1578,10 @@ const STATIC_FILES: Record<string, { path: string; type: string }> = {
   "/style.css":   { path: join(PUBLIC_DIR, "style.css"),  type: "text/css; charset=utf-8" },
   "/app.js":      { path: join(PUBLIC_DIR, "app.js"),     type: "application/javascript; charset=utf-8" },
   "/terminal.js": { path: join(PUBLIC_DIR, "terminal.js"), type: "application/javascript; charset=utf-8" },
+  // v2.7.25 (Scope A): Lucide-backed SVG icon helper. Module-shape file
+  // so future code can `import { icon } from "/icons.js"`; today it also
+  // exposes window.subctlIcon for the classic-script app.js call sites.
+  "/icons.js":    { path: join(PUBLIC_DIR, "icons.js"),   type: "application/javascript; charset=utf-8" },
   "/logo.png":    { path: join(PUBLIC_DIR, "logo.png"),   type: "image/png" },
   "/tool-display.json": { path: join(PUBLIC_DIR, "tool-display.json"), type: "application/json; charset=utf-8" },
   "/vendor/xterm/xterm.js":  { path: join(NODE_MODULES_DIR, "xterm", "lib", "xterm.js"),  type: "application/javascript; charset=utf-8" },
@@ -3408,7 +3412,7 @@ const server = Bun.serve({
         { name: "CONTEXT7_API_KEY",     purpose: "Context7 — up-to-date library docs (master tool + MCP for dev-team Claude leads)", secret_key: "context7_api_key" },
         { name: "BRAVE_API_KEY",        purpose: "Brave AI Search (web_search master tool — v2.7.2)", secret_key: "brave_api_key" },
         { name: "FIRECRAWL_API_KEY",    purpose: "Firecrawl scraping (web_fetch master tool — v2.7.2)", secret_key: "firecrawl_api_key" },
-        { name: "TINYFISH_API_KEY",     purpose: "TinyFish search + fetch + agent (tinyfish_search, tinyfish_fetch — v2.7.16 free tier; tinyfish_agent — v2.7.27 paid, browser-automation, consumes credits)", secret_key: "tinyfish_api_key" },
+        { name: "TINYFISH_API_KEY",     purpose: "TinyFish search + fetch (tinyfish_search, tinyfish_fetch master tools — v2.7.16, free tier)", secret_key: "tinyfish_api_key" },
         { name: "LINEAR_API_KEY",       purpose: "Linear API (linear_list_issues, linear_search, linear_create_issue, linear_update_issue master tools — v2.7.2)", secret_key: "linear_api_key" },
         { name: "LMSTUDIO_API_TOKEN",   purpose: "LM Studio API auth (when 'Require API Token' is enabled in LM Studio server settings — v2.7.4)", secret_key: "lmstudio_api_token" },
       ];
@@ -4813,15 +4817,16 @@ const server = Bun.serve({
       }
     }
 
-    // ── v2.7.29 plan approvals ──
-    // Proxy /api/plan-approvals/* to the master's /plan-approvals/*
-    // surface. Same shape as /api/notifications: no auth, dashboard runs
-    // on localhost. The master owns the queue + JSONL log; this just
-    // forwards REST so the Plans tab in app.js doesn't have to know
-    // master's port.
-    if (url.pathname.startsWith("/api/plan-approvals")) {
+    // ── /api/upstreams — proxy to master's upstream-check (v2.7.25 C) ───
+    // ADR 0015 always-latest policy. The master owns the watchdog state;
+    // this proxy lets the dashboard's Memory tab "Upstreams" card read it
+    // without knowing the master's port. Routes:
+    //
+    //   GET  /api/upstreams        → master /upstreams
+    //   POST /api/upstreams/check  → master /upstreams/check (manual tick)
+    if (url.pathname === "/api/upstreams" || url.pathname === "/api/upstreams/check") {
       const masterPort = process.env.SUBCTL_MASTER_PORT ?? "8788";
-      const masterUrl = `http://127.0.0.1:${masterPort}${url.pathname.replace(/^\/api\/plan-approvals/, "/plan-approvals")}${url.search}`;
+      const masterUrl = `http://127.0.0.1:${masterPort}${url.pathname.replace(/^\/api\/upstreams/, "/upstreams")}${url.search}`;
       try {
         const init: RequestInit = {
           method: req.method,

@@ -143,18 +143,11 @@ import {
   type MemoryEntry,
 } from "./memory";
 import { evyMemoryTools } from "./tools/evy-memory";
-// ── v2.7.29 plan approvals ──
 import {
-  recordApprovalRequest,
-  listPending as listPendingApprovals,
-  listDecided as listDecidedApprovals,
-  getApproval as getPlanApproval,
-  approveRequest as approvePlanRequest,
-  rejectRequest as rejectPlanRequest,
-  expireOldRequests as expireOldPlanRequests,
-  ApprovalError as PlanApprovalError,
-  type PendingApproval,
-} from "./plan-approvals";
+  startUpstreamWatchdog,
+  describeUpstreamState,
+  type UpstreamWatchdogHandle,
+} from "./upstream-check";
 
 const HOME = homedir();
 const COMPONENT_DIR = import.meta.dir;
@@ -1155,73 +1148,6 @@ async function main() {
         const synth = `[team-report] dev-team "${team}" reported ${ev.type}: ${summary}. Decide whether to ping the lead via subctl_orch_msg, escalate to Jason via telegram_send, or take corrective action.`;
         void dispatchToAgent(synth, "watchdog");
       }
-      // ── v2.7.29 plan approvals ──
-      // A team lead forwards a worker's plan_approval_request by writing
-      // a JSONL line of shape:
-      //   {"type":"plan-approval-request","request_id":"…","worker_name":"…",
-      //    "plan_summary":"short title","plan_body":"full text"}
-      // We record it in the pending-approvals queue and emit a single
-      // severity:"alert" notification so the dashboard tray + Telegram
-      // push both surface it. We intentionally do NOT log plan_body — it
-      // may contain secrets.
-      if (ev.type === "plan-approval-request") {
-        const request_id = String((ev as Record<string, unknown>).request_id ?? "");
-        const worker_name = String(
-          (ev as Record<string, unknown>).worker_name ?? "(unknown)",
-        );
-        const plan_summary = String(
-          (ev as Record<string, unknown>).plan_summary ??
-            (ev as Record<string, unknown>).text ??
-            "(no summary)",
-        );
-        const plan_body = String(
-          (ev as Record<string, unknown>).plan_body ??
-            (ev as Record<string, unknown>).text ??
-            "",
-        );
-        if (request_id) {
-          try {
-            const entry = recordApprovalRequest({
-              request_id,
-              worker_name,
-              team_id: team,
-              plan_summary,
-              plan_body,
-            });
-            emitNotification({
-              kind: "plan-approval-needed",
-              severity: "alert",
-              title: `plan approval: ${worker_name} (${team})`,
-              body:
-                `${entry.plan_summary}\n\n` +
-                `Approve from the dashboard Plans tab or via Telegram:\n` +
-                `  /plans approve ${entry.id}\n` +
-                `  /plans reject ${entry.id} <feedback>`,
-              team_id: team,
-            });
-            broadcast("plan_approval_request", {
-              id: entry.id,
-              request_id: entry.request_id,
-              worker_name: entry.worker_name,
-              team_id: entry.team_id,
-              plan_summary: entry.plan_summary,
-              created_at: entry.created_at,
-            });
-            // Truncate any console output — plan_body may contain secrets.
-            console.error(
-              `[plan-approvals] new request id=${entry.id} team=${team} worker=${worker_name} summary="${entry.plan_summary.slice(0, 60)}"`,
-            );
-          } catch (err) {
-            console.error(
-              `[plan-approvals] record failed (${request_id}): ${(err as Error).message}`,
-            );
-          }
-        } else {
-          console.error(
-            `[plan-approvals] dropping malformed plan-approval-request from ${team} (missing request_id)`,
-          );
-        }
-      }
     }
   }
 
@@ -1819,6 +1745,12 @@ async function main() {
   // public traffic. Keeps the agent off the open LAN by default.
   const masterHost = process.env.SUBCTL_MASTER_HOST ?? "127.0.0.1";
 
+  // Forward-declared so the fetch handler can capture it; assignment
+  // happens after the watchdog ticker block below. The /upstreams/check
+  // route guards on null to handle the (vanishingly small) window
+  // between Bun.serve() returning and the watchdog being armed.
+  let upstreamWatchdog: UpstreamWatchdogHandle | null = null;
+
   const httpServer = Bun.serve({
     port: masterPort,
     hostname: masterHost,
@@ -2016,109 +1948,37 @@ async function main() {
         });
       }
 
-      // ── v2.7.29 plan approvals ──
-      // Operator-facing surface for worker-proposed plans waiting on
-      // approval. Dashboard proxies these under /api/plan-approvals/*.
+      // ── /upstreams — pi-ai + pi-agent-core tracker (v2.7.25 Scope C) ────
+      // ADR 0015 "always-latest" policy. The dashboard proxies these under
+      // /api/upstreams; Telegram's /upstreams reads describeUpstreamState()
+      // directly via master-notify-listener. Routes:
       //
-      //   GET    /plan-approvals                  → { ok, pending, decided }
-      //   POST   /plan-approvals/:id/approve      → { ok, approval }
-      //   POST   /plan-approvals/:id/reject       → body { feedback } → { ok, approval }
-      //   POST   /plan-approvals/expire           → { ok, expired }
-      //
-      // The approve/reject side effects:
-      //   1. Update the queue (durable JSONL log under ~/.local/state/subctl).
-      //   2. Forward a plan_approval_response back to the team lead via
-      //      the dashboard's HMAC-authenticated /msg route — same path
-      //      auto-nudge uses, so the worker sees a real "supervisor said
-      //      yes/no" event.
-      if (url.pathname === "/plan-approvals" && req.method === "GET") {
-        const pending = listPendingApprovals();
-        const decided = listDecidedApprovals(20);
-        return Response.json({ ok: true, pending, decided });
+      //   GET  /upstreams        → { ok, checked_at, results[], auto_update_enabled, auto_update_flag_path }
+      //   POST /upstreams/check  → runs the watchdog once, returns the same shape
+      if (url.pathname === "/upstreams" && req.method === "GET") {
+        const state = describeUpstreamState();
+        return Response.json({ ok: true, ...state });
       }
-      {
-        const m = url.pathname.match(
-          /^\/plan-approvals\/([A-Za-z0-9-]+)\/(approve|reject)\/?$/,
-        );
-        if (m && req.method === "POST") {
-          const id = m[1]!;
-          const action = m[2] as "approve" | "reject";
-          let feedback = "";
-          if (action === "reject") {
-            try {
-              const body = (await req.json()) as { feedback?: unknown };
-              if (typeof body.feedback === "string") {
-                feedback = body.feedback.trim();
-              }
-            } catch {
-              /* empty body → empty feedback; that's allowed */
-            }
-          }
-          let updated: PendingApproval;
-          try {
-            updated =
-              action === "approve"
-                ? approvePlanRequest(id)
-                : rejectPlanRequest(id, feedback);
-          } catch (err) {
-            if (err instanceof PlanApprovalError) {
-              const status = err.code === "not-found" ? 404 : 409;
-              const existing = getPlanApproval(id);
-              return Response.json(
-                { ok: false, error: err.message, code: err.code, approval: existing },
-                { status },
-              );
-            }
-            throw err;
-          }
-          // Best-effort deliver the response back to the team lead. We
-          // don't block the operator on this — the queue update is
-          // authoritative, and a downed dashboard shouldn't make the
-          // approval UI hang. The dashboard /msg route signs the body
-          // with the v2.7.20 HMAC trust marker so the worker's lead
-          // verifies it as a real supervisor directive.
-          const responseText =
-            action === "approve"
-              ? `[plan_approval_response] request_id=${updated.request_id} approve=true`
-              : `[plan_approval_response] request_id=${updated.request_id} approve=false feedback=${feedback || "(no feedback)"}`;
-          fetch(
-            `${SUBCTL_API}/api/orchestration/${encodeURIComponent(updated.team_id)}/msg`,
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ text: responseText, phase: "plan-approval-response" }),
-              signal: AbortSignal.timeout(5_000),
-            },
-          ).catch((err) => {
-            console.error(
-              `[plan-approvals] dashboard /msg delivery failed (${updated.id}): ${(err as Error).message}`,
-            );
-          });
-          // Also emit a tracking notification (info severity) so the
-          // operator sees the decision was applied even if the worker
-          // never acknowledges.
-          emitNotification({
-            kind: "plan-approval-decided",
-            severity: "info",
-            title:
-              action === "approve"
-                ? `plan approved: ${updated.worker_name}`
-                : `plan rejected: ${updated.worker_name}`,
-            body:
-              `Team: ${updated.team_id}\n` +
-              `Worker: ${updated.worker_name}\n` +
-              `Summary: ${updated.plan_summary}` +
-              (action === "reject" && feedback
-                ? `\n\nFeedback: ${feedback}`
-                : ""),
-            team_id: updated.team_id,
-          });
-          return Response.json({ ok: true, approval: updated });
+      if (url.pathname === "/upstreams/check" && req.method === "POST") {
+        // Trigger a manual tick. Forward-declared above; null only in
+        // the brief window between Bun.serve() returning and the
+        // watchdog being armed a few lines below.
+        if (!upstreamWatchdog) {
+          return Response.json(
+            { ok: false, error: "upstream watchdog not yet armed" },
+            { status: 503 },
+          );
         }
-      }
-      if (url.pathname === "/plan-approvals/expire" && req.method === "POST") {
-        const expired = expireOldPlanRequests();
-        return Response.json({ ok: true, expired });
+        try {
+          await upstreamWatchdog.runNow();
+        } catch (err) {
+          return Response.json(
+            { ok: false, error: (err as Error).message },
+            { status: 500 },
+          );
+        }
+        const state = describeUpstreamState();
+        return Response.json({ ok: true, ...state });
       }
 
       // ── /memory/* — Evy Memory (Tier 3) operator surface (v2.7.23) ──────
@@ -3286,49 +3146,6 @@ async function main() {
   setTimeout(() => void runAutoCompactTick(), 15_000);
   console.error("[master] auto-compact safety-net ticker armed — every 5min (PRIMARY gate is just-in-time, see runJitCompactCheck())");
 
-  // ── v2.7.29 plan-approval auto-expire ticker ───────────────────────────
-  // Every 5 min sweep the pending-approvals queue; anything older than 60
-  // min auto-rejects with feedback "auto-expired". One emitNotification
-  // per expired entry so the operator sees they timed out (and can
-  // re-request from the worker if desired).
-  const planApprovalExpireInterval = setInterval(() => {
-    touchWatchdog("plan-approval-expire");
-    try {
-      const before = listPendingApprovals();
-      const n = expireOldPlanRequests(60);
-      if (n > 0) {
-        // Re-snapshot the decided list to find the ones we just flipped.
-        const decided = listDecidedApprovals(n + before.length);
-        const expired = decided.filter(
-          (e) => e.status === "expired" && e.decided_by === "auto-timeout",
-        );
-        for (const entry of expired.slice(0, n)) {
-          emitNotification({
-            kind: "plan-approval-expired",
-            severity: "warn",
-            title: `plan expired: ${entry.worker_name}`,
-            body:
-              `Worker: ${entry.worker_name}\n` +
-              `Team: ${entry.team_id}\n` +
-              `Summary: ${entry.plan_summary}\n` +
-              `Sat pending >60 min; auto-rejected. Re-request from the worker if you still want this work.`,
-            team_id: entry.team_id,
-          });
-        }
-      }
-    } catch (err) {
-      console.error(
-        `[plan-approvals] expire tick error: ${(err as Error).message}`,
-      );
-    }
-  }, 5 * 60 * 1000);
-  registerWatchdog({
-    id: "plan-approval-expire",
-    kind: "plan-approval-expire",
-    kill: () => clearInterval(planApprovalExpireInterval),
-  });
-  console.error("[master] plan-approval expire ticker armed — every 5min, threshold=60min");
-
   // ── verifier denial-cluster ticker (PR 6.5, HANDOFF_DIGEST D8) ─────────
   // Scans each team's recent audit entries every 30s. If a Gated worker is
   // hitting policy denials in clusters (>5 in 60s OR >3 of the same
@@ -3344,6 +3161,18 @@ async function main() {
   });
   console.error("[master] verifier denial-cluster ticker armed — interval=30s, burst=>5/60s, stuck=>3/5min");
 
+  // ── upstream-check watchdog (v2.7.25 Scope C) ───────────────────────────
+  // ADR 0015 declared pi-ai + pi-agent-core first-class upstreams under
+  // an "always-latest" policy. This watchdog polls npm every 6h, emits
+  // notifications when a newer version is available, and (when the
+  // ~/.config/subctl/auto-update-upstreams.enabled flag is set)
+  // attempts the upgrade itself with a bun install + bun test gate.
+  // See components/master/upstream-check.ts.
+  upstreamWatchdog = startUpstreamWatchdog({
+    packageJsonPath: join(COMPONENT_DIR, "package.json"),
+  });
+  console.error("[master] upstream-check watchdog armed — interval=6h, packages=pi-ai + pi-agent-core");
+
   // ── graceful shutdown ───────────────────────────────────────────────────
   const shutdown = (signal: string) => {
     if (stopped) return;
@@ -3353,8 +3182,8 @@ async function main() {
     clearInterval(followupTicker);
     clearInterval(autoCompactInterval);
     clearInterval(inboxPoll);
-    clearInterval(planApprovalExpireInterval);
     clusterTicker.stop();
+    try { upstreamWatchdog?.stop(); } catch { /* ignore */ }
     try { profilesWatcher.close(); } catch { /* ignore */ }
     if (inboxWatcher) try { inboxWatcher.close(); } catch { /* ignore */ }
     try { stopMasterNotifyListener(); } catch { /* ignore */ }
