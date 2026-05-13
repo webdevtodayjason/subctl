@@ -144,17 +144,23 @@ def _voxcpm_render(text: str, voice_id: str, model: str) -> tuple[bytes, str, in
     audio = _VOXCPM_MODEL.generate(**gen_kwargs)  # returns np.ndarray, float32 [-1,1]
     elapsed_ms = int((time.time() - started) * 1000)
 
-    # VoxCPM output is mono float32 @ 16kHz; convert to int16 PCM WAV.
+    # Output sample rate differs by model:
+    #   VoxCPM2: AudioVAE out_sample_rate=48000 (per modules/audiovae/audio_vae_v2.py)
+    #   VoxCPM v1: 16000 (matches the encode rate)
+    out_sr = 48000 if is_v2 else 16000
+
+    # VoxCPM emits mono float32 [-1,1]; convert to int16 PCM WAV.
     audio_int16 = (audio.clip(-1.0, 1.0) * 32767).astype(np.int16)
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
-        w.setframerate(16000)
+        w.setframerate(out_sr)
         w.writeframes(audio_int16.tobytes())
     LOG.info(
-        "voxcpm render text_len=%d ms=%d bytes=%d cloned=%s",
-        len(text), elapsed_ms, len(buf.getvalue()), os.path.exists(ref_wav),
+        "voxcpm render text_len=%d ms=%d bytes=%d sr=%d cloned=%s v2=%s",
+        len(text), elapsed_ms, len(buf.getvalue()), out_sr,
+        os.path.exists(ref_wav), is_v2,
     )
     return buf.getvalue(), "wav", elapsed_ms
 
