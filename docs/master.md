@@ -1928,7 +1928,7 @@ Rigid by design. When she disagrees she pushes back **once**: state the conflict
 
 ### Eval suite
 
-The persona is load-bearing, so it is measured. The eval suite at `components/master/__tests__/evy-eval/` runs 24 tests across seven categories (pushback, verification, persona stability, routing discipline, memory and provenance, error recovery, format and voice). Each test uses the regex-fast-fail → LLM-judge pipeline from [ADR 0008](adr/0008-eval-suite-pipeline.md): cheap deterministic regex first, Sonnet judge after if regex did not veto. Tests degrade gracefully to `regex-only-pass` when no `ANTHROPIC_API_KEY` is available so the suite is usable in dev.
+The persona is load-bearing, so it is measured. The eval suite at `components/master/__tests__/evy-eval/` runs **40 tests across fourteen categories**: the original seven persona categories (pushback, verification, persona stability, routing discipline, memory and provenance, error recovery, format and voice — 24 tests) plus seven feature-coverage categories added in v2.7.30 covering the operator-visible behaviors that shipped in v2.7.18 through v2.7.24 (supervisor profiles, watchdog controls + circuit breaker, HMAC trust marker, web terminal, notifications + auto-nudge, Evy Memory, pi-ai provider catalog — 16 tests). Each test uses the regex-fast-fail → LLM-judge pipeline from [ADR 0008](adr/0008-eval-suite-pipeline.md): cheap deterministic regex first, Sonnet judge after if regex did not veto. Tests degrade gracefully to `regex-only-pass` when no `ANTHROPIC_API_KEY` is available so the suite is usable in dev.
 
 To run:
 

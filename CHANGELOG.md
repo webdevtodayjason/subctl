@@ -4,6 +4,59 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.7.30] — 2026-05-13
+
+### `test(eval): v2.7.30 add eval coverage for v2.7.18 through v2.7.24 features`
+
+The 24-test Evy persona eval suite (shipped in v2.7.15) measures persona behaviors only — pushback shape, voice, memory provenance, routing discipline. Since then, seven releases shipped operator-visible behaviors that were entirely outside the eval grader's reach: v2.7.18 supervisor profiles, v2.7.19 watchdog controls + empty-listener circuit breaker, v2.7.20 HMAC trust marker, v2.7.21 web terminal escape hatch, v2.7.22 notification channel separation + auto-nudge, v2.7.23 Evy Memory (Tier 3), and v2.7.24 pi-ai dynamic provider catalog. Each of these has its own unit-test suite that pins the mechanics, but none of them had eval coverage for the operator-facing surface — what Evy says when the operator asks "what profile are you on?" or "kill the inbox-poll watchdog" or "remember that I prefer terse responses". A future refactor that breaks the operator surface of one of these features would not be caught by either layer until an operator hit it in production.
+
+This release extends the eval suite with 16 feature-coverage tests across seven new categories (8 through 14), one category per shipped version. The tests mirror the existing harness shape exactly: each test file lives in `components/master/__tests__/evy-eval/tests/`, declares per-test judge prompts inline, calls `runEvalTest({testId, operatorTurns, judgePrompt})`, and runs the same regex fast-fail → LLM judge pipeline as the original 24. No new fixture shape, no harness modifications — just additions under `tests/`. Test IDs use the existing `<category>.<test>` convention (8.1, 8.2, 9.1, etc.).
+
+**Category map (file → version → count):**
+
+- `category-8-supervisor-profiles.test.ts` — v2.7.18 — 3 tests
+  - 8.1 reports the active profile by name
+  - 8.2 swaps to chat via the right surface (`/profile chat`, dashboard pill, or POST /profile)
+  - 8.3 same for heavy, with the no-unsolicited-warning constraint
+- `category-9-watchdog-controls.test.ts` — v2.7.19 — 3 tests
+  - 9.1 invokes `watchdog_list` for "what watchdogs are running?"
+  - 9.2 invokes `watchdog_kill({id: "inbox-poll"})` for the named kill
+  - 9.3 respects the empty-listener circuit breaker (no retry, surfaces the dead-listener finding, points at watchdog_list)
+- `category-10-trust-marker.test.ts` — v2.7.20 — 2 tests
+  - 10.1 describes the marker shape with the HMAC field
+  - 10.2 worker should refuse + escalate on HMAC mismatch, not trust the body
+- `category-11-web-terminal.test.ts` — v2.7.21 — 1 test
+  - 11.1 names the dashboard Attach button + the `/terminal on` enable command
+- `category-12-notifications.test.ts` — v2.7.22 — 2 tests
+  - 12.1 notification surface ≠ chat surface (bell tray + alert-only Telegram push)
+  - 12.2 auto-nudge flow: nudge → 30-min hold → escalation; no transcript pollution
+- `category-13-evy-memory.test.ts` — v2.7.23 — 3 tests
+  - 13.1 saves an operator preference via `evy_remember` (Tier 3)
+  - 13.2 recalls recent operator↔Evy chat via `evy_recall` (Tier 3, not Tier 4)
+  - 13.3 distinguishes Evy Memory (Tier 3) from claude-mem (Tier 4) correctly
+- `category-14-provider-catalog.test.ts` — v2.7.24 — 2 tests
+  - 14.1 reflects the dynamic 31+-provider catalog, not a hard-coded short list
+  - 14.2 guides operator through dashboard "New profile" or `subctl auth` to add a Groq profile (no fabricated CLI flags)
+
+**Test infrastructure unchanged.** No edits to `harness.ts`, `judge.ts`, `regex-graders.ts`, `types.ts`, or `_helpers.ts`. The pr23-era prohibition on modifying the harness core files still holds — this release only adds files under `tests/`. The original 24 tests are byte-identical.
+
+**Regex-only mode is the contract.** All 16 new tests pass on the regex fast-fail layer without an Anthropic key (the stub `runEvySession` returns a placeholder Evy response that doesn't hit any of the six base fast-fail patterns, so each test resolves to `regex-only-pass`). The LLM judge runs full-quality grading when `ANTHROPIC_API_KEY` is set; this is the same pattern as the original 24.
+
+**What still feels under-covered.** Three feature surfaces resisted clean eval expression on the regex/LLM-judge pipeline and remain partially covered by their unit tests only: (a) the actual circuit-breaker trip in the master tool-call dispatcher — 9.3 grades the post-trip operator reply only, not the in-flight refusal; pr-future could add a synthetic tool-result injector to drive the breaker for real. (b) The HMAC verification on the worker side — 10.2 grades Evy's explanation of correct worker behavior, not actual worker execution against a malformed HMAC. (c) The dashboard pill + `/profile` Telegram command — eval covers Evy's text response, not the surface invocations themselves; the unit tests in `profiles.test.ts` cover the file-write semantics.
+
+**Files:**
+
+- New: `components/master/__tests__/evy-eval/tests/category-8-supervisor-profiles.test.ts`
+- New: `components/master/__tests__/evy-eval/tests/category-9-watchdog-controls.test.ts`
+- New: `components/master/__tests__/evy-eval/tests/category-10-trust-marker.test.ts`
+- New: `components/master/__tests__/evy-eval/tests/category-11-web-terminal.test.ts`
+- New: `components/master/__tests__/evy-eval/tests/category-12-notifications.test.ts`
+- New: `components/master/__tests__/evy-eval/tests/category-13-evy-memory.test.ts`
+- New: `components/master/__tests__/evy-eval/tests/category-14-provider-catalog.test.ts`
+- `components/master/__tests__/evy-eval/README.md` — eval test set summary line updated to "40 tests, 14 categories".
+- `docs/master.md` — Eval suite section count updated from 24 to 40 with the seven new feature categories enumerated.
+- `VERSION` → `2.7.30`.
+
 ## [2.7.24] — 2026-05-13
 
 ### `feat(dashboard): v2.7.24 pi-ai provider catalog (dynamic dropdown) — pi-ai + pi-agent declared first-class upstreams`
