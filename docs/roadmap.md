@@ -23,9 +23,10 @@ The active wave. Bug fixes from the bash-gate landing, the orchestrator persona 
 | 2.7.11 | chat tool-badges (neon glow) + thinking indicator | In flight (pr22) |
 | 2.7.12 | Evy persona rewrite + autonomous skills + proactive memory + eval harness | Queued |
 | 2.7.13 | Memori (BYODB sqlite) integration for Tier 3 conversational memory | Queued |
-| 2.7.14 | Project skeleton at spawn + ship subctl-team-protocol / handoff-protocol / spec-driven-dev skills | Queued |
-| 2.7.15 | Ecosystem skill bundles (node-conventions, python-conventions, rust-conventions) + agent definitions baseline | Queued |
+| 2.7.14 | Project skeleton at spawn + ship subctl-team-protocol / handoff-protocol / spec-driven-dev skills | Folded into 2.7.33 |
+| 2.7.15 | Ecosystem skill bundles (node-conventions, python-conventions, rust-conventions) + agent definitions baseline | Folded into 2.7.33 |
 | 2.7.16 | Phase 3s capability bridge groundwork | Queued |
+| 2.7.33 | Skill bundles + agent definitions baseline (consolidated 2.7.14 + 2.7.15) | Shipped |
 
 ### v2.8.0 — "team templates" wave
 
