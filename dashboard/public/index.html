@@ -1294,13 +1294,74 @@
 
     <!-- ── Skills tab ──────────────────────────────────────────────── -->
     <section class="skills-screen" data-tab="skills">
+      <!-- ── v2.8.1 skills clarity ── -->
       <header class="screen-header">
-        <h2>Skills <span class="screen-sub">catalog of imported Claude Code skills · used by team templates to give dev-team leads scoped capabilities</span></h2>
+        <h2>Skills <span class="screen-sub">what they are · where they're loaded · who can curate them</span></h2>
         <div class="screen-header-actions">
           <button type="button" class="secondary-btn" id="skills-refresh-btn">refresh</button>
           <button type="button" class="primary-btn" id="skills-import-btn">+ Import from GitHub</button>
         </div>
       </header>
+
+      <!-- Category-aware view (v2.8.1). Each section explains what the
+           category is via the [?] tooltip, lists its skills, and (for
+           Evy-authored drafts) exposes promote/delete actions. The legacy
+           sources + filter pane is still loaded below for the team-builder
+           modal flow, which expects the flat /api/skills list. -->
+      <div class="skills-clarity">
+        <details class="skills-section" id="skills-section-evy-loaded" open>
+          <summary>
+            <span class="skills-section-title">Evy's loaded skills</span>
+            <span class="skills-section-count" id="skills-count-evy-loaded">0</span>
+            <button type="button" class="skills-info-btn" data-info="evy-loaded" aria-label="what is this?">[?]</button>
+          </summary>
+          <div class="skills-cards" id="skills-list-evy-loaded">
+            <div class="dim small" style="padding:12px">loading…</div>
+          </div>
+        </details>
+
+        <details class="skills-section" id="skills-section-team-developer" open>
+          <summary>
+            <span class="skills-section-title">Team-developer skills</span>
+            <span class="skills-section-count" id="skills-count-team-developer">0</span>
+            <button type="button" class="skills-info-btn" data-info="team-developer" aria-label="what is this?">[?]</button>
+          </summary>
+          <div class="skills-cards" id="skills-list-team-developer">
+            <div class="dim small" style="padding:12px">loading…</div>
+          </div>
+        </details>
+
+        <details class="skills-section skills-section-evy-authored" id="skills-section-evy-authored" open>
+          <summary>
+            <span class="skills-section-title">Evy-authored skills</span>
+            <span class="skills-section-count" id="skills-count-evy-authored">0</span>
+            <button type="button" class="skills-info-btn" data-info="evy-authored" aria-label="what is this?">[?]</button>
+          </summary>
+          <div class="skills-cards" id="skills-list-evy-authored">
+            <div class="dim small" style="padding:12px">no drafts yet — Evy hasn't authored any skills in this session</div>
+          </div>
+        </details>
+
+        <details class="skills-section" id="skills-section-project-local">
+          <summary>
+            <span class="skills-section-title">Project-local skills</span>
+            <span class="skills-section-count" id="skills-count-project-local">0</span>
+            <button type="button" class="skills-info-btn" data-info="project-local" aria-label="what is this?">[?]</button>
+          </summary>
+          <div class="skills-cards" id="skills-list-project-local">
+            <div class="dim small" style="padding:12px">no project-local skills detected</div>
+          </div>
+        </details>
+      </div>
+
+      <!-- Info popover (single instance, repositioned per click) -->
+      <div class="skills-info-popover" id="skills-info-popover" hidden></div>
+
+      <hr class="skills-divider" />
+      <h3 class="skills-imported-h3">Imported third-party catalog
+        <span class="dim small">— skills cloned from upstream repos (mattpocock/skills, …) into <code>~/.config/subctl/skills/</code>. Used by the team-builder skill picker.</span>
+      </h3>
+      <!-- ── end v2.8.1 skills clarity ── -->
 
       <!-- Import modal -->
       <div class="modal-backdrop" id="skills-import-modal" hidden>

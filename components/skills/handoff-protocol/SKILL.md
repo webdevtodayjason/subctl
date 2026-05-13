@@ -9,6 +9,10 @@ description: >-
   the worker's tool set, end-of-shift, or running into the spawn-time context
   budget. Also load it when receiving a handoff so you know what shape to
   expect.
+scope: dev-team
+loaded_by_default: []
+created_at: "2026-05-10"
+created_by: operator
 ---
 
 # Handoff Protocol

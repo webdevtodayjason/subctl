@@ -9,6 +9,10 @@ description: >-
   conventions from the surrounding code (the surrounding code may itself be
   drift). Defaults documented here are the operator's preferences as
   expressed across the v2.7.x release wave.
+scope: dev-team
+loaded_by_default: []
+created_at: "2026-05-10"
+created_by: operator
 ---
 
 # Node Conventions

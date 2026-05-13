@@ -17,6 +17,10 @@ description: >-
   outputs, and maintaining an ORCHESTRATION.md task ledger. Workers run
   in their own iTerm2 panes on the right side of the window while the
   orchestrator pane stays on the left.
+scope: both
+loaded_by_default: []
+created_at: "2026-05-10"
+created_by: operator
 ---
 
 # Orchestrator Mode

@@ -129,16 +129,19 @@ import {
   spawnPtyBridge,
   type PtyBridge,
 } from "./terminal.ts";
-// ── v2.8.1 accounts data fix ──
-// Per-account verdict extracted into dashboard/lib/account-verdict.ts so the
-// "missing usage data → yellow with reason" logic is unit-testable and the
-// thresholds (80/95) are co-located with the team-lead's go/caution/throttle
-// dispatch model.
+// ── v2.8.1 skills clarity ──
+// Categorized skills listing + Evy-authored draft curation (promote/delete).
+// The legacy /api/skills route stays for the imported-catalog flow; these new
+// routes drive the categorized Skills tab view operator asked for.
 import {
-  computeAccountVerdict as computeAccountVerdictImpl,
-  type UsageEntry as VerdictUsageEntry,
-  type AccountVerdict,
-} from "./lib/account-verdict.ts";
+  listSkills as listAllSkills,
+  promoteEvySkill,
+  deleteEvySkill,
+  templatesUsingSkill,
+  type Skill,
+  type SkillCategory,
+} from "../components/master/skills-registry.ts";
+// ── end v2.8.1 skills clarity ──
 
 const PORT = Number(process.env.PORT ?? 8787);
 const STARTED_AT = Date.now();
@@ -353,12 +356,14 @@ const SUBCTL_BIN = join(REPO_ROOT, "bin", "subctl");
 
 // ---------- per-account usage (Anthropic /api/oauth/usage) ----------
 
-// ── v2.8.1 accounts data fix ──
-// `UsageEntry` is re-exported from dashboard/lib/account-verdict.ts so
-// the verdict module and the server agree on the shape. The dashboard
-// historically defined the type locally; the alias here keeps every
-// existing reference compiling unchanged.
-type UsageEntry = VerdictUsageEntry;
+interface UsageEntry {
+  five_hour?:        { utilization: number; resets_at: string | null } | null;
+  seven_day?:        { utilization: number; resets_at: string | null } | null;
+  seven_day_sonnet?: { utilization: number; resets_at: string | null } | null;
+  seven_day_opus?:   { utilization: number; resets_at: string | null } | null;
+  extra_usage?:      { is_enabled: boolean; monthly_limit?: number; used_credits?: number; currency?: string } | null;
+  [key: string]: unknown;
+}
 
 interface AccountUsageResult {
   alias: string;
@@ -368,25 +373,7 @@ interface AccountUsageResult {
   error?: string;
 }
 
-// ── v2.8.1 accounts data fix ──
-// Fetch metadata surfaced via state.usage_fetch so the dashboard can
-// distinguish "all accounts green because they're fine" from "all accounts
-// green because the subprocess silently returned []" — which was the bug
-// the operator hit on 2026-05-13. `ok: false` means the operator should
-// not trust per-account verdicts; the frontend renders a banner.
-interface UsageFetchMeta {
-  ok: boolean;
-  fetched_at_ms: number;
-  fetched_at: string;            // ISO8601 for the frontend
-  age_seconds: number;
-  accounts_returned: number;
-  accounts_with_usage: number;
-  accounts_with_errors: number;
-  error?: string;                // top-level failure (spawn error, JSON parse, etc.)
-  stderr_excerpt?: string;       // first 200 chars of stderr — debug aid, no secrets
-}
-
-let _usageCache: { fetchedAt: number; data: AccountUsageResult[]; meta: UsageFetchMeta } | null = null;
+let _usageCache: { fetchedAt: number; data: AccountUsageResult[] } | null = null;
 // 5min — same cadence as the history poller. The /api/refresh endpoint
 // (POST or GET) clears this cache for an explicit on-demand fetch.
 const USAGE_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -394,111 +381,31 @@ const USAGE_CACHE_TTL_MS = 5 * 60 * 1000;
 // Shells out to `subctl usage --json` once per TTL window. The bash impl has
 // its own 60s on-disk cache; this in-process cache just avoids spawning a
 // subprocess on every WebSocket tick.
-//
-// ── v2.8.1 accounts data fix ──
-// Previously this swallowed every error path into `[]` with no signal to
-// the caller — which then made every authed account default to a green
-// verdict (see computeAccountVerdict in dashboard/lib/account-verdict.ts).
-// Now we also return `meta` describing whether the fetch succeeded, when
-// it ran, and how many accounts came back with real `usage` payloads. The
-// dashboard surfaces this so the operator can see "stale 14m ago — re-auth?"
-// instead of a false "all clear, dispatches go".
-function subctlUsageFetchAll(now: number): { data: AccountUsageResult[]; meta: UsageFetchMeta } {
+function subctlUsageFetchAll(now: number): AccountUsageResult[] {
   if (_usageCache && now - _usageCache.fetchedAt < USAGE_CACHE_TTL_MS) {
-    return {
-      data: _usageCache.data,
-      meta: { ...usageMetaFromCache(_usageCache, now) },
-    };
+    return _usageCache.data;
   }
-  const baseMeta = (extra: Partial<UsageFetchMeta>): UsageFetchMeta => ({
-    ok: false,
-    fetched_at_ms: now,
-    fetched_at: new Date(now).toISOString(),
-    age_seconds: 0,
-    accounts_returned: 0,
-    accounts_with_usage: 0,
-    accounts_with_errors: 0,
-    ...extra,
-  });
   try {
     const r = spawnSync(SUBCTL_BIN, ["usage", "--json"], {
       encoding: "utf8",
       timeout: 12_000,
     });
-    if (r.error) {
-      const meta = baseMeta({ error: `spawn failed: ${r.error.message}` });
-      _usageCache = { fetchedAt: now, data: [], meta };
-      return { data: [], meta };
+    if (r.error || (typeof r.status === "number" && r.status !== 0)) {
+      _usageCache = { fetchedAt: now, data: [] };
+      return [];
     }
-    if (typeof r.status === "number" && r.status !== 0) {
-      const stderr = String(r.stderr ?? "").slice(0, 200);
-      const meta = baseMeta({
-        error: `subctl usage --json exit=${r.status}`,
-        stderr_excerpt: stderr || undefined,
-      });
-      _usageCache = { fetchedAt: now, data: [], meta };
-      return { data: [], meta };
-    }
-    let parsed: AccountUsageResult[];
-    try {
-      parsed = JSON.parse(r.stdout || "[]") as AccountUsageResult[];
-    } catch (e) {
-      const meta = baseMeta({ error: `JSON parse failed: ${(e as Error).message}` });
-      _usageCache = { fetchedAt: now, data: [], meta };
-      return { data: [], meta };
-    }
-    if (!Array.isArray(parsed)) {
-      const meta = baseMeta({ error: "usage payload was not an array" });
-      _usageCache = { fetchedAt: now, data: [], meta };
-      return { data: [], meta };
-    }
-    const accountsReturned = parsed.length;
-    const accountsWithUsage = parsed.filter(u => u.ok && u.usage).length;
-    const accountsWithErrors = parsed.filter(u => !u.ok).length;
-    // ok == "at least one account came back with usage data". An empty
-    // array means we have no claude accounts OR every fetch failed — both
-    // surface as ok:false so the frontend warns.
-    const ok = accountsWithUsage > 0;
-    const meta = baseMeta({
-      ok,
-      accounts_returned: accountsReturned,
-      accounts_with_usage: accountsWithUsage,
-      accounts_with_errors: accountsWithErrors,
-      error: ok ? undefined : "no account returned usage data",
-    });
-    _usageCache = { fetchedAt: now, data: parsed, meta };
-    return { data: parsed, meta };
-  } catch (e) {
-    const meta = baseMeta({ error: `unexpected: ${(e as Error).message}` });
-    _usageCache = { fetchedAt: now, data: [], meta };
-    return { data: [], meta };
+    const parsed = JSON.parse(r.stdout || "[]") as AccountUsageResult[];
+    _usageCache = { fetchedAt: now, data: parsed };
+    return parsed;
+  } catch {
+    _usageCache = { fetchedAt: now, data: [] };
+    return [];
   }
-}
-
-// Recompute age_seconds when serving from cache (the cached meta was minted
-// when the subprocess last ran — the timestamp is correct but the age isn't).
-function usageMetaFromCache(
-  cache: { fetchedAt: number; meta: UsageFetchMeta },
-  now: number,
-): UsageFetchMeta {
-  return {
-    ...cache.meta,
-    age_seconds: Math.max(0, Math.floor((now - cache.fetchedAt) / 1000)),
-  };
 }
 
 function usageForAlias(alias: string, all: AccountUsageResult[]): UsageEntry | null {
   const hit = all.find(u => u.alias === alias && u.ok);
   return hit?.usage ?? null;
-}
-
-// ── v2.8.1 accounts data fix ──
-// Did the fetch even include this alias in its result set? "Yes, but ok:false"
-// means a per-account auth/network failure; "no record at all" means the
-// account isn't in the upstream catalog yet. Both produce data_missing in
-// the verdict, but the reason text differs.
-function usageRecordForAlias(alias: string, all: AccountUsageResult[]): AccountUsageResult | null {
-  return all.find(u => u.alias === alias) ?? null;
 }
 
 // ---------- utilization history (24h sparkline) ----------
@@ -656,33 +563,62 @@ function ensureUsagePoller() {
   // Snapshot once at startup, then on a 5-minute cadence.
   const tick = () => {
     const now = Date.now();
-    // ── v2.8.1 accounts data fix ──
-    // subctlUsageFetchAll now returns { data, meta }; the history poller
-    // only consumes the data array.
-    const { data } = subctlUsageFetchAll(now);
-    recordUsageSnapshot(now, data);
+    const all = subctlUsageFetchAll(now);
+    recordUsageSnapshot(now, all);
   };
   tick();
   setInterval(tick, POLL_INTERVAL_MS);
 }
 
-// ── v2.8.1 accounts data fix ──
-// Verdict computation now lives in dashboard/lib/account-verdict.ts so it's
-// unit-testable. Thresholds match the team-lead's go/caution/throttle model
-// (80% yellow, 95% red — see THRESH_YELLOW / THRESH_RED in the module).
-// The signature is preserved so existing call sites keep working; the new
-// `usageFetchOk` parameter forwards the upstream fetch status so a missing
-// payload renders as "yellow + data_missing" instead of the old silent
-// "green + no reasons" that produced the v2.8.0 false-positive.
+// Verdict thresholds for usage signals. Yellow flags "be aware"; red flags
+// "you're about to hit a wall and a fresh dispatch may run out mid-task".
+const THRESH_7D_YELLOW = 70; // ≥70% weekly used → yellow
+const THRESH_7D_RED    = 90; // ≥90% weekly used → red
+const THRESH_5H_YELLOW = 80; // ≥80% session used → yellow
+const THRESH_5H_RED    = 95; // ≥95% session used → red
+
+interface AccountVerdict {
+  verdict: "green" | "yellow" | "red";
+  reasons: string[];
+}
+
 function computeAccountVerdict(args: {
   alias: string;
   authReady: boolean;
   usage: UsageEntry | null;
   recent429: number;
   parallelOnAccount: number;
-  usageFetchOk?: boolean;
 }): AccountVerdict {
-  return computeAccountVerdictImpl(args);
+  const reasons: string[] = [];
+  let level: "green" | "yellow" | "red" = "green";
+  const bump = (l: "yellow" | "red") => {
+    if (l === "red") level = "red";
+    else if (level !== "red") level = "yellow";
+  };
+
+  if (!args.authReady) {
+    return { verdict: "red", reasons: ["account not authenticated"] };
+  }
+
+  const wkly = args.usage?.seven_day?.utilization;
+  if (typeof wkly === "number") {
+    if (wkly >= THRESH_7D_RED)         { bump("red");    reasons.push(`weekly ${wkly}% (red ≥${THRESH_7D_RED}%)`); }
+    else if (wkly >= THRESH_7D_YELLOW) { bump("yellow"); reasons.push(`weekly ${wkly}%`); }
+  }
+
+  const sess = args.usage?.five_hour?.utilization;
+  if (typeof sess === "number") {
+    if (sess >= THRESH_5H_RED)         { bump("red");    reasons.push(`5h ${sess}% (red ≥${THRESH_5H_RED}%)`); }
+    else if (sess >= THRESH_5H_YELLOW) { bump("yellow"); reasons.push(`5h ${sess}%`); }
+  }
+
+  if (args.recent429 >= 3)      { bump("red");    reasons.push(`${args.recent429} RL hits today`); }
+  else if (args.recent429 >= 1) { bump("yellow"); reasons.push(`${args.recent429} RL hit${args.recent429 === 1 ? "" : "s"} today`); }
+
+  if (args.parallelOnAccount >= 5)      { bump("red");    reasons.push(`${args.parallelOnAccount} parallel sessions on this account`); }
+  else if (args.parallelOnAccount >= 3) { bump("yellow"); reasons.push(`${args.parallelOnAccount} parallel sessions on this account`); }
+
+  return { verdict: level, reasons };
 }
 
 function tmuxRun(args: string[]): { stdout: string; ok: boolean } {
@@ -1431,7 +1367,6 @@ function buildAccountSummaries(
   sessions: SessionRecord[],
   rl: RLData,
   usageAll: AccountUsageResult[],
-  usageMeta: UsageFetchMeta,
   history24h: ReturnType<typeof readUsageHistory24h>,
   now: number,
 ) {
@@ -1443,27 +1378,13 @@ function buildAccountSummaries(
     );
     const rlEntry = rl.by_account.get(acc.alias);
     const auth = authStatus(acc);
-    // ── v2.8.1 accounts data fix ──
-    // Only treat the upstream as "OK for this account" when the alias was
-    // present in the fetch result AND that account's per-account fetch
-    // succeeded. A missing record (cfg_dir not yet seen by the upstream)
-    // or `ok: false` (per-account auth/network failure) both produce a
-    // null `usage` and a `usage_missing` flag the verdict module flips to
-    // yellow with a human-readable reason.
-    const usageRec = usageRecordForAlias(acc.alias, usageAll);
-    const usage = usageRec && usageRec.ok ? (usageRec.usage ?? null) : null;
-    const usageFetchOkForAcct =
-      usageMeta.ok &&
-      usageRec !== null &&
-      usageRec.ok === true &&
-      usageRec.usage != null;
+    const usage = usageForAlias(acc.alias, usageAll);
     const verdict = computeAccountVerdict({
       alias: acc.alias,
       authReady: auth === "ready",
       usage,
       recent429: rlEntry?.count_today ?? 0,
       parallelOnAccount: mySessions.length,
-      usageFetchOk: usageFetchOkForAcct,
     });
     const hist = history24h.get(acc.alias) ?? Array.from({ length: 24 }, () => ({ five_hour_max: null, seven_day_max: null, samples: 0 }));
     return {
@@ -1477,16 +1398,6 @@ function buildAccountSummaries(
       last_activity_seconds_ago: Number.isFinite(lastSec) ? lastSec : null,
       color_class: colorClassFor(acc.alias),
       usage,
-      // ── v2.8.1 accounts data fix ──
-      // Tri-state surface for the frontend so it can render correctly:
-      //   "ok"      — usage payload present and trusted
-      //   "stale"   — fetch succeeded globally but this alias is absent or
-      //               per-account ok:false (upstream-level data hole)
-      //   "fetch_failed" — global fetch failed (spawn/timeout/non-zero exit)
-      usage_state: !usageMeta.ok
-        ? "fetch_failed"
-        : (usageFetchOkForAcct ? "ok" : "stale"),
-      usage_error: usageRec && !usageRec.ok ? usageRec.error : undefined,
       dispatch: verdict,
       usage_history_24h: hist,
     };
@@ -1595,13 +1506,9 @@ function buildState() {
   );
 
   ensureUsagePoller();
-  // ── v2.8.1 accounts data fix ──
-  // subctlUsageFetchAll now returns { data, meta }; meta is surfaced as
-  // state.usage_fetch so the frontend can warn when the data is stale
-  // instead of silently rendering every account green.
-  const { data: usageAll, meta: usageMeta } = subctlUsageFetchAll(now);
+  const usageAll = subctlUsageFetchAll(now);
   const history24h = readUsageHistory24h(now);
-  const accountSummaries = buildAccountSummaries(rawAccounts, sessions, rl, usageAll, usageMeta, history24h, now);
+  const accountSummaries = buildAccountSummaries(rawAccounts, sessions, rl, usageAll, history24h, now);
 
   const sessionsOut = sessions
     .slice()
@@ -1667,13 +1574,6 @@ function buildState() {
     dispatch,
     cost,
     totals,
-    // ── v2.8.1 accounts data fix ──
-    // Fetch-level metadata for the per-account usage payload. Tells the
-    // frontend whether the Accounts table can be trusted; when ok:false the
-    // UI renders a banner ("usage data unavailable — check `subctl usage`")
-    // so the operator stops seeing a false "all clear, dispatches go" when
-    // the upstream fetch silently failed.
-    usage_fetch: usageMeta,
   };
   if (warning) state.warning = warning;
   return state;
@@ -3277,6 +3177,109 @@ const server = Bun.serve({
         output: ((r.stdout || "") + (r.stderr || "")).slice(-500),
       });
     }
+
+    // ── v2.8.1 skills clarity ──
+    //
+    // /api/skills/categorized — single payload powering the redesigned Skills
+    // tab. Returns the full set bucketed by category (evy-loaded,
+    // team-developer, evy-authored, project-local) plus, for team-developer
+    // skills, the list of templates that reference them. The legacy
+    // /api/skills route above stays unchanged so the team-builder modal that
+    // pulls all imported skills doesn't regress.
+    if (url.pathname === "/api/skills/categorized" && req.method === "GET") {
+      try {
+        const skills = listAllSkills({});
+        // Load templates once so we can annotate which templates use each
+        // team-developer skill. The team-templates module exports a sync
+        // listTemplates() that seeds + caches, so this is cheap.
+        let templates: { name: string; lead: { skills: string[] }; developers: { name: string; skills: string[] }[] }[] = [];
+        try {
+          const mod = await import("../components/master/team-templates.ts");
+          const r = mod.listTemplates();
+          templates = r.templates.map((t) => ({
+            name: t.name,
+            lead: { skills: t.lead?.skills ?? [] },
+            developers: (t.developers ?? []).map((d) => ({ name: d.name, skills: d.skills ?? [] })),
+          }));
+        } catch {
+          /* templates dir missing is fine — show skills without annotations */
+        }
+        const byCategory: Record<SkillCategory, Skill[]> = {
+          "evy-loaded": [],
+          "team-developer": [],
+          "evy-authored": [],
+          "project-local": [],
+        };
+        for (const s of skills) byCategory[s.category].push(s);
+        const annotate = (s: Skill) => ({
+          ...s,
+          templates_using: templatesUsingSkill(s.name, templates),
+        });
+        return Response.json({
+          ok: true,
+          counts: {
+            "evy-loaded": byCategory["evy-loaded"].length,
+            "team-developer": byCategory["team-developer"].length,
+            "evy-authored": byCategory["evy-authored"].length,
+            "project-local": byCategory["project-local"].length,
+          },
+          categories: {
+            "evy-loaded": byCategory["evy-loaded"].map(annotate),
+            "team-developer": byCategory["team-developer"].map(annotate),
+            "evy-authored": byCategory["evy-authored"].map(annotate),
+            "project-local": byCategory["project-local"].map(annotate),
+          },
+        });
+      } catch (err) {
+        return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+      }
+    }
+
+    // GET /api/skills/evy/:name — read the full SKILL.md body of an
+    // Evy-authored draft.
+    {
+      const m = url.pathname.match(/^\/api\/skills\/evy\/([^/]+)$/);
+      if (m && req.method === "GET") {
+        const name = decodeURIComponent(m[1]!);
+        const draft = listAllSkills({ category: "evy-authored", skipImported: true })
+          .find((s) => s.name === name);
+        if (!draft) return Response.json({ ok: false, error: `not found: ${name}` }, { status: 404 });
+        try {
+          const content = readFileSync(draft.path, "utf8");
+          return Response.json({ ok: true, skill: draft, content });
+        } catch (err) {
+          return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+        }
+      }
+    }
+
+    // POST /api/skills/evy/:name/promote — promote a draft into
+    // components/skills/<name>/.
+    {
+      const m = url.pathname.match(/^\/api\/skills\/evy\/([^/]+)\/promote$/);
+      if (m && req.method === "POST") {
+        const name = decodeURIComponent(m[1]!);
+        let body: { promoted_by?: string } = {};
+        try { body = await req.json(); } catch { /* allow empty body */ }
+        const promotedBy = (body.promoted_by ?? "operator").toString().slice(0, 80);
+        const r = promoteEvySkill(name, promotedBy);
+        if (!r.ok) return Response.json(r, { status: 400 });
+        return Response.json(r);
+      }
+    }
+
+    // POST /api/skills/evy/:name/delete — discard a draft. POST (not DELETE)
+    // for parity with the rest of this dashboard's curation endpoints.
+    {
+      const m = url.pathname.match(/^\/api\/skills\/evy\/([^/]+)\/delete$/);
+      if (m && (req.method === "POST" || req.method === "DELETE")) {
+        const name = decodeURIComponent(m[1]!);
+        const r = deleteEvySkill(name);
+        if (!r.ok) return Response.json(r, { status: 400 });
+        return Response.json(r);
+      }
+    }
+    // ── end v2.8.1 skills clarity ──
 
     // ── Settings page endpoints ─────────────────────────────────────────
 

@@ -1,3 +1,68 @@
+## [2.8.3] — 2026-05-13
+
+### `feat(dashboard,master): v2.8.3 Skills tab clarity + Evy-authored skills (evy_author_skill tool)`
+
+Originally scoped as part of the v2.8.1 batch (alongside operator preferences + notification/watchdog fixes + chat-perf/skill-router). Sibling batches landed first and shipped as v2.8.2; this slice rebased onto that base and ships as v2.8.3.
+
+Operator-raised on 2026-05-13 verbatim:
+
+> "The Skills tab. When I click on Skills, I can view all sources or map podoc skills. I don't know what this actually means. How are those being used? How are those being assigned? Are those just skills that the Evy can pick up, or those skills that get applied to team members? Also, I've got no visual when Evy creates her own skills. Where she puts those, there needs to be something where I can see that."
+
+Two intertwined gaps:
+1. **The Skills tab was opaque.** It listed skill names with no answer to "what does this skill DO, where is it loaded, who can curate it?" Operators couldn't tell whether an entry was Evy's persona, a worker convention, or a third-party imported skill.
+2. **No surface for Evy-authored skills.** When Evy worked out a reusable pattern in conversation, she had no operator-visible channel to persist it — the legacy `skill_create` tool wrote into a private `master/` source under `~/.config/subctl/skills/` that was hidden in the catalog tail.
+
+This release closes both.
+
+**Frontmatter schema (v2.7.33 skills + new drafts).** Every `SKILL.md` now carries extended YAML frontmatter:
+
+```yaml
+---
+name: subctl-team-protocol
+description: …
+scope: dev-team               # dev-team | evy | both | project
+loaded_by_default: ["evy"]    # personas / template names that auto-load
+created_at: "2026-05-13"
+created_by: evy               # operator | evy
+promoted_by: operator         # only set on promote
+promoted_at: "..."
+---
+```
+
+The 10 repo skills shipped in v2.7.33 (`master`, `autonomy`, `orchestrator-mode`, `subctl`, `subctl-team-protocol`, `handoff-protocol`, `spec-driven-dev`, `node-conventions`, `python-conventions`, `rust-conventions`) had only `name` + `description`. v2.8.3 prepends the new fields without touching their bodies. Inferences: `subctl-master` → scope=evy, loaded_by_default=["evy"]; conventions + protocols + spec-driven-dev + handoff-protocol → scope=dev-team; `autonomy`, `orchestrator-mode`, `subctl` → scope=both (workers AND Evy can leverage them). The v2.8.1 chat-perf slice's `skill-router.ts` reads only `name` / `description` / `keywords` and is unaffected by the extra fields (its `parseFrontmatter` ignores unknown keys).
+
+**Skills registry.** `components/master/skills-registry.ts` is the unified reader. Scans four sources — repo (`components/skills/`), Evy-authored drafts (`~/.local/state/subctl/evy-skills/`), imported catalog (`~/.config/subctl/skills/`), project-local (`<project>/.subctl/skills/`) — parses extended frontmatter (including folded `>-` and literal `|` block scalars without pulling a YAML dep), and bucket each Skill into one of four categories: `evy-loaded` · `team-developer` · `evy-authored` · `project-local`. Exports `listSkills()`, `getSkill()`, `resolveSkillsForTemplate()` (joins a template's `skills = [...]` arrays to Skill records), and `templatesUsingSkill()` (reverse lookup for the "Used by N templates" annotation).
+
+**`evy_author_skill` master tool.** New `components/master/tools/skills-author.ts` registers four tools that complement the legacy `skill_create` family (kept for backward compat):
+
+- `evy_author_skill` — Evy persists a reusable pattern as a draft SKILL.md under `~/.local/state/subctl/evy-skills/<name>/`. Required `reason` lands in `~/.local/state/subctl/audit/evy-skills.jsonl` and the notification body so the operator audit trail says WHY Evy captured each.
+- `evy_list_authored_skills` — Evy introspects her drafts before authoring (dedup guard).
+- `evy_promote_skill` / `evy_delete_authored_skill` — operator-triggered curation. Promote copies the draft into `components/skills/<name>/SKILL.md` with `promoted_by` + `promoted_at` stamped in frontmatter; does NOT auto-commit (operator reviews the diff in git).
+
+Every author/promote/delete emits a `severity: info, kind: "evy-authored-skill"` notification so the tray + Telegram see the activity instantly, plus a `evy-authored-skill` SSE broadcast so the Skills tab refreshes live.
+
+**Dashboard.** The Skills tab is rebuilt around four collapsible sections (`Evy's loaded skills` · `Team-developer skills` · `Evy-authored skills` · `Project-local skills`), each with a `[?]` info popover explaining what that bucket means and where its skills get loaded. Evy-authored cards expose `View` / `Promote to repo` / `Delete` buttons. Team-developer cards annotate `Used by: <template> (lead, dev-name, …)` so the operator can see at a glance which templates pull a given convention. The legacy sources + filter pane stays below as the imported-catalog viewer (still needed for the team-builder modal). New endpoints: `GET /api/skills/categorized`, `GET /api/skills/evy/:name`, `POST /api/skills/evy/:name/promote`, `POST /api/skills/evy/:name/delete`.
+
+**Telegram.** New `/skills` family:
+- `/skills` — summary counts across the four categories, with names of any drafts awaiting review
+- `/skills evy` — Evy-authored drafts only, with `/skills promote <name>` and `/skills delete <name>` inlined per row
+- `/skills team` / `/skills loaded` / `/skills project` — category views
+- `/skills promote <name>` — promote a draft
+- `/skills delete <name>` — discard a draft
+
+**CLI.** `subctl skills` extended (sibling to v2.8.1's `router-trace` subcommand — different verbs, no conflict):
+- `subctl skills list [--category <c>]` — categorized view (falls back to legacy flat list when dashboard offline)
+- `subctl skills show <name>` — print a skill's full body (looks up by frontmatter name across all sources)
+- `subctl skills promote <name>` / `subctl skills delete <name>` — curation actions (via dashboard endpoints so audit + notifications fire)
+
+**Tests.** `components/master/__tests__/skills-registry.test.ts` pins: env-overridable evy-skills dir; author → list → delete round-trip; kebab-name validation; collision refusal; frontmatter parsing across single-line, folded `>-`, literal `|`, and no-description fallback styles; `resolveSkillsForTemplate` joining template ids to Skill records; `templatesUsingSkill` reverse lookup.
+
+---
+
+## [2.8.2] — 2026-05-13
+
+Batch tag covering the v2.8.1 sibling waves (chat-perf + preferences + notification/watchdog fixes + Templates-tab route). See the `## [2.8.1]` section below for the operator-facing summaries of each.
+
 ## [2.8.1] — 2026-05-13
 
 ### `fix(dashboard,master): v2.8.1 Accounts surface — real per-account usage + correct dispatch verdict`
