@@ -99,6 +99,12 @@ import {
   type CompactDecision,
 } from "./compact-policy";
 import { resolveSecret } from "./secrets";
+// ── v2.7.31 secret backends ──
+import {
+  describeBackendChain,
+  testSecret,
+  flushOnePasswordCache,
+} from "./secrets-backends";
 import {
   loadProfiles,
   setActiveProfile,
@@ -1946,6 +1952,42 @@ async function main() {
             "Connection": "keep-alive",
           },
         });
+      }
+
+      // ── v2.7.31 secret backends — ADR 0012 multi-backend chain ──────────
+      // These endpoints never return a secret VALUE. Only chain
+      // configuration + per-key existence/origin metadata. Dashboard proxies
+      // these under /api/secrets/*; Telegram's /secrets command reads
+      // describeBackendChain() directly via master-notify-listener.
+      //
+      //   GET  /secrets/backends        → chain config + 1Password CLI status
+      //   POST /secrets/test {key}      → { ok, key, exists, found_via }
+      //   POST /secrets/cache/flush     → { ok, cleared } — wipes 1P cache
+      if (url.pathname === "/secrets/backends" && req.method === "GET") {
+        return Response.json({ ok: true, ...describeBackendChain() });
+      }
+      if (url.pathname === "/secrets/test" && req.method === "POST") {
+        try {
+          const body = (await req.json().catch(() => ({}))) as { key?: unknown };
+          const key = typeof body.key === "string" ? body.key.trim() : "";
+          if (!key) {
+            return Response.json(
+              { ok: false, error: "missing 'key' in request body" },
+              { status: 400 },
+            );
+          }
+          const result = await testSecret(key);
+          return Response.json({ ok: true, ...result });
+        } catch (err) {
+          return Response.json(
+            { ok: false, error: `test failed: ${(err as Error).message}` },
+            { status: 500 },
+          );
+        }
+      }
+      if (url.pathname === "/secrets/cache/flush" && req.method === "POST") {
+        const cleared = flushOnePasswordCache();
+        return Response.json({ ok: true, cleared });
       }
 
       // ── /upstreams — pi-ai + pi-agent-core tracker (v2.7.25 Scope C) ────

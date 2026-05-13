@@ -75,6 +75,7 @@ import {
   markAllRead as markAllNotificationsRead,
 } from "./notifications";
 import { describeUpstreamState } from "./upstream-check";
+import { describeBackendChain } from "./secrets-backends";
 import {
   recordEntry as recordMemoryEntry,
   recallEntries as recallMemoryEntries,
@@ -478,6 +479,12 @@ async function handleBotCommand(text: string): Promise<string> {
       // its own. See ADR 0015 (always-latest policy) +
       // components/master/upstream-check.ts.
       return handleUpstreamsCommand();
+    case "/secrets":
+      // v2.7.31 — ADR 0012 backend chain status. Lists the configured
+      // resolution order (default: env → 1Password → file), per-key
+      // overrides, 1Password CLI availability, and cache stats. NEVER
+      // surfaces a secret value.
+      return handleSecretsCommand();
     case "/memory":
       // v2.7.23 — operator-facing query of Evy Memory (Tier 3).
       //   /memory <query>   → top 3 most-relevant matches
@@ -492,8 +499,34 @@ async function handleBotCommand(text: string): Promise<string> {
       // with the id (so /memory <text> can find it back).
       return handleRememberCommand(text.slice("/remember".length));
     default:
-      return `Unknown command: ${cmd}\n\nTry: /status, /pause, /resume, /profile, /watchdogs, /terminal, /notifications, /upstreams, /memory, /remember, /help`;
+      return `Unknown command: ${cmd}\n\nTry: /status, /pause, /resume, /profile, /watchdogs, /terminal, /notifications, /upstreams, /secrets, /memory, /remember, /help`;
   }
+}
+
+function handleSecretsCommand(): string {
+  const s = describeBackendChain();
+  const lines: string[] = ["🔐 Secret backends (ADR 0012):", ""];
+  lines.push(`Chain: ${s.default_chain.join(" → ")}`);
+  if (Object.keys(s.overrides).length > 0) {
+    lines.push("");
+    lines.push("Per-key overrides:");
+    for (const [k, chain] of Object.entries(s.overrides)) {
+      lines.push(`  • ${k}: ${chain.join(" → ")}`);
+    }
+  }
+  lines.push("");
+  lines.push("1Password backend:");
+  lines.push(`  op CLI:    ${s.onepassword.cli_available ? "✓ installed" : "✗ missing"}`);
+  lines.push(`  token:     ${s.onepassword.token_set ? "✓ set" : "✗ unset (OP_SERVICE_ACCOUNT_TOKEN)"}`);
+  const status =
+    s.onepassword.cli_available && s.onepassword.token_set
+      ? "active"
+      : "inactive (falls through to file)";
+  lines.push(`  status:    ${status}`);
+  lines.push(`  cache:     ${s.onepassword.cache_size} entr${s.onepassword.cache_size === 1 ? "y" : "ies"} (TTL ${Math.round(s.onepassword.cache_ttl_ms / 1000)}s)`);
+  lines.push("");
+  lines.push("No secret values are ever returned via this command.");
+  return lines.join("\n");
 }
 
 function handleUpstreamsCommand(): string {
@@ -788,6 +821,7 @@ function formatHelp(): string {
     "/notifications         show last 5 operator notifications",
     "/notifications read    mark all notifications read",
     "/upstreams             pi-ai + pi-agent-core check state (ADR 0015)",
+    "/secrets               secret backend chain status (ADR 0012, no values)",
     "/memory <query>        search Evy Memory (Tier 3) — top 3 hits",
     "/memory recent         show last 5 memory entries",
     "/remember <text>       save a durable note into Evy Memory",
