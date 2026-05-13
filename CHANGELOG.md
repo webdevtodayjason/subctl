@@ -1,9 +1,3 @@
-# Changelog
-
-All notable changes to subctl are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
-The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
-
 ## [2.7.27] — 2026-05-13
 
 ### `feat(master): v2.7.27 tinyfish_agent — third TinyFish surface`

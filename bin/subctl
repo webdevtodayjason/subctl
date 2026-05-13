@@ -145,6 +145,24 @@ Usage:
 
   subctl update                       Pull origin/main, rebuild, restart daemons,
                                       doctor on the way out (no manual ssh+rsync)
+  subctl deploy [--no-pull] [--dry-run]
+                                      Fast-path deploy — git pull + launchctl
+                                      kickstart -k for master + dashboard. See
+                                      'subctl update' for the careful path.
+
+  subctl status [--json]              One-shot health probe across master
+                                      (:8788) + dashboard (:8787) — versions,
+                                      uptime, telegram listener, profile.
+  subctl logs [--master|--dashboard] [--tail N] [--follow]
+                                      Tail launchd log files in
+                                      ~/Library/Logs/subctl/.
+  subctl notif [recent|list <N>|mark-all-read]
+                                      Read operator notifications (master ring
+                                      buffer via dashboard proxy).
+  subctl memory [recent <N>|search <query>|remember <text>]
+                                      Query / append Evy Tier 3 memory via
+                                      /api/memory/* proxy.
+
   subctl uninstall                    Remove subctl
   subctl version                      Print version
   subctl help                         Show this help
@@ -630,11 +648,36 @@ case "$cmd" in
     subctl_update "$@"
     ;;
 
+  status)
+    . "$SUBCTL_REPO_ROOT/lib/cli.sh"
+    subctl_cli_status "$@"
+    ;;
+
+  logs)
+    . "$SUBCTL_REPO_ROOT/lib/cli.sh"
+    subctl_cli_logs "$@"
+    ;;
+
+  deploy)
+    . "$SUBCTL_REPO_ROOT/lib/cli.sh"
+    subctl_cli_deploy "$@"
+    ;;
+
+  notif|notifications)
+    . "$SUBCTL_REPO_ROOT/lib/cli.sh"
+    subctl_cli_notif "$@"
+    ;;
+
+  memory|mem)
+    . "$SUBCTL_REPO_ROOT/lib/cli.sh"
+    subctl_cli_memory "$@"
+    ;;
+
   uninstall)
     bash "$SUBCTL_REPO_ROOT/uninstall.sh" "$@"
     ;;
 
-  version|--version|-v)
+  version|--version|-v|-V)
     echo "subctl v$SUBCTL_VERSION"
     if (cd "$SUBCTL_REPO_ROOT" && git rev-parse --git-dir >/dev/null 2>&1); then
       _branch=$(cd "$SUBCTL_REPO_ROOT" && git rev-parse --abbrev-ref HEAD 2>/dev/null)
