@@ -4,6 +4,96 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.7.11] — 2026-05-12
+
+### `fix(verifier): structured tool-call inspection + keyword-overlap validation`
+
+Closes a hallucination gap operator caught in live Evy interaction
+(2026-05-12). Pre-v2.7.11 verifier only name-matched: if `memory_remember`
+appeared in this turn's tool calls, any memory-related claim was treated
+as verified. Operator-observed exploit: Evy could call `memory_remember`
+with arbitrary content (or with an erroring call) and then make any
+memory claim she wanted; the verifier had no view into args or results.
+
+This release upgrades the verifier interface and adds two structural
+checks. Plus broadens the trigger regexes that operator-observed verbs
+missed:
+
+- **`memory-update-claim`** (new in v2.7.11) — catches "I've updated my
+  learned-facts memory", "I have committed the rule to my Tier-1 memory",
+  "Memory has been updated", and variants the original
+  `decision-logged-claim` regex didn't cover. Verbs:
+  `updated|updating|committed|committing|stored|storing|pinned|pinning|
+  locked|added|adding|remembered|remembering|memorized|memorizing|
+  persisted|persisting|saved|written|writing|recorded|recording`.
+- **`procedure-or-rule-update-claim`** (new in v2.7.11) — catches "I am
+  updating my internal operating procedure", "I've added a hard-coded
+  rule", "I have authored a skill", and variants.
+- **`decision-logged-claim`** (extended) — adds `filed` to the verb
+  list, adds `team_decision_log` (v2.7.10) to the satisfying-tool list.
+
+### What changed in the verifier interface
+
+**`AssistantTurn` now carries `tool_calls: ToolCallRecord[]`** (each
+record has `name`, `arguments`, `result`, `is_error`) instead of the
+flat `tool_names_called: string[]`. `extractLastTurn` walks
+`assistant`-role tool_use blocks and pairs them with `tool_result`
+blocks in subsequent `user`-role messages by `tool_use_id`. The
+real-user-prompt scan now skips tool-result-bearing user messages so
+the turn slice captures the full assistant sequence, not just the
+trailing fragment after the last `tool_result`.
+
+**Tool errors disqualify a claim.** If a matching tool call has
+`is_error: true` (either set explicitly or inferred from `ok: false` in
+the result, or a string starting with "Error:"), it is excluded from
+the candidate set. If all matching calls errored, the claim is
+unverified even though the tool name appeared.
+
+**Per-rule `validate` function.** Each `VerificationRule` can attach a
+validator that runs after the name + error filter. Default validator
+returns ok (name-match-only, back-compat for older rules). The new
+rules attach `keywordOverlapValidate(2)`, which:
+
+1. Extracts significant tokens from the matched claim text (lowercased,
+   stop-words removed, 4-char minimum).
+2. Stringifies each candidate tool call's arguments.
+3. Requires `min(2, ceil(claim_keywords / 2))` of the claim keywords to
+   appear in the args (substring match, with loose stem matching for
+   plural/tense variation).
+4. If no candidate call's args meet the threshold, gap is recorded
+   with the specific reason ("tool was called but its arguments don't
+   reference the claim's significant terms").
+
+This raises the cost of cheating from "call any tool" to "call the
+right tool with content that lexically matches what you claimed."
+
+### Correction prompt now includes the reason
+
+`VerificationGap` now carries `reason: string`. The correction prompt
+fed back to the agent surfaces the specific failure mode per gap
+("no matching tool call this turn" / "matching tool call(s) all
+errored" / "tool was called but its arguments don't reference..."), so
+the agent has actionable signal instead of a generic hint.
+
+### Tests
+
+`components/master/__tests__/verifier.test.ts` — 27 tests covering
+regex coverage, the cheat case (call any tool with unrelated args),
+errored tool calls, tool_use ↔ tool_result pairing in real-shaped
+message threads, and back-compat for the pre-v2.7.11 rules.
+Master suite: **444 pass / 0 fail / 2 known-gap skips**.
+
+### Operator-visible benefit
+
+When Evy says "I've stored the Promise rule in Tier-1 memory," the
+verifier now checks (a) that `memory_remember` was called this turn,
+(b) that the call did not error, and (c) that its `content` argument
+contains words like "Promise" and "rule." Any of those failing means
+the claim is unverified and the correction loop re-enters with a
+specific reason. Cheating now requires deliberately matching content
+to claim text, which is much harder to do accidentally than calling
+any tool with any args.
+
 ## [2.7.10] — 2026-05-12
 
 ### `feat(team-docs): master tools to read/write/list/log project-local docs at .subctl/docs/`
