@@ -1618,6 +1618,75 @@ The trip logs at warn level to stderr (so it lands in `~/Library/Logs/subctl/mas
 - `dashboard/server.ts` — `/api/watchdogs` GET + `/api/watchdogs/:id/kill` POST pass-throughs.
 - `dashboard/public/index.html`, `app.js`, `style.css` — Watchdogs panel markup, `wireWatchdogPanel()` with open/close-driven polling and optimistic kill, `.watchdog-card` / `.watchdog-table` / `.watchdog-kill-btn` styles.
 
+### Phase 3o.20 — Authenticated trust markers (v2.7.20)
+
+HMAC-authenticated supervisor→worker directives, replacing the plaintext marker from v2.7.9. Layer 1 of [ADR 0011](adr/0011-trust-marker-hmac-replacement.md). Layer 2 (operator web-terminal escape hatch) is queued for v2.7.21; Layer 3 (style matching) already lives in Evy's SKILL.md from v2.7.15.
+
+#### The protocol
+
+Every directive arriving in a worker's pane through the trusted channel carries a marker like:
+
+```
+[subctl-master directive · phase=<phase> · ts:<iso> · hmac:<hmac16>]
+<message body>
+```
+
+Or, when no phase is supplied:
+
+```
+[subctl-master directive · ts:<iso> · hmac:<hmac16>]
+<message body>
+```
+
+`<hmac16>` is the first 16 hex chars of `HMAC-SHA256(secret, phase + "\n" + ts + "\n" + body)`. The phase string is the literal text the marker carries (empty when the field is dropped). The 16-char truncation gives 8 bytes of integrity — ample for the threat model (see ADR 0011 §reasoning), and short enough to keep the marker readable in operator-visible transcripts.
+
+#### Per-team secret
+
+The shared secret lives in two places, NEVER in transit on its own:
+
+- **On disk** at `~/.local/state/subctl/teams/<team_id>/hmac.secret` (chmod 600). Generated at spawn time by `providers/claude/teams.sh` (`head -c 32 /dev/urandom | xxd -p -c 64` → 64 hex chars). Honors `SUBCTL_STATE_DIR` like the policy snapshot writer.
+- **In the worker's spawn-time system prompt** as part of the subctl-team-contract preamble. System prompts re-inject on every turn in Claude Code, so the worker doesn't lose the secret across compaction.
+
+Master reads the disk copy; the worker uses the prompt copy. Anything outside those two paths cannot compute a valid HMAC: a stray cron job that echoes log lines into a pane, a stale tmux process the operator forgot about, or even the worker's own model hallucinating a re-issued directive in a long context — none of them can produce a marker that validates.
+
+Idempotency: re-spawning the same team_id reuses the existing secret rather than rotating. Rotation is an explicit operator action (see open questions in ADR 0011); the convention is "kill the team, re-spawn it" until `/subctl team rekey` lands.
+
+#### Fail-loud on missing secret
+
+If the dashboard's `/api/orchestration/:name/msg` route can't find `hmac.secret` for the named team (file missing, file unreadable, file malformed) the route REFUSES to send. HTTP 500 with the descriptive error:
+
+```
+HMAC secret missing for team <team_id>. Cannot send authenticated directive.
+Run /subctl team rekey <team_id> to regenerate.
+```
+
+The alternative — falling back to a plaintext marker — would teach workers to ignore the auth field, defeating the whole point of the protocol. Better to fail loud and surface the gap to the operator immediately.
+
+#### Backward compatibility
+
+Workers spawned **before** v2.7.20 don't have the verification instructions in their prompt. The v2.7.9 contract teaches them to recognize the `[subctl-master directive ...]` prefix structurally and does NOT instruct them to reject markers with unknown extra fields. They see the new `hmac:<...>` field as an unrecognized but benign extension and still trust the channel marker as before — no flag-day cutover, no migration script. The protocol is forward-compatible by extension. New workers spawned after upgrading pick up full HMAC verification automatically.
+
+#### Centralized helper
+
+`components/master/trust-marker.ts` exports the canonical API:
+
+- `generateSecret()` — 64 hex chars from `randomBytes(32)`.
+- `ensureSecret(teamId)` — get-or-create on disk; idempotent.
+- `readSecret(teamId)` — throws the descriptive missing/malformed error.
+- `computeHmac(secret, phase, ts, body)` — primitive; returns 16-hex truncated MAC.
+- `buildDirectiveMarker({ teamId, phase?, body, ts? })` — full marker construction; reads secret + computes hmac + assembles bracket header.
+- `parseDirectiveMarker(marker)` / `verifyDirectiveMarker({ teamId, marker, body })` — verification helpers; used in tests today, reserved for future native-language workers.
+
+The secret value is treated as a token: never logged, never echoed, never included in audit lines or telemetry. Same hygiene as the LM Studio API token.
+
+#### Files
+
+- New: `components/master/trust-marker.ts` — helper module.
+- New: `components/master/__tests__/trust-marker.test.ts` — 32 tests covering secret lifecycle, marker shape with and without phase, parse rejection of pre-v2.7.20 / malformed / truncated / over-long hmac fields, verification happy path, and tamper detection on each input (secret rotation, body modification, phase modification, ts modification, missing/malformed/truncated hmac, missing team file).
+- `providers/claude/teams.sh` — `SUBCTL_HMAC_SECRET` generation + secret-file write at spawn time; HMAC instructions embedded in the team-contract preamble.
+- `dashboard/server.ts` — `/api/orchestration/:name/msg` route uses `buildDirectiveMarker`; missing-secret path returns 500 + rekey pointer.
+- `components/master/tools/subctl-orch.ts` — `msg` tool description names v2.7.20 HMAC authentication accurately.
+
 ---
 
 ## 4a. Persona — Evy (v2.7.15+)

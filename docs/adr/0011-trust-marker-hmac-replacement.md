@@ -1,9 +1,9 @@
 # 0011: Replace trust-channel marker with HMAC + operator escape hatch
 
-- **Status:** Accepted (implementation queued for v2.7.16)
+- **Status:** Accepted (shipped v2.7.20)
 - **Date:** 2026-05-13
 - **Decided by:** Jason Brashear (operator)
-- **Implemented in:** v2.7.16 (queued behind v2.7.15 Evy persona)
+- **Implemented in:** v2.7.20 (Layer 1 only — HMAC marker. Layer 2 web terminal queued for v2.7.21; Layer 3 style matching already in Evy SKILL.md from v2.7.15.)
 - **Supersedes:** [ADR 0002](0002-trust-channel-directive-wrapper.md) — same problem, weaker solution
 
 ## Context

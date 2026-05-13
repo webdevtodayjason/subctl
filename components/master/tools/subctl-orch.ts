@@ -207,7 +207,7 @@ export const subctlOrchTools = {
    */
   msg: {
     description:
-      "**Use this when** you need to inject a directive into a running worker — nudge a stalled team, deliver a follow-up, course-correct. Match operator style: terse, lowercase, imperative. Verbose hedged formal phrasing is a red flag workers correctly suspect. The runtime wraps the text in a trust marker (v2.7.16+ adds HMAC authentication) so the worker's lead can verify it as a legitimate supervisor directive. Always include `phase` plus a short WHY — bare imperatives without context get refused.",
+      "**Use this when** you need to inject a directive into a running worker — nudge a stalled team, deliver a follow-up, course-correct. Match operator style: terse, lowercase, imperative. Verbose hedged formal phrasing is a red flag workers correctly suspect. The runtime wraps the text in an HMAC-authenticated trust marker (v2.7.20 / ADR 0011 Layer 1) so the worker's lead cryptographically verifies it as a legitimate supervisor directive. Always include `phase` plus a short WHY — bare imperatives without context get refused.",
     schema: {
       type: "object",
       properties: {

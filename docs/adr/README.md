@@ -39,7 +39,7 @@ Most recent first. When adding a new ADR, append to this list.
 |---|---|---|
 | [0013](0013-tinyfish-browser-api-integration.md) | TinyFish Browser API — dev-team workers drive Playwright, master stays lean | Accepted (queued, no version slot yet) |
 | [0012](0012-1password-service-accounts-multibackend.md) | Multi-backend secret resolution with 1Password Service Accounts as first-class option | Accepted (queued v2.7.19 — shifted) |
-| [0011](0011-trust-marker-hmac-replacement.md) | Replace trust-channel marker with HMAC + operator escape hatch | Accepted (queued v2.7.18 — shifted) |
+| [0011](0011-trust-marker-hmac-replacement.md) | Replace trust-channel marker with HMAC + operator escape hatch | Accepted (shipped v2.7.20) |
 | [0010](0010-claude-mem-stays-parallel.md) | claude-mem stays parallel as Tier 4 observation corpus | Accepted |
 | [0009](0009-self-hosted-only-no-cloud-memory.md) | Self-hosted only for any memory backend | Accepted |
 | [0008](0008-eval-suite-pipeline.md) | Eval suite: regex fast-fail then LLM judge | Accepted |
