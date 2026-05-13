@@ -31,6 +31,8 @@ subctl_skills() {
     info)     subctl_skills_info "$@" ;;
     rm|remove) subctl_skills_remove "$@" ;;
     sources)  subctl_skills_sources ;;
+    # ── v2.8.1 chat perf / skill router ──
+    router-trace) subctl_skills_router_trace "$@" ;;
     -h|--help|"")
       cat <<EOF
 subctl skills <verb> [args]
@@ -46,6 +48,11 @@ Verbs:
   info <skill-id>           Show a skill's frontmatter + first lines.
   rm, remove <skill-id>     Remove a skill from the catalog.
   sources                   List skill sources (each repo imported = source).
+  router-trace <msg...>     v2.8.1 — Score the master's in-repo skill
+                            catalog against a sample operator message
+                            and show which skills the router would
+                            preload. Add --force to bypass the runtime
+                            enable flag.
 
 Examples:
   subctl skills import mattpocock/skills
@@ -53,10 +60,25 @@ Examples:
   subctl skills list
   subctl skills list --source mattpocock
   subctl skills info mattpocock/engineering/grill-with-docs
+  subctl skills router-trace --force "spawn a node team to refactor server.ts"
 EOF
       ;;
     *) subctl_die "unknown skills verb: $sub" ;;
   esac
+}
+
+# ── v2.8.1 chat perf / skill router ──
+# Thin shim — defer to the TS implementation at bin/skills/router-trace.ts.
+# Routed through bun so the implementation can re-import the live
+# skill-router module the master daemon uses (no shell duplication of
+# the scoring logic).
+subctl_skills_router_trace() {
+  local script="$SUBCTL_REPO_ROOT/bin/skills/router-trace.ts"
+  if [[ ! -f "$script" ]]; then
+    subctl_die "router-trace script missing at $script"
+  fi
+  subctl_require bun "install: brew install oven-sh/bun/bun" || return 1
+  bun "$script" "$@"
 }
 
 subctl_skills_import() {

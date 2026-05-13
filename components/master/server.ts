@@ -57,6 +57,13 @@ import { projectTools } from "./tools/project";
 import { memoryTools } from "./tools/memory";
 import { context7Tools } from "./tools/context7";
 import { tier1MemoryTools, buildMemoryBlock } from "./tools/tier1-memory";
+// ── v2.8.1 chat perf / skill router ──
+import {
+  selectSkills as routerSelectSkills,
+  renderSelected as routerRenderSelected,
+  isRouterEnabled as routerIsEnabled,
+  type RouterDecision,
+} from "./skill-router";
 import { skillAuthorTools } from "./tools/skill-author";
 import { notifyTools, bindNotifyBroadcast } from "./tools/notify";
 import { specforgeTools } from "./tools/specforge";
@@ -149,18 +156,6 @@ import {
   type MemoryEntry,
 } from "./memory";
 import { evyMemoryTools } from "./tools/evy-memory";
-// ── v2.8.1 operator preferences ──
-import { preferencesTools } from "./tools/preferences";
-import {
-  loadPreferences,
-  setPreference as setPreferenceValue,
-  deletePreference,
-  resetPreferences,
-  watchPreferences,
-  renderPreferencesForPrompt,
-  listPreferences,
-  getPreferenceMeta,
-} from "./preferences";
 import {
   startUpstreamWatchdog,
   describeUpstreamState,
@@ -514,17 +509,6 @@ export const toolRegistry: Record<string, InternalTool> = {
   // Keys are fully-qualified (voice_render, voice_status).
   ...Object.fromEntries(
     Object.entries(voiceTools).map(([k, v]) => [k, v as unknown as InternalTool]),
-  ),
-  // ── v2.8.1 operator preferences ──
-  // Bilateral-maintenance config the operator AND Evy both write. Keys
-  // are fully-qualified (evy_get_preferences, evy_set_preference,
-  // evy_get_preference_value) — distinct from evy-memory which is the
-  // conversational Tier 3 store.
-  ...Object.fromEntries(
-    Object.entries(preferencesTools).map(([k, v]) => [
-      k,
-      v as unknown as InternalTool,
-    ]),
   ),
 };
 
@@ -976,36 +960,47 @@ async function main() {
     getApiKeyForProvider(provider);
 
   // Compose the initial system prompt: master persona + tier-1 memory
-  // (user profile + learned facts) + operator preferences (v2.8.1).
-  // Memory files + preferences.toml are re-read on every dispatchToAgent
-  // call below, so writes from operator OR master tools land in the
-  // next turn without restart.
-  function composeSystemPrompt(): string {
+  // (user profile + learned facts). Both memory files are re-read on
+  // every dispatchToAgent call below, so writes from operator OR master
+  // tools land in the next turn without restart.
+  // ── v2.8.1 chat perf / skill router ──
+  // Last router decision for the current turn, captured so the SSE
+  // broadcast in processOnePrompt can surface it to the dashboard pill
+  // without re-running scoring. Re-set on every compose call.
+  let lastRouterDecision: RouterDecision | null = null;
+
+  function composeSystemPrompt(userMessage?: string): string {
     const memBlock = buildMemoryBlock();
     const personality = buildPersonalityFragment();
-    // v2.8.1: operator preferences. Bilateral-maintenance config —
-    // operator writes via dashboard / CLI / /prefs; Evy writes via
-    // evy_set_preference when she learns one in conversation. Rendered
-    // as a clearly-labeled markdown block so the model knows these are
-    // operator preferences, not safety rules. Empty when no preferences
-    // have been set (e.g. before first boot seeds the file).
-    let prefsBlock = "";
+    // ── v2.8.1: skill router (Hermes-style preloading) ──
+    // When ~/.config/subctl/skill-router.enabled exists, score the
+    // inbound message against the in-repo skill catalog and prepend
+    // the chosen skills' bodies BEFORE the master SKILL.md. Absent
+    // the flag, behavior is identical to v2.8.0 (master SKILL.md
+    // only). Routing runs sub-ms (no LLM call, no embeddings) and
+    // re-uses a stat()-invalidated catalog cache.
+    let routerBlock = "";
     try {
-      const md = renderPreferencesForPrompt();
-      if (md) prefsBlock = "\n\n" + md;
+      const decision = routerSelectSkills(userMessage ?? "", {
+        cwd: process.cwd(),
+      });
+      lastRouterDecision = decision;
+      if (decision.enabled) {
+        routerBlock = routerRenderSelected(decision.selected);
+      }
     } catch (err) {
-      console.error(
-        `[preferences] renderPreferencesForPrompt failed: ${(err as Error).message ?? err}`,
-      );
+      // Router must never block the prompt path. Fail open (no extra
+      // skills) and log loud.
+      console.error(`[skill-router] selection failed: ${(err as Error).message}`);
+      lastRouterDecision = null;
     }
     // Personality goes LAST so voice rules are the most-recent thing the
     // model reads before responding. SKILL.md (the behavioral contract)
     // and anti-hallucination rules stay authoritative — the personality
-    // fragment + preferences cannot relax them, and every preset's
-    // content explicitly says so. Hot-swappable: composeSystemPrompt()
-    // runs before every turn, so writes to personality.json /
-    // preferences.toml take effect on the next prompt.
-    return memBlock + skill + prefsBlock + personality;
+    // fragment cannot relax them, and every preset's content explicitly
+    // says so. Hot-swappable: composeSystemPrompt() runs before every
+    // turn, so writes to personality.json take effect on the next prompt.
+    return memBlock + routerBlock + skill + personality;
   }
 
   const agent = new Agent({
@@ -1129,17 +1124,6 @@ async function main() {
     broadcast("voice_config", next);
   });
 
-  // v2.8.1 — operator preferences watcher. The renderer + tools read
-  // preferences.toml fresh on every call, so the watcher's only job is
-  // to broadcast a `preferences` SSE event for the dashboard's
-  // Preferences tab to refresh, and log the change. The next agent
-  // turn picks up the new values automatically via composeSystemPrompt().
-  const preferencesWatcher = watchPreferences((next) => {
-    const cats = Object.keys(next).join(",");
-    console.error(`[preferences] reloaded: categories=${cats}`);
-    broadcast("preferences", { preferences: next });
-  });
-
   agent.subscribe((event) => {
     // Stream every event to subscribers — the dashboard chat panel renders
     // text deltas live, the tool-call ticker shows what the master is doing,
@@ -1173,83 +1157,6 @@ async function main() {
   const teamLastActivity = new Map<string, { ts: number; lastEvent?: TeamEvent }>();
   const teamReadOffsets = new Map<string, number>(); // file path → last byte read
 
-  // ── v2.8.1 vanished-team registry ────────────────────────────────────
-  // The team-staleness watchdog tracks teams via teamLastActivity, which
-  // gets seeded from three sources: inbox tailing, tmux pane refresh, and
-  // an explicit /teams/:id/vanished hook (added below). When an operator
-  // (or the v2.7.36 `subctl team kill` CLI) archives a team's registry
-  // dir to ~/.local/state/subctl/teams/.killed/<id>.<ts>/, the v2.7.32 fix
-  // added a teamRegistryExists predicate to auto-nudge.ts — but the
-  // callback was never wired in this file. Result: the watchdog kept
-  // nudging/escalating teams that no longer exist on disk (operator
-  // screenshot 2026-05-13: "auto-nudged claude-osint-cve-monitor (383min
-  // idle)" 5h after its dir was archived to .killed/).
-  //
-  // This Set is the persistent "we already alerted on this vanished team"
-  // memo. One alert per team_id, period — survives restart so a daemon
-  // bounce can't re-spam.
-  const TEAMS_REGISTRY_ROOT = join(
-    process.env.SUBCTL_STATE_DIR ?? join(HOME, ".local", "state", "subctl"),
-    "teams",
-  );
-  const VANISHED_TEAMS_PATH = join(MASTER_STATE_DIR, "vanished-teams.json");
-  const vanishedTeams = new Set<string>();
-  try {
-    if (existsSync(VANISHED_TEAMS_PATH)) {
-      const raw = readFileSync(VANISHED_TEAMS_PATH, "utf8");
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        for (const id of parsed) {
-          if (typeof id === "string") vanishedTeams.add(id);
-        }
-      }
-    }
-  } catch (err) {
-    console.error(
-      `[master] vanished-teams load failed (continuing with empty set): ${(err as Error).message}`,
-    );
-  }
-  function persistVanishedTeams(): void {
-    try {
-      writeFileSync(
-        VANISHED_TEAMS_PATH,
-        JSON.stringify([...vanishedTeams], null, 2),
-      );
-    } catch (err) {
-      console.error(
-        `[master] vanished-teams persist failed: ${(err as Error).message}`,
-      );
-    }
-  }
-  /** True when ~/.local/state/subctl/teams/<team_id>/ is an extant dir. */
-  function teamRegistryExists(team_id: string): boolean {
-    try {
-      const stat = require("node:fs").statSync(
-        join(TEAMS_REGISTRY_ROOT, team_id),
-      );
-      return stat.isDirectory();
-    } catch {
-      return false;
-    }
-  }
-  /**
-   * Called from refreshTeamActivityFromTmux + tailInboxFile before they
-   * add an entry to teamLastActivity. If the team is vanished AND the
-   * registry dir is still gone, refuse to re-track (true=block). If the
-   * registry dir came back (operator re-spawned), clear the vanished
-   * flag and allow tracking (false=permit).
-   */
-  function isStillVanished(team_id: string): boolean {
-    if (!vanishedTeams.has(team_id)) return false;
-    if (teamRegistryExists(team_id)) {
-      // Re-spawned — let it back in.
-      vanishedTeams.delete(team_id);
-      persistVanishedTeams();
-      return false;
-    }
-    return true;
-  }
-
   function teamNameFromPath(p: string): string {
     return p.replace(/^.*\//, "").replace(/\.jsonl$/, "");
   }
@@ -1268,15 +1175,6 @@ async function main() {
       return;
     }
     const team = teamNameFromPath(filePath);
-    // v2.8.1 — suppress re-tracking of vanished teams. The inbox file
-    // for an archived team can linger (the archive only moves teams/<id>/,
-    // not inbox/<id>.jsonl); without this guard, a master restart would
-    // reseed teamLastActivity from the historical inbox content and the
-    // watchdog would re-fire on a team that was already alerted as
-    // vanished. isStillVanished() also self-heals: if the registry dir
-    // came back (operator re-spawn), the team is cleared from the set
-    // and tracking resumes normally.
-    if (isStillVanished(team)) return;
     let prev = teamReadOffsets.get(filePath);
     if (prev === undefined) {
       // Never seen this file. On first scan after boot, jump to end so
@@ -1723,12 +1621,70 @@ async function main() {
       // ticker below is a safety net; this is the primary gate.
       await runJitCompactCheck();
 
+      // ── v2.8.1 chat perf / skill router ──
+      // Per-turn latency telemetry. Stage timestamps recorded on the
+      // local stack so they don't leak across overlapping turns
+      // (processOnePrompt is serialized via promptInFlight, but the
+      // closure is reentered for each turn). emitStage() logs to stderr
+      // AND broadcasts a `latency_stage` SSE event so the dashboard can
+      // surface the breakdown — see chat-perf zone in app.js.
+      const turnT0 = performance.now();
+      const turnId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      const stageTimes: Record<string, number> = {};
+      const emitStage = (stage: string, extras?: Record<string, unknown>) => {
+        const elapsed = Math.round(performance.now() - turnT0);
+        stageTimes[stage] = elapsed;
+        const extraStr = extras
+          ? " " + Object.entries(extras).map(([k, v]) => `${k}=${v}`).join(" ")
+          : "";
+        console.error(
+          `[latency] turn=${turnId} stage=${stage} ms=${elapsed}${extraStr}`,
+        );
+        try {
+          broadcast("latency_stage", {
+            ts: new Date().toISOString(),
+            turn: turnId,
+            source: p.source,
+            stage,
+            elapsed_ms: elapsed,
+            extras: extras ?? null,
+          });
+        } catch { /* never block on broadcast */ }
+      };
+      emitStage("process_start");
+
       // Refresh the system prompt with current tier-1 memory before every
       // prompt. Both memory.md and user.md are re-read fresh — operator
       // edits via the dashboard Memory tab AND master's own memory_*
       // tool writes both flow into the next turn without restart.
       try {
-        (agent.state as any).systemPrompt = composeSystemPrompt();
+        // ── v2.8.1 chat perf / skill router ──
+        // Pass the operator's message into composeSystemPrompt so the
+        // skill router can score against it. Falls back to legacy
+        // single-skill behavior when the flag file is absent.
+        const newPrompt = composeSystemPrompt(p.text);
+        (agent.state as any).systemPrompt = newPrompt;
+        emitStage("compose_prompt_done", {
+          prompt_chars: newPrompt.length,
+          router_enabled: lastRouterDecision?.enabled ? 1 : 0,
+          routed_skills:
+            lastRouterDecision?.selected.map((s) => s.name).join(",") || "-",
+        });
+        // Surface the routing decision on the SSE bus so the dashboard
+        // can render the "[router] X · Y" pill under this operator
+        // message. Cheap; just metadata.
+        if (lastRouterDecision && lastRouterDecision.enabled) {
+          try {
+            broadcast("skill_router", {
+              ts: new Date().toISOString(),
+              turn: turnId,
+              source: p.source,
+              message_preview: p.text.slice(0, 80),
+              selected: lastRouterDecision.selected.map((s) => s.name),
+              reason: lastRouterDecision.reason,
+            });
+          } catch { /* never block */ }
+        }
       } catch { /* if pi-agent-core ever locks state.systemPrompt, we'll see it loud */ }
       broadcast("inbound", { source: p.source, text: p.text, ts: new Date().toISOString() });
       // v2.7.23 — record the inbound on Tier 3 (Evy Memory). User-facing
@@ -1753,7 +1709,36 @@ async function main() {
           `[memory] inbound record failed: ${(err as Error).message ?? err}`,
         );
       }
-      await agent.prompt(p.text);
+      // ── v2.8.1 chat perf / skill router ──
+      // Hook agent.subscribe just for the duration of this turn so we
+      // can record first-token + last-token timings. The longstanding
+      // global subscriber upstream stays in place; this is a piggyback
+      // listener that detaches in finally{}.
+      emitStage("llm_call_start");
+      let firstTokenEmitted = false;
+      const detach = agent.subscribe((event: any) => {
+        try {
+          if (
+            !firstTokenEmitted &&
+            event?.type === "message_update" &&
+            event?.assistantMessageEvent?.type === "text_delta"
+          ) {
+            firstTokenEmitted = true;
+            emitStage("first_token");
+          }
+          if (event?.type === "agent_end") {
+            emitStage("last_token");
+          }
+        } catch { /* never throw out of subscriber */ }
+      });
+      try {
+        await agent.prompt(p.text);
+      } finally {
+        if (typeof detach === "function") {
+          try { detach(); } catch { /* ignore */ }
+        }
+      }
+      emitStage("turn_complete", { stages: JSON.stringify(stageTimes) });
       let { stop, err } = lastStopReason();
       if (stop === "error" && isTransient(err) && !stopped) {
         console.error(`[master] transient error "${err}" (source=${p.source}), retrying in 5s`);
@@ -2482,35 +2467,6 @@ async function main() {
         return Response.json({ ok: true, teams });
       }
 
-      // v2.8.1 — POST /teams/:id/vanished is the fix-forward hook for the
-      // v2.7.36 `subctl team kill <name>` CLI (and any future operator
-      // tool that archives a team's registry dir). It immediately removes
-      // the team from the staleness tracker so we don't have to wait for
-      // the next 3-min watchdog tick to reconcile. Idempotent. Returns
-      // { ok, was_tracked } so the caller can tell whether anything
-      // changed.
-      {
-        const m = url.pathname.match(/^\/teams\/([A-Za-z0-9_.-]+)\/vanished\/?$/);
-        if (m && req.method === "POST") {
-          const team_id = m[1]!;
-          const was_tracked =
-            teamLastActivity.has(team_id) || teamNudgeState.has(team_id);
-          teamLastActivity.delete(team_id);
-          teamPaneHash.delete(team_id);
-          teamNudgeState.delete(team_id);
-          if (!vanishedTeams.has(team_id)) {
-            vanishedTeams.add(team_id);
-            persistVanishedTeams();
-          }
-          logDecision({
-            project: team_id,
-            action: "team_marked_vanished",
-            rationale: "operator/CLI archived team — staleness tracker silenced",
-          });
-          return Response.json({ ok: true, was_tracked });
-        }
-      }
-
       if (url.pathname === "/diag" && req.method === "GET") {
         // Fan out connectivity + readiness checks in parallel. Each check
         // returns {name, ok, detail} — UI renders a green/red row per check.
@@ -2983,136 +2939,6 @@ async function main() {
         return Response.json({ ok: true, config: next });
       }
 
-      // ── v2.8.1 operator preferences ───────────────────────────────────
-      // Bilateral-maintenance config. Dashboard proxies these under
-      // /api/preferences/*. Telegram's /prefs command reads/writes via
-      // the same module directly (no HTTP hop) inside master-notify-listener.
-      //
-      //   GET    /preferences                       → { ok, preferences }
-      //   GET    /preferences/:category             → { ok, category, values }
-      //   POST   /preferences/:category/:key        body { value, by?, reason? }
-      //   DELETE /preferences/:category/:key        → { ok, removed }
-      //   POST   /preferences/reset                 body { confirm: true }
-      //
-      // by defaults to "operator" — only the master tool path uses "evy".
-      // Values are NOT redacted on egress: the operator deliberately
-      // chose what to put here, and unlike Evy Memory the contents are
-      // expected to be operator-readable shorthand (no chat history,
-      // no transcripts). The Telegram surface still applies the same
-      // redaction pass as memory before quoting back as a defense-in-depth.
-      if (url.pathname === "/preferences" && req.method === "GET") {
-        try {
-          const prefs = loadPreferences();
-          return Response.json({ ok: true, preferences: prefs });
-        } catch (err) {
-          return Response.json(
-            { ok: false, error: (err as Error).message },
-            { status: 500 },
-          );
-        }
-      }
-      {
-        const m = url.pathname.match(/^\/preferences\/([A-Za-z_][A-Za-z0-9_-]*)\/?$/);
-        if (m && req.method === "GET") {
-          try {
-            const cat = m[1]!;
-            const entries = listPreferences(cat);
-            const values: Record<string, unknown> = {};
-            for (const e of entries) values[e.key] = e.value;
-            return Response.json({
-              ok: true,
-              category: cat,
-              values,
-              count: entries.length,
-            });
-          } catch (err) {
-            return Response.json(
-              { ok: false, error: (err as Error).message },
-              { status: 500 },
-            );
-          }
-        }
-      }
-      {
-        const m = url.pathname.match(
-          /^\/preferences\/([A-Za-z_][A-Za-z0-9_-]*)\/([A-Za-z_][A-Za-z0-9_-]*)\/?$/,
-        );
-        if (m && req.method === "POST") {
-          let body: { value?: unknown; by?: unknown; reason?: unknown };
-          try {
-            body = (await req.json()) as typeof body;
-          } catch {
-            return Response.json(
-              { ok: false, error: "invalid JSON body" },
-              { status: 400 },
-            );
-          }
-          const value = body.value;
-          if (value !== null && typeof value === "object") {
-            return Response.json(
-              { ok: false, error: "value must be a string, number, or boolean" },
-              { status: 400 },
-            );
-          }
-          const by =
-            body.by === "evy" || body.by === "operator" ? body.by : "operator";
-          const reason = typeof body.reason === "string" ? body.reason : undefined;
-          try {
-            const entry = setPreferenceValue(
-              m[1]!,
-              m[2]!,
-              value as string | number | boolean,
-              by,
-              reason,
-            );
-            return Response.json({
-              ok: true,
-              entry,
-              meta: getPreferenceMeta(m[1]!, m[2]!),
-            });
-          } catch (err) {
-            return Response.json(
-              { ok: false, error: (err as Error).message },
-              { status: 400 },
-            );
-          }
-        }
-        if (m && req.method === "DELETE") {
-          try {
-            const removed = deletePreference(m[1]!, m[2]!);
-            return Response.json({ ok: true, removed });
-          } catch (err) {
-            return Response.json(
-              { ok: false, error: (err as Error).message },
-              { status: 400 },
-            );
-          }
-        }
-      }
-      if (url.pathname === "/preferences/reset" && req.method === "POST") {
-        let body: { confirm?: unknown };
-        try {
-          body = (await req.json().catch(() => ({}))) as typeof body;
-        } catch {
-          body = {};
-        }
-        if (body.confirm !== true) {
-          return Response.json(
-            { ok: false, error: "pass { confirm: true } to reset to seeded defaults" },
-            { status: 400 },
-          );
-        }
-        try {
-          const prefs = resetPreferences();
-          return Response.json({ ok: true, preferences: prefs });
-        } catch (err) {
-          return Response.json(
-            { ok: false, error: (err as Error).message },
-            { status: 500 },
-          );
-        }
-      }
-
       {
         const m = url.pathname.match(/^\/voice\/audio\/([a-f0-9]+\.[a-z0-9]+)$/i);
         if (m && req.method === "GET") {
@@ -3253,12 +3079,6 @@ async function main() {
       );
       const now = Date.now();
       for (const session of sessions) {
-        // v2.8.1 — don't re-seed teamLastActivity for a team we've already
-        // alerted as vanished (its registry dir is in teams/.killed/). The
-        // tmux session can outlive the registry archive, so without this
-        // guard the watchdog would keep nudging a zombie pane. Self-heals
-        // when the dir comes back (operator re-spawn).
-        if (isStillVanished(session)) continue;
         const cap = Bun.spawnSync(
           ["tmux", "capture-pane", "-p", "-t", `${session}:0`, "-S", "-50"],
           { stdout: "pipe", stderr: "pipe" },
@@ -3429,42 +3249,10 @@ async function main() {
           emitNotification({ kind: "team-nudge-sent", severity: "info", title, body, team_id }),
         emitAlert: (team_id, title, body) =>
           emitNotification({ kind: "team-unresponsive", severity: "alert", title, body, team_id }),
-        // v2.8.1 — wire the v2.7.32 reconciliation predicate that was
-        // defined in auto-nudge.ts but never wired here (root cause of
-        // the 2026-05-13 "auto-nudged claude-osint-cve-monitor" + "team
-        // unresponsive" alerts for a team archived hours earlier to
-        // teams/.killed/). On each tick we check the registry dir for
-        // every tracked team BEFORE deciding nudge/escalate.
-        teamRegistryExists,
-        emitVanished: (team_id, title, body) => {
-          if (vanishedTeams.has(team_id)) return; // one-shot — already alerted
-          vanishedTeams.add(team_id);
-          persistVanishedTeams();
-          emitNotification({
-            kind: "team-vanished",
-            severity: "alert",
-            title,
-            body,
-            team_id,
-          });
-        },
         logDecision: (team_id, action, rationale) =>
           logDecision({ project: team_id, action, rationale }),
       },
     });
-
-    // v2.8.1 — drop vanished teams from the local tracker so subsequent
-    // ticks don't keep handing them to the sweep. auto-nudge.ts only
-    // clears teamNudgeState; teamLastActivity + teamPaneHash live here.
-    // Combined with persistVanishedTeams() above + the isStillVanished()
-    // guards in tailInboxFile / refreshTeamActivityFromTmux, this makes
-    // the alert one-shot for the lifetime of the team_id.
-    for (const a of actions) {
-      if (a.action === "vanished") {
-        teamLastActivity.delete(a.team_id);
-        teamPaneHash.delete(a.team_id);
-      }
-    }
 
     const stale = actions.filter((a) => a.action !== "fresh");
     if (stale.length === 0) {
@@ -3688,7 +3476,6 @@ async function main() {
     try { upstreamWatchdog?.stop(); } catch { /* ignore */ }
     try { profilesWatcher.close(); } catch { /* ignore */ }
     try { voiceWatcher.close(); } catch { /* ignore */ }
-    try { preferencesWatcher.close(); } catch { /* ignore */ }
     if (inboxWatcher) try { inboxWatcher.close(); } catch { /* ignore */ }
     try { stopMasterNotifyListener(); } catch { /* ignore */ }
     httpServer.stop(true);

@@ -1,62 +1,47 @@
 ## [2.8.1] — 2026-05-13
 
-> **Note:** v2.8.1 is a batched release. The operator may bundle additional items before tagging; this entry covers what's landed on the branch so far.
+### `feat(master,dashboard): v2.8.1 chat latency telemetry + skill router + thinking-indicator fix`
 
-### `feat(master): v2.8.1 operator preferences (bilateral maintenance, TOML store)`
+Three operator complaints from the 2026-05-13 chat session, ganged into one slice:
 
-Operator-raised on 2026-05-13:
+1. **Thinking indicator vanished too early.** Operator: *"When chatting, you see that she's chatting for a second. It says 'thinking', and then it goes away, and it takes a hot second for her to respond."* Root cause: `appendToolCall()` in `dashboard/public/app.js` ran `hideChatThinking(log)` the moment Evy issued a tool call, which killed the indicator even if Evy hadn't started streaming text yet. With LM Studio JIT + tool latency + the prompt re-load each turn, the gap between "indicator gone" and "first text byte" was the "hot second" of silence. Fix: keep the indicator alive through tool calls and tool results, flip its label between `Evy · thinking` and `Evy · working` so the visual changes (operator knows something is happening) but the dots keep animating. The indicator is now removed ONLY when actual text streams in via `appendDelta()` or the turn ends in `endAssistantBubble()` / `agent_end` / error / timeout.
 
-> We need to have an operator preferences section that both me and the agent can maintain. Examples would be: I prefer audio over Telegram versus text, I prefer this coding style, I prefer this type of report, et cetera.
+2. **Chat felt slow vs Hermes.** Operator: *"I don't know why our chatting is so slow when I chat with hermes. Things are just almost instant."* The master had no instrumentation to point at the bottleneck. v2.8.1 adds per-turn latency telemetry across the full chat path. `components/master/server.ts` now emits `[latency] turn=<id> stage=<X> ms=<Y>` log lines at six stage boundaries — `process_start`, `compose_prompt_done` (with prompt char count + router skills), `llm_call_start`, `first_token`, `last_token`, `turn_complete`. The same stages broadcast as `latency_stage` SSE events so the dashboard can surface them on the assistant bubble (`data-latency_last_token_ms` etc) for devtools-driven debugging. Operator now has the breakdown live without `subctl logs grep` gymnastics.
 
-The load-bearing requirement is bilateral authorship — both the operator AND Evy write to the same file. Evy writes when she learns a preference from conversation; the operator writes via dashboard, CLI, Telegram, or direct edit. The next turn's system prompt reflects the new value either way.
+3. **Skill preloading (Hermes-style).** Operator: *"Hermes, when you ask a question, you'll see it load a skill. It'll preload a skill based on what you're asking. It kind of reads the room, loads the skill, and then passes that over to the agent."* v2.8.1 adds `components/master/skill-router.ts` — a lightweight scoring router that, on each turn, picks the top-K skills from the in-repo catalog (`components/skills/*/SKILL.md`) and folds their bodies into Evy's system prompt as `<skill name="…">…</skill>` fenced blocks. Scoring is keyword + description-token overlap against the operator's message tokens (3× weight on hand-curated `keywords:` frontmatter, 1× on description tokens, +2 for a direct name hit). `subctl-team-protocol` and `handoff-protocol` are always-loaded floor; domain skills (`node-conventions` / `python-conventions` / `rust-conventions`) are routed by cwd-based ecosystem detection (`package.json` → node, `pyproject.toml` → python, `Cargo.toml` → rust). Short messages (<5 chars, "hi", "/profile") fast-path to floor-only — no point burning router cycles on a one-word turn. The router is feature-flagged via the presence of `~/.config/subctl/skill-router.enabled`; absent that file, master falls back to the v2.8.0 legacy single-skill prompt path. Catalog reads are memoized with mtime invalidation — sub-ms on the happy path.
 
-**Storage.** `~/.config/subctl/preferences.toml` (chmod 600, parent dir chmod 700 — same posture as `profiles.json`). TOML over JSON for three reasons (ADR 0018): comments survive (the seed file ships with inline guidance the operator sees in `$EDITOR`), matches v2.8.0 team-templates precedent for operator-facing config, and `smol-toml` is already a dependency. A sidecar `preferences.meta.json` records `{by: "operator" | "evy" | "default", at, reason?}` for each write so the audit trail says who decided what. Schema is intentionally loose — categories and keys are free-form strings matching `^[A-Za-z_][A-Za-z0-9_-]*$`. Seeded categories: `[communication]`, `[coding]`, `[reports]`, `[agent_behavior]`. Operator can add categories at runtime.
+**Dashboard surface.** A `[router] node-conventions · spec-driven-dev` pill renders under each operator turn when the router preloaded skills. CSS mirrors the v2.7.21 tool-pill accent palette but in slate (so it doesn't compete with the bright tool-pill row).
 
-**Comment-preserving writes.** `smol-toml`'s `stringify()` drops comments, so `setPreference()` uses a regex-aware merge: locate the `[category]` header, locate the `key = ` line, replace just the value portion. Inline comments and the surrounding section survive untouched. New keys insert at the end of the section; new categories append at the end of the file. Multi-line strings / arrays / nested tables aren't part of the preferences contract and the merger leaves them alone.
+**CLI.** New `subctl skills router-trace <message>` subcommand runs the router against a sample message and prints the scoring rationale (selected skills + score-sorted trace with matched keywords and matched description tokens). Useful for tuning the scoring weights without restarting master. `--force` flag bypasses the runtime enable flag so the operator can score the catalog even when the router is off in production.
 
-**Master tools.** Three new tools (zone marker `// ── v2.8.1 operator preferences ──` in `server.ts`):
+**Telegram.** Skipped this slice — operator's feedback was that pill rendering on a phone is too verbose for the surface.
 
-- `evy_get_preferences({category?})` — full preferences bag or one category
-- `evy_set_preference({category, key, value, reason?})` — Evy's write surface. `by="evy"` and `reason` get stamped in the meta sidecar. Called when the operator says "actually, keep responses shorter from now on" — Evy persists the standing preference instead of trusting memory retrieval to surface it next time.
-- `evy_get_preference_value({category, key})` — quick single-key lookup
+**Tests.** 22 new pinned tests in `components/master/__tests__/skill-router.test.ts` covering frontmatter parsing (inline scalars, folded `>-`, hyphen-list keywords), tokenization, ecosystem detection, the disabled/enabled router contracts, short-message fast-path, scoring-trace ordering, render output shape, and catalog cache invalidation on SKILL.md mtime bump. The 853 pre-existing master tests still pass; dashboard's 109 still pass. Bun build clean.
 
-**Prompt injection.** `composeSystemPrompt()` now appends `renderPreferencesForPrompt()` between SKILL.md and the persona fragment. The block is clearly labeled ("Your operator's preferences") so the model knows these are operator knobs, not persona / safety rules. Reads fresh from disk on every dispatched turn — operator-side and Evy-side writes both take effect immediately. `watchPreferences()` broadcasts a `preferences` SSE event so the dashboard tab refreshes live.
-
-**Master HTTP.** `GET /preferences`, `GET /preferences/:category`, `POST /preferences/:category/:key` (body `{value, by?, reason?}`), `DELETE /preferences/:category/:key`, `POST /preferences/reset` (gated on `{confirm: true}`). The dashboard proxies under `/api/preferences/*`.
-
-**Dashboard.** New Preferences tab in the sidebar nav. Categories render as collapsible cards; each row is `key + edit-in-place input + "set by …" badge + save/delete buttons`. "+ Add new preference" affordance per category, "+ Add category" toolbar button. Reset-all button confirms before clearing operator-added categories and reseeding defaults. Optimistic UI with rollback toast on error.
-
-**Telegram.** New `/prefs` family:
-- `/prefs` — list every category, terse
-- `/prefs <category>` — list one
-- `/prefs get <cat>.<key>` — single value
-- `/prefs set <cat>.<key> <value>` — write (by=operator)
-- `/prefs reset confirm` — two-step reset
-
-All replies pass through `redactForEgress` so a misplaced `sk-*` / HMAC mark in `preferences.toml` can't leak through chat.
-
-**CLI.** `subctl prefs show|get|set|edit|reset`:
-- `show [--category <cat>]` — dump all or one
-- `get <cat>.<key>` — single value
-- `set <cat>.<key> <value>` — write
-- `edit` — open `$EDITOR` directly on `preferences.toml`; master's fs.watch picks up the save
-- `reset` — confirm-then-restore-defaults
-
-**Tests.** `preferences.test.ts` (24 tests, all pass): seed-on-missing + chmod 600, comment preamble survives seed, unparseable file recovers by reseeding, get/set/list round-trip, comment + sibling-key preservation on merge-write, value coercion (`"false"` → `false`, `"10"` → `10`), new-key + new-category insertion, name validation, sidecar `by` / `reason` metadata, delete-line-without-disturbing-neighbors, reset-restores-defaults, fs.watch debounce + close, render-as-markdown output shape.
+**What's still slow.** The biggest opportunities (not addressed this slice — kept in scope to ship telemetry + the easy thinking-indicator fix in the same commit):
+- LM Studio cold-start on profile swap. The supervisor JITs the first prompt after a profile change. v2.7.18's `ensureModelLoaded` already pre-pins context; a periodic keep-alive would close the remaining gap.
+- Persona prompt-cache misses on every turn. pi-ai's openai-completions provider doesn't expose explicit cache_control; the chat profile (gemma) and heavy profile (qwen) both lose the cache when memory writes change the prefix. Worth investigating after we see real telemetry numbers from operator's typical flow.
+- Verifier re-runs (claim-gap iteration). Each adds a full LLM round-trip. Currently capped at 2; visible in the per-stage trace as a second `llm_call_start` within the same turn.
 
 **Files:**
 
-- New: `components/master/preferences.ts` — TOML store + merge-write + sidecar meta + watcher + `renderPreferencesForPrompt()`
-- New: `components/master/tools/preferences.ts` — three Evy-facing tools
-- New: `components/master/__tests__/preferences.test.ts` — 24 tests
-- New: `docs/adr/0018-operator-preferences-bilateral-maintenance.md`
-- Modified: `components/master/server.ts` — tool registry, prompt injection, HTTP routes, watcher boot + shutdown
-- Modified: `components/master/master-notify-listener.ts` — `/prefs` handler + help
-- Modified: `dashboard/server.ts` — `/api/preferences/*` proxy
-- Modified: `dashboard/public/index.html`, `app.js`, `style.css` — Preferences tab
-- Modified: `bin/subctl`, `lib/cli.sh` — `subctl prefs` subcommand + help
-- Modified: `docs/adr/README.md` — ADR 0018 index entry
-- Modified: `VERSION` → `2.8.1`
+- New: `components/master/skill-router.ts` — scoring router + catalog loader + ecosystem detection
+- New: `components/master/__tests__/skill-router.test.ts` — 22 tests
+- New: `bin/skills/router-trace.ts` — CLI trace tool
+- Modified: `components/master/server.ts` — wired router into `composeSystemPrompt(userMessage?)`, added per-turn latency stages and `latency_stage` + `skill_router` SSE broadcasts under the `── v2.8.1 chat perf / skill router ──` zone markers
+- Modified: `dashboard/public/app.js` — thinking-indicator state-flip (`thinking` ↔ `working`), `skill_router` + `latency_stage` SSE handlers, router pill rendering
+- Modified: `dashboard/public/style.css` — `.chat-router-pill` styling
+- Modified: `components/skills/skills.sh` — `subctl skills router-trace` subcommand
+- Modified: `bin/subctl` — help text addition
+
+### `fix(dashboard): Templates tab route — render only Templates content`
+
+Operator clicked the Templates tab in the dashboard after v2.8.0 shipped and reported "it just shows me every page, so this route is broken." Root cause was a missing CSS visibility rule in `dashboard/public/style.css`. The tab-visibility block at lines 1324–1336 enumerates each tab as `body[data-active-tab="<name>"] section[data-tab]:not([data-tab="<name>"]) { display: none; }`, and the v2.8.0 Templates ship added the nav-button + `<section data-tab="templates">` but never added the matching CSS rule. With no `display: none` rule firing for `data-active-tab="templates"`, every panel stayed visible. Spot-checking the rest of the block surfaced the same bug for the v2.7.29 Plans tab — also missing. Watchdogs + Notifications are nested inside the Orchestration tab (not standalone tabs) so they are unaffected. Fix adds the two missing rules under a `── v2.8.1 templates route fix ──` zone marker. No JS change needed — `setActiveTab()` already toggles `body.dataset.activeTab` correctly; the CSS was just incomplete.
+
+**Files:**
+
+- Modified: `dashboard/public/style.css` — added `body[data-active-tab="templates"]` and `body[data-active-tab="plans"]` visibility rules
+- Modified: `VERSION` → 2.8.1
 
 ## [2.8.0] — 2026-05-13
 

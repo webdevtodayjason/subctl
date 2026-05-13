@@ -4353,6 +4353,25 @@ tr.team-stale-red td           { background: rgba(214, 108, 108, 0.06); }
   0%, 100% { opacity: 0.3; }
   50%      { opacity: 1.0; }
 }
+/* ── v2.8.1 chat perf / skill router ──
+   "[router] node-conventions · spec-driven-dev" pill rendered below
+   the operator's message when master's skill router preloaded any
+   skills into Evy's system prompt for this turn. Hover shows the
+   scoring rationale (set as title=). Dim slate color so it doesn't
+   compete with the tool-pill row. */
+.chat-router-pill {
+  display: inline-block;
+  margin: 2px 0 6px 0;
+  padding: 2px 8px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 10px;
+  color: #94a3b8;
+  background: rgba(148, 163, 184, 0.08);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 999px;
+  letter-spacing: 0.02em;
+  cursor: help;
+}
 
 /* ── v2.7.25 notification surface ─────────────────────────────────────
    Replaces the v2.7.22 always-on panel. Two surfaces now:
