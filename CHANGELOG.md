@@ -4,6 +4,43 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.7.28] — 2026-05-13
+
+### `feat(cli): v2.7.28 subctl CLI bootstrap — status / logs / deploy / notif / memory`
+
+Adds five operator-facing subcommands to the bash dispatcher so the master + dashboard fleet can be driven from any terminal without the web UI, Telegram, or hand-rolled SSH one-liners. All new commands run against the localhost HTTP surface already exposed by master (`:8788`) and dashboard (`:8787`) — no auth in v1 (localhost-only).
+
+**New commands (all hang off the existing `bin/subctl` dispatcher):**
+
+- `subctl status [--json]` — one-shot probe of master `/health` + dashboard `/api/version`. Prints versions, uptime, subscriber count, active supervisor profile, and Telegram listener state. Exits 1 if either daemon is unreachable. `--json` emits a single combined doc for scripts.
+- `subctl logs [--master | --dashboard] [--tail N] [--follow|-f]` — tails the launchd log files at `~/Library/Logs/subctl/` (`master.log`, `dashboard.out.log`, `dashboard.err.log`). Banners separate files when multiple are shown; `--follow` does `tail -F`.
+- `subctl deploy [--no-pull] [--dry-run]` — fast-path deploy: `git pull --ff-only` followed by `launchctl kickstart -k gui/$(id -u)/com.subctl.master` and the same for `com.subctl.dashboard`. Replaces the SSH one-liner operators were running by hand. For the careful path (auto-stash, version bracket, doctor) keep using `subctl update`.
+- `subctl notif [recent | list <N> | mark-all-read]` — wraps the dashboard's `/api/notifications` proxy → master ring buffer (team-staleness auto-nudges, auto-compact errors). Default `recent` prints the last 10.
+- `subctl memory [recent <N> | search <query> | remember <text>]` — wraps `/api/memory/*` → master's Evy Tier 3 SQLite store. `search` URL-encodes via jq; `remember` POSTs with `kind:"note"`.
+
+**Files:**
+
+- New: `lib/cli.sh` — bash implementations for all five verbs. Localhost HTTP via `curl --connect-timeout 3 --max-time 5`, JSON parsing via `jq`. Reads `SUBCTL_MASTER_PORT` + `SUBCTL_SERVICE_PORT` env at call-time so tests (and operator overrides) work without re-sourcing.
+- New: `lib/__tests__/cli.test.ts` — 25 Bun-driven tests covering every subcommand. Stands up throwaway `Bun.serve` fakes on ephemeral ports for status / notif / memory happy-path assertions so the suite doesn't depend on a live daemon. `deploy` is exercised in `--dry-run` mode (kickstart commands printed, never executed).
+- `bin/subctl` — five new dispatch cases (`status`, `logs`, `deploy`, `notif|notifications`, `memory|mem`), updated usage block, `-V` accepted as a `--version` alias.
+- `VERSION` → `2.7.28`.
+- `docs/master.md` — new "CLI commands (v2.7.28)" section.
+- `docs/cli.md` — fuller subcommand reference.
+
+**Design notes:**
+
+- The existing `bin/subctl` is bash; we extended it rather than introducing a parallel Bun executable. `install.sh` already symlinks `bin/subctl` into `/usr/local/bin/` (or `~/bin/` fallback) so the install story is unchanged.
+- HTTP layer is curl + jq — same dependency floor as the existing `doctor` / `usage` / `update` commands. Adds nothing to the dep manifest.
+- `subctl deploy` uses `launchctl kickstart -k` (the modern in-place restart) rather than the unload/load cycle in `subctl update` — faster, but no rollback. Operators with concerns about state continuity should still prefer `update`.
+- Output is plain-text by default, color-friendly under TTY, suppressed under `NO_COLOR=1`. No spinners or progress bars in v1.
+- Auth is intentionally absent — localhost-only endpoints. If we add LAN-exposed dashboard auth in a follow-up, the CLI grows a `~/.config/subctl/cli-token` reader (noted in docs/cli.md).
+
+**Out of scope, queued:**
+
+- SSE streaming directly in the CLI (e.g. `subctl notif --follow` watching `/api/notifications/stream`). Tracked separately.
+- A `subctl team` HTTP wrapper around dashboard team management (the `subctl team` verb already exists for inbox events, so the naming collision needs a sort-out before this lands).
+- A `subctl exec` shell-into-a-team escape hatch — depends on terminal.ts auth surface which is still localhost-only.
+
 ## [2.7.24] — 2026-05-13
 
 ### `feat(dashboard): v2.7.24 pi-ai provider catalog (dynamic dropdown) — pi-ai + pi-agent declared first-class upstreams`

@@ -2192,8 +2192,40 @@ subctl orch spawn --template feature-dev \
 
 ---
 
+## 6.5 CLI commands (v2.7.28)
+
+`bin/subctl` is the bash dispatcher symlinked into `/usr/local/bin/subctl` by
+`install.sh` (or `~/bin/subctl` if `/usr/local/bin` isn't writable). v2.7.28
+added five operator-facing subcommands that drive the master + dashboard
+fleet from any terminal — no web UI, no Telegram round-trip.
+
+All five hit the localhost HTTP surface (`master:8788`, `dashboard:8787`).
+No auth in v1 — the endpoints are localhost-only. If we expose the dashboard
+to LAN/Tailscale with auth in a follow-up, the CLI grows a
+`~/.config/subctl/cli-token` step (tracked as a v2 concern).
+
+| Command | What it does |
+|---------|--------------|
+| `subctl status [--json]` | Probes master `/health` + dashboard `/api/version`. Versions, uptime, subscribers, active profile, Telegram listener state. Exit 1 if either is down. `--json` for scripts. |
+| `subctl logs [--master\|--dashboard] [--tail N] [--follow]` | Tails launchd log files at `~/Library/Logs/subctl/` (`master.log`, `dashboard.{out,err}.log`). |
+| `subctl deploy [--no-pull] [--dry-run]` | `git pull --ff-only` + `launchctl kickstart -k gui/$(id -u)/com.subctl.{master,dashboard}`. The fast path. For careful upgrades (stash, version bracket, doctor) use `subctl update`. |
+| `subctl notif [recent\|list <N>\|mark-all-read]` | Wraps `/api/notifications` (master ring buffer via dashboard proxy). |
+| `subctl memory [recent <N>\|search <query>\|remember <text>]` | Wraps `/api/memory/*` → master Evy Tier 3 SQLite. |
+
+Implementation lives in `lib/cli.sh`. Tests in `lib/__tests__/cli.test.ts`
+stand up throwaway `Bun.serve` fakes on ephemeral ports so the suite runs
+green without a live daemon. Run `bun test lib/__tests__/cli.test.ts`.
+
+Install path: `bin/subctl` → `/usr/local/bin/subctl` (or `~/bin/subctl`).
+`install.sh` handles this — no extra step needed after a normal install.
+
+Fuller subcommand reference: [docs/cli.md](./cli.md).
+
+---
+
 ## 7. Decision log (this doc)
 
+- 2026-05-13: v2.7.28 ships the operator CLI bootstrap (`status` / `logs` / `deploy` / `notif` / `memory`) on the existing bash dispatcher rather than spawning a parallel Bun executable — install path stays put, dependency floor unchanged (curl + jq, already required by `doctor`/`usage`/`update`).
 - 2026-05-10: Adopt Hermes Agent core's tiered memory architecture (§3). Three tiers, claude-mem stays as tier-2 provider, tier-1 (memory.md/user.md) is the next near-term build (Phase 3e).
 - 2026-05-10: Personal skill authoring constrained to `master` source + category allow-list (§3.6) — ship after template-driven spawn lands so we can dogfood with real teams.
 - 2026-05-10: Document is the source of truth. Update this file when designs change; do not let architectural choices live only in commit messages.
