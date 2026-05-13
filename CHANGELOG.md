@@ -4,6 +4,44 @@ All notable changes to subctl are documented here. The format is based on [Keep 
 
 The canonical version source is the `VERSION` file at the repo root. `lib/core.sh`, `bin/subctl`, the dashboard, and the master daemon all derive their version string from it. To bump: edit `VERSION`, append a CHANGELOG entry, commit, push — `subctl update` on every host pulls the new version automatically.
 
+## [2.7.27] — 2026-05-13
+
+### `feat(master): v2.7.27 tinyfish_agent — third TinyFish surface`
+
+Adds the **TinyFish Agent API** as the third surface of the TinyFish integration (after `tinyfish_search` + `tinyfish_fetch` shipped in v2.7.16). Evy now has a hosted-browser-automation-as-a-service tool: describe a task in natural language, supply a starting URL, get back the extracted result + run metadata. Useful when she needs to fill a form, click a multi-step flow, or scrape dynamic content that requires interaction — without spinning up Playwright locally (that's the v2.8.0 Browser API route, ADR 0013, still out of scope for this PR).
+
+**Endpoint (verified against https://docs.tinyfish.ai on 2026-05-13):**
+
+- `POST https://agent.tinyfish.ai/v1/automation/run`
+- `X-API-Key` header (reuses the existing `tinyfish_api_key` secret — same key as search + fetch)
+- Body: `{ url (req), goal (req), agent_config: { max_duration_seconds, max_steps? }, browser_profile? }`
+- Response: `{ run_id, status: "COMPLETED"|"FAILED", started_at, finished_at, num_of_steps, result, error }`
+
+**Tool parameters (LLM-facing names follow the operator's v2.7.27 spec; wire shape follows TinyFish):**
+
+- `task` (required) → `goal`
+- `starting_url` (required, http(s) only) → `url`. NOTE: the original spec called this optional, but the Agent API enforces `url` as required (does not free-pick from the task description). Tool surfaces a structured error when omitted.
+- `timeout_seconds` (default 120, clamped to [1, 600]) → `agent_config.max_duration_seconds`
+- `max_steps` (optional, 1–500) → `agent_config.max_steps`
+- `browser_profile` (`"lite"` default | `"stealth"`)
+
+**Reliability:** 5xx + transport-level network errors retry up to 3 attempts with exponential backoff (500ms → 1500ms). 4xx (401 auth, 402 billing, 429 rate-limit, 400 invalid) surfaces immediately — operator-actionable, never retried. Agent-side `status: "FAILED"` surfaces as `{ ok: false, error, run_id, retry_after, hint }` with the SYSTEM_FAILURE / AGENT_FAILURE / BILLING_FAILURE / UNKNOWN category preserved.
+
+**Files:**
+
+- `components/master/tools/tinyfish.ts` — adds `tinyfish_agent` to the `tinyfishTools` family export, plus a public `callTinyfishAgent` named export for direct callers. Adds `sleep` to the injectable `Deps` interface so retry backoff is testable. Header comment expanded to cover the third surface.
+- `components/master/tools/__tests__/tinyfish-agent.test.ts` — NEW, 20 hermetic tests covering: happy path + wire shape, optional `max_steps` / `browser_profile` / `timeout_seconds` forwarding, timeout clamping, validation (missing task, missing starting_url, invalid URL, missing API key), 4xx (401/402/429/400 — no retry, no sleep), 5xx retry success + retry exhaustion + retries[] log, network error retry, HTTP timeout headroom on every attempt, agent-side `FAILED` status, unexpected status string, malformed JSON, registry wiring.
+- `components/master/tools/__tests__/tinyfish.test.ts` — family-export sanity test updated to expect three tools.
+- `dashboard/server.ts` — `/api/settings/keys` TINYFISH_API_KEY purpose string extended to mention `tinyfish_agent` (paid, v2.7.27). No new operator-facing UI; Evy invokes the tool inline.
+- `docs/master.md` — extends the existing TinyFish section with a v2.7.27 addendum.
+- `VERSION` → `2.7.27`.
+
+**No new ADR.** This is a mechanical extension of an integration whose architecture was already decided (v2.7.16). ADR 0013 covers the separate Browser API route (v2.8.0); the Agent API's request/response shape fits the existing single-tool pattern without architectural changes.
+
+**Server registration:** automatic — `tinyfishTools` is iterated by `components/master/server.ts`. The new tool appears in the registry, `/diag`, and Evy's tool list on next master restart with no edits to server.ts.
+
+**Master is the only surface.** No new Telegram commands. No watchdog. No notifications. Single tool, single test file, single doc section.
+
 ## [2.7.24] — 2026-05-13
 
 ### `feat(dashboard): v2.7.24 pi-ai provider catalog (dynamic dropdown) — pi-ai + pi-agent declared first-class upstreams`

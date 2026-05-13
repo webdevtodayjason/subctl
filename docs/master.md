@@ -1557,6 +1557,33 @@ Operator decided to integrate TinyFish first-class rather than via MCP passthrou
 
 Dashboard `/api/settings/keys` gains a `TINYFISH_API_KEY` row; the Settings → API Tokens panel shows the secret status with the same Set / Not set / env-override pills as the other keys. Master tool count: **71 → 73**.
 
+#### v2.7.27 addendum — `tinyfish_agent` (third TinyFish surface)
+
+`tinyfish_agent` (`components/master/tools/tinyfish.ts`, paid: consumes TinyFish credits) joins the family in v2.7.27. It hits the synchronous Agent API:
+
+- `POST https://agent.tinyfish.ai/v1/automation/run`
+- `X-API-Key` header (reuses the existing `tinyfish_api_key` secret — same key as search + fetch)
+- Body: `{ url, goal, agent_config: { max_duration_seconds, max_steps? }, browser_profile? }`
+- Response: `{ run_id, status: "COMPLETED"|"FAILED", started_at, finished_at, num_of_steps, result, error }`
+
+**Use this when** Evy needs the page to actually *do something* — fill a form, click through a multi-step flow, scrape dynamic content that requires interaction. TinyFish operates the browser on their cloud and returns the extracted result. For pure read/search keep using `tinyfish_search` / `tinyfish_fetch` (those stay free).
+
+**Parameters (LLM-facing):**
+
+- `task` (required) — natural-language goal description. Maps to TinyFish `goal`.
+- `starting_url` (required, http(s) only) — target URL the agent starts from. Maps to TinyFish `url`. The Agent API REQUIRES this; it does not free-pick from the task description, contrary to early spec drafts.
+- `timeout_seconds` (optional, default 120, clamped to [1, 600]) — maps to `agent_config.max_duration_seconds`. The outer HTTP timeout is this value + 30s headroom on every retry.
+- `max_steps` (optional, 1–500) — caps agent step count, useful for bounding cost on exploratory tasks.
+- `browser_profile` (optional, `"lite"` | `"stealth"`) — `lite` is faster, `stealth` adds anti-bot countermeasures. Pick `stealth` only when `lite` is blocked.
+
+**Reliability:** 5xx + transport-level network errors retry up to 3 attempts with exponential backoff (500ms → 1500ms). 4xx (auth, billing, rate-limit, invalid request) surfaces immediately with no retry — those are operator-actionable. Agent-side `status: "FAILED"` (e.g., SYSTEM_FAILURE, AGENT_FAILURE, BILLING_FAILURE) surfaces as a structured `{ ok: false, error: "…", run_id, retry_after, hint }` payload.
+
+**Credits:** Search + Fetch don't use credits. `tinyfish_agent` does. SYSTEM_FAILURE may be refunded per TinyFish billing terms — verify with TinyFish, not subctl.
+
+**No new operator-facing UI.** Evy invokes the tool inline during chat; results flow through the existing tool-call rendering. The dashboard `TINYFISH_API_KEY` row in Settings → API Tokens covers config status for all three tools (one key drives all three surfaces).
+
+Master tool count: **73 → 74** (or higher post-v2.7.16 — depends on the v2.7.17–v2.7.24 stream).
+
 ### Phase 3o.17 — OpenRouter as a first-class model provider (v2.7.17)
 
 OpenRouter is a unified gateway for hundreds of AI models (incl. a free preview tier across many vendors) speaking the OpenAI Chat Completions wire format at `https://openrouter.ai/api/v1`. v2.7.17 registers `openrouter` as a first-class provider alongside `anthropic`, `openai`, `lmstudio`, `mlx`, `ollama`, `vllm`, `mistral`, `google`, `google-vertex`, and `amazon-bedrock`.

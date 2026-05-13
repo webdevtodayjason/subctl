@@ -1,8 +1,10 @@
 // components/master/tools/tinyfish.ts
 //
-// TinyFish web toolkit integration — two tools at the free tier:
-//   - tinyfish_search — live web search, structured agent-ready results
-//   - tinyfish_fetch  — full-page content extraction as clean markdown
+// TinyFish web toolkit integration — three tools across the
+// free + paid tiers:
+//   - tinyfish_search — live web search, structured agent-ready results (v2.7.16, free)
+//   - tinyfish_fetch  — full-page content extraction as clean markdown (v2.7.16, free)
+//   - tinyfish_agent  — natural-language browser-automation agent (v2.7.27, paid: credits)
 //
 // Operator-decided (v2.7.16): subctl integrates TinyFish FIRST-CLASS
 // alongside `web_search` (Brave) and `web_fetch` (Firecrawl) rather
@@ -25,18 +27,32 @@
 //                            language, author, published_date, text,
 //                            links, image_links, latency_ms, format}],
 //                 errors: [{url, error, status?}] }
+//   - Agent: POST https://agent.tinyfish.ai/v1/automation/run
+//     body: { url (req), goal (req), browser_profile?, agent_config?,
+//             capture_config?, output_schema?, ... }
+//     response: { run_id, status: "COMPLETED"|"FAILED", started_at,
+//                 finished_at, num_of_steps, result, error }
+//     5xx → retries up to 3 attempts with exponential backoff; 4xx
+//     surfaces directly (no retry, no credits consumed on auth/billing
+//     errors).
 //   - Auth: X-API-Key header (NOT Authorization: Bearer; the brief
 //     used "tinyfish_oauth_token" assuming OAuth, but the REST API
 //     uses an API key obtained by signing up at agent.tinyfish.ai —
 //     the MCP endpoint's OAuth flow is a separate auth surface).
 //   - Free tier: 30 req/min; 429 returned with rate limit excess.
 //   - "Search and Fetch do not use credits" per TinyFish docs.
+//   - Agent and Browser DO use credits. tinyfish_agent runs that
+//     return `status: "FAILED"` due to operator goal phrasing still
+//     consume credits; SYSTEM_FAILURE may be refunded per TinyFish
+//     billing terms (verify with TinyFish, not subctl).
 //
-// Both tools are READ-ONLY. Results are returned directly to the
-// caller; nothing is cached to subctl state, written to disk, or
-// otherwise persisted. HTTP errors (network, 4xx, 5xx, timeout, rate
-// limit) all surface as `{ ok: false, error: "..." }` — tools never
-// throw to the caller. Pattern mirrors components/master/tools/web.ts.
+// All three tools are READ-ONLY from subctl's perspective — nothing is
+// cached to subctl state, written to disk, or otherwise persisted.
+// (The agent itself may interact with target sites; that's the
+// operator's responsibility to mandate appropriately via the `goal`.)
+// HTTP errors (network, 4xx, 5xx, timeout, rate limit) all surface as
+// `{ ok: false, error: "..." }` — tools never throw to the caller.
+// Pattern mirrors components/master/tools/web.ts.
 
 // ─── injectable side-effect surface (for tests) ────────────────────────────
 
@@ -61,6 +77,12 @@ interface Deps {
     },
   ) => Promise<FetchResult>;
   now: () => number;
+  /**
+   * Sleep helper, injectable for tests. tinyfish_agent uses this for
+   * exponential backoff between 5xx retries — tests stub it to a no-op
+   * so the suite doesn't burn real wall time.
+   */
+  sleep: (ms: number) => Promise<void>;
 }
 
 const realDeps: Deps = {
@@ -98,6 +120,7 @@ const realDeps: Deps = {
     }
   },
   now: () => Date.now(),
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
 
 let deps: Deps = realDeps;
@@ -140,8 +163,22 @@ const TINYFISH_SEARCH_URL =
   process.env.TINYFISH_SEARCH_URL ?? "https://api.search.tinyfish.ai";
 const TINYFISH_FETCH_URL =
   process.env.TINYFISH_FETCH_URL ?? "https://api.fetch.tinyfish.ai";
+const TINYFISH_AGENT_URL =
+  process.env.TINYFISH_AGENT_URL ??
+  "https://agent.tinyfish.ai/v1/automation/run";
 const SEARCH_TIMEOUT_MS = 30_000;
 const FETCH_TIMEOUT_MS = 60_000;
+// Agent runs are long-lived (TinyFish hosts the browser, runs N steps,
+// returns when done). The default operator-tunable max is 120s; HTTP
+// timeout adds 30s headroom for the response to arrive after the agent
+// itself wraps up.
+const AGENT_DEFAULT_DURATION_SECONDS = 120;
+const AGENT_HTTP_TIMEOUT_HEADROOM_MS = 30_000;
+// Retry policy for 5xx + network errors. Auth/billing/rate-limit (4xx)
+// never retry — the operator must intervene. Backoff: 500ms, 1500ms,
+// 4500ms (exponential x3).
+const AGENT_RETRY_MAX_ATTEMPTS = 3;
+const AGENT_RETRY_BACKOFF_MS = [500, 1500, 4500];
 
 // ─── tool 1: tinyfish_search ───────────────────────────────────────────────
 
@@ -474,9 +511,355 @@ const tinyfish_fetch = {
   },
 };
 
+// ─── tool 3: tinyfish_agent (v2.7.27) ──────────────────────────────────────
+
+/**
+ * Public input shape for `callTinyfishAgent` — used by tests and by any
+ * direct caller that wants to invoke the agent outside the tool registry.
+ * The tool-facing names match the operator's v2.7.27 spec; they are
+ * mapped to TinyFish's `goal` / `url` / `max_duration_seconds` on the
+ * wire.
+ */
+export interface TinyfishAgentArgs {
+  /** Natural-language goal description. Maps to TinyFish `goal`. */
+  task?: string;
+  /**
+   * Target URL the agent should start from. Maps to TinyFish `url`.
+   * REQUIRED — the spec wording called this optional, but the
+   * Agent API enforces `url` as required (per
+   * docs.tinyfish.ai/api-reference/automation/run-browser-automation-synchronously
+   * verified 2026-05-13). The agent does NOT free-pick a URL from
+   * the task description.
+   */
+  starting_url?: string;
+  /**
+   * Max seconds the agent may spend on the task. Default 120.
+   * Maps to TinyFish `agent_config.max_duration_seconds`. The outer
+   * HTTP timeout is this value + 30s headroom.
+   */
+  timeout_seconds?: number;
+  /** Optional cap on agent steps. Maps to `agent_config.max_steps`. */
+  max_steps?: number;
+  /**
+   * Browser profile — "lite" (default; faster, less stealth) or
+   * "stealth" (slower, anti-bot countermeasures). Maps to
+   * `browser_profile`.
+   */
+  browser_profile?: "lite" | "stealth";
+}
+
+/** Per-attempt summary surfaced when retries kick in. */
+export interface TinyfishAgentRetryAttempt {
+  attempt: number;
+  status: number;
+  error?: string;
+  latency_ms: number;
+}
+
+/** Public output shape. `ok: true` means status === "COMPLETED" on the wire. */
+export type TinyfishAgentResult =
+  | {
+      ok: true;
+      run_id: string | null;
+      status: "COMPLETED";
+      started_at: string | null;
+      finished_at: string | null;
+      num_of_steps: number | null;
+      result: Record<string, unknown> | null;
+      latency_ms: number;
+      attempts: number;
+    }
+  | {
+      ok: false;
+      error: string;
+      status?: number;
+      run_id?: string | null;
+      retry_after?: string | null;
+      hint?: string;
+      retries?: TinyfishAgentRetryAttempt[];
+      latency_ms?: number;
+    };
+
+interface TinyFishAgentErrorRaw {
+  code?: string;
+  message?: string;
+  category?: string;
+  retry_after?: number | null;
+  help_url?: string;
+  help_message?: string;
+}
+
+interface TinyFishAgentResponseRaw {
+  run_id?: string | null;
+  status?: "COMPLETED" | "FAILED" | string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  num_of_steps?: number | null;
+  result?: Record<string, unknown> | null;
+  error?: TinyFishAgentErrorRaw | null;
+}
+
+/**
+ * Direct callable entry point. Exposed alongside the tool registry
+ * entry so tests + other components can drive the Agent API without
+ * going through the `invoke` indirection. Both surfaces share this
+ * implementation.
+ */
+export async function callTinyfishAgent(
+  args: TinyfishAgentArgs = {},
+): Promise<TinyfishAgentResult> {
+  const task = typeof args.task === "string" ? args.task.trim() : "";
+  if (!task) {
+    return {
+      ok: false,
+      error: "task is required and must be a non-empty string",
+    };
+  }
+  const startingUrl =
+    typeof args.starting_url === "string" ? args.starting_url.trim() : "";
+  if (!startingUrl) {
+    return {
+      ok: false,
+      error:
+        "starting_url is required — TinyFish Agent API requires an explicit target URL (it does not free-pick from the task description)",
+    };
+  }
+  if (!isValidUrl(startingUrl)) {
+    return {
+      ok: false,
+      error: `tinyfish_agent invalid starting_url: must be http:// or https://, got ${bodyExcerpt(startingUrl, 120)}`,
+    };
+  }
+  const apiKey = resolveSecret("tinyfish_api_key");
+  if (!apiKey) {
+    return {
+      ok: false,
+      error: `TINYFISH_API_KEY not configured. ${KEY_MISSING_HINT}`,
+    };
+  }
+  const rawTimeout =
+    typeof args.timeout_seconds === "number" && args.timeout_seconds > 0
+      ? Math.floor(args.timeout_seconds)
+      : AGENT_DEFAULT_DURATION_SECONDS;
+  // Per TinyFish docs: max_duration_seconds.minimum = 1; no documented
+  // ceiling but the practical TinyFish-side cap is ~10 minutes. Clamp
+  // to [1, 600] so a runaway operator instruction can't park the agent
+  // forever.
+  const durationSeconds = Math.max(1, Math.min(rawTimeout, 600));
+  const httpTimeoutMs =
+    durationSeconds * 1000 + AGENT_HTTP_TIMEOUT_HEADROOM_MS;
+
+  const agentConfig: Record<string, unknown> = {
+    max_duration_seconds: durationSeconds,
+  };
+  if (
+    typeof args.max_steps === "number" &&
+    args.max_steps > 0 &&
+    args.max_steps <= 500
+  ) {
+    agentConfig.max_steps = Math.floor(args.max_steps);
+  }
+
+  const requestBody: Record<string, unknown> = {
+    url: startingUrl,
+    goal: task,
+    agent_config: agentConfig,
+  };
+  if (args.browser_profile === "lite" || args.browser_profile === "stealth") {
+    requestBody.browser_profile = args.browser_profile;
+  }
+  const body = JSON.stringify(requestBody);
+
+  const retries: TinyfishAgentRetryAttempt[] = [];
+  let r: FetchResult | null = null;
+  let attempts = 0;
+  for (let i = 1; i <= AGENT_RETRY_MAX_ATTEMPTS; i++) {
+    attempts = i;
+    r = await deps.fetchHttp(TINYFISH_AGENT_URL, {
+      method: "POST",
+      headers: {
+        "X-API-Key": apiKey,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body,
+      timeoutMs: httpTimeoutMs,
+    });
+    // Retry on 5xx or transport-level network failure (status 0).
+    // 4xx (auth, billing, rate-limit, invalid request) is operator-
+    // actionable — surface immediately, never retry.
+    const isRetryable = r.status === 0 || (r.status >= 500 && r.status < 600);
+    if (!isRetryable) break;
+    if (i < AGENT_RETRY_MAX_ATTEMPTS) {
+      retries.push({
+        attempt: i,
+        status: r.status,
+        error: r.error,
+        latency_ms: r.latencyMs,
+      });
+      const backoff =
+        AGENT_RETRY_BACKOFF_MS[i - 1] ??
+        AGENT_RETRY_BACKOFF_MS[AGENT_RETRY_BACKOFF_MS.length - 1]!;
+      await deps.sleep(backoff);
+    }
+  }
+  if (!r) {
+    return { ok: false, error: "tinyfish_agent: no response (no attempts made)" };
+  }
+  // Final non-2xx — surface with structured error.
+  if (!r.ok) {
+    if (r.status === 429) {
+      const retry = r.headers?.["retry-after"];
+      return {
+        ok: false,
+        error: `tinyfish_agent rate limited by TinyFish (HTTP 429)${
+          retry ? `, retry-after: ${retry}` : ""
+        }. ${bodyExcerpt(r.text)}`,
+        status: r.status,
+        retry_after: retry ?? null,
+        retries: retries.length > 0 ? retries : undefined,
+        latency_ms: r.latencyMs,
+      };
+    }
+    if (r.status === 401) {
+      return {
+        ok: false,
+        error: `tinyfish_agent HTTP 401: invalid or missing API key. ${bodyExcerpt(r.text)}`,
+        status: r.status,
+        hint: "Re-mint your key at https://agent.tinyfish.ai and update the `tinyfish_api_key` secret (dashboard panel or plist).",
+        latency_ms: r.latencyMs,
+      };
+    }
+    if (r.status === 402) {
+      return {
+        ok: false,
+        error: `tinyfish_agent HTTP 402 (Payment Required): TinyFish credit balance exhausted. ${bodyExcerpt(r.text)}`,
+        status: r.status,
+        hint: "Top up credits at https://agent.tinyfish.ai/billing. Agent + Browser surfaces consume credits; Search + Fetch do not.",
+        latency_ms: r.latencyMs,
+      };
+    }
+    if (r.status === 0) {
+      return {
+        ok: false,
+        error: `tinyfish_agent network error after ${attempts} attempts: ${r.error ?? "unknown"}`,
+        latency_ms: r.latencyMs,
+        retries: retries.length > 0 ? retries : undefined,
+      };
+    }
+    return {
+      ok: false,
+      error: `tinyfish_agent HTTP ${r.status}${
+        r.status >= 500 ? ` after ${attempts} attempts` : ""
+      }: ${bodyExcerpt(r.text)}`,
+      status: r.status,
+      retries: retries.length > 0 ? retries : undefined,
+      latency_ms: r.latencyMs,
+    };
+  }
+  // 2xx — parse the agent envelope. `status` inside the body still may
+  // be "FAILED" (agent reached an error state mid-run); that surfaces as
+  // ok=false with the agent's structured error attached.
+  let parsed: TinyFishAgentResponseRaw;
+  try {
+    parsed = JSON.parse(r.text) as TinyFishAgentResponseRaw;
+  } catch (err) {
+    return {
+      ok: false,
+      error: `tinyfish_agent response was not valid JSON: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+      latency_ms: r.latencyMs,
+    };
+  }
+  if (parsed.status === "FAILED") {
+    const errPayload = parsed.error ?? {};
+    const category = errPayload.category ?? "UNKNOWN";
+    const code = errPayload.code ?? "";
+    const message = errPayload.message ?? "no error message provided";
+    return {
+      ok: false,
+      error: `tinyfish_agent run FAILED (${category}${code ? `:${code}` : ""}): ${message}`,
+      status: r.status,
+      run_id: parsed.run_id ?? null,
+      retry_after:
+        typeof errPayload.retry_after === "number"
+          ? String(errPayload.retry_after)
+          : null,
+      hint: errPayload.help_message ?? errPayload.help_url,
+      latency_ms: r.latencyMs,
+    };
+  }
+  if (parsed.status !== "COMPLETED") {
+    return {
+      ok: false,
+      error: `tinyfish_agent returned unexpected status: ${
+        parsed.status ?? "(missing)"
+      }`,
+      status: r.status,
+      latency_ms: r.latencyMs,
+    };
+  }
+  return {
+    ok: true,
+    run_id: parsed.run_id ?? null,
+    status: "COMPLETED",
+    started_at: parsed.started_at ?? null,
+    finished_at: parsed.finished_at ?? null,
+    num_of_steps:
+      typeof parsed.num_of_steps === "number" ? parsed.num_of_steps : null,
+    result: parsed.result ?? null,
+    latency_ms: r.latencyMs,
+    attempts,
+  };
+}
+
+const tinyfish_agent = {
+  description:
+    "**Use this when** you need a hosted browser to actually *do something* on a page — fill a form, click through a multi-step flow, scrape dynamic content that requires interaction, run a natural-language workflow on a real site. TinyFish operates the browser on their cloud, executes your `task` starting from `starting_url`, and returns the extracted result + run metadata. For pure read/search use `tinyfish_search` (live web search) or `tinyfish_fetch` (URL → markdown) instead — those are free; this consumes TinyFish credits. Requires `tinyfish_api_key` (or TINYFISH_API_KEY env var) on the master daemon. 5xx errors retry with exponential backoff (3 attempts); 4xx surfaces immediately.",
+  schema: {
+    type: "object",
+    properties: {
+      task: {
+        type: "string",
+        description:
+          "Natural-language description of what the agent should do, e.g. 'Find the pricing page and extract all plan details' or 'Fill the email field with x@y.com, click Sign In, return the resulting page title'.",
+      },
+      starting_url: {
+        type: "string",
+        description:
+          "Target URL the agent starts from (http:// or https:// only). REQUIRED — the Agent API does not free-pick a URL from the task.",
+      },
+      timeout_seconds: {
+        type: "number",
+        description:
+          "Max seconds the agent may spend (1–600, default 120). The outer HTTP timeout adds 30s headroom.",
+        minimum: 1,
+        maximum: 600,
+      },
+      max_steps: {
+        type: "integer",
+        description:
+          "Optional cap on agent steps (1–500). Useful for bounding cost on exploratory tasks.",
+        minimum: 1,
+        maximum: 500,
+      },
+      browser_profile: {
+        type: "string",
+        enum: ["lite", "stealth"],
+        description:
+          "'lite' (default, faster) or 'stealth' (slower, anti-bot countermeasures). Pick stealth only for sites that block 'lite'.",
+      },
+    },
+    required: ["task", "starting_url"],
+  },
+  invoke: async (args: TinyfishAgentArgs = {}) => callTinyfishAgent(args),
+};
+
 // ─── family export ──────────────────────────────────────────────────────────
 
 export const tinyfishTools = {
   tinyfish_search,
   tinyfish_fetch,
+  tinyfish_agent,
 };
