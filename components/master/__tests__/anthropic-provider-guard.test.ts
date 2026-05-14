@@ -15,9 +15,12 @@
 //      and one log line, not a flood.
 //   4. Other providers are unaffected (lmstudio, openrouter, openai).
 //
-// The Telegram side-effect is NOT exercised here (it reads
-// master-notify.json off disk). The guard uses fire-and-forget
-// `.catch()`, so a missing config doesn't break the test path.
+// External side effects (Telegram push + decisions.jsonl append) are
+// suppressed via SUBCTL_GUARD_SKIP_EXTERNAL_EFFECTS=1, set in beforeEach.
+// CRITICAL: without that env var, running this test file on a machine
+// where ~/.config/subctl/master-notify.json is configured will fire real
+// Telegram messages to the operator and pollute the operator's real
+// decisions.jsonl. Don't remove the gate.
 
 import {
   afterEach,
@@ -31,10 +34,17 @@ import { buildModel } from "../server";
 import { listNotifications } from "../notifications";
 
 let savedEnv: string | undefined;
+let savedSkipEnv: string | undefined;
 
 beforeEach(() => {
   savedEnv = process.env.SUBCTL_ALLOW_ANTHROPIC_PROVIDER;
   delete process.env.SUBCTL_ALLOW_ANTHROPIC_PROVIDER;
+  // Gate the guard's external side effects (Telegram + decisions.jsonl)
+  // so this test suite never touches the operator's real Telegram bot or
+  // real audit log. The in-process notification ring is unaffected and
+  // remains the source of truth for the assertions below.
+  savedSkipEnv = process.env.SUBCTL_GUARD_SKIP_EXTERNAL_EFFECTS;
+  process.env.SUBCTL_GUARD_SKIP_EXTERNAL_EFFECTS = "1";
 });
 
 afterEach(() => {
@@ -42,6 +52,11 @@ afterEach(() => {
     delete process.env.SUBCTL_ALLOW_ANTHROPIC_PROVIDER;
   } else {
     process.env.SUBCTL_ALLOW_ANTHROPIC_PROVIDER = savedEnv;
+  }
+  if (savedSkipEnv === undefined) {
+    delete process.env.SUBCTL_GUARD_SKIP_EXTERNAL_EFFECTS;
+  } else {
+    process.env.SUBCTL_GUARD_SKIP_EXTERNAL_EFFECTS = savedSkipEnv;
   }
 });
 

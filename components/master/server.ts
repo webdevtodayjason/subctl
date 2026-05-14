@@ -713,6 +713,8 @@ export function buildModel(cfg: {
       const body = allowed
         ? `An agent role just built a Model<anthropic/${cfg.model}>. SUBCTL_ALLOW_ANTHROPIC_PROVIDER=1 is set, so the call is going through. Under master's tick cadence this can burn the $200/mo Agent SDK credit in days and then start charging extra usage. Confirm this was intentional. See ADR 0019.`
         : `An agent role tried to build a Model<anthropic/${cfg.model}>. Blocked by ADR 0019 (no Anthropic provider in master). pi-agent-core traffic is Agent-SDK-shaped and would bill the $200/mo credit, not Max 20×. To override deliberately, set SUBCTL_ALLOW_ANTHROPIC_PROVIDER=1 in the launchd plist EnvironmentVariables after reading DECISIONS.md + docs/adr/0019.`;
+      // emitNotification is in-process (ring buffer + subscribers) — always
+      // safe to fire, including from tests. Tests assert on the ring.
       try {
         emitNotification({
           kind: allowed
@@ -733,23 +735,36 @@ export function buildModel(cfg: {
           `[master][ANTHROPIC-API-GUARD] emitNotification failed: ${(err as Error).message}`,
         );
       }
-      void sendTelegramOutbound(`🚨 ${title}\n\n${body}`).catch((err: unknown) => {
-        console.error(
-          `[master][ANTHROPIC-API-GUARD] Telegram alert failed: ${(err as Error)?.message ?? String(err)}`,
+      // External side effects (real Telegram push + decisions.jsonl append)
+      // are gated behind SUBCTL_GUARD_SKIP_EXTERNAL_EFFECTS so a test run on
+      // an operator's machine doesn't blast their Telegram bot or pollute
+      // their decisions log. Production never sets this; the
+      // anthropic-provider-guard.test.ts suite sets it in beforeEach.
+      // Suppressing these does NOT affect the throw — the safety guarantee
+      // (refuse to build the Model) is unconditional.
+      const skipExternal =
+        process.env.SUBCTL_GUARD_SKIP_EXTERNAL_EFFECTS === "1";
+      if (!skipExternal) {
+        void sendTelegramOutbound(`🚨 ${title}\n\n${body}`).catch(
+          (err: unknown) => {
+            console.error(
+              `[master][ANTHROPIC-API-GUARD] Telegram alert failed: ${(err as Error)?.message ?? String(err)}`,
+            );
+          },
         );
-      });
-      try {
-        logDecision({
-          project: "_master",
-          action: allowed
-            ? "anthropic_provider_armed"
-            : "anthropic_provider_blocked",
-          rationale: `buildModel(provider=anthropic, model=${cfg.model}, host=${cfg.host ?? "(default)"}) — verdict=${verdict}. SUBCTL_ALLOW_ANTHROPIC_PROVIDER=${process.env.SUBCTL_ALLOW_ANTHROPIC_PROVIDER ?? "(unset)"}.`,
-        });
-      } catch (err) {
-        console.error(
-          `[master][ANTHROPIC-API-GUARD] logDecision failed: ${(err as Error).message}`,
-        );
+        try {
+          logDecision({
+            project: "_master",
+            action: allowed
+              ? "anthropic_provider_armed"
+              : "anthropic_provider_blocked",
+            rationale: `buildModel(provider=anthropic, model=${cfg.model}, host=${cfg.host ?? "(default)"}) — verdict=${verdict}. SUBCTL_ALLOW_ANTHROPIC_PROVIDER=${process.env.SUBCTL_ALLOW_ANTHROPIC_PROVIDER ?? "(unset)"}.`,
+          });
+        } catch (err) {
+          console.error(
+            `[master][ANTHROPIC-API-GUARD] logDecision failed: ${(err as Error).message}`,
+          );
+        }
       }
     }
     if (!allowed) {
