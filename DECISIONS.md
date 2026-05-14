@@ -94,6 +94,32 @@ export function unmount(/* ctx */);       // optional — close SSE / timers
 - Did not replace the `window.prompt` / `alert` dialogs (UX change, separate concern).
 - Did not introduce a `shared/` directory — still nothing to share.
 
+### 2026-05-13 night — dashboard decomposition wave 3 (Models extracted)
+
+**Decision:** Extract the Models tab from `dashboard/public/app.js` into `dashboard/public/tabs/models.js`, mirroring waves 1+2 (commits `3f58f03`, `b681255`). App.js shrinks from 8,520 → 8,408 LOC (-112: 1 call site, 111 function-body lines, plus the orphan `// ----- Models tab — LM Studio model catalog -----` section header that fell out of scope when the body left; mirrors wave-2's leading-comment removal).
+
+**Why now:** Models was the next target in the wave-1 migration order (Logs → Templates → **Models** → …). The trivial case — one fetch endpoint (`GET /api/models`), no shared state, no `window.__subctl*` bridges, no nav-click reattachment quirk. Cleaner than Templates.
+
+**Proof point — even simpler than wave 2:**
+- Talks to exactly one HTTP endpoint (`GET /api/models`). Server-side handler untouched.
+- Reads no cross-tab state; dispatches no events. Zero bridge layer.
+- Three app.js module-scope helpers (`$`, `td`, `emptyRow`) were used; inlined as local declarations inside `mount()` to keep the module self-contained. Behavior identical.
+- `setInterval` (5 s poll) + `visibilitychange` listener preserved verbatim. `pollTimer` lifted to module scope so `unmount()` can `clearInterval` for interface parity with wave-1 (logs.js); bootstrap doesn't call unmount today, so this is forward-looking hygiene, not behavior change.
+
+**What this confirms:** The `{ id, mount, unmount }` interface continues to scale; "self-contained tab" is the typical case, not the exception. Three of seventeen tabs now extracted; the remaining queue (Preferences, Providers, Vault, Memory, Skills, …) can follow this same pattern unless they read shared state.
+
+**Migration progress:**
+- ✅ Wave 1 — Logs (commit `3f58f03`)
+- ✅ Wave 2 — Templates (commit `b681255`)
+- ✅ Wave 3 — Models (this entry)
+- ⏭ Next — Preferences, per the wave-1 ordering.
+
+**What we explicitly did NOT do this PR:**
+- Did not modify wave-1 or wave-2 files (`tabs/logs.js`, `tabs/templates.js`, the bridge globals, `setActiveTab` notify hook).
+- Did not touch any tab other than Models.
+- Did not replace `setInterval` with a per-mount handle abstraction (a forward refactor when more tabs share polling patterns).
+- Did not introduce a `shared/` directory — still nothing to share.
+
 ### 2026-05-13 — Account usage on multi-host is by-design partial, no operator-side fix this session (closes HANDOFF.md §2.2)
 
 **Decision:** Accept that the dashboard shows different account usage numbers on different hosts. Not a regression; not fixing this session.

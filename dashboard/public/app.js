@@ -450,7 +450,6 @@
   renderClock();
   wireRefreshButton();
   wireMasterChat();
-  wireModelsTab();
   wireProjectsTab();
   wireMemoryTab();
   wireVaultTab();
@@ -3509,117 +3508,6 @@
     // Safety timeout — if nothing happens within 90s, give up (in case the
     // user never receives an assistant turn for any reason).
     setTimeout(cleanup, 90000);
-  }
-
-  // ----- Models tab — LM Studio model catalog -----
-  function wireModelsTab() {
-    const body = $("models-body");
-    const status = $("models-status");
-    const summary = $("models-summary");
-    if (!body) return;
-    let pollTimer = null;
-
-    async function refresh() {
-      try {
-        const r = await fetch("/api/models");
-        const j = await r.json();
-        if (!j.ok) {
-          // v2.7.7 — surface kind-specific human-language errors.
-          // /api/models now returns: kind, message, hint, host (see dashboard/server.ts).
-          const statusByKind = {
-            missing_token: "no token",
-            invalid_token: "token rejected",
-            unreachable: "unreachable",
-            http_error: "lm studio error",
-          };
-          const statusText = statusByKind[j.kind] || "unreachable";
-          if (status) { status.textContent = statusText; status.dataset.state = "err"; }
-          const tr = document.createElement("tr");
-          const td = document.createElement("td");
-          td.colSpan = 9;
-          td.className = "empty lmstudio-err";
-          td.dataset.kind = j.kind || "unknown";
-          if (j.message) {
-            const line = document.createElement("div");
-            line.className = "lmstudio-err-msg";
-            line.textContent = j.message;
-            td.appendChild(line);
-          }
-          if (j.hint) {
-            const hint = document.createElement("div");
-            hint.className = "lmstudio-err-hint";
-            hint.textContent = j.hint;
-            td.appendChild(hint);
-          }
-          if (!j.message && !j.hint) {
-            td.textContent = j.error || "LM Studio API unreachable";
-          }
-          tr.appendChild(td);
-          body.replaceChildren(tr);
-          if (summary) summary.textContent = "";
-          return;
-        }
-        if (status) { status.textContent = "live"; status.dataset.state = "ok"; }
-        if (summary) {
-          summary.innerHTML =
-            `<span><strong>${j.total}</strong> total</span> · ` +
-            `<span><strong>${j.loaded_count}</strong> loaded</span> · ` +
-            `<span class="dim">host ${j.host}</span> · ` +
-            `<span class="dim">refreshed ${new Date(j.ts).toLocaleTimeString()}</span>`;
-        }
-        const sorted = (j.models || []).slice().sort((a, b) => {
-          if (a.state === "loaded" && b.state !== "loaded") return -1;
-          if (a.state !== "loaded" && b.state === "loaded") return 1;
-          return (a.id || "").localeCompare(b.id || "");
-        });
-        if (sorted.length === 0) {
-          body.replaceChildren(emptyRow(9, "no models"));
-          return;
-        }
-        body.replaceChildren(...sorted.map((m) => {
-          const tr = document.createElement("tr");
-          if (m.state === "loaded") tr.classList.add("model-loaded");
-          tr.appendChild(td(m.id));
-          tr.appendChild(td(m.type || "—"));
-          const stateCell = document.createElement("td");
-          const pill = document.createElement("span");
-          pill.className = "model-state-pill model-state-" + (m.state || "unknown");
-          pill.textContent = m.state || "?";
-          stateCell.appendChild(pill);
-          tr.appendChild(stateCell);
-          tr.appendChild(td(m.publisher || "—"));
-          tr.appendChild(td(m.arch || "—"));
-          tr.appendChild(td(m.quantization || "—"));
-          tr.appendChild(td(m.max_context_length ? m.max_context_length.toLocaleString() : "—", "num"));
-          tr.appendChild(td(m.loaded_context_length ? m.loaded_context_length.toLocaleString() : "—", "num"));
-          const capsCell = document.createElement("td");
-          (m.capabilities || []).forEach((c) => {
-            const cp = document.createElement("span");
-            cp.className = "model-cap-pill";
-            cp.textContent = c;
-            capsCell.appendChild(cp);
-          });
-          if (!(m.capabilities || []).length) capsCell.textContent = "—";
-          tr.appendChild(capsCell);
-          return tr;
-        }));
-      } catch (err) {
-        if (status) { status.textContent = "error"; status.dataset.state = "err"; }
-        body.replaceChildren(emptyRow(9, "fetch error: " + err));
-      }
-    }
-
-    // Refresh once on load + every 5s while the Models tab is visible.
-    refresh();
-    document.addEventListener("visibilitychange", () => {
-      if (document.hidden) return;
-      refresh();
-    });
-    if (pollTimer) clearInterval(pollTimer);
-    pollTimer = setInterval(() => {
-      const panel = $("models-panel");
-      if (panel && getComputedStyle(panel).display !== "none") refresh();
-    }, 5000);
   }
 
   // ----- Projects screen — master/detail with drill-down -----
