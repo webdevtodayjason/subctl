@@ -1,10 +1,69 @@
-# Orchestration Log — subctl master stage 2
+# Orchestration Log — subctl
+
+Most recent session at top. Older sessions retained below as historical record.
+
+---
+
+## Session 2026-05-13 evening — close HANDOFF.md open issues (Claude Opus 4.7, 1M ctx)
+
+**Protocol start:** 2026-05-13T~18:36Z (CDT)
+**Branch:** `main` @ `da3578a` (v2.8.5)
+**Mode:** Orchestration + autonomous within approved scope.
+
+### Mission
+Close the three open issues that carried over from the 2026-05-12 night session per HANDOFF.md §2:
+- §2.1 notification dropdown CSS fix verification
+- §2.2 accounts shows zeros on M3 dashboard
+- §2.3 OSINT Telegram alerts firing every 30 min
+
+Sequencing: 2.3 first (operator was actively being paged), then 2.2 (trust-corrosive), then 2.1 (verification of already-shipped fix).
+
+### Pre-conditions (verified at session start)
+- Main at v2.8.5. Dashboard daemon on M3 at v2.8.5, master daemon at v2.8.4.
+- ~22 orphan worktrees from last night, all branches merged. Not cleaned (housekeeping out of primary scope).
+- Existing ORCHESTRATION.md was the 2026-05-09 stage-2 log (clawd → subctl master). Stale for new work — rewrote it (this file).
+- claude-mem hook reports 500 due to `pending_messages.retry_count` migration bug. Fixed via SQL ALTER (recurrence of bug from 2026-05-05). Memory entry updated.
+
+### Task ledger
+
+| ID | Task | State | Resolution |
+|----|------|-------|------------|
+| 2.3 | OSINT Telegram alerts firing | ✅ closed | Inbox archived + master restarted on M3. Root cause: tmux pruner silently no-ops because tmux not in launchd PATH AND tmux server wasn't running. Permanent code fix queued as Task #5. |
+| 2.2 | Accounts zeros on M3 | ✅ closed (b) | Confirmed architectural per operator amendment. Documented in DECISIONS.md. Observability follow-up queued as Task #6. |
+| 2.1 | Notif dropdown CSS fix | ✅ closed | Verified `.notif-tray[hidden] { display: none }` deployed at style.css:4469 with correct specificity. Only remaining variable: operator browser cache (hard-refresh required). |
+
+### Verification evidence
+
+**2.3** — `curl http://localhost:8788/health` on M3 post-restart returned `{"teams_tracked": 0, "version": "2.8.5", "telegram_listener": {"running": true}}`. `/teams` returned `{"ok": true, "teams": []}`. Inbox file relocated to `~/.config/subctl/master/inbox.archive/claude-osint-cve-monitor.killed-20260513-185255.jsonl`. As a side effect of `launchctl kickstart -k`, master picked up v2.8.5 from disk — master and dashboard now version-matched.
+
+**2.2** — `subctl usage --json` on M3 returns `[{alias: claude-jason, ok: false, error: "no .credentials.json..."}, {alias: claude-titanium, ok: false, error: "...429..."}, {alias: claude-semfreak, ok: false, error: "...429..."}, ...]`. Categorized: claude-jason has no creds on M3 (host locality); claude-titanium/semfreak are rate-limited by Anthropic's `/api/oauth/usage` endpoint due to dual-poll contention with local Mac dashboard.
+
+**2.1** — `curl http://localhost:8787/style.css | grep -n notif-tray` on M3 confirms the v2.8.5 fix rule at line 4469. Specificity computation: `.notif-tray` = (0,0,1,0); `.notif-tray[hidden]` = (0,0,2,0) → fix wins. JS handler at app.js:8323 correctly toggles `tray.hidden`.
+
+### Decisions made (logged to DECISIONS.md)
+- Framework migration deferred (no Svelte/React/HTMX/SvelteKit this session).
+- `app.js` per-tab split deferred to a focused session after open issues closed.
+- Voice-layer refinement is a separate v2.8.x track.
+- Multi-host account-usage rework is v2.9.0+ scope; this session ships observability only (queued as Task #6, not done in this session).
+- Permanent fix for 2.3 (callback wiring + eviction route) queued as Task #5, not urgent now that alerts are silenced.
+
+### Not done this session
+- No worker dispatches via `Agent + team_name`. The investigation work plus immediate fixes were small enough for the orchestrator to do directly (within the "5 lines or less" allowance for the actual ops on M3). Tasks #5 and #6 are queued as worker-bound for next session.
+- No worktree cleanup (~22 orphans on local Mac).
+- No source edits to dashboard/server.ts, master/server.ts, or app.js. All fixes were operational (file moves, service restart, SQL migration).
+
+### Workers used
+None. All work was orchestrator-driven: read → diagnose → operate on M3 via SSH → verify via HTTP API.
+
+---
+
+## Historical: Session 2026-05-09 — subctl master stage 2
 
 **Session:** subctl-master-stage2
 **Orchestrator:** pane 0 (Claude Opus 4.7, 1M ctx)
 **Protocol start:** 2026-05-09T18:50:00Z
 
-## Mission
+### Mission
 
 Stage 2 of clawd (the master orchestrator daemon). Stage 1 shipped the
 scaffold + tool catalog + master SKILL in commit `4b18be0`. Stage 2
