@@ -45,12 +45,7 @@
     "auth": "oauth"
   },
 
-  "fallback": {
-    "_comment": "Last-resort if local stack is offline AND escalate provider is unreachable. Uses your Anthropic Max subscription via subctl's account routing.",
-    "provider": "anthropic",
-    "model": "claude-sonnet-4-6",
-    "auth": "max-subscription"
-  },
+  "_fallback_removed_2026_05_14": "NO ANTHROPIC FALLBACK. pi-agent-core is an Agent-SDK-shaped harness; provider=anthropic calls will bill against the $200/mo Agent SDK credit (Anthropic policy change, June 15 2026+), NOT against the operator's Max 20× subscription, regardless of any `auth: max-subscription` hint. Master's tick cadence (60s watchdog, 60s followup ticker, auto-compact, inbox poll) would burn the entire monthly credit in days and then start drawing extra usage charges. See ADR 0019 + DECISIONS.md (2026-05-14). If you genuinely need this and you've read both docs, set SUBCTL_ALLOW_ANTHROPIC_PROVIDER=1 in the launchd plist EnvironmentVariables — buildModel() emits a loud `[master][ANTHROPIC-API-GUARD]` log line + a Telegram alert + a dashboard notification on first construction so you can't miss it.",
 
   "routing_policy": {
     "_comment": "Defaults applied when the master_skill doesn't override. The master can self-elevate on a per-task basis via the `escalate_decision` tool.",

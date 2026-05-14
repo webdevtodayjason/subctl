@@ -283,8 +283,13 @@ interface Providers {
     // role in providers.json to override.
     context_length?: number;
   }>;
-  escalate: { provider: string; model: string; auth?: string };
-  fallback: { provider: string; model: string; auth?: string };
+  // `escalate` and `fallback` are operator-config slots that are NOT
+  // currently read by the daemon (verified 2026-05-14 audit). Left as
+  // optional so existing providers.json files with these blocks still
+  // parse. The `fallback: { provider: "anthropic", ... }` pattern is
+  // explicitly forbidden by buildModel()'s anthropic guard — see ADR 0019.
+  escalate?: { provider: string; model: string; auth?: string };
+  fallback?: { provider: string; model: string; auth?: string };
   routing_policy?: Record<string, string>;
   memory_budget_gb?: { target: number; ceiling: number };
 }
@@ -665,12 +670,95 @@ export const PROVIDER_API: Record<string, string> = {
   openrouter: "openai-completions",
 };
 
+// Module-level dedup so the anthropic guard's loud alert (notification +
+// Telegram + log line) fires once per unique provider+model per boot.
+// buildModel can be called multiple times across roles + profile swaps;
+// we don't want to spam the operator if the guard trips on every role.
+const _anthropicGuardSeen = new Set<string>();
+
 export function buildModel(cfg: {
   provider: string;
   model: string;
   host?: string;
   max_tokens?: number;
 }): Model<string> {
+  // ─── Anthropic provider guard (ADR 0019, 2026-05-14) ────────────────────
+  // pi-agent-core is an Agent-SDK-shaped harness. Per Anthropic's policy
+  // change taking effect 2026-06-15, programmatic/Agent-SDK traffic bills
+  // against the $200/mo Agent SDK credit, NOT against the operator's
+  // Max 20× subscription — regardless of any `auth: max-subscription`
+  // hint in providers.json. Under master's tick cadence (60s watchdog +
+  // 60s followup ticker + auto-compact + inbox poll + chat) this would
+  // exhaust the monthly credit in days and start drawing extra-usage
+  // charges. The Anthropic provider is therefore HARD-FAILED at model
+  // construction unless the operator has deliberately set
+  // SUBCTL_ALLOW_ANTHROPIC_PROVIDER=1 in the launchd plist.
+  //
+  // Defense in depth: even when allowed, fire a one-shot loud alert
+  // (notification + Telegram + log line with `[ANTHROPIC-API-GUARD]`
+  // prefix) so accidental activation is visible immediately, not from
+  // a billing alert weeks later.
+  if (cfg.provider === "anthropic") {
+    const allowed = process.env.SUBCTL_ALLOW_ANTHROPIC_PROVIDER === "1";
+    const dedupKey = `${cfg.provider}:${cfg.model}:${allowed ? "armed" : "blocked"}`;
+    if (!_anthropicGuardSeen.has(dedupKey)) {
+      _anthropicGuardSeen.add(dedupKey);
+      const verdict = allowed ? "ARMED (env opt-in)" : "BLOCKED";
+      console.error(
+        `[master][ANTHROPIC-API-GUARD] buildModel called with provider="anthropic" model="${cfg.model}" host="${cfg.host ?? "(default)"}" — ${verdict}`,
+      );
+      const title = allowed
+        ? `Anthropic provider ARMED (${cfg.model})`
+        : `Anthropic provider BLOCKED (${cfg.model})`;
+      const body = allowed
+        ? `An agent role just built a Model<anthropic/${cfg.model}>. SUBCTL_ALLOW_ANTHROPIC_PROVIDER=1 is set, so the call is going through. Under master's tick cadence this can burn the $200/mo Agent SDK credit in days and then start charging extra usage. Confirm this was intentional. See ADR 0019.`
+        : `An agent role tried to build a Model<anthropic/${cfg.model}>. Blocked by ADR 0019 (no Anthropic provider in master). pi-agent-core traffic is Agent-SDK-shaped and would bill the $200/mo credit, not Max 20×. To override deliberately, set SUBCTL_ALLOW_ANTHROPIC_PROVIDER=1 in the launchd plist EnvironmentVariables after reading DECISIONS.md + docs/adr/0019.`;
+      try {
+        emitNotification({
+          kind: allowed
+            ? "anthropic-provider-armed"
+            : "anthropic-provider-blocked",
+          severity: "alert",
+          title,
+          body,
+          metadata: {
+            provider: cfg.provider,
+            model: cfg.model,
+            host: cfg.host ?? null,
+            allowed,
+          },
+        });
+      } catch (err) {
+        console.error(
+          `[master][ANTHROPIC-API-GUARD] emitNotification failed: ${(err as Error).message}`,
+        );
+      }
+      void sendTelegramOutbound(`🚨 ${title}\n\n${body}`).catch((err: unknown) => {
+        console.error(
+          `[master][ANTHROPIC-API-GUARD] Telegram alert failed: ${(err as Error)?.message ?? String(err)}`,
+        );
+      });
+      try {
+        logDecision({
+          project: "_master",
+          action: allowed
+            ? "anthropic_provider_armed"
+            : "anthropic_provider_blocked",
+          rationale: `buildModel(provider=anthropic, model=${cfg.model}, host=${cfg.host ?? "(default)"}) — verdict=${verdict}. SUBCTL_ALLOW_ANTHROPIC_PROVIDER=${process.env.SUBCTL_ALLOW_ANTHROPIC_PROVIDER ?? "(unset)"}.`,
+        });
+      } catch (err) {
+        console.error(
+          `[master][ANTHROPIC-API-GUARD] logDecision failed: ${(err as Error).message}`,
+        );
+      }
+    }
+    if (!allowed) {
+      throw new Error(
+        `Anthropic provider blocked by ADR 0019. pi-agent-core calls to provider=anthropic bill against the $200/mo Agent SDK credit (Anthropic policy 2026-06-15+), not Max 20×. Master's tick cadence would burn the credit in days. To override deliberately, set SUBCTL_ALLOW_ANTHROPIC_PROVIDER=1 in the launchd plist EnvironmentVariables and bounce master. See DECISIONS.md → "No Anthropic provider in master" and docs/adr/0019.`,
+      );
+    }
+  }
+
   const api = PROVIDER_API[cfg.provider] ?? "openai-completions";
   // Reasoning models (qwen3.x, deepseek-r1, glm-flash, etc.) consume tokens
   // inside <think> blocks BEFORE producing the user-visible answer or a
