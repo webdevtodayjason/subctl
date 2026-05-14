@@ -1595,6 +1595,11 @@ const STATIC_FILES: Record<string, { path: string; type: string }> = {
   // so future code can `import { icon } from "/icons.js"`; today it also
   // exposes window.subctlIcon for the classic-script app.js call sites.
   "/icons.js":    { path: join(PUBLIC_DIR, "icons.js"),   type: "application/javascript; charset=utf-8" },
+  // v2.8.6 (decomposition wave 1): per-tab ES modules + their loader shell.
+  // See ORCHESTRATION.md 2026-05-13 night session. Each future tab adds one
+  // line here when it extracts.
+  "/bootstrap.js":   { path: join(PUBLIC_DIR, "bootstrap.js"),         type: "application/javascript; charset=utf-8" },
+  "/tabs/logs.js":   { path: join(PUBLIC_DIR, "tabs", "logs.js"),      type: "application/javascript; charset=utf-8" },
   "/logo.png":    { path: join(PUBLIC_DIR, "logo.png"),   type: "image/png" },
   "/tool-display.json": { path: join(PUBLIC_DIR, "tool-display.json"), type: "application/json; charset=utf-8" },
   "/vendor/xterm/xterm.js":  { path: join(NODE_MODULES_DIR, "xterm", "lib", "xterm.js"),  type: "application/javascript; charset=utf-8" },

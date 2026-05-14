@@ -468,122 +468,11 @@
   wireTeamsTab();
   // ── v2.8.0 team templates ──
   wireV2TemplatesTab();
-  wireLogsTab();
-  // PR 11 (v2.7.0)
-  wireLogsPolicyChip();
+  // ── v2.8.6: Logs tab extracted to dashboard/public/tabs/logs.js. The
+  // bootstrap.js shell loader mounts the module on first activation. The
+  // chip + audit-detail state moved with it. See ORCHESTRATION.md 2026-05-13
+  // night session for the state-ownership ruling.
   wirePolicyTab();
-
-  // ----- Logs tab — streaming tail of master + dashboard logs -----
-  function wireLogsTab() {
-    const sourceSel = $("logs-source");
-    const view = $("logs-view");
-    const status = $("logs-status");
-    const autoscrollCb = $("logs-autoscroll");
-    const clearBtn = $("logs-clear-btn");
-    const copyBtn = $("logs-copy-btn");
-    if (!view || !sourceSel) return;
-
-    let es = null;
-    let backoffMs = 1000;
-    const MAX_LINES = 5000;
-
-    function setStatus(state) {
-      if (!status) return;
-      status.textContent = state;
-      status.className = "logs-status " + (state === "live" ? "connected" : state === "connecting" || state === "reconnecting" ? "connecting" : state.startsWith("error") ? "error" : "");
-    }
-
-    function classify(line) {
-      const lc = line.toLowerCase();
-      if (/(error|fatal|critical|✗|abort|exception|crashed)/.test(lc)) return "err";
-      if (/(warn|warning|degraded)/.test(lc)) return "warn";
-      if (/(✓|ok\b|ready|listening|armed)/.test(lc)) return "ok";
-      if (/(boot|init|spawn|reload)/.test(lc)) return "info";
-      return "";
-    }
-
-    function appendLines(lines) {
-      const frag = document.createDocumentFragment();
-      for (const line of lines) {
-        if (!line) continue;
-        const div = document.createElement("div");
-        div.className = "log-line " + classify(line);
-        div.textContent = line;
-        frag.appendChild(div);
-      }
-      view.appendChild(frag);
-      // Cap total rendered lines to avoid DOM bloat
-      while (view.childElementCount > MAX_LINES) view.removeChild(view.firstChild);
-      if (autoscrollCb?.checked !== false) view.scrollTop = view.scrollHeight;
-    }
-
-    function clearView() {
-      view.innerHTML = "";
-    }
-
-    function disconnect() {
-      if (es) try { es.close(); } catch {}
-      es = null;
-    }
-
-    function connect() {
-      disconnect();
-      const id = sourceSel.value;
-      setStatus("connecting");
-      clearView();
-      es = new EventSource(`/api/logs/${id}/stream`);
-      es.addEventListener("snapshot", (e) => {
-        try {
-          const d = JSON.parse(e.data);
-          clearView();
-          appendLines(d.lines || []);
-          setStatus("live");
-        } catch {}
-      });
-      es.addEventListener("append", (e) => {
-        try {
-          const d = JSON.parse(e.data);
-          appendLines(d.lines || []);
-        } catch {}
-      });
-      es.addEventListener("error", () => {
-        setStatus("error · reconnecting");
-        try { es.close(); } catch {}
-        setTimeout(connect, backoffMs);
-        backoffMs = Math.min(backoffMs * 2, 15000);
-      });
-      es.addEventListener("open", () => { backoffMs = 1000; });
-    }
-
-    sourceSel.addEventListener("change", () => connect());
-    if (clearBtn) clearBtn.addEventListener("click", clearView);
-    if (copyBtn) copyBtn.addEventListener("click", () => {
-      const text = Array.from(view.querySelectorAll(".log-line")).map((el) => el.textContent).join("\n");
-      navigator.clipboard.writeText(text);
-      copyBtn.textContent = "copied ✓";
-      setTimeout(() => copyBtn.textContent = "copy all", 1500);
-    });
-
-    // Connect on first switch into the Logs tab. Don't connect eagerly —
-    // SSE keeps a TCP connection open and we don't want to chew connections
-    // when the user never visits this view.
-    let everConnected = false;
-    const observer = new MutationObserver(() => {
-      const panel = document.querySelector("section[data-tab=\"logs\"]");
-      const visible = panel && getComputedStyle(panel).display !== "none";
-      if (visible && !everConnected) {
-        everConnected = true;
-        connect();
-      }
-    });
-    observer.observe(document.body, { attributes: true, attributeFilter: ["data-active-tab"] });
-    // If logs is the initial tab on load
-    const panel = document.querySelector("section[data-tab=\"logs\"]");
-    if (panel && getComputedStyle(panel).display !== "none") {
-      everConnected = true;
-      connect();
-    }
-  }
 
   // ----- Teams (dev-team templates) -----
   function wireTeamsTab() {
@@ -7012,6 +6901,10 @@
     document.querySelectorAll(".sidebar-nav .nav-btn[data-tab], .tab-nav .tab-btn[data-tab]").forEach(b => {
       b.classList.toggle("active", b.dataset.tab === tab);
     });
+    // v2.8.6: notify the bootstrap.js shell so it can lazy-mount the tab
+    // module on first activation. Optional-chained because bootstrap.js is a
+    // module and may not have evaluated yet on initial page boot.
+    window.__subctlShellNotifyTabChange?.(tab);
   }
   wireTabs();
 
@@ -7106,14 +6999,14 @@
 
   // ──────────────────────────────────────────────────────────────────────
   // PR 11 (v2.7.0): Live Logs Policy filter chip + Policy sidebar tab
+  //
+  // v2.8.6: The Logs side (chip + audit detail panel + allowlist modal +
+  // its private SSE/filter/last-clicked state) moved to
+  // dashboard/public/tabs/logs.js. What stays here is Policy-owned:
+  // cachedTeams + refreshPolicyTeamsForDropdowns + renderAuditEntries
+  // (shared renderer) + wirePolicyTab.
   // ──────────────────────────────────────────────────────────────────────
 
-  // Shared in-memory: the currently-selected audit team so the Logs tab and
-  // Policy tab agree. Updated by either side.
-  let policyAuditTeam = null;
-  let policySubfilter = "all"; // "all" | "deny" | "verifier"
-  let policyEventSource = null;
-  let lastClickedAuditEntry = null;
   let cachedTeams = []; // populated by /api/policy/teams polling
 
   function fmtAuditLine(entry) {
@@ -7137,11 +7030,15 @@
   }
 
   function renderAuditEntries(view, entries, opts = {}) {
+    // sub-filter is owned by the Logs tab module (tabs/logs.js) since v2.8.6;
+    // it travels in via opts.subfilter. Default "all" preserves behavior for
+    // any future caller that doesn't pass an opts.
+    const subfilter = opts.subfilter ?? "all";
     const frag = document.createDocumentFragment();
     for (const entry of entries) {
       // sub-filter applied client-side
-      if (policySubfilter === "deny" && !(entry.decision === "deny" && entry.event_type !== "verifier_correction")) continue;
-      if (policySubfilter === "verifier" && entry.event_type !== "verifier_correction") continue;
+      if (subfilter === "deny" && !(entry.decision === "deny" && entry.event_type !== "verifier_correction")) continue;
+      if (subfilter === "verifier" && entry.event_type !== "verifier_correction") continue;
 
       const div = document.createElement("div");
       div.className = "log-line " + classifyAuditLine(entry);
@@ -7164,86 +7061,6 @@
     while (view.childElementCount > MAX) view.removeChild(view.firstChild);
     const autoscrollCb = $("logs-autoscroll");
     if (autoscrollCb?.checked !== false) view.scrollTop = view.scrollHeight;
-  }
-
-  function showAuditDetail(entry) {
-    lastClickedAuditEntry = entry;
-    const panel = $("logs-detail");
-    const json = $("logs-detail-json");
-    const title = $("logs-detail-title");
-    if (!panel || !json || !title) return;
-    title.textContent = `${entry.decision || ""} · ${entry.team_id || ""} · ${entry.ts || ""}`;
-    json.textContent = JSON.stringify(entry, null, 2);
-    panel.hidden = false;
-    // Only enable the suggest button for denials with a real command.
-    const sugg = $("logs-detail-suggest");
-    if (sugg) {
-      const isDenyWithCmd = entry.decision === "deny" && entry.command;
-      sugg.disabled = !isDenyWithCmd;
-      sugg.style.opacity = isDenyWithCmd ? "1" : "0.5";
-    }
-  }
-
-  function hideAuditDetail() {
-    const panel = $("logs-detail");
-    if (panel) panel.hidden = true;
-    lastClickedAuditEntry = null;
-  }
-
-  // Conservative client-side TOML snippet generator (mirrors the server
-  // helper in dashboard/lib/audit-api.ts; doing it client-side keeps the
-  // modal open instantly without a roundtrip).
-  function buildAllowlistSnippet(entry) {
-    if (!entry || entry.decision !== "deny") return "# Entry was already allowed — no addition needed.\n";
-    const cmd = (entry.command || "").trim();
-    if (!cmd) return "# No command captured on this entry; cannot generate a TOML snippet.\n";
-    const parts = cmd.split(/\s+/);
-    const head = JSON.stringify(parts[0]);
-    const rest = parts.slice(1).join(" ");
-    if (entry.rule_path && entry.rule_path.includes("deny_always")) {
-      return [
-        "# This denial fired on a deny_always rule:",
-        `#   rule_path = ${JSON.stringify(entry.rule_path)}`,
-        `#   rule      = ${JSON.stringify(entry.rule || "")}`,
-        "#",
-        "# deny_always wins over allow_pattern. To permit:",
-        "#   1. Edit the deny_always.substrings / deny_always.regex list to remove",
-        "#      the matching entry, OR",
-        "#   2. Override at the project layer with an empty list (disables that",
-        "#      family of denials for this project):",
-        "#",
-        "#      [mode.gated.deny_always]",
-        "#      substrings = []",
-        "#",
-        "# (We do NOT generate option 2 automatically — it's a deliberate act.)",
-        "",
-      ].join("\n");
-    }
-    return [
-      "# Suggested addition to <project>/.subctl/policy.toml",
-      `# Generated from a denial at ${entry.ts} (rule_path=${JSON.stringify(entry.rule_path || "")}).`,
-      "# Review carefully before applying — widening the gate is permanent.",
-      "",
-      "[[mode.gated.allow_pattern]]",
-      `command = ${head}`,
-      `args = [${rest ? JSON.stringify(rest) : "# any"}]`,
-      "",
-    ].join("\n");
-  }
-
-  function openAllowlistModal(entry) {
-    const modal = $("allowlist-modal");
-    const pre = $("allowlist-snippet");
-    if (!modal || !pre) return;
-    pre.textContent = buildAllowlistSnippet(entry);
-    modal.hidden = false;
-    const status = $("allowlist-status");
-    if (status) { status.hidden = true; status.textContent = ""; }
-  }
-
-  function closeAllowlistModal() {
-    const modal = $("allowlist-modal");
-    if (modal) modal.hidden = true;
   }
 
   async function refreshPolicyTeamsForDropdowns() {
@@ -7280,143 +7097,17 @@
     } catch { /* dashboard idle — fine */ }
   }
 
-  function wireLogsPolicyChip() {
-    const chip = $("logs-chip-policy");
-    const teamSel = $("logs-policy-team");
-    const subchipBox = $("logs-subchips");
-    const meta = $("logs-policy-meta");
-    const view = $("logs-view");
-    const status = $("logs-status");
-    if (!chip || !teamSel || !view) return;
-
-    function setStatus(s, cls) {
-      if (!status) return;
-      status.textContent = s;
-      status.className = "logs-status " + (cls || "");
-    }
-
-    function disconnectPolicy() {
-      if (policyEventSource) {
-        try { policyEventSource.close(); } catch {}
-        policyEventSource = null;
-      }
-    }
-
-    function connectPolicy() {
-      disconnectPolicy();
-      const team = teamSel.value;
-      if (!team) { setStatus("no team selected", ""); return; }
-      policyAuditTeam = team;
-      view.innerHTML = "";
-      setStatus("connecting", "connecting");
-      const es = new EventSource(`/api/audit/${encodeURIComponent(team)}/stream`);
-      policyEventSource = es;
-      es.addEventListener("snapshot", (e) => {
-        try {
-          const d = JSON.parse(e.data);
-          view.innerHTML = "";
-          // server sends most-recent-first in the list endpoint; for the
-          // SSE snapshot we use the list endpoint internally, so reverse
-          // to chronological for natural top-to-bottom flow.
-          const ents = (d.entries || []).slice().reverse();
-          renderAuditEntries(view, ents);
-          setStatus("live · policy", "connected");
-          if (meta) {
-            const row = cachedTeams.find((t) => t.team_id === team);
-            meta.textContent = row
-              ? `mode=${row.mode || "?"}  preset=${row.preset || "?"}  sha=${row.allowlist_sha || "?"}`
-              : "";
-          }
-        } catch {}
-      });
-      es.addEventListener("append", (e) => {
-        try {
-          const d = JSON.parse(e.data);
-          renderAuditEntries(view, d.entries || []);
-        } catch {}
-      });
-      es.addEventListener("error", () => {
-        setStatus("error · reconnecting", "error");
-      });
-    }
-
-    chip.addEventListener("click", () => {
-      const active = chip.dataset.active === "true";
-      chip.dataset.active = active ? "false" : "true";
-      if (subchipBox) subchipBox.hidden = active;
-      if (!active) {
-        // turning ON
-        refreshPolicyTeamsForDropdowns().then(() => {
-          if (!teamSel.value && cachedTeams[0]) teamSel.value = cachedTeams[0].team_id;
-          connectPolicy();
-        });
-      } else {
-        // turning OFF — reconnect the launchd log stream the normal way
-        disconnectPolicy();
-        policyAuditTeam = null;
-        view.innerHTML = "";
-        setStatus("disconnected", "");
-        if (meta) meta.textContent = "";
-        // Re-fire the source select to reconnect to whatever was selected
-        const src = $("logs-source");
-        if (src) src.dispatchEvent(new Event("change"));
-      }
-    });
-
-    teamSel.addEventListener("change", () => {
-      if (chip.dataset.active === "true") connectPolicy();
-    });
-
-    // Sub-chips
-    if (subchipBox) {
-      subchipBox.querySelectorAll(".logs-subchip").forEach((b) => {
-        b.addEventListener("click", () => {
-          subchipBox.querySelectorAll(".logs-subchip").forEach((x) => x.classList.remove("active"));
-          b.classList.add("active");
-          policySubfilter = b.dataset.subfilter || "all";
-          // Re-snapshot so the filter takes effect immediately
-          if (chip.dataset.active === "true") connectPolicy();
-        });
-      });
-    }
-
-    // Click handler for audit lines → detail panel
-    view.addEventListener("click", (ev) => {
-      const target = ev.target.closest(".log-line[data-clickable=\"true\"]");
-      if (!target || !target._auditEntry) return;
-      showAuditDetail(target._auditEntry);
-    });
-
-    const closeBtn = $("logs-detail-close");
-    if (closeBtn) closeBtn.addEventListener("click", hideAuditDetail);
-
-    const suggestBtn = $("logs-detail-suggest");
-    if (suggestBtn) {
-      suggestBtn.addEventListener("click", () => {
-        if (lastClickedAuditEntry) openAllowlistModal(lastClickedAuditEntry);
-      });
-    }
-
-    // Modal
-    const modal = $("allowlist-modal");
-    const modalClose = $("allowlist-modal-close");
-    const copyBtn = $("allowlist-copy");
-    if (modalClose) modalClose.addEventListener("click", closeAllowlistModal);
-    if (modal) modal.addEventListener("click", (e) => { if (e.target === modal) closeAllowlistModal(); });
-    if (copyBtn) {
-      copyBtn.addEventListener("click", async () => {
-        const text = ($("allowlist-snippet")?.textContent) || "";
-        try {
-          await navigator.clipboard.writeText(text);
-          const s = $("allowlist-status");
-          if (s) { s.hidden = false; s.textContent = "copied ✓"; }
-        } catch {
-          const s = $("allowlist-status");
-          if (s) { s.hidden = false; s.textContent = "clipboard unavailable — select & ⌘C the snippet above"; }
-        }
-      });
-    }
-  }
+  // ── v2.8.6 shell-bridge globals ─────────────────────────────────────────
+  // Temporary globals exposed for the extracted Logs tab module
+  // (dashboard/public/tabs/logs.js). The chip in that module needs to read
+  // `cachedTeams`, trigger a refresh, and call the shared audit renderer
+  // without importing app.js internals. These three bridges retire when the
+  // Policy tab also extracts and owns its own publishing of team state.
+  // See ORCHESTRATION.md 2026-05-13 night session for the state-ownership
+  // ruling.
+  window.__subctlGetPolicyTeams = () => cachedTeams.slice();
+  window.__subctlRefreshPolicyTeams = refreshPolicyTeamsForDropdowns;
+  window.__subctlRenderAuditEntries = renderAuditEntries;
 
   // ────────────────────────────── Policy tab ──────────────────────────────
   function wirePolicyTab() {

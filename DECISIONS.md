@@ -27,6 +27,47 @@ Sorted newest-first within each section.
 
 ## Architectural calls
 
+### 2026-05-13 night — dashboard decomposition wave 1 (Logs extracted; loader pattern established)
+
+**Decision:** Begin splitting `dashboard/public/app.js` (8,955 LOC) into per-tab plain-JS ES modules served verbatim by Bun's existing static handler. No framework, no build step, no new deps, no `shared/` directory. Wave 1 extracts the Logs tab as the pattern-setter. App.js shrinks to 8,646 LOC; the rest of the monolith is unchanged.
+
+**Why now:** Pre-mortem 2026-05-12 night flagged `app.js` size as the slow-burn risk; Recommendation #1 (per-tab split in plain JS) must come before any framework decision. Operator approved wave 1 as a single feature-branch PR.
+
+**Module interface** — every extracted tab exports:
+
+```js
+export const id;                          // string, matches data-tab attr
+export async function mount({ root });    // mandatory — wire DOM + subscriptions
+export function unmount(/* ctx */);       // optional — close SSE / timers
+// later, optional: refresh(ctx), onState(slice)
+```
+
+**Loader pattern** (`dashboard/public/bootstrap.js`):
+- Classic `app.js` runs first (script tag is non-module → blocks parser); its IIFE calls `setActiveTab(initial)` during boot, and `setActiveTab` ends with `window.__subctlShellNotifyTabChange?.(tab)` (optional-chain because the loader hasn't evaluated yet on boot).
+- `<script type="module" src="/bootstrap.js">` runs after the parser is done. On startup it checks `document.body.dataset.activeTab` and mounts the initial tab if it's in the loader's registry (catches the boot-tab case the notifier missed). After that, every `setActiveTab` call routes through the notifier.
+- `Map<id, () => Promise<Module>>` registry holds dynamic-import closures. The first activation per tab kicks off `mod.mount({ root })`. The promise is memoized so a tab mounts exactly once per page. On mount failure: `console.error` + drop the entry so the next activation can retry. Nothing throws — other tabs keep working.
+
+**No `shared/` directory in PR 1:** With only one extracted tab there's no second importer to motivate it. Adding `shared/` now would silently touch every other tab and defeat the "single PR, one tab" discipline. When the second tab extracts and needs the same helper, that's when `shared/` arrives.
+
+**State-ownership ruling — `cachedTeams` stays Policy-owned:**
+- The Logs policy filter chip and the Policy tab both read `cachedTeams` (populated by `refreshPolicyTeamsForDropdowns`). Today it's an `app.js` module-scope local.
+- The state semantically belongs to Policy — Logs only consumes it for the chip's team selector and meta line.
+- To keep Policy as the owner without forcing Logs to depend on `app.js` internals, `app.js` publishes three temporary window bridges immediately after `refreshPolicyTeamsForDropdowns` is defined:
+  - `window.__subctlGetPolicyTeams = () => cachedTeams.slice();`
+  - `window.__subctlRefreshPolicyTeams = refreshPolicyTeamsForDropdowns;`
+  - `window.__subctlRenderAuditEntries = renderAuditEntries;` (renderer is genuinely shared — the sessions tab inventory flagged it as a future consumer)
+- These retire when the Policy tab extracts. At that point Policy owns its own publishing (likely a `teamsUpdated` custom event Logs subscribes to), the bidirectional DOM cross-write (`refreshPolicyTeamsForDropdowns` populates both `#logs-policy-team` AND `#policy-resolved-team`) collapses to one side, and the bridges go.
+- `renderAuditEntries` gained a single line: it now reads `opts.subfilter ?? "all"` instead of closing over the (now-departed) `policySubfilter` module local. The subfilter belongs to the chip — it travels with Logs.
+
+**Migration order:** Logs → Templates → Models → Preferences → Providers/Vault/Memory/Skills → Projects/Settings/Policy → Teams → Orchestration + Dashboard panels (together) → Master chat (last). Vault must extract before Projects (deep-link dep). Master chat last because it's the biggest tab (1,385 LOC) and most entangled with the SSE/notification chrome.
+
+**What we explicitly did NOT do this PR:**
+- Did not introduce a framework, build step, or bundler.
+- Did not extract any tab other than Logs.
+- Did not touch master chat, orchestration, dashboard panels, or notification tray.
+- Did not change Policy ownership of `cachedTeams` or `refreshPolicyTeamsForDropdowns`.
+- Did not leave stubs or "TODO hook later" comments in app.js — the deletion is permanent and the loader replaces it.
+
 ### 2026-05-13 — Account usage on multi-host is by-design partial, no operator-side fix this session (closes HANDOFF.md §2.2)
 
 **Decision:** Accept that the dashboard shows different account usage numbers on different hosts. Not a regression; not fixing this session.
