@@ -8,6 +8,46 @@ Every claim below is marked **[VERIFIED]** (I observed it tonight) or **[ASSUMED
 
 ---
 
+## 0. Closeout update — 2026-05-13 evening (final)
+
+All three open issues from §2 are now CLOSED. This section is the authoritative current-state snapshot; §1-§7 below are retained as the historical record from when the original handoff was written (~6:30 PM CDT). Inline markers in §2.1 / §2.2 / §2.3 reflect each resolution.
+
+### Resolutions
+
+- **§2.1 notification dropdown CSS** — **[VERIFIED]** ✅ CLOSED. v2.8.5 fix is served correctly on M3: `.notif-tray[hidden] { display: none }` at `style.css:4469` with specificity `(0,0,2,0)` beating `.notif-tray { display: flex }` at `(0,0,1,0)`. Confirmed via `curl http://localhost:8787/style.css | grep -n notif-tray`. The only remaining variable is the operator's browser cache — a hard-refresh (Cmd+Shift+R) picks up the new rule.
+- **§2.2 accounts shows zeros on M3** — **[VERIFIED]** ✅ CLOSED as **architectural-deferred** (option b from operator's amendment). NOT a regression. `subctl usage --json` on M3 returns valid JSON; per-account: `claude-jason` has no creds file on M3 (host-locality of OAuth — operator's Claude Code logs in on local Mac); `claude-titanium` + `claude-semfreak` return HTTP 429 from Anthropic's `/api/oauth/usage` due to dual-poll contention with local Mac dashboard polling the same accounts every 5 min. `dashboard/server.ts:406-409` (`usageForAlias`) silently nulls the usage for any `ok: false`, hiding the *why*. Documented in `DECISIONS.md`. Multi-host rework is v2.9.0+ scope; observability follow-up queued as Task #6.
+- **§2.3 OSINT Telegram alerts every 30 min** — **[VERIFIED]** ✅ CLOSED (alerts silenced; permanent code fix queued as Task #5). The handoff's `teamRegistryExists`-missing hypothesis WAS correct as a contributing factor (callback is indeed not wired at `components/master/server.ts:3268`), but the *proximate* cause was different: master's tmux pruner at `components/master/server.ts:3148-3158` silently no-ops because `tmux` is not in launchd's PATH on M3 AND tmux server itself wasn't running. So orphan teams in `teamLastActivity` never get pruned. Silenced by archiving the inbox file (`~/.config/subctl/master/inbox/claude-osint-cve-monitor.jsonl` → `inbox.archive/`) on M3 and `launchctl kickstart -k gui/$UID/com.subctl.master`. Post-restart `/health` returns `teams_tracked: 0`. **Bonus:** master picked up v2.8.5 from disk on the kickstart — master and dashboard are now version-matched at v2.8.5.
+
+### Current state (snapshot 2026-05-13 7:20 PM CDT)
+
+- **Branch:** `main` @ `b0db72e` **[VERIFIED]** (`git log --oneline -1`)
+- **Last tag:** `v2.8.5` **[VERIFIED]**
+- **M3 `com.subctl.master`:** v2.8.5, restarted today ~6:55 PM CDT, `teams_tracked: 0`, telegram listener running **[VERIFIED]** via `/health` curl from M3
+- **M3 `com.subctl.dashboard`:** v2.8.5 **[VERIFIED]** via `/api/version`
+- **M3 `com.subctl.tts`:** running (voxcpm backend), unchanged from last night **[ASSUMED]** (not re-verified this evening)
+- **Local Mac `com.subctl.dashboard`:** still on v2.8.0 on disk, ~v2.7.7 in-memory **[ASSUMED]** (not re-verified; documented in §1 below — do NOT restart unless intentional)
+- **Pending push:** the single new commit `b0db72e docs: close 2.1/2.2/2.3 handoff issues + capture decisions` is local-only. Origin is at `da3578a` **[VERIFIED]** (no push performed this session per operator authorization rules).
+
+### Top-of-queue for next session
+
+- **Task #5 — permanent 2.3 fix** (~80-150 LOC, worker-bound). Files: `components/master/server.ts` (wire `teamRegistryExists` callback at the auto-nudge call site lines 3259-3277; log when tmux pruner gives up; add `DELETE /teams/:name` or `POST /teams/:name/forget` route), `components/master/auto-nudge.ts` (no shape change, just used), `lib/cli.sh` (add `subctl_cli_team_forget` function + audit-log archive in `subctl_cli_team_kill`). Goal: operator-facing path to evict an orphan team without restarting master, AND silent-failure-proof tmux pruner.
+- **Task #6 — 2.2 observability chip** (~30 LOC, worker-bound). Files: `dashboard/server.ts:406-409` (`usageForAlias`) + `dashboard/server.ts:1365+` (`buildAccountSummaries`) — add `usage_error_kind: 'auth-missing-on-host' | 'rate-limited' | 'network-error' | null` classifier; `dashboard/public/app.js` accounts renderer + `dashboard/public/style.css` for chip styling. STRICTLY observability — does not touch auth flow, polling cadence, or multi-host story.
+
+Both are queued in the TaskList (subctl-bugfix team) and called out as next-session-first work in `ORCHESTRATION.md`.
+
+### Session artifacts (this evening)
+
+- **`DECISIONS.md`** — **[VERIFIED]** new file at repo root. Captures deferred items (frontend framework: no Svelte/React/HTMX, deferred; `app.js` per-tab split: deferred to a focused session after open bugs close; voice-layer refinement: separate v2.8.x track) and architectural calls (2.2 multi-host close rationale; 2.3 fix mechanism + permanent-fix gaps). Persisted to commit `b0db72e`. Recommended sequencing rule encoded: "split `app.js` per tab in plain JS comes before any framework decision."
+- **`ORCHESTRATION.md`** — **[VERIFIED]** rewritten with current-session-at-top header (ledger, evidence, decisions, not-done list). Stage-2 historical content preserved below under "Historical:" heading. Persisted to commit `b0db72e`.
+- **Obsidian vault** at `/Users/sem/Documents/Obsidian Vault/Subctl/` — **[VERIFIED]** expanded from the anti-pattern state (only `Portfolio.md`) to the standard numbered layout: `README.md`, `00 - Start Here.md`, `01 - Current State.md`, `02 - Overview.md`, `05 - Decisions Log.md`, `06 - Known Gotchas.md`, `Daily Updates/2026-05-13.md`, `Orchestration Handoffs/2026-05-13-close-handoff-issues.md`. Not load-bearing for the next Claude Code session (which should read this HANDOFF.md + repo `ORCHESTRATION.md` + `DECISIONS.md` first), but useful operator context and follows the `obsidian-vault` skill maintenance contract.
+
+### Operator action recommended (next time you sit down)
+
+1. Hard-refresh the dashboard tab (`Cmd+Shift+R`) and visually confirm the notification dropdown opens/closes correctly. If yes, §2.1 is fully closed including UX.
+2. Decide whether to push `b0db72e` to origin. No operator-facing artifact depends on the remote state for §2.1/2.2/2.3 to be closed locally; push is optional.
+
+---
+
 ## 1. Repo + deployment state
 
 ### Versions shipped tonight
@@ -49,7 +89,7 @@ Plus voice-layer fixes after v2.8.0: `2262168` (real VoxCPM 2.x API), `7bc5ddf` 
 
 | Host | Service | Version | Notes |
 |---|---|---|---|
-| M3 | `com.subctl.master` | **v2.8.4** | uptime ~4.3h as of 6:05 PM CDT. **[VERIFIED]** via `/health`. Did NOT restart for v2.8.5 (CSS-only) since master code didn't change. |
+| M3 | `com.subctl.master` | **v2.8.5** (was v2.8.4 at session start) | Restarted 2026-05-13 ~6:55 PM CDT via `launchctl kickstart -k` to silence the §2.3 alert loop; the restart side-effected a pickup of v2.8.5 from disk. **[VERIFIED]** via `/health` curl. `teams_tracked: 0` after restart. |
 | M3 | `com.subctl.dashboard` | **v2.8.5** | restarted at end of session for CSS fix. **[VERIFIED]** via `/api/version`. |
 | M3 | `com.subctl.tts` | running (voxcpm backend) | port 8789, VoxCPM2 model + reference WAV in place. Cloned voice synthesis verified working end-to-end. **[VERIFIED]** by listening to `/Users/sem/code/subctl/tmp/evy-cloned-http.wav`. |
 | Local Mac | `com.subctl.dashboard` PID 1473 | **shows v2.8.0 from disk, but in-memory code is from when daemon started 2026-05-12 1:45 PM (pre-v2.7.18 generation)** | Operator's screenshots of "real account data" came from this daemon. Don't restart it — it's the only working reference for what the dashboard SHOULD look like. **[VERIFIED]** via local `launchctl list` + `ps -ef`. |
@@ -91,7 +131,7 @@ Two workers were SHUTDOWN mid-flight at end of session due to the architecture p
 
 ## 2. Three open issues
 
-### 2.1 Notification dropdown — STATE UNCERTAIN
+### 2.1 Notification dropdown — ✅ CLOSED 2026-05-13 evening (see §0)
 
 - **What was supposed to happen:** v2.7.25 shipped a dropdown with X buttons, mark-all-read, click-outside, ESC handling. JS handlers were correct (**[VERIFIED]** by reading lines 7975-8024 of app.js).
 - **What actually happened:** CSS rule `.notif-tray { display: flex }` (line 4381 of style.css) had higher specificity than the UA default `[hidden] { display: none }`. So setting `tray.hidden = true` did nothing visually. **[VERIFIED]** by inspection.
@@ -99,7 +139,7 @@ Two workers were SHUTDOWN mid-flight at end of session due to the architecture p
 - **[ASSUMED]** — hard-refresh in operator's browser will pick up the new CSS and the dropdown will behave correctly. Operator hadn't confirmed this at end of session.
 - **If still broken:** the JS may be removing the `hidden` attribute somewhere unintentionally, OR there's another CSS rule overriding. Check first: in DevTools, inspect `#notif-tray`, see whether the `hidden` attribute is present and what the computed `display` value is.
 
-### 2.2 Accounts shows all zeros on M3 — UNFIXED, ARCHITECTURALLY UNCLEAR
+### 2.2 Accounts shows all zeros on M3 — ✅ CLOSED 2026-05-13 evening as architectural-deferred (see §0)
 
 - **The v2.8.3 worker SHIPPED** what they claimed was a fix (`fix(dashboard,master): v2.8.1 Accounts surface — real per-account usage + correct dispatch verdict`). **[VERIFIED]** their commit is on main.
 - **The fix did not actually fix it.** **[VERIFIED]** by inspecting M3's `/api/state` response — every account returns `usage: null`, `active_sessions: 0`, `last_activity_seconds_ago: null`, `dispatch: green`.
@@ -108,7 +148,7 @@ Two workers were SHUTDOWN mid-flight at end of session due to the architecture p
 - **If hypothesis correct:** Multi-host dashboard is required. Operator runs subctl across M3 + local + Mac Minis + Studio + DGX. Each host has partial truth. Dashboard needs aggregation. This is a v2.9.0+ feature, not a quick fix.
 - **If hypothesis wrong:** There's a regression in the usage-fetch path. Diff `v2.7.7..main` on `dashboard/server.ts` `subctlUsageFetchAll`-related code.
 
-### 2.3 OSINT alerts firing every 30 min on Telegram — UNFIXED, CALLBACK NOT WIRED
+### 2.3 OSINT alerts firing every 30 min on Telegram — ✅ CLOSED 2026-05-13 evening — silenced; permanent code fix queued as Task #5 (see §0)
 
 - **The v2.8.2 reconciliation logic exists** in `components/master/auto-nudge.ts` lines 168-198. **[VERIFIED]** by reading the file.
 - **It's opt-in.** The reconciliation only runs if `opts.callbacks.teamRegistryExists` is passed. Comment on line 165: *"Predicate is opt-in via callbacks.teamRegistryExists; omitting it preserves pre-v2.7.32 behavior."* **[VERIFIED]**.
