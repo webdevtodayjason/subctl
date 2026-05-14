@@ -13,10 +13,11 @@
 //     the boot tab (where the notifier call landed before we existed).
 //
 // Registry of extracted tabs. As each tab migrates out of app.js, add an
-// entry here. Today: just Logs.
+// entry here. Waves so far: Logs (1), Templates (2).
 
 const TAB_LOADERS = new Map([
   ["logs", () => import("./tabs/logs.js")],
+  ["templates", () => import("./tabs/templates.js")],
 ]);
 
 // id -> Promise<module>. Memoizes the dynamic import + mount so a tab is

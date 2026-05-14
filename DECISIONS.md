@@ -68,6 +68,32 @@ export function unmount(/* ctx */);       // optional — close SSE / timers
 - Did not change Policy ownership of `cachedTeams` or `refreshPolicyTeamsForDropdowns`.
 - Did not leave stubs or "TODO hook later" comments in app.js — the deletion is permanent and the loader replaces it.
 
+### 2026-05-13 night — dashboard decomposition wave 2 (Templates extracted)
+
+**Decision:** Extract the Templates tab from `dashboard/public/app.js` into `dashboard/public/tabs/templates.js`, mirroring the wave-1 module interface (`{ id, mount, unmount }`) and the `TAB_LOADERS` registry pattern established in `bootstrap.js`. App.js shrinks from 8,646 → 8,520 LOC (126 lines removed: 1 call site + 125 lines for the function body and its leading comment block).
+
+**Why now:** Templates was identified as the next target in the wave-1 migration order (Logs → **Templates** → Models → …). The pre-extraction inventory showed it was a clean, self-contained tab — the ideal "proof point" candidate to validate that the wave-1 interface holds for a tab that needs *no* state-ownership negotiation.
+
+**Proof point — zero bridges, fully self-contained:**
+
+- Talks only to three HTTP endpoints — `GET /api/team-templates`, `GET /api/team-templates/<name>`, `POST /api/orchestration/spawn`. All keep their server-side handlers untouched.
+- Reads no `cachedTeams`-style shared state, dispatches no events, calls no `window.__subctl*` helper. The Logs extraction needed three temporary bridges to keep Policy as the owner of `cachedTeams`; Templates needed zero.
+- Uses three `window.prompt(...)` + two `alert(...)` calls for the "Use this template" dialog. Kept as-is — modal replacement is out of scope for the decomposition (would be a separate UX change).
+- Behavior preserved verbatim, including the nav-click re-refresh listener. The bootstrap loader memoizes `mount()`, so without re-wiring the `[data-tab="templates"].nav-btn` click handler inside `mount()` itself, subsequent tab clicks would no longer refresh the list — a regression the wave-2 module guards against by re-attaching that listener at mount time.
+
+**What this teaches the migration:** The `{ id, mount, unmount }` interface scales cleanly to fully-isolated tabs without introducing a `shared/` directory or a bridge layer. Tabs that consume cross-tab state (Logs ↔ Policy) need the temporary `window.__subctl*` pattern; tabs that don't can land as drop-in modules. We can move faster on the next batch (Models, Preferences) by sorting them on this axis: isolated-first to reduce churn in `app.js`'s remaining surface.
+
+**Migration progress:**
+- ✅ Wave 1 — Logs (commit `3f58f03`)
+- ✅ Wave 2 — Templates (this entry)
+- ⏭ Next — Models, per the wave-1 ordering. (Models, Preferences, Providers/Vault/Memory/Skills remain on the queue.)
+
+**What we explicitly did NOT do this PR:**
+- Did not modify `wave-1` files (`tabs/logs.js`, the bridge globals, `setActiveTab` notify hook) — wave-1 stays untouched.
+- Did not touch any tab other than Templates.
+- Did not replace the `window.prompt` / `alert` dialogs (UX change, separate concern).
+- Did not introduce a `shared/` directory — still nothing to share.
+
 ### 2026-05-13 — Account usage on multi-host is by-design partial, no operator-side fix this session (closes HANDOFF.md §2.2)
 
 **Decision:** Accept that the dashboard shows different account usage numbers on different hosts. Not a regression; not fixing this session.
