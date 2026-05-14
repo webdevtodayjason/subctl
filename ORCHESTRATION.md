@@ -4,6 +4,125 @@ Most recent session at top. Older sessions retained below as historical record.
 
 ---
 
+## Session 2026-05-13 night — dashboard decomposition wave 1 (Claude Opus 4.7, 1M ctx)
+
+**Protocol start:** 2026-05-13T~19:30 CDT
+**Branch:** `main` @ `dd958ba` (v2.8.5)
+**Mode:** Orchestration. Operator authorization: one PR for the wave-1 extraction. Worker bound to a feature branch in the main worktree (no new orphan worktrees).
+
+### Mission
+Recommendation #1 of the 2026-05-12 night pre-mortem: split `dashboard/public/app.js` (8,955 lines) into per-tab plain-JS modules. No framework. No build system. No new deps. Wave 1: extract the Logs tab end-to-end as the pattern-setter; everything else stays in the monolith.
+
+### Pre-conditions verified
+- main @ `dd958ba`, clean working tree (`git status` at session start)
+- app.js inventory complete (see operator-facing report at session start; full breakdown by tab in this entry below)
+- `dashboard/server.ts:1591` uses an explicit `STATIC_FILES` allowlist — new asset paths require server.ts edits (verified by reading the static handler)
+- `icons.js` already proves ES modules serve correctly when registered
+- All three HANDOFF §2 issues remain closed (no rework backlog blocking wave 1)
+
+### Inventory summary (app.js 8,955 LOC)
+
+| Tab | Wire fn @ line | LOC | window.* writes | window.* reads | Cross-tab deps |
+|---|---|---|---|---|---|
+| logs | wireLogsTab @ 477 + wireLogsPolicyChip @ 7283 | ~192 | 0 | 0 | none |
+| teams | wireTeamsTab @ 589 | ~319 | 0 | 0 | mild — providers, policy |
+| templates | wireV2TemplatesTab @ 908 | ~122 | 0 | 0 | mild Teams interop (spawn-from-template) |
+| providers | wireProvidersTab @ 1030 | ~269 | 0 | 0 | none |
+| skills | wireSkillsTab + wireSkillsClarityView @ 1299 | ~410 | `__skillsClarityRefresh` | 0 | none |
+| settings | wireSettingsTab @ 1705 | ~528 | 0 | 0 | none |
+| chat selectors | wireChatModelSelector + wireProfilePill @ 2233 | ~221 | 0 | 0 | tightly coupled to master chat |
+| vault | wireVaultTab @ 2454 | ~311 | `openVaultDeepLink` | 0 | exposes deep-link for projects |
+| orchestration | wireOrchCameraGrid + wireOrchestrationCockpit + wireWatchdogPanel @ 2765 | ~987 | `__subctlOpenTmuxPreview`, `__subctlCopyAttachCommand`, `__subctlOpenWebTerminal`, `__subctlWireWebTerminalGate`, `notice` | 0 | exposes 4 globals consumed by dashboard panels |
+| models | wireModelsTab @ 3752 | ~111 | 0 | 0 | none — smallest |
+| projects | wireProjectsTab @ 3863 | ~468 | `__policyPresetsCache` (own cache) | `openVaultDeepLink` | depends on vault |
+| memory | wireTier1MemoryCards + wireMemoryTab + wireEvyMemoryCard @ 4331 | ~278 | 0 | 0 | none |
+| **master chat** | wireMasterChat @ 4609 | **1,385** | `__subctlVoiceEnabled` (own) | `__subctlPushNotification` | biggest, deepest SSE entanglement |
+| dashboard panels | renderOrchSidecar/Orchestrations/Sessions/Cost/RateLimits/Events/Conversations @ 5994 | ~904 | 0 | `__subctlOpenTmuxPreview`, `__subctlCopyAttachCommand` | depends on orchestration |
+| sessions search | wireSearchUI + renderSearchResults @ 6898 | ~72 | 0 | 0 | reads audit shared renderer |
+| shell (tabs + transport) | wireTabs + setActiveTab + connectWS + startPolling @ 6970 | ~170 | — | — | the spine |
+| audit shared | renderAuditEntries @ 7139 | ~163 | 0 | 0 | shared by logs + sessions tabs |
+| policy | wirePolicyTab + wirePolicyEditor + form renderers @ 7422 | ~609 | 0 | 0 | own SSE handle `policyEventSource` (line 7115) |
+| notification tray | initNotificationTray @ 8031 | ~388 | `__subctlPushNotification`, `__subctlPushActivity`, `notice` | 0 | global chrome — consumed by master chat + orch + others |
+| lucide chrome + upstreams | initLucideChrome + initUpstreamsCard @ 8419 | ~250 | — | `subctlIcon` (from icons.js module) | settings-adjacent |
+| preferences | initPreferencesTab @ 8669 | ~268 | 0 | 0 | own SSE for `preferences` events |
+
+### Decisions recorded (will be persisted to DECISIONS.md by worker)
+- **Plain JS native ES modules, no build step, no new deps.** Bun's existing static handler serves modules; classic-script `app.js` continues unchanged for everything not extracted.
+- **No `shared/` directory in PR 1** — first tab inlines its needs; helpers extract on a later PR when a second importer exists. (Doing it now would silently touch every other tab.)
+- **Module interface:** `export const id; export async function mount(ctx); export function unmount(ctx); export function refresh(ctx); export function onState(slice);` — `mount`/`unmount` mandatory, others optional.
+- **Loader pattern:** ES-module `bootstrap.js` runs after classic `app.js` (defer semantics). On startup, it mounts the already-active tab if extracted. `app.js`'s `setActiveTab(tab)` gets one new line: `window.__subctlShellNotifyTabChange?.(tab)`. Dynamic `import("./tabs/<id>.js")` from bootstrap.
+- **No half-finished:** `app.js` deletes the extracted code outright. No stubs, no "TODO hook later". The function and call sites disappear.
+- **server.ts edit required:** add `/bootstrap.js` and `/tabs/logs.js` to the `STATIC_FILES` allowlist. Future tab extractions add one line each.
+- **Migration order:** Logs → Templates → Models → Preferences → Providers/Vault/Memory/Skills → Projects/Settings/Policy → Teams → Orchestration + Dashboard panels (together) → Master chat (last). Vault must extract before Projects (deep-link dep).
+
+### Task ledger
+
+| ID | Task | State | Worker | Started | Notes |
+|----|------|-------|--------|---------|-------|
+| W1 | Extract Logs tab to dashboard/public/tabs/logs.js + bootstrap.js shell | dispatched | logs-extract | 2026-05-13T~19:35 CDT | Single feature branch `feat/dashboard-decomp-logs` in main worktree (NO new git worktree). |
+
+### State-ownership ruling (Logs ↔ Policy cross-cut)
+
+The Logs policy-filter chip and the Policy tab share three module-scope locals in today's app.js:
+- `let policyAuditTeam = null;` (line 7113) — touched only by the chip → **moves into Logs module closure**
+- `let policyEventSource = null;` (line 7115) — touched only by the chip → **moves into Logs module closure**
+- `let cachedTeams = [];` (line 7117) — populated by `refreshPolicyTeamsForDropdowns` (line 7249), consumed by both the chip (5 sites) and the Policy tab (1 site) → **stays in app.js, Policy-owned**
+- `async function refreshPolicyTeamsForDropdowns()` (line 7249) — populates both `#logs-policy-team` (Logs DOM) and `#policy-resolved-team` (Policy DOM) → **stays in app.js**
+
+To preserve Policy's ownership without forcing Logs to depend on app.js internals, app.js exposes two tiny temporary globals:
+- `window.__subctlGetPolicyTeams = () => cachedTeams.slice();`
+- `window.__subctlRefreshPolicyTeams = refreshPolicyTeamsForDropdowns;`
+
+Both retire when Policy tab extracts in a later wave. This is **not** a state-ownership change — Policy continues to own `cachedTeams` with identical semantics. Logs just queries through a getter instead of closing over the same variable. The bidirectional DOM coupling (app.js writes `#logs-policy-team`) is preserved temporarily; when Policy extracts, Policy publishes a `teamsUpdated` event and Logs subscribes.
+
+### Worker constraints (in worker prompt)
+- May NOT push, merge, or open a PR. Stop after commit.
+- May NOT touch any tab other than Logs. May NOT touch master chat, orchestration, dashboard panels, or notification tray.
+- May NOT introduce `shared/`. May NOT introduce a build step. May NOT add npm deps.
+- May NOT change Policy ownership of `cachedTeams` or `refreshPolicyTeamsForDropdowns`. Those stay in app.js.
+- MUST verify the test plan items end-to-end before reporting done.
+
+### Verification evidence — wave 1 complete
+
+**Worker commit:** `3f58f03` on `feat/dashboard-decomp-logs` — `refactor(dashboard): extract Logs tab to ES module — decomposition wave 1`. Worker went idle without sending the structured report-back message; orchestrator self-verified per protocol rule 6.
+
+**Structural gates (all pass):**
+
+| Gate | Expected | Actual |
+|---|---|---|
+| `app.js` LOC delta | shrink ~250 | 8955 → **8646** (−309) |
+| `grep -c 'wireLogsTab\|wireLogsPolicyChip\|policyAuditTeam\|policyEventSource' app.js` | 0 | **0** |
+| `grep -c cachedTeams app.js` (Policy retains) | >0 | **9** |
+| `grep -c refreshPolicyTeamsForDropdowns app.js` (Policy retains) | ≥2 | **4** (def + call + 2 references) |
+| Bridge globals (`__subctlGetPolicyTeams`/`Refresh`/`RenderAuditEntries`) published in app.js | 3 | **3** |
+| `__subctlShellNotifyTabChange` call in `setActiveTab` | 1 | **1** |
+| Bridge consumption in `tabs/logs.js` | ≥3 distinct | **5 call sites** across 3 distinct bridges |
+| `server.ts` STATIC_FILES entries for `/bootstrap.js` + `/tabs/logs.js` | 2 | **2** (lines 1601-1602) |
+| `index.html` script tag order | `bootstrap.js` before `app.js` | ✓ lines 1609 (module) → 1610 (classic) |
+| `node --check bootstrap.js` | clean | **OK** |
+| `node --check tabs/logs.js` | clean | **OK** |
+
+**End-to-end MIME smoke (live `PORT=8799 bun dashboard/server.ts`):**
+```
+HTTP/1.1 200 OK  Content-Type: application/javascript; charset=utf-8  content-length: 2176   /bootstrap.js
+HTTP/1.1 200 OK  Content-Type: application/javascript; charset=utf-8  content-length: 15498  /tabs/logs.js
+```
+
+**State-ownership decision held:** `cachedTeams` and `refreshPolicyTeamsForDropdowns` remain in app.js; `policyAuditTeam` and `policyEventSource` migrated into the module closure. Bridge globals retire when Policy tab extracts.
+
+**DECISIONS.md updated:** worker appended a `2026-05-13 night — dashboard decomposition wave 1` entry with the module interface, loader strategy, state-ownership ruling, and migration order.
+
+**Not done in this session (deliberately):**
+- No browser-level UX test (clicking around Logs, exercising SSE reconnect, etc.). Worker's spec required it; their idle-without-report leaves it unconfirmed. Operator should hard-refresh and exercise Logs tab once at the next dashboard visit. Falls back to "feature branch unmerged" — no production exposure until operator merges.
+- No push, no merge. Branch sits local on `feat/dashboard-decomp-logs` awaiting operator decision.
+- No worker-spawned worktree. Work happened in the main worktree, branch-isolated.
+
+### Wave 1 closed; loop terminated.
+
+The 10-min status cron (`d7420c37`) was cancelled at completion. No further worker dispatches this session unless operator opens a new wave.
+
+---
+
 ## Session 2026-05-13 evening — close HANDOFF.md open issues (Claude Opus 4.7, 1M ctx)
 
 **Protocol start:** 2026-05-13T~18:36Z (CDT)
