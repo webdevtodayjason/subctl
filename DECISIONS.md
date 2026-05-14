@@ -147,6 +147,37 @@ export function unmount(/* ctx */);       // optional — close SSE / timers
 - Did not fix the pre-existing master-routing breakage that makes Preferences flaky on local-Mac dashboards (out of scope; behavior parity with the old code is the goal).
 - Did not wire `unmount()` into the bootstrap — same parity stance as waves 1–3.
 
+### 2026-05-14 — dashboard decomposition wave 5 (Providers extracted)
+
+**Decision:** Extract the Providers tab from `dashboard/public/app.js` into `dashboard/public/tabs/providers.js`, mirroring waves 1–4 (commits `3f58f03`, `b681255`, `2b2c515`, `c633322`). App.js shrinks from 8,122 → 7,853 LOC (-269: section header + 267-line `wireProvidersTab` body + the boot-time call site at app.js:466, offset by +1 for the wave-5 breadcrumb dropped into the existing comment block).
+
+**Why now:** Providers was the next target in the wave-1 migration order (Logs → Templates → Models → Preferences → **Providers** → …). Per-provider profile management UI — modal + form + per-card auth/edit/delete buttons + 30 s background poll. Moderate size; trivially self-contained on the HTTP boundary.
+
+**Proof point — fully self-contained, no bridge layer:**
+- Talks to exactly three HTTP endpoints (`GET /api/providers`, `POST` and `DELETE /api/providers/profiles`). Server-side handlers untouched.
+- Reads no cross-tab state, dispatches no events, makes no `window.__subctl*` references. Confirmed by grep.
+- Two app.js module-scope helpers (`$` @ app.js:61, `escapeText` @ app.js:3214) were used; inlined as local declarations inside `mount()` to keep the module self-contained — same idiom as wave 3 (`tabs/models.js`) inlining `$ / td / emptyRow`. Behavior identical.
+- All per-element listeners (`newBtn` click, modal close + cancel + backdrop, form submit, `fAlias`/`fProvider` suggest, per-row auth/edit/delete buttons) stay inline inside `mount()`; they die with the panel DOM and don't need explicit removal in `unmount()`. Transient `setTimeout` calls (focus, close-after-save) also stay inline — they're one-shots, not pollers.
+- The 30 s background poll moves to a module-scope `pollTimer` so `unmount()` can `clearInterval` — parity with wave 1 (logs.js) / wave 3 (models.js) / wave 4 (preferences.js). Bootstrap doesn't call `unmount` today; this is forward-looking hygiene.
+
+**What this teaches the migration:** The old `setInterval` callback gated the 30 s refresh on `getComputedStyle(panel).display !== "none"`. Dropped here because the bootstrap loader only mounts modules when their tab activates — the visibility test is now redundant. Mirrors wave 4's dropping of the `MutationObserver` watching `data-active-tab`. The pattern that's emerging: bootstrap-mounting *is* the visibility contract, and per-tab visibility re-checks inside polling loops can retire as each tab extracts. Future tabs (Vault, Memory, Skills, Settings) should follow the same simplification when their bodies move.
+
+**Migration progress:**
+- ✅ Wave 1 — Logs (commit `3f58f03`)
+- ✅ Wave 2 — Templates (commit `b681255`)
+- ✅ Wave 3 — Models (commit `2b2c515`)
+- ✅ Wave 4 — Preferences (commit `c633322`)
+- ✅ Wave 5 — Providers (this entry)
+- ⏭ Next — Vault, per the wave-1 ordering. (Memory, Skills, Settings, … remain on the queue.)
+
+**What we explicitly did NOT do this PR:**
+- Did not modify wave-1/2/3/4 files (`tabs/logs.js`, `tabs/templates.js`, `tabs/models.js`, `tabs/preferences.js`, bridge globals, `setActiveTab` notify hook).
+- Did not touch any tab other than Providers.
+- Did not replace the inline `confirm(...)` (delete) or the indirect `alert(...)` paths with a modal/toast layer — behavior parity is the goal, UX-modal replacement is a separate change.
+- Did not change any server-side `/api/providers*` handler — only the client moved.
+- Did not introduce a `shared/` directory — still nothing to share (each tab inlines its tiny helper budget).
+- Did not wire `unmount()` into the bootstrap — same parity stance as waves 1–4.
+
 ### 2026-05-13 — Account usage on multi-host is by-design partial, no operator-side fix this session (closes HANDOFF.md §2.2)
 
 **Decision:** Accept that the dashboard shows different account usage numbers on different hosts. Not a regression; not fixing this session.
