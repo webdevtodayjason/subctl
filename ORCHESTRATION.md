@@ -121,6 +121,45 @@ HTTP/1.1 200 OK  Content-Type: application/javascript; charset=utf-8  content-le
 
 The 10-min status cron (`d7420c37`) was cancelled at completion. No further worker dispatches this session unless operator opens a new wave.
 
+### Post-wave infra split — daily-driver dashboard decoupled from dev tree
+
+**Trigger:** Operator flagged that his local dashboard "doesn't update from what you're working on" and that he didn't want to be "locked into [the] local one always sitting on the development code." Investigation showed `~/Library/LaunchAgents/com.subctl.dashboard.plist` pointed `ProgramArguments` directly at `/Users/sem/code/subctl/dashboard/server.ts` — the dev tree. ANY branch checkout in that path would change what the daemon would serve on next restart. There was no separate install copy.
+
+**Operator's choice via AskUserQuestion:** Option A — separate install worktree.
+
+**Executed (operator-authorized):**
+1. `git worktree add ~/.local/lib/subctl-install main` — new worktree pinned to `main` (currently at `dd958ba`, v2.8.5).
+2. `cd ~/.local/lib/subctl-install/dashboard && bun install` — vendor deps (xterm.js + addon-fit + smol-toml + lucide + node-pty) installed in the install tree's `node_modules/`.
+3. Backed up plist to `~/Library/LaunchAgents/com.subctl.dashboard.plist.bak-20260513-211858`.
+4. `/usr/libexec/PlistBuddy -c "Set :ProgramArguments:2 /Users/sem/.local/lib/subctl-install/dashboard/server.ts"` — repointed the launchd job at the install tree.
+5. `launchctl bootout gui/$UID/com.subctl.dashboard` then `launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.subctl.dashboard.plist`.
+6. **Killed PID 1473** (the long-running v2.7.7-in-memory daemon from May 12 that HANDOFF.md had flagged as "don't restart — only working reference"). Replaced with PID 94317 running from the install tree at v2.8.5.
+
+**Verification (post-switchover):**
+- `curl http://localhost:8787/api/version` → `{"version":"2.8.5"}` ✓
+- `curl -I http://localhost:8787/bootstrap.js` → `404` ✓ (proves install tree is on `main`, NOT the feature branch — wave-1 changes are isolated to `~/code/subctl`)
+- index.html on :8787 has only `<script src="/app.js">` — no `bootstrap.js` script tag ✓
+- `ps -ef` confirms `PID 94317 bun run /Users/sem/.local/lib/subctl-install/dashboard/server.ts` ✓
+
+**Test-the-branch path established:** `cd /Users/sem/code/subctl && PORT=8788 bun run dashboard/server.ts` runs the dev tree on a sibling port. PID 97068 currently serves this — `:8788/bootstrap.js` returns 200, index has both script tags. Operator browses `http://localhost:8788` to verify wave-1 without touching daily-driver `:8787`.
+
+**Deploy flow (until a CLI verb is wired):**
+```
+cd ~/.local/lib/subctl-install
+git pull origin main          # or git merge a feature branch after operator approves
+launchctl kickstart -k gui/$UID/com.subctl.dashboard
+```
+
+**Loss accepted:** PID 1473's in-memory v2.7.7-era account data is gone. Operator chose this explicitly; HANDOFF.md's "don't restart" caveat is retired.
+
+**Lossless rollback path:** `cp ~/Library/LaunchAgents/com.subctl.dashboard.plist.bak-20260513-211858 ~/Library/LaunchAgents/com.subctl.dashboard.plist && launchctl bootout gui/$UID/com.subctl.dashboard && launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.subctl.dashboard.plist`. Won't restore PID 1473's in-memory state — that's gone — but restores the plist to dev-tree-pointing as before.
+
+**Follow-up parking lot (not done tonight):**
+- Add `subctl dashboard deploy` CLI verb wrapping the deploy flow above.
+- Apply same split to M3 Ultra (`com.subctl.master` + `com.subctl.dashboard` there). Currently M3's daemons read from a remote git checkout at `/Users/sem/code/subctl` over its SSH session; the same lock-in risk applies if a future session does branch work on M3.
+- Add the install-tree pattern to `install.sh` for fresh installs so this isn't a manual surgery for the next operator.
+- The `DECISIONS.md` architectural-call entry for this split lives only in ORCHESTRATION.md for now; should be promoted to a proper DECISIONS.md entry on the next merge to `main`.
+
 ---
 
 ## Session 2026-05-13 evening — close HANDOFF.md open issues (Claude Opus 4.7, 1M ctx)
