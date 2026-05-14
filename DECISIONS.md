@@ -120,6 +120,33 @@ export function unmount(/* ctx */);       // optional — close SSE / timers
 - Did not replace `setInterval` with a per-mount handle abstraction (a forward refactor when more tabs share polling patterns).
 - Did not introduce a `shared/` directory — still nothing to share.
 
+### 2026-05-14 — dashboard decomposition wave 4 (Preferences extracted; listener-lifecycle pattern proven)
+
+**Decision:** Extract the Preferences tab from `dashboard/public/app.js` into `dashboard/public/tabs/preferences.js`, mirroring waves 1–3 (commits `3f58f03`, `b681255`, `2b2c515`). App.js shrinks from 8,408 → 8,122 LOC (-286: header comment block + `initPreferencesTab` body + the DOMContentLoaded bootstrap pair).
+
+**Why now:** Preferences was the next target in the wave-1 migration order (Logs → Templates → Models → **Preferences** → …). Bilateral-maintenance config (operator + Evy both write to `~/.config/subctl/preferences.toml`) — moderately complex but still self-contained on the HTTP boundary.
+
+**Proof point — first module with persistent listener lifecycle:**
+- Two persistent listeners are required so Evy-side / CLI / Telegram edits show up live: `document.addEventListener("subctl:sse:preferences", …)` and `window.addEventListener("focus", …)`. In app.js they were installed inside `initPreferencesTab()` with anonymous arrow functions and never removed (acceptable when the module is a singleton that lives for the page's lifetime).
+- The module version lifts the handler refs to module scope (`let onSseEvent = null; let onFocus = null;` — mirrors `tabs/models.js`'s `pollTimer` idiom) so `unmount()` can pass them to `removeEventListener`. Bootstrap never calls unmount today; the cleanup is forward-looking hygiene that Master chat will need at scale.
+- 4 fetch endpoints (`GET /api/preferences`, `POST` and `DELETE /api/preferences/<cat>/<key>`, `POST /api/preferences/reset`) kept verbatim. Server-side handlers untouched.
+- The old `MutationObserver(maybeLoad)` watching `data-active-tab` is intentionally dropped — the shell only calls `mount()` when the tab activates, so the gate is moot. `maybeLoad`'s `if (active !== "preferences") return;` short-circuit goes with it.
+
+**What this teaches the migration:** The `{ id, mount, unmount }` interface accommodates persistent DOM listeners cleanly — captured refs at module scope + symmetric add/remove in mount/unmount. This is the pattern Master chat (and any future tab that subscribes to SSE) will follow.
+
+**Migration progress:**
+- ✅ Wave 1 — Logs (commit `3f58f03`)
+- ✅ Wave 2 — Templates (commit `b681255`)
+- ✅ Wave 3 — Models (commit `2b2c515`)
+- ✅ Wave 4 — Preferences (this entry)
+- ⏭ Next — Providers, per the wave-1 ordering. (Vault, Memory, Skills, … remain on the queue.)
+
+**What we explicitly did NOT do this PR:**
+- Did not modify wave-1/2/3 files (`tabs/logs.js`, `tabs/templates.js`, `tabs/models.js`, bridge globals, `setActiveTab` notify hook).
+- Did not touch any tab other than Preferences.
+- Did not fix the pre-existing master-routing breakage that makes Preferences flaky on local-Mac dashboards (out of scope; behavior parity with the old code is the goal).
+- Did not wire `unmount()` into the bootstrap — same parity stance as waves 1–3.
+
 ### 2026-05-13 — Account usage on multi-host is by-design partial, no operator-side fix this session (closes HANDOFF.md §2.2)
 
 **Decision:** Accept that the dashboard shows different account usage numbers on different hosts. Not a regression; not fixing this session.
