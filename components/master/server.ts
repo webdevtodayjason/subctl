@@ -970,8 +970,39 @@ async function main() {
   // loaded") but reviewer pin hung for 60s on /api/v1/models/load
   // timeout. With Promise.allSettled boot is bounded by the SLOWEST
   // single role, not the sum.
+  //
+  // Dedup: when reviewer points at the same provider+model+host as
+  // supervisor, skip the reviewer pin entirely. LM Studio's load API
+  // treats two pins of the same model with DIFFERENT ctx_size values
+  // (supervisor typically 65K, reviewer typically 32K) as a request
+  // for a second instance — it spawns a `qwen/qwen3.6-27b:2` shadow
+  // model and burns ~30GB of unified memory for nothing, because the
+  // supervisor's already-loaded 65K context window is a strict
+  // superset of what the reviewer would need. One pin at the larger
+  // size handles both callers correctly.
+  function sameLocalRoute(
+    a: Providers["models"][string] | undefined,
+    b: Providers["models"][string] | undefined,
+  ): boolean {
+    return !!a && !!b
+      && a.provider === b.provider
+      && a.model === b.model
+      && (a.host ?? "") === (b.host ?? "");
+  }
   const rolesToPin = (["supervisor", "reviewer"] as const).filter(
-    (role) => providers.models[role],
+    (role) => {
+      if (!providers.models[role]) return false;
+      if (
+        role === "reviewer"
+        && sameLocalRoute(providers.models.reviewer, providers.models.supervisor)
+      ) {
+        console.error(
+          `[master] ctx-pin reviewer: SKIPPED — same model+host as supervisor (avoids LM Studio :2 instance)`,
+        );
+        return false;
+      }
+      return true;
+    },
   );
   await Promise.allSettled(
     rolesToPin.map(async (role) => {
