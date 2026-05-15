@@ -4,6 +4,74 @@ Most recent session at top. Older sessions retained below as historical record.
 
 ---
 
+## Session 2026-05-15 morning — M3 install-worktree split + CLI follow-ups (Claude Opus 4.7, 1M ctx)
+
+**Protocol start:** 2026-05-15T~05:00 CDT
+**Mode:** Orchestration with batch authorization extended from prior session. Operator explicitly authorized M3 (item 2b) per-action after the orchestrator surfaced the production-risk consideration.
+
+### Mission
+Three follow-ups parked in the prior HANDOFF §2:
+- **2a** — `subctl dashboard deploy` CLI verb wrapping the 3-step deploy flow
+- **2c** — `install.sh` patch baking the install-worktree pattern into fresh installs
+- **2b** — M3 install-worktree split (touches remote production daemons; held for explicit op auth)
+- (Plus item 2d worktree cleanup done directly; items 3 + 4 are read-only investigations.)
+
+### Task Ledger
+
+| ID | Task | State | Worker / Actor | Started | Finished |
+|----|------|-------|----------------|---------|----------|
+| 2a | `subctl dashboard deploy` CLI verb (lib/dashboard.sh + bin/subctl subverb dispatch) | ✅ done | deploy-cli (Agent + team_name) | 2026-05-15T~05:00 CDT | 2026-05-15T~05:18 CDT |
+| 2c | install.sh ensure_install_tree + lib/service.sh plist points at install tree | ✅ done | install-pattern (Agent + team_name) | 2026-05-15T~05:00 CDT | 2026-05-15T~05:20 CDT |
+| 2d | Worktree cleanup — 10 of 11 dashboard-decomp feature branches | ✅ done | orchestrator | 2026-05-15T~04:55 CDT | 2026-05-15T~04:55 CDT |
+| 2b | M3 install-worktree split — both daemons decoupled from `~/code/subctl` dev tree | ✅ done | orchestrator (via SSH) | 2026-05-15T~05:56 CDT | 2026-05-15T~05:58 CDT |
+
+### Verification Evidence
+
+**2a (`deploy-cli`, commit `c25018a`):**
+- `lib/dashboard.sh` (NEW, 156 lines) — `subctl_dashboard_deploy` + `subctl_dashboard_open`. Idempotent (no-op when install tree already at origin/main). Smart-runs `bun install` only when `dashboard/package.json` differs between BEFORE/AFTER SHAs.
+- `bin/subctl:316-322` — `dashboard)` case now sub-dispatches `[open|deploy]`
+- bin/subctl help text documents both subverbs
+- Live-smoked post-merge: `bin/subctl dashboard deploy` returned "install tree already at 5d5749e — nothing to deploy" (idempotent path verified)
+- Worker honest-reported: `lib/dep-manifest.json` schema only tracks external tool deps, so the registration step was correctly skipped.
+
+**2c (`install-pattern`, commit `5d5749e`):**
+- `install.sh:76` — `ensure_install_tree()` function added (63 lines)
+- `install.sh:597` — called from main install flow
+- `lib/core.sh:30` — `SUBCTL_INSTALL_TREE` env var (worker made the correct call to put it here rather than `lib/settings.sh` since `SUBCTL_*` env vars cluster in `lib/core.sh`)
+- `lib/service.sh:89-94` — dashboard plist generation now points at install tree (`$SUBCTL_INSTALL_TREE/dashboard/server.ts`) with a dev-tree fallback if the install tree was skipped during setup
+- `README.md` — install-tree pattern documented (8-line note)
+- Master daemon plist NOT changed here — worker explicitly scoped this commit to the dashboard plist generation, deferring master to the M3-side work documented in this session.
+
+**2d (orchestrator direct):**
+- Deleted 10 of 11 dashboard-decomp feature branches: `feat/dashboard-decomp-{providers,vault,memory,skills,projects,settings,policy,teams,orch,preferences}`. `feat/dashboard-decomp-master` blocked by dev-tree worktree (harmless — same SHA as main).
+- 21 version-named orphan worktrees (`subctl-v2.7.21` through `subctl-v2.8.6-skills-redesign`) NOT removed — they predate this session and likely contain operator state. Left for a future housekeeping pass.
+
+**2b — M3 install-worktree split:**
+Applied the same pattern that landed on local Mac 2026-05-13 night. M3 dev tree was on `main` at start (v2.8.5 = `da3578a`), preventing creating an install worktree on `main`. Resolution:
+1. M3 dev tree fast-forwarded from `da3578a` → `5d5749e` (local Mac's main)
+2. M3 dev tree moved to label branch `dev` (same SHA as main, harmless leftover label) to free up `main` for the install worktree
+3. Install worktree created: `git worktree add /Users/sem/.local/lib/subctl-install main`
+4. Vendored both dep trees: `bun install` in `~/.local/lib/subctl-install/dashboard/` (10 packages) + `~/.local/lib/subctl-install/components/master/` (174 packages)
+5. Backed up both plists with timestamp `20260515-055638`
+6. **Dashboard plist:** `PlistBuddy Set :ProgramArguments:2` → install-tree path; `plutil -lint` OK; `launchctl bootout` + `launchctl bootstrap`. New PID **27129**, status 0, HTTP 200 on `/api/version` (returns v2.8.5). Confirmed via `ps -p` that the new PID is running `/Users/sem/.local/lib/subctl-install/dashboard/server.ts`.
+7. **Master plist:** same procedure. New PID **27432**, status 0, HTTP 200 on `/health`. Confirmed running install-tree code.
+8. **`com.subctl.tts.plist`** NOT touched — separate plist for the voice service, scope was dashboard + master only. The TTS daemon still points at the dev tree (`~/code/subctl/services/tts/server.py`), parked as a future cleanup if it ever bites.
+
+**M3-specific quirks observed:**
+- Non-interactive `zsh` over SSH has a minimal PATH; `bun` lives at `/Users/sem/.bun/bin/bun` which had to be sourced explicitly. Standard utils (`curl`, `head`, `id`) needed full paths in some invocations.
+- M3 dev tree was 28 commits behind origin (sat at v2.8.5 da3578a; pulled to 5d5749e). The decomposition + this morning's CLI work all landed cleanly via fast-forward.
+
+**Rollback evidence:** plist backups at `~/Library/LaunchAgents/com.subctl.{dashboard,master}.plist.bak-20260515-055638` on M3. Restoring is `mv .bak-… .plist; launchctl bootout && launchctl bootstrap` — same procedure in reverse.
+
+### Items NOT addressed this session
+
+- **Item 3 (worker-visibility investigation):** confirmed that the orchestrator-mode skill defers iTerm2 panes to "the Claude Code iTerm2 integration when `team_name` is set" — the skill itself doesn't enforce pane placement. Either the integration isn't installed on local Mac or it's placing panes somewhere not visible to the operator. **Diagnostic recommendation for future session:** inspect `~/.claude/settings.json` for iTerm-related keys; check if a separate "Claude Code iTerm2" helper script is registered.
+- **Item 4 (`__skillsClarityRefresh` retirement):** confirmed via grep that NO external readers exist in `dashboard/`, `components/`, `lib/`, `bin/`. Safe to retire (3-line delete: assignment in mount, null in unmount, top doc comment line). Tiny worker dispatch worth doing in a future housekeeping pass.
+- **`com.subctl.tts` plist** still points at dev tree (out of scope for this morning's split).
+- **`feat/dashboard-decomp-master` leftover branch** still on dev tree (harmless — same SHA as main; cleanup blocked by worktree).
+
+---
+
 ## Session 2026-05-14 evening — dashboard decomposition wave 14 — THE FINISH LINE (Claude Opus 4.7, 1M ctx)
 
 **Protocol start:** 2026-05-14T~22:25 CDT
