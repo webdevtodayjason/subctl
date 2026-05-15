@@ -343,6 +343,75 @@ Projects is the **first tab that both CONSUMES someone else's bridge AND OWNS a 
 - Did not wire `unmount()` into the bootstrap — same parity stance as waves 1–8.
 - Did not modify wave-1/2/3/4/5/6/7/8 files (`tabs/logs.js`, `tabs/templates.js`, `tabs/models.js`, `tabs/preferences.js`, `tabs/providers.js`, `tabs/vault.js`, `tabs/memory.js`, `tabs/skills.js`).
 
+### 2026-05-14 — dashboard decomposition wave 10 (Settings extracted; biggest single function collapse)
+
+**Decision:** Extract the Settings tab from `dashboard/public/app.js` into `dashboard/public/tabs/settings.js`, mirroring waves 1–9. App.js shrinks from 6,398 → 5,870 LOC (-528: section header + `wireSettingsTab` body (`app.js:797–1324`, 528 lines) + the boot call site (`app.js:461`), offset by +2 lines for the wave-10 breadcrumb in the boot comment block — net -527 with adjacent-blank cleanup landing the final delta at -528).
+
+Settings is the **biggest single-function collapse in the migration so far.** Unlike wave 7 (Memory) and wave 8 (Skills) — which each had 2–3 sibling top-level functions in app.js to fold together — Settings is a single 528-line `wireSettingsTab` whose body contains ~15 nested sub-helpers as closures. The extraction is a one-for-one verbatim copy: outer function → `mount()`, every inner sub-helper → local declaration. No structural rearrangement, no behavior delta.
+
+**Why now:** Settings was next in the wave-1 migration order after Projects. It validates that the wave-1-through-9 idioms scale to a single function with this many inline closures, and it isolates the `window.notice` consumer pattern before Policy (wave 11, 609 LOC) and Master chat (which will exercise consumer + publisher both).
+
+**Sub-helper accounting — all 15 collapse into mount() locals:**
+- `loadHealth` (install-checks panel)
+- `loadKeys` (env-derived API key presence)
+- `loadSecrets` (secrets.json presence + Edit/Set buttons)
+- `openSecretsModal`, `closeSecretsModal`, `submitSecretsModal`, `wireSecretsModal` (modal lifecycle)
+- `loadOAuth` (provider account auth status)
+- `loadTelegramStatus`, `wireTelegramForm` (Telegram bot config + test)
+- `wireConfigViewer` (read-only config-file tabs)
+- `loadVault`, `wireVaultForm` (Obsidian vault-root configuration)
+- `loadPersonality` (+ inline `personalityApply` button handler, not enumerated as a named function but lives in the same body)
+- `refreshAll` (manual operator-driven fan-out)
+
+Plus one piece of closure-shared mutable state: `let _currentSecretKey = null` between `openSecretsModal` / `closeSecretsModal` / `submitSecretsModal`. Lifted from function scope to mount-body scope — same shape, same identity semantics across a single mount call. NOT lifted to module scope (no remount today, but parity with the original function-scoped `let` is the goal).
+
+**`window.notice` handling — keep as a CONSUMER bridge, do NOT extract the notification system this wave:**
+The personality-apply flow inside `wireSettingsTab` consumes `window.notice` and `window.notice.error` (and falls back to `alert(...)` if the publisher hasn't run yet). The publisher is `window.notice = (title, body, opts) => _showNotice(...)` at `app.js:1921` (was 2449 pre-decomp). It lives next to its render helpers (`_showNotice`, toast DOM machinery) and is consumed by **at least seven other sites in app.js** (`grep -c 'window\.notice' dashboard/public/app.js` returns 19 hits across 12 call sites). Three alternatives considered:
+
+1. **Extract the notification system to a sibling module now (e.g. `tabs/_notice.js` or `lib/notice.js`):** rejected. The publisher is consumed from chat, orchestration, attach-team, policy-team — all still in app.js. Extracting it before those readers move means publishing a new bridge for each of them, which is the *opposite* of the migration's direction (we're trying to *retire* `window.*` bridges, not invent new ones).
+2. **Move just the consumer-side personality-apply block, leaving the publisher in place:** chosen. Same pattern as wave 9 (Projects) consuming `window.openVaultDeepLink` published by wave 6 (Vault). The `typeof` guard (`if (window.notice && window.notice.error)`) and the `alert(...)` fallback are both preserved verbatim — they handle the case where the publisher hasn't yet executed (notice is wired further down in app.js's boot at line 1921, well after `wireSettingsTab` would have been called by `boot()` had we not extracted it).
+3. **Pre-bind `window.notice` into a local `const` at mount-time:** rejected. Would break the late-binding semantics — Settings can mount before `window.notice` is published (bootstrap activates tabs on first user click, which may precede the rest of app.js's boot if the operator is fast). The current shape with the `if (window.notice)` guard at call-site is correct as-is.
+
+Bridge retires when app.js's notification system gets its own module (post-decomp cleanup phase, probably wave 13+ after Settings/Policy/Master-chat/Orchestration are out).
+
+**Settings vault-config form vs. Vault tab (wave 6) — different concerns, different DOM, different endpoints:**
+Easy point of confusion to flag at the README level. The Settings tab's vault-form (`loadVault` + `wireVaultForm` in `tabs/settings.js`) writes `/api/settings/obsidian` and targets `#settings-vault-status`, `#settings-vault-root`, `#settings-vault-save`, `#settings-vault-result`. That's the operator-facing single-string vault-root *configuration* surface. The **Vault tab** in `tabs/vault.js` (wave 6) is a separate browser surface that reads `/api/vault/roots` and renders the multi-root file tree under `#vault-*` IDs. Same domain noun ("vault"), separate concerns — the Settings vault-form sets *where* the vault lives; the Vault tab navigates *inside* it. We did NOT merge or unify them this wave.
+
+**Lifecycle:**
+- No `setInterval`. Refresh is operator-driven via `#settings-refresh-btn` → `refreshAll()`. The original had no Settings-specific polling either, so we removed the visibility-gate template that waves 4–8 wrote (it has nothing to gate).
+- Multiple `setTimeout`s for "copied!" feedback on install-cmd and oauth-cmd `<code>` elements (1500ms label restore). One-shot and self-collecting — no handles tracked.
+- No `document` or `window` event listeners. All other handlers (modal save/cancel/remove, telegram save/test, vault save, personality-apply, config-tab clicks, per-secret-row edit buttons) are element-scoped and die with the panel DOM.
+- `unmount()` is a **no-op**. Interface parity with waves 1–9; no timers, no document/window listeners, no window-prefixed globals owned by this module. The `window.notice` bridge is consumer-only — not ours to null.
+
+**Helpers inlined at mount-scope (not bridged) for behavior parity:**
+- `$` — `id => document.getElementById(id)` (one-liner, every prior wave inlines it).
+- `escapeText` — used in health / keys / secrets / oauth renders. App.js's copy at `app.js:1706` stays put for the rest of app.js's consumers.
+- `HOST_LABEL` — defaulted to `"this Mac"`, matching app.js:14's initializer. Consumed in the oauth-row install-cmd tooltip and the vault-form success message. Same call as wave 7 (Memory) — we use the static default and DO NOT re-derive the `/api/host` async patch path. Acceptable drift: the tooltip and success message may read "this Mac" even after the operator has set a custom host label, until they reload.
+- `SSH_HOST_ALIAS` — defaulted to `"argent-m3-ultra-dev"`, matching app.js:22. Same hardcoded value the original used; the long-standing TODO at app.js:2300 to de-hardcode this is not a wave-10 concern.
+
+**Migration progress:**
+- ✅ Wave 1 — Logs (commit `3f58f03`)
+- ✅ Wave 2 — Templates (commit `b681255`)
+- ✅ Wave 3 — Models (commit `2b2c515`)
+- ✅ Wave 4 — Preferences (commit `c633322`)
+- ✅ Wave 5 — Providers (commit `edc0b73`)
+- ✅ Wave 6 — Vault (commit `27000b5`)
+- ✅ Wave 7 — Memory (commit `6597668`)
+- ✅ Wave 8 — Skills (commit `d926d58`)
+- ✅ Wave 9 — Projects (commit `52e2ae2`)
+- ✅ Wave 10 — Settings (this entry; 10/17 tabs)
+- ⏭ Next — Policy (~609 LOC), then Master chat / Orchestration cockpit.
+
+**What we explicitly did NOT do this PR:**
+- Did not refactor or restructure any of the 15 inline sub-helpers. The extraction is verbatim: outer function → `mount()`, every inner closure → local declaration. Same identity, same shape, same wiring order.
+- Did not introduce a notification module / extract the `window.notice` publisher. The publisher stays at `app.js:1921` with `_showNotice` and its associated toast DOM helpers. Settings reads it as a CONSUMER only — same pattern as wave 9 (Projects) consuming `window.openVaultDeepLink`.
+- Did not change any endpoint contract (`/api/settings/*`, `/api/master/personality`). Only the client moved.
+- Did not unify the Settings vault-config form with the Vault tab. Different DOM, different endpoints — they remain independent.
+- Did not de-hardcode `SSH_HOST_ALIAS`. The TODO at the original app.js:2300 outlives this wave.
+- Did not lift `_currentSecretKey` to module scope. Kept as a `let` inside `mount()` for behavior parity with the original function-scoped state.
+- Did not wire `unmount()` into the bootstrap — same parity stance as waves 1–9.
+- Did not modify wave-1/2/3/4/5/6/7/8/9 files (`tabs/logs.js`, `tabs/templates.js`, `tabs/models.js`, `tabs/preferences.js`, `tabs/providers.js`, `tabs/vault.js`, `tabs/memory.js`, `tabs/skills.js`, `tabs/projects.js`).
+
 ### 2026-05-13 — Account usage on multi-host is by-design partial, no operator-side fix this session (closes HANDOFF.md §2.2)
 
 **Decision:** Accept that the dashboard shows different account usage numbers on different hosts. Not a regression; not fixing this session.
