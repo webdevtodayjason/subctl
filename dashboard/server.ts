@@ -1607,6 +1607,7 @@ const STATIC_FILES: Record<string, { path: string; type: string }> = {
   "/tabs/vault.js":     { path: join(PUBLIC_DIR, "tabs", "vault.js"),           type: "application/javascript; charset=utf-8" },
   "/tabs/memory.js":    { path: join(PUBLIC_DIR, "tabs", "memory.js"),          type: "application/javascript; charset=utf-8" },
   "/tabs/skills.js":    { path: join(PUBLIC_DIR, "tabs", "skills.js"),          type: "application/javascript; charset=utf-8" },
+  "/tabs/projects.js":  { path: join(PUBLIC_DIR, "tabs", "projects.js"),        type: "application/javascript; charset=utf-8" },
   "/logo.png":    { path: join(PUBLIC_DIR, "logo.png"),   type: "image/png" },
   "/tool-display.json": { path: join(PUBLIC_DIR, "tool-display.json"), type: "application/json; charset=utf-8" },
   "/vendor/xterm/xterm.js":  { path: join(NODE_MODULES_DIR, "xterm", "lib", "xterm.js"),  type: "application/javascript; charset=utf-8" },

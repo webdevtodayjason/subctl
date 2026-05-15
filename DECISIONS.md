@@ -289,6 +289,60 @@ This is the biggest tab in the migration so far. Two module-scope entry points i
 - Did not change the Skills router, categorized backend, evy-skills directory layout, or the promote/delete endpoints.
 - Did not wire `unmount()` into the bootstrap — same parity stance as waves 1–7.
 
+### 2026-05-14 — dashboard decomposition wave 9 (Projects extracted; dual-role bridge handling)
+
+**Decision:** Extract the Projects tab from `dashboard/public/app.js` into `dashboard/public/tabs/projects.js`, mirroring waves 1–8. App.js shrinks from 6,860 → 6,398 LOC (-462: section header + `wireProjectsTab` body (`app.js:2532–2996`, 465 lines) + the boot call site (`app.js:453`), offset by +4 lines for the wave-9 breadcrumb in the boot comment block AND a one-line `window.__subctlAttachOneShotAssistantCapture` bridge published right after the helper's declaration).
+
+Projects is the **first tab that both CONSUMES someone else's bridge AND OWNS a window-prefixed cache of its own.** Previous waves established each pattern independently — wave 6 (Vault) was the first publisher; wave 8 (Skills) preserved a dead bridge; waves 1–5/7 either had no bridges or only consumed. Projects exercises both directions at once and pins the playbook.
+
+**Why now:** Projects was next in the wave-1 migration order. The dual-role pattern is what made it interesting beyond pure size: every remaining wave will be exercising some mix of CONSUME / OWN / PUBLISH, and getting the dual-role conventions right here keeps Settings (528 LOC, next), Policy (609 LOC, after that), Master chat, and Orchestration cockpit from each re-inventing the convention.
+
+**Bridge handling decision — keep both as window globals; do NOT retire to events:**
+
+1. **CONSUMES `window.openVaultDeepLink`** (published by `tabs/vault.js`, wave 6). Used by the "Open in Vault Viewer" action button to deep-link a project's `decisions.md` inside the master vault. The original's `typeof window.openVaultDeepLink === "function"` guard + `location.hash` / `nav.click()` fallback is preserved verbatim. Why keep the window global instead of retiring to a `subctl:vault-deeplink` custom event? Two reasons:
+   - The current shape (function-on-window + typeof guard + fallback) handles the not-yet-mounted case cleanly. Bootstrap-mounting makes the not-mounted case MORE likely (tabs are inert until first activation), and the `nav.click()` fallback path fires `data-active-tab` flip → bootstrap notifier → Vault mount → Vault's `MutationObserver` re-reads the hash. That dance already works.
+   - A custom event would require Vault to listen on `document` for `subctl:vault-deeplink`, which means Vault has to be mounted first. Same not-mounted problem, different syntax. The window global is the simpler contract.
+
+2. **CONSUMES `window.__subctlAttachOneShotAssistantCapture`** (newly published by app.js right after the `attachOneShotAssistantCapture` declaration). Same `window.__subctl*` bridge idiom as wave 1's `tabs/logs.js` (`__subctlRenderAuditEntries`, `__subctlGetPolicyTeams`, `__subctlRefreshPolicyTeams`). The lead's section bounds for wave 9 (`app.js:2532–2996`) excluded the helper at `app.js:2463–2530` because `attachOneShotAssistantCapture` co-lives with Chat (its only call sites are Projects today, but its `renderToolPill` / `ensureChatToolPillsRow` dependencies are still chat-owned at `app.js:197` and `app.js:247`). Three alternatives considered:
+   - **Move the helper into `tabs/projects.js`:** rejected. Forces us to also bridge `renderToolPill` + `ensureChatToolPillsRow` (still needed by Chat at `app.js:3056` and `app.js:3372`), which inverts the dependency from "Projects depends on Chat" to "Chat depends on Projects" without any architectural reason.
+   - **Inline duplicate copies of all three helpers into `tabs/projects.js`:** rejected. ~60 LOC of duplication, two divergence vectors when Chat's tool-pill model evolves.
+   - **Publish the helper on window (chosen):** 1 line of app.js, 1 line of consumer-side optional-chained call. Established precedent in wave 1. Bridge retires naturally when Master chat extracts (probably wave 12+ once Settings/Policy are out).
+
+3. **OWNS `window.__policyPresetsCache`** — Projects-only lazy-memoized fetch promise for `/api/policy/presets`. Created on the first time a project-detail render reaches the Apply-preset dropdown wiring; reused for every subsequent project open. A `grep -rn '__policyPresetsCache' dashboard/ components/master/` confirms ZERO readers outside Projects (it's not really a "bridge" — it's an instance cache that happens to live on window). Why keep `window.`-prefixed instead of lifting to module scope?
+   - **Behavior parity > stylistic preference.** The point of this wave is to move code without changing what it does. Lifting to module scope would change identity semantics across the (theoretical) unmount/remount cycle.
+   - **Cache survives unmount.** `unmount()` does NOT null `window.__policyPresetsCache`. It's a fetch promise; no resources to release; re-fetching on re-mount would defeat the cache. The bridge globals owned-by-other-modules (`window.openVaultDeepLink`, `window.__subctlAttachOneShotAssistantCapture`) are also left alone in `unmount()` for the same reason — they're not ours to null.
+
+**Lifecycle — one timer + one document-scoped listener:**
+- `pollTimer` (30s refresh of project list + reselection): `app.js:2867–2868` had a `getComputedStyle(panel).display !== "none"` visibility gate; dropped (bootstrap-mounting is the new gate).
+- `documentKeydownHandler`: the new-project modal installs `document.addEventListener("keydown", ...)` to close on Escape. Genuinely document-scoped — if `mount()` ever runs twice without an intervening `unmount()`, two handlers would stack. Lifted to module scope and `removeEventListener`'d in `unmount()`. The lead's worker brief flagged "no document listeners observed" — there IS one; this module handles it the same way wave 8 handled its popover click handler.
+- All other listeners (filter input, list-item clicks, per-detail action buttons, modal close/cancel/overlay-click, name-input preview, GitHub controls, the form submit) are element-scoped and die with the panel DOM. The `setTimeout(focus, 50)` after opening the modal and `setTimeout(closeModal, 1800)` after a successful create are one-shot and self-collecting.
+
+**Helpers inlined at mount-scope (not bridged) for behavior parity:**
+- `$` — `id => document.getElementById(id)` (one-liner, every prior wave inlines it).
+- `escapeText` — used heavily inside `renderProjectDetail`. App.js's copy at `app.js:2233` stays put for the rest of app.js's consumers.
+- `cssEscape` — used at one site to address the per-project chat log via `querySelector`. App.js's copy at `app.js:2454` stays put for chat at `app.js:3069`.
+
+**Migration progress:**
+- ✅ Wave 1 — Logs (commit `3f58f03`)
+- ✅ Wave 2 — Templates (commit `b681255`)
+- ✅ Wave 3 — Models (commit `2b2c515`)
+- ✅ Wave 4 — Preferences (commit `c633322`)
+- ✅ Wave 5 — Providers (commit `edc0b73`)
+- ✅ Wave 6 — Vault (commit `27000b5`)
+- ✅ Wave 7 — Memory (commit `6597668`)
+- ✅ Wave 8 — Skills (commit `d926d58`)
+- ✅ Wave 9 — Projects (this entry; 9/17 tabs)
+- ⏭ Next — Settings (~528 LOC), then Policy (~609 LOC).
+
+**What we explicitly did NOT do this PR:**
+- Did not retire `window.openVaultDeepLink` to a `subctl:vault-deeplink` custom event. Kept the function-on-window contract for the reasons in §1 above. Re-evaluate after Master chat extracts and we see how many publisher/consumer pairs survive in window-bridge form.
+- Did not refactor the consumer of `window.openVaultDeepLink` inside Projects. The `typeof` guard + `location.hash` / `nav.click()` fallback ships verbatim.
+- Did not modify any `/api/projects/*`, `/api/policy/presets`, `/api/policy/preset/<path>`, or `/api/master/chat` server-side handler. Only the client moved.
+- Did not move `attachOneShotAssistantCapture` (or its `renderToolPill` / `ensureChatToolPillsRow` deps) into `tabs/projects.js`. Kept in app.js, published on window — see §2 above.
+- Did not lift `window.__policyPresetsCache` to module scope. Behavior parity wins over stylistic preference until we have a reason to break the cache identity contract — see §3 above.
+- Did not wire `unmount()` into the bootstrap — same parity stance as waves 1–8.
+- Did not modify wave-1/2/3/4/5/6/7/8 files (`tabs/logs.js`, `tabs/templates.js`, `tabs/models.js`, `tabs/preferences.js`, `tabs/providers.js`, `tabs/vault.js`, `tabs/memory.js`, `tabs/skills.js`).
+
 ### 2026-05-13 — Account usage on multi-host is by-design partial, no operator-side fix this session (closes HANDOFF.md §2.2)
 
 **Decision:** Accept that the dashboard shows different account usage numbers on different hosts. Not a regression; not fixing this session.
