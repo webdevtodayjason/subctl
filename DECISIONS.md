@@ -412,6 +412,104 @@ Easy point of confusion to flag at the README level. The Settings tab's vault-fo
 - Did not wire `unmount()` into the bootstrap — same parity stance as waves 1–9.
 - Did not modify wave-1/2/3/4/5/6/7/8/9 files (`tabs/logs.js`, `tabs/templates.js`, `tabs/models.js`, `tabs/preferences.js`, `tabs/providers.js`, `tabs/vault.js`, `tabs/memory.js`, `tabs/skills.js`, `tabs/projects.js`).
 
+### 2026-05-14 — dashboard decomposition wave 11 (Policy extracted; wave-1 bridges retired)
+
+**Decision:** Extract the Policy zone from `dashboard/public/app.js` into `dashboard/public/tabs/policy.js` (the **biggest extraction yet at ~717 LOC deleted from app.js**) AND retire the three temporary `window.__subctl*` bridges wave 1 introduced. App.js shrinks from 5,870 → 5,161 LOC (-709 net: -717 from the Policy zone deletion + 8 lines added for the wave-11 breadcrumb in the boot comment block and the rewording of an adjacent comment).
+
+This is the **first wave to modify an already-shipped extracted module** (`tabs/logs.js`). Logs was wave 1; it consumed three `window.__subctl*` bridges that app.js owned. Wave 11 retires those bridges and replaces them with a custom-DOM-event contract — Logs is no longer a bridge consumer, it's an event subscriber.
+
+**Why now:** Policy was the last of the migration's "wave 1 bridge dependents." With Policy extracted, both publishers and consumers of the wave-1 bridges live in modules, so the temporary `window.__subctl*` globals can be retired in the same PR. Waiting longer would mean carrying three dead bridges through the remaining 6 tab extractions.
+
+**Event contract — publisher (Policy) + subscriber (Logs):**
+```
+PUBLISHER  tabs/policy.js
+  emits  document → "subctl:policy-teams-updated"
+         detail: { teams: PolicyTeam[] }      // full list, copy of cachedTeams
+  fires on: end of every successful refreshPolicyTeams() call (initial mount,
+            5-second visibility-gated poll, manual #policy-refresh-btn click,
+            and whenever Logs sends a refresh-request).
+
+SUBSCRIBER tabs/logs.js
+  listens document ← "subctl:policy-teams-updated"
+  on receipt:
+    1. updates `logsCachedTeams` (module-scope) with a copy of detail.teams
+    2. repopulates #logs-policy-team, preserving the prior selection
+       across refreshes (the same DOM cross-write logic that previously
+       lived in Policy's refreshPolicyTeamsForDropdowns)
+
+SUBSCRIBER tabs/policy.js  (back-channel for Logs's chip-activation flow)
+  listens document ← "subctl:policy-teams-refresh-request"
+  on receipt: calls refreshPolicyTeams() → which publishes the
+              teams-updated event Logs is waiting on.
+
+PUBLISHER  tabs/logs.js  (only fires from the chip-activation branch)
+  emits   document → "subctl:policy-teams-refresh-request"  (no detail)
+  pattern: one-shot listener on teams-updated + 1500ms fallback timer
+           (see "One-shot pattern + defensive fallback" below).
+```
+
+The publisher emits the full teams array via `event.detail.teams`. Each subscriber slices to keep its own copy — no shared mutable state.
+
+**One-shot pattern + defensive fallback (deviation from spec):** The spec's bare one-shot example listens for `subctl:policy-teams-updated` indefinitely after firing a refresh-request. That works only if the Policy module is already mounted. But Policy is **lazy-loaded** by `bootstrap.js` on first activation of the Policy tab; an operator who lands on the Logs tab and clicks the Policy chip without first visiting Policy hits a scenario where no listener exists to fulfill the request → the chip would hang in "connecting" forever.
+
+To prevent this regression, the chip-activation branch in `tabs/logs.js` wraps the one-shot with a 1500ms fallback `setTimeout`. If the teams-updated event arrives first (the happy path once Policy mounts), the timer is cleared. If the timer fires first, we remove the one-shot listener and call `connectPolicy()` anyway — using whatever `logsCachedTeams` we have. With an empty list, `connectPolicy` naturally degrades to status "no team selected" (its existing empty-team branch). This is **graceful** rather than the pre-wave-11 default-active bridge behavior, but it cleanly avoids the hang. Documented inline in `tabs/logs.js`.
+
+**First inter-module modification — care taken:** Touching `tabs/logs.js` (wave 1, shipped 2026-05-13) for the first time required:
+- Preserving every existing module-scope handle (`policyAuditTeam`, `policyEventSource`, `policySubfilter`, `lastClickedAuditEntry`, `logsEventSource`, `logsBackoffMs`) — no renames, no rescoping of state that's already settled.
+- A structural shuffle: `mountPolicyChip` was a module-scope function in wave 1, calling the bridges. To give it access to the audit renderers (now local to `mount()`), it was lifted INSIDE `mount()` as a nested function declaration. The chip's helper functions that don't need renderers (`showAuditDetail`, `hideAuditDetail`, `buildAllowlistSnippet`, `openAllowlistModal`, `closeAllowlistModal`) STAY at module scope — they only touch `lastClickedAuditEntry` which is module-scope, so no change of scope was needed.
+- Re-naming a local `view`/`status`/`copyBtn` inside the nested chip to `chipView`/`chipStatus`/`allowCopyBtn` to avoid shadowing the outer `mount()` locals of the same names — the nested chip used to be at module scope where no shadowing existed.
+- A `function setChipStatus` replaced the chip's old local `setStatus` for the same reason (the outer `setStatus` for launchd-log status lives in `mount()` now).
+
+**DOM cross-write split rationale (each tab owns its own selector):** Pre-wave-11, `refreshPolicyTeamsForDropdowns` in app.js populated BOTH `#policy-resolved-team` and `#logs-policy-team` from a single helper. Wave 11 splits this: `tabs/policy.js` populates only `#policy-resolved-team` from `refreshPolicyTeams`; `tabs/logs.js` populates only `#logs-policy-team` from inside the teams-updated event listener. Same DOM behavior, same preserve-prev-selection logic on both sides — but each tab now owns the DOM it cares about, with no cross-module reach. The event payload is the single source of truth.
+
+**Audit renderer move — Logs is the sole consumer:** The trio (`fmtAuditLine`, `classifyAuditLine`, `renderAuditEntries`) sat in app.js's Policy zone solely because that's where `refreshPolicyTeamsForDropdowns` was — they were called via the `window.__subctlRenderAuditEntries` bridge from inside `tabs/logs.js`'s `mountPolicyChip` only. With the bridge retired, the cleanest home is inside `mount()` in `tabs/logs.js` as function declarations (so the nested `mountPolicyChip`'s `connectPolicy` can call them without explicit parameter passing). Hoisting via `function` (not `const`) means statement-order inside `mount()` is irrelevant — matches the wave-1 original's reliance on function-declaration hoisting.
+
+**Migration progress:**
+- ✅ Wave 1 — Logs (commit `3f58f03`)
+- ✅ Wave 2 — Templates (commit `b681255`)
+- ✅ Wave 3 — Models (commit `2b2c515`)
+- ✅ Wave 4 — Preferences (commit `c633322`)
+- ✅ Wave 5 — Providers (commit `edc0b73`)
+- ✅ Wave 6 — Vault (commit `27000b5`)
+- ✅ Wave 7 — Memory (commit `6597668`)
+- ✅ Wave 8 — Skills (commit `d926d58`)
+- ✅ Wave 9 — Projects (commit `52e2ae2`)
+- ✅ Wave 10 — Settings (commit `44aa618`)
+- ✅ Wave 11 — Policy + bridge retirement (this entry; 11/17 tabs)
+- ⏭ Next — Teams (~319 LOC), then Master chat / Orchestration cockpit.
+
+**Bridge retirement scoreboard:** Of the original wave-1 `window.__subctl*` bridges, ALL THREE are retired this wave:
+- `window.__subctlGetPolicyTeams` — gone
+- `window.__subctlRefreshPolicyTeams` — gone
+- `window.__subctlRenderAuditEntries` — gone
+
+Other inter-tab bridges that are still live (NOT touched this wave):
+- `window.openVaultDeepLink` — published by tabs/vault.js (wave 6), consumed by tabs/projects.js (wave 9). Stays until both modules can negotiate via event.
+- `window.__subctlAttachOneShotAssistantCapture` — wave 9. Stays.
+- `window.__skillsClarityRefresh` — wave 8 dead bridge (no known reader). Stays pending confirmation.
+- `window.__policyPresetsCache` — wave 9. Stays.
+- `window.notice` / `window.notice.error` — published by `_showNotice` still in app.js; consumed by wave-10 Settings and many in-app.js callers. Stays until the notification surface itself extracts.
+
+**Helpers inlined at mount-scope (not bridged) for behavior parity:**
+- `$` — `id => document.getElementById(id)` (one-liner, every prior wave inlines it).
+- `escapeHtml` — used in renderTeams / renderDenials / renderVerifierTimeline / renderResolvedChips / renderListSection. App.js's copy (now at app.js:4516) stays for the notification + upstream-history renderers that continue to use it.
+- `emptyRow(cols, msg)` — used in renderTeams / renderDenials. App.js's copy at `emptyRow` (still in app.js, called from accounts + sessions + transcript renderers) stays.
+
+**Lifecycle:**
+- `mount({ root })` wires the editor sub-panels, installs the refresh-request listener, kicks off the initial `refreshPolicyTeams()` (which seeds both the local cachedTeams and any subscribers via the teams-updated event).
+- `unmount()` detaches the refresh-request listener. The MutationObserver inside `wirePolicyTab`'s `checkVisible` (visibility-driven polling) and the four MutationObservers inside `panelObserveActive` (one per editor pane) remain unfreed — matches wave-1-through-10 parity; bootstrap never calls unmount today.
+- `refreshPolicyTeams` is `async` and re-entrant-safe — the only state it writes is `cachedTeams` and the `#policy-resolved-team` selector. A racing call from the 5s poll and a Logs refresh-request both produce idempotent results.
+
+**What we explicitly did NOT do this PR:**
+- Did not introduce an event-bus library or a shared/ directory — two stylistic `document.addEventListener` calls on namespaced event names is sufficient for this contract.
+- Did not change the `/api/policy/teams` endpoint contract — same response shape (`{ ok, teams: [...] }`), same fields per team row (`team_id`, `mode`, `preset`, `allowlist_sha`, etc.). Server side is unchanged.
+- Did not refactor wave-1's chip/SSE state (`policyAuditTeam`, `policyEventSource`, `policySubfilter`, `lastClickedAuditEntry` stay at module scope in `tabs/logs.js`). Beyond the bridge swap + the structural shuffle to nest `mountPolicyChip` inside `mount()`, wave-1's chip is untouched.
+- Did not push the cached-teams cache to a service layer — each tab keeps its own copy fed by the event payload. Single source of truth is the server's `/api/policy/teams` response; subscribers receive a slice on every Policy refresh.
+- Did not modify the wave-6 Vault bridge (`window.openVaultDeepLink`). Retiring it requires both Vault and Projects to negotiate via event — separate work, separate wave.
+- Did not modify the `_showNotice` notification publisher (still in app.js with `window.notice` exposed). Out of scope; retires when the notification surface itself extracts.
+- Did not wire `unmount()` into the bootstrap — same parity stance as waves 1–10.
+- Did not modify wave-2/3/4/5/6/7/8/9/10 files (`tabs/templates.js`, `tabs/models.js`, `tabs/preferences.js`, `tabs/providers.js`, `tabs/vault.js`, `tabs/memory.js`, `tabs/skills.js`, `tabs/projects.js`, `tabs/settings.js`). Only `tabs/logs.js` was modified — and only for the bridge-retirement scope spelled out above.
+
 ### 2026-05-13 — Account usage on multi-host is by-design partial, no operator-side fix this session (closes HANDOFF.md §2.2)
 
 **Decision:** Accept that the dashboard shows different account usage numbers on different hosts. Not a regression; not fixing this session.

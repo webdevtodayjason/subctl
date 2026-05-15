@@ -15,7 +15,7 @@
 // Registry of extracted tabs. As each tab migrates out of app.js, add an
 // entry here. Waves so far: Logs (1), Templates (2), Models (3),
 // Preferences (4), Providers (5), Vault (6), Memory (7), Skills (8),
-// Projects (9), Settings (10).
+// Projects (9), Settings (10), Policy (11).
 
 const TAB_LOADERS = new Map([
   ["logs", () => import("./tabs/logs.js")],
@@ -28,6 +28,7 @@ const TAB_LOADERS = new Map([
   ["skills", () => import("./tabs/skills.js")],
   ["projects", () => import("./tabs/projects.js")],
   ["settings", () => import("./tabs/settings.js")],
+  ["policy", () => import("./tabs/policy.js")],
 ]);
 
 // id -> Promise<module>. Memoizes the dynamic import + mount so a tab is
