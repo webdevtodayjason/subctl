@@ -510,6 +510,50 @@ Other inter-tab bridges that are still live (NOT touched this wave):
 - Did not wire `unmount()` into the bootstrap — same parity stance as waves 1–10.
 - Did not modify wave-2/3/4/5/6/7/8/9/10 files (`tabs/templates.js`, `tabs/models.js`, `tabs/preferences.js`, `tabs/providers.js`, `tabs/vault.js`, `tabs/memory.js`, `tabs/skills.js`, `tabs/projects.js`, `tabs/settings.js`). Only `tabs/logs.js` was modified — and only for the bridge-retirement scope spelled out above.
 
+### 2026-05-14 — dashboard decomposition wave 12 (Teams extracted)
+
+**Decision:** Extract the Teams tab (dev-team templates) from `dashboard/public/app.js` into `dashboard/public/tabs/teams.js`. App.js shrinks 5,161 → 4,845 LOC (-316: section header + `wireTeamsTab` body at `app.js:488–803` (316 lines) and the boot call site at `app.js:461`, offset by +1 line for the wave-12 breadcrumb in the boot comment block — net -316).
+
+Teams is the **simple case** of the decomposition. After the wave-9/10/11 sequence handled cross-tab bridges, dual-role data sharing, and a 717-LOC structural shuffle with bridge retirement, wave 12 is one isolated function with one timer and zero cross-module surface. Same idiom as wave 5 (Providers): outer function → `mount()`, inline closures stay closures, single `setInterval` lifted to a module-scope `pollTimer` for `unmount()` hygiene.
+
+**Why now:** Teams was the next sequential tab after Policy (wave 11). It's a clean single-function extraction with no shared state to negotiate, so it slots in between the structurally-heavy wave 11 and the structurally-heavy wave 13 (joint Orchestration cockpit + Dashboard panels at ~1,891 LOC). Doing it now keeps the cadence and frees up app.js's call site for the wave-13 entry.
+
+**Lifecycle:**
+- One `setInterval(refreshList, 30000)` lifted to module-scope `pollTimer`. Original wrapped the call in a `getComputedStyle(panel).display !== "none"` visibility gate — dropped, same as waves 4–11, because bootstrap only mounts on tab activation. Gate is moot.
+- One `setTimeout(closeModal, 900)` after a successful save — left verbatim, no handle tracked (self-collecting).
+- All other listeners (modal open/close, form submit, skills filter, per-row buttons, edit/duplicate/delete actions inside the detail pane) are element-scoped and die with the panel DOM.
+- `unmount()` clears `pollTimer` only. Interface parity with waves 1–11; bootstrap never calls unmount today.
+- No `window.__subctl*` reads, no `subctl:*` event subscriptions, no shared cache. Fully isolated tab.
+
+**Helpers inlined at mount-scope (not bridged) for behavior parity:**
+- `$` — `id => document.getElementById(id)` (one-liner, every prior wave inlines it).
+- `escapeText` — used heavily in `refreshList` / `selectTeam` / `renderToolsGrid` / `renderSkillsList` renders. App.js's copy stays put for the rest of app.js's consumers.
+
+**Spec-vs-code drift (logged for next dispatch):** The wave-12 brief listed HTTP endpoints as `/api/team-templates` (GET/POST/DELETE) plus a `POST /api/orchestration/spawn` call. Neither matches the actual code. The section actually calls `/api/teams` (GET, POST), `/api/teams/<name>` (GET, PUT, DELETE), `/api/skills`, `/api/teams/tools`. No `/api/orchestration/spawn` is invoked. The module's docstring documents the real endpoints; the brief was not amended in source. Server handlers were not modified (and were never going to be — they were out of scope), so this drift is a documentation-only issue that affected nothing structural.
+
+**Migration progress:**
+- ✅ Wave 1 — Logs (commit `3f58f03`)
+- ✅ Wave 2 — Templates (commit `b681255`)
+- ✅ Wave 3 — Models (commit `2b2c515`)
+- ✅ Wave 4 — Preferences (commit `c633322`)
+- ✅ Wave 5 — Providers (commit `edc0b73`)
+- ✅ Wave 6 — Vault (commit `27000b5`)
+- ✅ Wave 7 — Memory (commit `6597668`)
+- ✅ Wave 8 — Skills (commit `d926d58`)
+- ✅ Wave 9 — Projects (commit `52e2ae2`)
+- ✅ Wave 10 — Settings (commit `44aa618`)
+- ✅ Wave 11 — Policy + bridge retirement (commit `e8bbd30`)
+- ✅ Wave 12 — Teams (this entry; 12/17 tabs)
+- ⏭ Next — joint wave 13: Orchestration cockpit + Dashboard panels (~1,891 LOC).
+
+**What we explicitly did NOT do this PR:**
+- Did not refactor or restructure any of the inline sub-helpers (`renderSelectedSkillChips`, `renderSkillsList`, `renderToolsGrid`, `setSelectedTools`, `getSelectedTools`, `loadEditorContext`, `openModal`, `closeModal`, `refreshList`, `selectTeam`). Verbatim copy: outer function → `mount()`, every inner closure → local declaration. Same identity, same shape, same wiring order.
+- Did not replace the browser dialogs (`prompt` for duplicate-rename, `confirm` for delete, `alert` for failure paths). Out of scope this wave; would require coordination with the notification surface that's still owned by app.js.
+- Did not change any endpoint contract or modify any server handler. `/api/teams[*]`, `/api/skills`, `/api/teams/tools` all unchanged.
+- Did not introduce or retire any cross-module bridge — Teams owns nothing on `window` and consumes nothing from `window.__subctl*`. The wave-9 `window.openVaultDeepLink`, wave-9 `window.__subctlAttachOneShotAssistantCapture`, wave-8 `window.__skillsClarityRefresh`, wave-9 `window.__policyPresetsCache`, and `window.notice` consumer surfaces all stand exactly as they did after wave 11.
+- Did not wire `unmount()` into the bootstrap — same parity stance as waves 1–11.
+- Did not modify wave-1/2/3/4/5/6/7/8/9/10/11 files. Only the new `tabs/teams.js`, `bootstrap.js` (+1 entry), `dashboard/server.ts` (+1 STATIC_FILES entry), and `app.js` (deletion + breadcrumb) were touched.
+
 ### 2026-05-13 — Account usage on multi-host is by-design partial, no operator-side fix this session (closes HANDOFF.md §2.2)
 
 **Decision:** Accept that the dashboard shows different account usage numbers on different hosts. Not a regression; not fixing this session.
