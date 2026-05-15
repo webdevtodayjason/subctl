@@ -3,17 +3,21 @@
 // v2.8.6 — Orchestration zone. Wave 13 of dashboard/public/app.js
 // decomposition. Largest single extraction (~906 LOC).
 //
-// Extracted from app.js:709–1614 (six contiguous blocks):
+// Extracted from app.js:709–1614 (five contiguous blocks):
 //   1. Camera grid (NVR-style tmux pane viewer)        — app.js:709–828
 //   2. Orchestration cockpit + watchdog history shim   — app.js:830–1098
 //   3. Watchdogs panel (v2.7.19 + v2.7.35 rich diag)   — app.js:1101–1394
 //   4. TMux preview modal                              — app.js:1401–1484
 //   5. Web terminal modal driver + boot gate           — app.js:1490–1540
-//   6. Notice/confirm modal (global notification sub.) — app.js:1544–1611
 //
-// PUBLISHES 5 window globals from `mount()` for the 32 consumers that
-// still read them (24 sites in app.js shell + 8 sites across the
-// extracted tabs/*.js modules):
+// The notice/confirm modal (originally a sixth block here) lives in
+// app.js — it's a shell-level notification system, not tab-scoped, and
+// every consumer fires before this module mounts. See app.js for the
+// `_showNotice` definition + `window.notice` publications.
+//
+// PUBLISHES 4 window globals from `mount()` for the consumers that
+// still read them (across app.js shell + the extracted tabs/*.js
+// modules):
 //   - window.__subctlOpenTmuxPreview        (consumed at app.js:3278)
 //   - window.__subctlCopyAttachCommand      (consumed at app.js:3288)
 //   - window.__subctlOpenWebTerminal        (no remaining external consumers
@@ -21,29 +25,13 @@
 //                                            for symmetry + legacy panels)
 //   - window.__subctlWireWebTerminalGate    (hoist for boot block, harmless
 //                                            now that Orch owns its own boot)
-//   - window.notice (+ .error, .confirm)    (consumed at ~21 sites in app.js
-//                                            + settings.js:620,628)
 //
-// Bridge retirement is DEFERRED for this wave — these globals are deeply
-// consumed across the shell, the chat panel, the supervisor switch, the
-// profile pill, the compact/clear flows, the Dashboard panel attach
-// buttons, and Settings. Following the wave-6 (Vault) publisher pattern:
+// Bridge retirement is DEFERRED for this wave — these globals are
+// consumed across the shell, the chat panel, the Dashboard panel attach
+// buttons, etc. Following the wave-6 (Vault) publisher pattern:
 // publish at the end of `mount()`, null in `unmount()`. A future
 // event-based migration (per the wave-11 Policy precedent) can land
 // after wave 14 (Master chat) removes its own publishers.
-//
-// HOWEVER — note that the 21 in-app.js `window.notice` consumers do
-// NOT null-check before calling. If the operator triggers a flow that
-// uses `window.notice` BEFORE this module mounts (e.g. profile-pill
-// confirm before any tab activates Orch), the call throws. This is the
-// same trade-off accepted in wave 6 for `window.openVaultDeepLink`
-// (consumers fell back to a no-op) — but here, every consumer assumes
-// `window.notice` is defined. The pragmatic mitigation is that Orch's
-// loader entry is registered in bootstrap.js and any tab activation
-// fires mountTab, which serializes the dynamic import. Operators
-// landing on Orch as the boot tab get it immediately; landing on
-// another tab gets it shortly after. The window before mount is the
-// only at-risk surface; we accept that for wave 13.
 //
 // HTTP endpoints (server-side handlers untouched this wave):
 //   GET  /api/orchestration/captures?lines=N
@@ -937,75 +925,6 @@ export async function mount({ root: _root }) {
     }
   }
 
-  // ---------- notice/confirm modal ----------
-  // Replaces browser alert() and confirm() so popups match the dashboard
-  // theme. Returns a Promise<boolean> for confirm-style usage; resolves
-  // true on OK, false on cancel/escape/close.
-  //
-  // Usage:
-  //   await notice("Title", "Plain message")           — info, single OK
-  //   await notice.error("Switch failed", err.message) — red header
-  //   await notice.confirm("Delete?", "This is permanent.") — returns bool
-  //
-  // The dashboard already has alert() / confirm() calls scattered through
-  // the legacy widgets; we sweep the most user-visible ones (chat,
-  // supervisor switch, delete buttons) to use this helper. Background
-  // dialogs (e.g. minor errors in low-traffic admin views) can keep
-  // alert() until needed.
-  function _showNotice({ title, body, kind = "info", confirm = false }) {
-    return new Promise((resolve) => {
-      const modal = document.getElementById("notice-modal");
-      const titleEl = document.getElementById("notice-title");
-      const bodyEl = document.getElementById("notice-body");
-      const okBtn = document.getElementById("notice-ok");
-      const cancelBtn = document.getElementById("notice-cancel");
-      const closeBtn = document.getElementById("notice-close");
-      if (!modal || !titleEl || !bodyEl || !okBtn) {
-        // Fallback to native if the modal element somehow isn't in the DOM
-        if (confirm) resolve(window.confirm((title ? title + "\n\n" : "") + body));
-        else { window.alert((title ? title + "\n\n" : "") + body); resolve(true); }
-        return;
-      }
-      titleEl.textContent = title || "Notice";
-      bodyEl.textContent = body || "";
-      // Color the header by kind
-      titleEl.style.color = kind === "error" ? "#d66c6c"
-                          : kind === "warn"  ? "#d6c46c"
-                          : kind === "ok"    ? "#6cd697"
-                          : "#ffffff";
-      // Belt-and-braces visibility — inline display PLUS hidden attr —
-      // so the Cancel button never sneaks through on info/error notices
-      // even if a CSS rule overrides [hidden].
-      cancelBtn.hidden = !confirm;
-      cancelBtn.style.display = confirm ? "" : "none";
-      okBtn.textContent = confirm ? "Confirm" : "OK";
-      modal.hidden = false;
-      // Focus management — let Esc and Enter work
-      const close = (val) => {
-        modal.hidden = true;
-        okBtn.removeEventListener("click", onOk);
-        cancelBtn.removeEventListener("click", onCancel);
-        closeBtn.removeEventListener("click", onCancel);
-        modal.removeEventListener("click", onBackdrop);
-        document.removeEventListener("keydown", onKey);
-        resolve(val);
-      };
-      const onOk = () => close(true);
-      const onCancel = () => close(false);
-      const onBackdrop = (e) => { if (e.target === modal) close(false); };
-      const onKey = (e) => {
-        if (e.key === "Escape") close(false);
-        else if (e.key === "Enter") close(true);
-      };
-      okBtn.addEventListener("click", onOk);
-      cancelBtn.addEventListener("click", onCancel);
-      closeBtn.addEventListener("click", onCancel);
-      modal.addEventListener("click", onBackdrop);
-      document.addEventListener("keydown", onKey);
-      setTimeout(() => okBtn.focus(), 50);
-    });
-  }
-
   // ── Boot wirers — mirror app.js boot order (455, 456, 460, 1395). The
   //    original web-terminal gate was fire-and-forget at line 460 inside
   //    a synchronous IIFE block, so we preserve that semantic with `void`
@@ -1016,17 +935,16 @@ export async function mount({ root: _root }) {
   void wireWebTerminalGate();
   wireWatchdogPanel();
 
-  // ── Publish 5 globals — verbatim from app.js:1487, 1488, 1523, 1542,
-  //    1612, 1613, 1614. Consumers (app.js shell + extracted tabs) read
-  //    these directly off `window`. See top-of-file note for the
-  //    deferred-retirement reasoning.
+  // ── Publish 4 globals — verbatim from app.js:1487, 1488, 1523, 1542.
+  //    Consumers (app.js shell + extracted tabs) read these directly
+  //    off `window`. See top-of-file note for the deferred-retirement
+  //    reasoning. The fifth global previously published here
+  //    (window.notice) was reclaimed to app.js — it's a shell-level
+  //    notification system, not tab-scoped.
   window.__subctlOpenTmuxPreview = openTmuxPreview;
   window.__subctlCopyAttachCommand = copyAttachCommand;
   window.__subctlOpenWebTerminal = openWebTerminal;
   window.__subctlWireWebTerminalGate = wireWebTerminalGate;
-  window.notice = (title, body, opts = {}) => _showNotice({ title, body, kind: opts.kind ?? "info", confirm: false });
-  window.notice.error = (title, body) => _showNotice({ title, body, kind: "error", confirm: false });
-  window.notice.confirm = (title, body) => _showNotice({ title, body, kind: "warn", confirm: true });
 }
 
 export function unmount() {
@@ -1035,5 +953,4 @@ export function unmount() {
   window.__subctlCopyAttachCommand = null;
   window.__subctlOpenWebTerminal = null;
   window.__subctlWireWebTerminalGate = null;
-  window.notice = null;
 }

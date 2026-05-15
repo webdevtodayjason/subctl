@@ -219,14 +219,24 @@
   //    cell builders, notification tray, status pill, lucide chrome,
   //    host-label boot, tab nav).
   // ── v2.8.6 (wave 13): Orchestration zone (camera grid + cockpit +
-  //    watchdog panel + tmux-preview / web-terminal / notice modals)
-  //    extracted to dashboard/public/tabs/orch.js. The four boot setup
+  //    watchdog panel + tmux-preview / web-terminal modals)
+  //    extracted to dashboard/public/tabs/orch.js. The boot setup
   //    functions that used to run here are now invoked inside that
-  //    module's mount(). Orch continues to publish 5 globals from
-  //    mount() for the cross-module consumers (window.notice plus the
-  //    three __subctl* helpers + the boot-gate hoist). 24 in-shell +
-  //    8 in-module consumers keep working. See orch.js header for the
-  //    bridge-retirement plan.
+  //    module's mount(). Orch publishes 4 globals from mount() for the
+  //    cross-module consumers (the three __subctl* helpers + the
+  //    boot-gate hoist). See orch.js header for the bridge-retirement
+  //    plan.
+  //
+  //    NOTE: `_showNotice` + `window.notice` / `.error` / `.confirm`
+  //    were also moved out in the original wave-13 extraction. That
+  //    was wrong — the default-active tab is "chat", so on page boot
+  //    window.notice was null until the operator clicked the
+  //    Orchestration nav button, and every consumer aborted silently
+  //    with `TypeError: Cannot read properties of null`. Reclaimed to
+  //    the shell (see the `_showNotice` definition + publications just
+  //    above `escapeText`). The notification system is a shell-level
+  //    concern, not tab-scoped — the wave-13 grouping with orch's
+  //    modal helpers was an authoring-history accident.
   // ── v2.8.6 (wave 12): Teams tab extracted to dashboard/public/tabs/teams.js.
   // ── v2.8.6 (wave 11): Policy zone extracted to dashboard/public/tabs/policy.js.
   //    Bridge retirement: the 3 wave-1 window.__subctl* globals are GONE.
@@ -263,6 +273,82 @@
   function cssEscape(s) {
     return String(s).replace(/[^a-zA-Z0-9_-]/g, "_");
   }
+
+  // ----- notice/confirm modal (shell-owned) -----
+  // Replaces browser alert() and confirm() so popups match the dashboard
+  // theme. Returns a Promise<boolean> for confirm-style usage; resolves
+  // true on OK, false on cancel/escape/close.
+  //
+  // Usage:
+  //   await notice("Title", "Plain message")           — info, single OK
+  //   await notice.error("Switch failed", err.message) — red header
+  //   await notice.confirm("Delete?", "This is permanent.") — returns bool
+  //
+  // History: wave 13 moved this into tabs/orch.js along with the
+  // tmux-preview + web-terminal modal helpers. That was wrong — the
+  // default-active tab is "chat", so window.notice was null until the
+  // operator clicked the Orchestration nav button, and every consumer
+  // (chat model-selector apply, settings profile swap, etc.) threw
+  // `TypeError: Cannot read properties of null (reading 'confirm')` on
+  // click and aborted silently. The notification system is a
+  // shell-level concern, not orch-scoped, so it lives here now, published
+  // before any tab module mounts.
+  function _showNotice({ title, body, kind = "info", confirm = false }) {
+    return new Promise((resolve) => {
+      const modal = document.getElementById("notice-modal");
+      const titleEl = document.getElementById("notice-title");
+      const bodyEl = document.getElementById("notice-body");
+      const okBtn = document.getElementById("notice-ok");
+      const cancelBtn = document.getElementById("notice-cancel");
+      const closeBtn = document.getElementById("notice-close");
+      if (!modal || !titleEl || !bodyEl || !okBtn) {
+        // Fallback to native if the modal element somehow isn't in the DOM
+        if (confirm) resolve(window.confirm((title ? title + "\n\n" : "") + body));
+        else { window.alert((title ? title + "\n\n" : "") + body); resolve(true); }
+        return;
+      }
+      titleEl.textContent = title || "Notice";
+      bodyEl.textContent = body || "";
+      // Color the header by kind
+      titleEl.style.color = kind === "error" ? "#d66c6c"
+                          : kind === "warn"  ? "#d6c46c"
+                          : kind === "ok"    ? "#6cd697"
+                          : "#ffffff";
+      // Belt-and-braces visibility — inline display PLUS hidden attr —
+      // so the Cancel button never sneaks through on info/error notices
+      // even if a CSS rule overrides [hidden].
+      cancelBtn.hidden = !confirm;
+      cancelBtn.style.display = confirm ? "" : "none";
+      okBtn.textContent = confirm ? "Confirm" : "OK";
+      modal.hidden = false;
+      // Focus management — let Esc and Enter work
+      const close = (val) => {
+        modal.hidden = true;
+        okBtn.removeEventListener("click", onOk);
+        cancelBtn.removeEventListener("click", onCancel);
+        closeBtn.removeEventListener("click", onCancel);
+        modal.removeEventListener("click", onBackdrop);
+        document.removeEventListener("keydown", onKey);
+        resolve(val);
+      };
+      const onOk = () => close(true);
+      const onCancel = () => close(false);
+      const onBackdrop = (e) => { if (e.target === modal) close(false); };
+      const onKey = (e) => {
+        if (e.key === "Escape") close(false);
+        else if (e.key === "Enter") close(true);
+      };
+      okBtn.addEventListener("click", onOk);
+      cancelBtn.addEventListener("click", onCancel);
+      closeBtn.addEventListener("click", onCancel);
+      modal.addEventListener("click", onBackdrop);
+      document.addEventListener("keydown", onKey);
+      setTimeout(() => okBtn.focus(), 50);
+    });
+  }
+  window.notice = (title, body, opts = {}) => _showNotice({ title, body, kind: opts.kind ?? "info", confirm: false });
+  window.notice.error = (title, body) => _showNotice({ title, body, kind: "error", confirm: false });
+  window.notice.confirm = (title, body) => _showNotice({ title, body, kind: "warn", confirm: true });
 
   // ----- Verdict-transition notifications -----
   // Track the previous global + per-account verdicts. When any flip from green
