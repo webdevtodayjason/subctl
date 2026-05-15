@@ -4,6 +4,78 @@ Most recent session at top. Older sessions retained below as historical record.
 
 ---
 
+## Session 2026-05-14 evening — dashboard decomposition wave 11 (Claude Opus 4.7, 1M ctx)
+
+**Protocol start:** 2026-05-14T~21:20 CDT
+**Branch:** `feat/dashboard-decomp-policy` (off `main` @ `e6de7d8`)
+**Mode:** Orchestration with batch authorization. **Operator explicitly authorized higher-risk wave** including the wave-1 bridge retirement.
+
+### Mission
+Wave 11: extract the **Policy** zone — biggest yet at ~710 LOC across 13 functions — AND **retire the 3 wave-1 cross-tab bridges**. First wave to modify an already-shipped extracted module (`tabs/logs.js`). New contract: custom DOM events on `document` replace the three `window.__subctl*` globals.
+
+### Pre-conditions verified
+- `main` @ `e6de7d8` (wave-10 deployed, pushed)
+- Policy zone bounds: `app.js:4510–5225` inclusive (~715 lines)
+  - Lines 4510-4515: long PR-11 header comment block
+  - Line 4520: `let cachedTeams = []`
+  - Lines 4522-4574: audit-line helpers (`fmtAuditLine`, `classifyAuditLine`, `renderAuditEntries`) — **these MOVE TO `tabs/logs.js`** (Logs is the sole consumer)
+  - Lines 4576-4609: `refreshPolicyTeamsForDropdowns()` — Policy-owned, splits DOM cross-write
+  - Lines 4613-4620: bridge publication block (3 `window.__subctl*` assignments) — DELETED
+  - Lines 4623-5225: `wirePolicyTab` + 4 editor functions + 4 helper functions — all to `tabs/policy.js`
+- Boot call at `app.js:479`
+- 3 bridge consumers in `tabs/logs.js`: lines 274, 277, 288, 302, 304 (5 read sites)
+- Wave-1 DECISIONS predicted this exact retirement: "Policy owns its own publishing (likely a `teamsUpdated` custom event Logs subscribes to)"
+
+### New contract — `subctl:policy-teams-updated` event
+
+**Publisher (`tabs/policy.js`):**
+- Owns `cachedTeams` (module-scope)
+- `refreshPolicyTeams()` fetches `/api/policy/teams`, updates `cachedTeams`, populates `#policy-resolved-team` (Policy's own selector — the cross-write to `#logs-policy-team` is REMOVED), then dispatches `document.dispatchEvent(new CustomEvent("subctl:policy-teams-updated", { detail: { teams: [...cachedTeams] } }))`
+- Subscribes to `document` for `subctl:policy-teams-refresh-request` — when received, calls `refreshPolicyTeams()`. Lift the handler to module scope so `unmount()` can remove it.
+
+**Subscriber (`tabs/logs.js` — modified):**
+- Adds module-scope `let logsCachedTeams = []` (Logs's local copy)
+- In `mount()`, registers `onTeamsUpdated` listener on `document`. Handler stores `e.detail.teams` into `logsCachedTeams` and populates `#logs-policy-team` (the DOM cross-write that used to live in Policy is now here, on the consuming side).
+- SSE meta-line code reads `logsCachedTeams` directly (replacing `window.__subctlGetPolicyTeams?.()` call sites).
+- Chip-activation path: dispatches `subctl:policy-teams-refresh-request` and uses a one-shot Promise-wrapping helper to wait for the next `subctl:policy-teams-updated` event before populating the team selector.
+- Hosts `fmtAuditLine`, `classifyAuditLine`, `renderAuditEntries` as local helpers inside `mount()` (moved from app.js's policy-zone).
+- SSE handlers call local `renderAuditEntries` directly (replacing `window.__subctlRenderAuditEntries?.()`).
+- `unmount()` removes the `subctl:policy-teams-updated` listener.
+
+### Task Ledger
+
+| ID | Task | State | Worker | Started | Finished |
+|----|------|-------|--------|---------|----------|
+| W11 | Extract Policy zone to `tabs/policy.js` (publishes event) + modify `tabs/logs.js` to subscribe (replaces 3 bridges) + move audit renderers from app.js to logs.js + delete 3 `window.__subctl*` bridge publications + bootstrap registry + server STATIC_FILES + DECISIONS.md wave-11 closeout | ✅ done | policy-extract | 2026-05-14T~21:20 CDT | 2026-05-14T~21:42 CDT (22 min) |
+
+### Verification Evidence — wave 11
+
+- **Commit:** `e8bbd30` on `feat/dashboard-decomp-policy`
+- **App.js:** 5,870 → 5,161 LOC (−709, forecast was −712)
+- **tabs/policy.js:** 758 lines, biggest module yet — owns `cachedTeams`, publishes `subctl:policy-teams-updated`, subscribes to `subctl:policy-teams-refresh-request`, populates ONLY `#policy-resolved-team`
+- **tabs/logs.js:** 372 → 504 lines (+132) — adds module-scope `logsCachedTeams` + `onTeamsUpdated`; hosts `fmtAuditLine`/`classifyAuditLine`/`renderAuditEntries` as locals inside mount; subscribes to `subctl:policy-teams-updated`, fires `subctl:policy-teams-refresh-request` on chip activation; unmount removes the listener cleanly
+- **Bridge retirement — verified by grep:**
+  - `__subctlGetPolicyTeams` / `__subctlRefreshPolicyTeams` / `__subctlRenderAuditEntries` → **zero hits in BOTH `app.js` AND `tabs/logs.js`**. The wave-1 bridges are gone.
+- **Event contract — verified symmetric:**
+  - `subctl:policy-teams-updated`: dispatched at `policy.js:128`; subscribed at `logs.js:154` (long-lived) + `logs.js:316-323` (one-shot pattern for chip activation)
+  - `subctl:policy-teams-refresh-request`: dispatched at `logs.js:330`; subscribed at `policy.js:137`, removed at `policy.js:755` (unmount)
+- **DOM cross-write split** verified: Policy populates only `#policy-resolved-team`; Logs populates only `#logs-policy-team` (now triggered by event handler, not direct cross-write)
+- **bootstrap.js:** `TAB_LOADERS` now 11 entries
+- **server.ts:** `STATIC_FILES["/tabs/policy.js"]` registered
+- **All 4 `node --check` passes; bun build of server clean.**
+
+### Pattern proven — inter-module event contract
+
+Wave 11 establishes the canonical pattern for cross-tab communication after extraction: **`document`-level custom events** with `{ detail: ... }` payloads. Publisher fires, subscriber listens, both clean up in `unmount()`. The one-shot pattern (install listener → fire request → resolve on first matching event → remove listener) handles synchronous request/response. No event-bus library, no shared/ directory, no service layer — just the platform.
+
+This unlocks the back half of the migration. Future cross-cuts (Master chat reading session state, Dashboard panels reading Orchestration state, Teams reading Policy presets) all have a tested contract to follow.
+
+### Wave-1 retrospective closeout
+
+Wave-1 DECISIONS.md explicitly predicted this retirement: "These retire when the Policy tab extracts. At that point Policy owns its own publishing (likely a `teamsUpdated` custom event Logs subscribes to), the bidirectional DOM cross-write collapses to one side, and the bridges go." **All three predictions held.** The temporary bridges introduced 1.5 days ago to keep wave-1 unblocked are gone exactly as scheduled. Good design discipline.
+
+---
+
 ## Session 2026-05-14 evening — dashboard decomposition wave 10 (Claude Opus 4.7, 1M ctx)
 
 **Protocol start:** 2026-05-14T~21:05 CDT
