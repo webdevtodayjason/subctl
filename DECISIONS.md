@@ -178,6 +178,42 @@ export function unmount(/* ctx */);       // optional — close SSE / timers
 - Did not introduce a `shared/` directory — still nothing to share (each tab inlines its tiny helper budget).
 - Did not wire `unmount()` into the bootstrap — same parity stance as waves 1–4.
 
+### 2026-05-14 — dashboard decomposition wave 6 (Vault extracted; publisher bridge pattern proven)
+
+**Decision:** Extract the Vault tab from `dashboard/public/app.js` into `dashboard/public/tabs/vault.js`, mirroring waves 1–5 (commits `3f58f03`, `b681255`, `2b2c515`, `c633322`, `edc0b73`). App.js shrinks from 7,853 → 7,544 LOC (-309: 1 boot call site, the `// ----- Vault viewer (Phase 3n) ---` section header + 308 lines of `wireVaultTab` body, offset by +3 for the wave-6 breadcrumb dropped into the existing comment block).
+
+The new module continues to **publish** `window.openVaultDeepLink` from `mount()` — making this the FIRST tab in the decomposition to expose a window bridge. Wave 1 (Logs) only consumed bridges (`__subctlGetPolicyTeams`, etc.); wave 6 is the symmetric publisher side. The Projects tab (wave 9, still in app.js at the relocated lines ~3210) reads the global to deep-link into specific notes.
+
+**Why now:** Vault was the next target in the wave-1 migration order (Logs → Templates → Models → Preferences → Providers → **Vault** → …). It also had a hard sequencing constraint: Vault must extract **before** Projects so the publisher half of the deep-link bridge moves first. Memory and Skills remain on the queue after this.
+
+**Bridge pattern — publisher side:**
+- `mount()` ends by assigning `window.openVaultDeepLink = function(root, path) { … }`. Verbatim body from the original lines 2246–2253; the function closes over the mount-scope `checkActive` so navigation re-runs deep-link parsing when the tab nav button is missing.
+- `unmount()` sets `window.openVaultDeepLink = null` (symmetric with the publisher install). Bootstrap never calls `unmount` today, so this is forward-looking hygiene — same parity stance as waves 1–5's `pollTimer` / listener teardown.
+- The bridge **stays published** until Projects extracts in wave 9. We DID NOT replace it with a `CustomEvent` or `EventTarget` channel this wave. The consumer at app.js:3210 reads the global directly and a switch would force a parallel edit in a tab we explicitly are not touching this wave.
+- When Projects extracts, we'll evaluate retiring this bridge to a `subctl:vault-deeplink` custom event. The decision criterion will be: is there ≥1 additional consumer beyond Projects (e.g. master-chat tool calls suggesting "open this note") that would benefit from the looser coupling? If yes → custom event. If no → keep the global (simpler, same shape as `window.__subctlGetPolicyTeams` until Policy extracts).
+
+**Lifecycle — first tab to lift a `MutationObserver` handle:**
+- The original installed `new MutationObserver(checkActive).observe(document.body, …)` inline at line 2239 with no captured handle. Bootstrap-mounting makes the first mount-time `checkActive` redundant, but the observer still has real work: when Projects fires `openVaultDeepLink`, the resulting `nav.click()` flips `data-active-tab`, the observer catches it, `checkActive` re-reads the hash. We can't drop the observer the way wave 4 dropped the Preferences `MutationObserver`.
+- Lifted to a module-scope `let activeTabObserver = null;` so `unmount()` can `.disconnect()` it. Same idiom as wave 3 (`tabs/models.js`)'s `pollTimer` and wave 5's identical pattern. First tab in the migration to use this pattern for an observer rather than a timer.
+- `select.change`, `.dir-label` / `.vault-tree-note` / `.vault-wikilink` click listeners, and the `setTimeout` marked.js ready-poll are element-scoped or one-shot; they don't need explicit removal. Only the observer + the bridge null-out are in `unmount()`.
+
+**Migration progress:**
+- ✅ Wave 1 — Logs (commit `3f58f03`)
+- ✅ Wave 2 — Templates (commit `b681255`)
+- ✅ Wave 3 — Models (commit `2b2c515`)
+- ✅ Wave 4 — Preferences (commit `c633322`)
+- ✅ Wave 5 — Providers (commit `edc0b73`)
+- ✅ Wave 6 — Vault (this entry)
+- ⏭ Next — Memory, per the wave-1 ordering (278 LOC, no shared state by current inventory).
+
+**What we explicitly did NOT do this PR:**
+- Did not modify wave-1/2/3/4/5 files (`tabs/logs.js`, `tabs/templates.js`, `tabs/models.js`, `tabs/preferences.js`, `tabs/providers.js`, bridge globals, `setActiveTab` notify hook).
+- Did not touch any tab other than Vault. The Projects-tab consumer at app.js:3210 (typeof guard + invocation) is preserved verbatim — it stays as-is until wave 9.
+- Did not retire the `window.openVaultDeepLink` bridge. Did not introduce a `subctl:vault-deeplink` custom event yet. Did not refactor the consumer.
+- Did not touch the Settings tab's vault-config form (lives BEFORE the Vault tab body; outside the deletion range).
+- Did not change any server-side `/api/vault/*` handler — only the client moved.
+- Did not wire `unmount()` into the bootstrap — same parity stance as waves 1–5.
+
 ### 2026-05-13 — Account usage on multi-host is by-design partial, no operator-side fix this session (closes HANDOFF.md §2.2)
 
 **Decision:** Accept that the dashboard shows different account usage numbers on different hosts. Not a regression; not fixing this session.
