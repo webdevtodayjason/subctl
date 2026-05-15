@@ -43,7 +43,10 @@ Usage:
   subctl service logs [N]             Show last N log lines (default 50)
   subctl service foreground           Run dashboard in current shell
 
-  subctl dashboard                    Ensure service is running, open browser
+  subctl dashboard [open]             Ensure service running, open browser
+  subctl dashboard deploy             Pull origin/main into install tree
+                                      (~/.local/lib/subctl-install) and
+                                      kickstart the daemon. Idempotent.
 
   subctl session-list [--format <plain|sesh|json>]
                                       List tmux sessions enriched with account
@@ -314,10 +317,13 @@ case "$cmd" in
     ;;
 
   dashboard)
-    . "$SUBCTL_REPO_ROOT/lib/service.sh"
-    state=$(subctl_service_state)
-    [[ "$state" != "running" ]] && subctl_service_start
-    open "http://127.0.0.1:$SUBCTL_SERVICE_PORT"
+    . "$SUBCTL_REPO_ROOT/lib/dashboard.sh"
+    sub="${1:-open}"; [[ $# -gt 0 ]] && shift
+    case "$sub" in
+      open|"")  subctl_dashboard_open ;;
+      deploy)   subctl_dashboard_deploy ;;
+      *) subctl_die "usage: subctl dashboard [open|deploy]" ;;
+    esac
     ;;
 
   deck)
