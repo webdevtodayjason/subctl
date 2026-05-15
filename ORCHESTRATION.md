@@ -4,6 +4,47 @@ Most recent session at top. Older sessions retained below as historical record.
 
 ---
 
+## Session 2026-05-14 evening — dashboard decomposition wave 8 (Claude Opus 4.7, 1M ctx)
+
+**Protocol start:** 2026-05-14T~20:35 CDT
+**Branch:** `feat/dashboard-decomp-skills` (off `main` @ `faf8098`)
+**Mode:** Orchestration with batch authorization. Operator chose to continue with `Agent` + `team_name` despite the wave-7 timing tail; we accept the variable latency risk.
+
+### Mission
+Wave 8 of `dashboard/public/app.js` decomposition: extract the **Skills** tab — biggest tab so far at ~406 LOC. Two internal entry points (`wireSkillsTab` + `wireSkillsClarityView`) collapse into one `mount()`. Publishes a window bridge (`window.__skillsClarityRefresh`) with no known consumer — preserve as no-op for behavior parity, queue retirement as DECISIONS deferred work.
+
+### Pre-conditions verified
+- `main` @ `faf8098` (wave-7 deployed and pushed)
+- Section bounds: `app.js:793–1198` inclusive (406 lines)
+  - `wireSkillsTab` @ 794-1005 — main catalog + import flow, `setInterval` poll, calls `wireSkillsClarityView`
+  - `wireSkillsClarityView` @ 1006-1198 — clarity card view, `setInterval` poll, publishes `window.__skillsClarityRefresh`
+- Call site at `app.js:463`
+- Bridge `window.__skillsClarityRefresh` set at `app.js:1061` — grep confirms NO READERS anywhere in `dashboard/public/app.js`. Bridge is effectively dead but preserved for behavior parity (something outside app.js — master tool, browser extension, bookmarklet — may still read it).
+
+### Task Ledger
+
+| ID | Task | State | Worker | Started | Finished |
+|----|------|-------|--------|---------|----------|
+| W8 | Extract Skills tab (2 sub-functions → 1 mount) to `tabs/skills.js` + preserve `__skillsClarityRefresh` bridge publication + bootstrap registry + server STATIC_FILES + delete from `app.js` + DECISIONS.md wave-8 closeout | ✅ done | skills-extract | 2026-05-14T~20:35 CDT | 2026-05-14T~20:48 CDT (13 min) |
+
+### Verification Evidence — wave 8
+
+- **Commit:** `d926d58` on `feat/dashboard-decomp-skills` (`refactor(dashboard): extract Skills tab to ES module — wave 8 (multi-entry + bridge preservation)`)
+- **App.js:** 7,263 → 6,860 LOC (−403, forecast was −406)
+- **New module:** `dashboard/public/tabs/skills.js` — 549 lines, `{ id, mount, unmount }` shape, two `pollTimer` lifted to module scope, two sub-helpers preserved as locals inside mount(), unified `escapeText`/`$` helpers inlined
+- **Bridge accounting:**
+  - `dashboard/public/tabs/skills.js`: 4 hits — top-of-file doc comment, `window.__skillsClarityRefresh = ...` at mount end, `window.__skillsClarityRefresh = null` in unmount, plus a reference (closure or comment)
+  - `dashboard/public/app.js`: 1 hit — extraction-note comment in boot block. **Zero readers in app.js confirms the bridge is dead in-file**; preserved for unknown external readers.
+- **bootstrap.js:** `TAB_LOADERS` now 8 entries
+- **server.ts:** `STATIC_FILES["/tabs/skills.js"]` registered
+- **Gates:** all 11 pass — `node --check` clean × 3, `wireSkillsTab`/`wireSkillsClarityView` purged from app.js, registry + STATIC_FILES entries verified
+- **Worker time:** ~13 min (vs 75 for wave 7) — the "start immediately, don't over-explore" preface may have helped, or this was just the normal envelope. We have one wave-7 data point and one wave-8; can't conclude yet.
+
+### Pattern reinforced — dead-bridge preservation
+When extracting a tab that publishes a `window.__*` global whose readers can't be located in-file, default to **preserve** rather than retire. Behavior-parity is the goal of decomposition; bridge retirement is a separate sweep once we've audited external consumers (master daemon routes, browser extensions, operator bookmarklets). Document in DECISIONS.md so the eventual sweep has a list.
+
+---
+
 ## Session 2026-05-14 evening — dashboard decomposition wave 7 (Claude Opus 4.7, 1M ctx)
 
 **Protocol start:** 2026-05-14T~19:15 CDT
