@@ -415,7 +415,12 @@ export async function mount({ root: _root }) {
         // about chat-priority — cloud is always available, but LOCAL is
         // the default we steer toward. Show cloud at the TOP of the
         // dropdown but mark them clearly so they're easy to skip past.
-        const cloud = (provJ.providers || []).filter((p) => p.kind === "cloud");
+        // Only show cloud providers the operator has actually configured (≥ 1
+        // profile). The full catalog stays available in the Providers tab's
+        // "+ New Profile" modal dropdown.
+        const cloud = (provJ.providers || []).filter(
+          (p) => p.kind === "cloud" && (p.profiles || []).length > 0,
+        );
         const local = (provJ.providers || []).filter((p) => p.kind === "local");
 
         let html = "";

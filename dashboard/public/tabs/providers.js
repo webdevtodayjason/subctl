@@ -220,10 +220,13 @@ export async function mount({ root: _root }) {
         list.innerHTML = "<div class=\"dim\">unreachable</div>";
         return;
       }
-      // Render each provider with kind=cloud (skip lmstudio since it has no profiles)
-      const cloud = (j.providers || []).filter((p) => p.kind === "cloud");
+      // Only render cards for providers with at least one configured profile.
+      // The full catalog stays in the "+ New Profile" modal dropdown.
+      const cloud = (j.providers || []).filter(
+        (p) => p.kind === "cloud" && (p.profiles || []).length > 0,
+      );
       if (!cloud.length) {
-        list.innerHTML = "<div class=\"dim\">no cloud providers configured</div>";
+        list.innerHTML = "<div class=\"dim\">no profiles configured yet — click <strong>+ New Profile</strong> above to add one</div>";
         return;
       }
       list.replaceChildren(...cloud.map((p) => {
