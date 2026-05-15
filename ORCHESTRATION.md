@@ -4,6 +4,38 @@ Most recent session at top. Older sessions retained below as historical record.
 
 ---
 
+## Session 2026-05-14 evening — dashboard decomposition wave 12 (Claude Opus 4.7, 1M ctx)
+
+**Protocol start:** 2026-05-14T~21:50 CDT
+**Branch:** `feat/dashboard-decomp-teams` (off `main` @ `35e6487`)
+**Mode:** Orchestration with batch authorization. Operator chose to push through to wave 14 tonight (full decomposition).
+
+### Mission
+Wave 12: extract the **Teams** tab (dev-team templates) into `dashboard/public/tabs/teams.js`. HANDOFF flagged "mild templates/policy interop" but grep shows none at code level — only UI-text references to templates. Simpler than waves 6-11.
+
+### Pre-conditions verified
+- `main` @ `35e6487` (wave-11 deployed & pushed, bridges retired cleanly)
+- Section bounds: `app.js:488–803` inclusive (316 lines)
+- Call site at `app.js:461`
+- One `setInterval` (refresh poll)
+- No `window.__subctl*` reads, no `subctl:*` event subscriptions, no `cachedTeams` references — fully isolated tab
+- HTTP endpoints (unchanged): `/api/team-templates` GET/POST/DELETE plus `/api/orchestration/spawn`
+
+### Task Ledger
+
+| ID | Task | State | Worker | Started | Finished |
+|----|------|-------|--------|---------|----------|
+| W12 | Extract Teams tab to `tabs/teams.js` + bootstrap registry + server STATIC_FILES + delete from `app.js` + DECISIONS.md wave-12 closeout | ✅ done | teams-extract | 2026-05-14T~21:50 CDT | 2026-05-14T~21:50 CDT (10 min) |
+
+### Verification Evidence — wave 12
+
+- **Commit:** `7236f34` on `feat/dashboard-decomp-teams`
+- **App.js:** 5,161 → 4,845 LOC (−316, exact forecast match)
+- **tabs/teams.js:** 380 lines
+- All gates pass. Bootstrap + STATIC_FILES registered. wireTeamsTab fully purged from app.js.
+
+---
+
 ## Session 2026-05-14 evening — dashboard decomposition wave 11 (Claude Opus 4.7, 1M ctx)
 
 **Protocol start:** 2026-05-14T~21:20 CDT
