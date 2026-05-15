@@ -4,6 +4,116 @@ Most recent session at top. Older sessions retained below as historical record.
 
 ---
 
+## Session 2026-05-14 evening — dashboard decomposition wave 14 — THE FINISH LINE (Claude Opus 4.7, 1M ctx)
+
+**Protocol start:** 2026-05-14T~22:25 CDT
+**Branch:** `feat/dashboard-decomp-master` (off `main` @ `860abcb`)
+**Mode:** Orchestration with batch authorization. **Wave 14 is the FINAL extraction.** After this lands, app.js IS the shell.
+
+### Mission
+Wave 14: extract **Master chat** + chat-adjacent helpers (chat model selector, supervisor profile pill, `attachOneShotAssistantCapture`) into `dashboard/public/tabs/chat.js` (matching HTML `data-tab="chat"`).
+
+This is the **default tab at page load** (`<button class="nav-btn active" data-tab="chat">`), so the bootstrap loader will hit `chat.js` immediately via the "boot tab catch-up" path — careful with mount-time work.
+
+### Pre-conditions verified
+- `main` @ `860abcb` (wave-13 deployed & pushed)
+- Section bounds (4 non-contiguous blocks — `escapeText` + `cssEscape` at 712-726 STAY in app.js):
+  - 491-611: Chat model selector (`wireChatModelSelector`)
+  - 619-711: Supervisor profile pill (`wireProfilePill`)
+  - 727-796: `attachOneShotAssistantCapture` + window publication
+  - 798-1931: Master chat (`wireMasterChat` — the biggest single function in the file)
+- Boot calls at 452 (wireMasterChat), 453 (wireChatModelSelector), 454 (wireProfilePill)
+- Bridge: `window.__subctlAttachOneShotAssistantCapture` published at app.js:796, consumed by `tabs/projects.js:367`. **Preserve** — publish from chat.js mount(), null in unmount.
+- Helper usage: 8 hits of `escapeText`/`cssEscape` inside the chat zone — module needs local copies (those helpers stay in app.js because they're used elsewhere too).
+- HTML routing key: `"chat"` (matches the default-active tab)
+
+### Forecast
+- Total to extract: ~1,418 lines + 3 boot calls
+- App.js: 3,945 → ~2,524 LOC. **This is the shell.**
+
+### Task Ledger
+
+| ID | Task | State | Worker | Started | Finished |
+|----|------|-------|--------|---------|----------|
+| W14 | Extract Master chat + chat-adjacent helpers (~1,418 LOC across 4 non-contiguous blocks) to `tabs/chat.js` + preserve `__subctlAttachOneShotAssistantCapture` publication + bootstrap registry + server STATIC_FILES + delete 3 boot calls + DECISIONS.md wave-14 closeout | ✅ done | chat-extract | 2026-05-14T~22:25 CDT | 2026-05-14T~22:38 CDT (13 min) |
+
+### Verification Evidence — wave 14 (FINAL)
+
+- **Commit:** `3cc7757` on `feat/dashboard-decomp-master`
+- **App.js:** 3,945 → 2,280 LOC (−1,665 — exceeded forecast of −1,421; worker moved more chat-adjacent helpers than minimum required)
+- **tabs/chat.js:** 1,862 lines — **biggest module in the project** (84 KB on disk)
+- **All 14 modules now present in `dashboard/public/tabs/`:** chat, logs, memory, models, orch, policy, preferences, projects, providers, settings, skills, teams, templates, vault
+- **Chat zone purged from app.js:** only 2 hits remain, both in extraction-note comments (lines 211 and 602)
+- **`escapeText` + `cssEscape` PRESERVED** in app.js at lines 257 and 263 (positions shifted but functions intact)
+- **Bridge `window.__subctlAttachOneShotAssistantCapture`:** 3 hits in chat.js (publish + null + doc comment); Projects consumer at projects.js:367 untouched
+- **bootstrap.js:** `TAB_LOADERS` now 14 entries (the final count)
+- **server.ts:** all 14 `/tabs/*.js` entries in STATIC_FILES
+- **All gates pass** — node --check × 3, server bun build, MIME smoke.
+
+---
+
+## DECOMPOSITION COMPLETE — final totals
+
+**Original `app.js`** (2026-05-12 night, before wave 1): **8,955 LOC**
+**Final `app.js`** (2026-05-14, wave 14 complete): **2,280 LOC**
+**Reduction:** **−6,675 LOC** (**74.5%** of the monolith decomposed)
+
+**14 waves over ~1.5 days:**
+
+| Wave | Tab | Day | Reduction | Pattern |
+|---|---|---|---|---|
+| 1 | Logs | 05-13 | −192 (incl. policy chip) | Two entry points + per-stream SSE + cross-tab bridge globals |
+| 2 | Templates | 05-13 | −126 | Clean isolated case (zero bridges) |
+| 3 | Models | 05-13 | −111 | `pollTimer` lifted to module scope |
+| 4 | Preferences | 05-14 | −286 | Listener lifecycle pattern proven |
+| 5 | Providers | 05-14 | −269 | Self-contained, mirrors waves 2-3 |
+| 6 | Vault | 05-14 | −309 | **Publisher pattern proven** (`window.openVaultDeepLink`) |
+| 7 | Memory | 05-14 | −281 | Multi-entry collapse pattern proven (3 sub-fns → 1 mount) |
+| 8 | Skills | 05-14 | −403 | Dead-bridge preservation pattern |
+| 9 | Projects | 05-14 | −462 | **Dual-role bridge handling** (consume + own) |
+| 10 | Settings | 05-14 | −528 | Operator-driven refresh tabs (no pollTimer) |
+| 11 | Policy | 05-14 | −709 | **Inter-module event contract proven** (`subctl:policy-teams-updated`) + wave-1 bridges retired |
+| 12 | Teams | 05-14 | −316 | Simple isolated extraction |
+| 13 | Orch | 05-14 | −900 | **5-globals publisher** (modal subsystems) |
+| 14 | Chat | 05-14 | −1,665 | **FINAL** — biggest module + chat-adjacent helpers |
+
+**Per-day breakdown:**
+- 2026-05-13 (waves 1-3): −429 LOC across 3 waves, established interface + loader pattern
+- 2026-05-14 morning/afternoon (wave 4): −286 LOC, listener-lifecycle pattern
+- **2026-05-14 evening (waves 5-14)** (this session): **−5,960 LOC across 10 waves**, completed the decomposition
+
+**Patterns established (in extraction order):**
+1. `{ id, mount, unmount }` module interface
+2. `bootstrap.js` lazy-import registry + boot-tab catch-up + `setActiveTab` notifier
+3. Inline helper duplication (no `shared/` directory)
+4. `setInterval` lifecycle via module-scope timer + symmetric unmount
+5. Persistent `document`/`window` listener lifecycle (refs at module scope, removed on unmount)
+6. Window-global publisher pattern (`window.xxx = fn` at mount end, `= null` at unmount)
+7. Multi-entry function collapse (sub-helpers as locals inside mount)
+8. Dead-bridge preservation (no readers in-file but preserve for unknown external consumers)
+9. Dual-role bridge handling (consume + own)
+10. **Inter-module DOM event contract** (`document.dispatchEvent(new CustomEvent("subctl:xxx", { detail }))`) — replaced wave-1's temporary `window.__subctl*` bridges
+11. 5-globals batch publishing (notification system + modal helpers)
+12. Worker silent-idle protocol (verify by git log + gates, don't wait for SendMessage)
+
+**Worker performance:**
+- 10 workers dispatched tonight via `Agent` + `team_name=dashboard-decomp` (subagent_type `expert-bun-typescript`)
+- 9 completed within 7-22 min envelope
+- 1 outlier (wave 7 Memory) took 75 min — cause unclear; subctl-orch retry attempted but `claude-jason` account auth was expired; original worker eventually completed silently while retry was preparing
+- 0 actual failures
+- All commits clean, no rollbacks needed
+
+**Architectural artifacts produced:**
+- `dashboard/public/bootstrap.js` — 73-line ES-module shell loader (lazy-import + memoization)
+- `dashboard/public/tabs/{logs,templates,models,preferences,providers,vault,memory,skills,projects,settings,policy,teams,orch,chat}.js` — 14 modules totaling ~9,090 lines
+- `dashboard/public/app.js` — 2,280-line shell (state polling, WS transport, render dispatcher, cell builders, notification tray, status pill, lucide chrome, host-label boot, tab nav, transport, upstreams card)
+- `DECISIONS.md` — 14 wave-closeout entries documenting every pattern decision
+- `ORCHESTRATION.md` — full ledger of dispatches, verifications, deviations from plan
+
+The dashboard is now **navigable for both humans and AI** without exhausting context. A future AI session opening one tab module pays the cost of ~5K tokens (the module + its imports), not ~100K (the monolith).
+
+---
+
 ## Session 2026-05-14 evening — dashboard decomposition wave 13 (Claude Opus 4.7, 1M ctx)
 
 **Protocol start:** 2026-05-14T~22:00 CDT
