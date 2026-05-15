@@ -118,6 +118,8 @@ import {
   testSecret,
   flushOnePasswordCache,
 } from "./secrets-backends";
+// ── v2.8.7 openai-codex OAuth (ChatGPT Pro subscription) ──
+import { getCodexAccessToken } from "./openai-codex-auth";
 import {
   loadProfiles,
   setActiveProfile,
@@ -762,6 +764,21 @@ export function getApiKeyForProvider(provider: string): string | undefined {
     // https://openrouter.ai/keys and pastes it into Settings → API Tokens
     // (or sets OPENROUTER_API_KEY in the launchd plist).
     return resolveSecret("openrouter_api_key") ?? undefined;
+  }
+  if (provider === "openai-codex") {
+    // v2.8.7 — OAuth (ChatGPT Pro subscription) for the openai-codex pi-ai
+    // provider. We read the active codex profile's auth.json (per
+    // accounts.conf) and return the JWT access_token. Pi-ai decodes the
+    // JWT to pull chatgpt_account_id for the `chatgpt-account-id` header
+    // and uses the same token as `Authorization: Bearer …`.
+    //
+    // Returns undefined when no codex profile is configured, the JWT is
+    // missing/malformed, or the token is past `exp` — pi-ai will surface
+    // "No API key for provider: openai-codex" with a clear master.log
+    // breadcrumb from openai-codex-auth.ts above it.
+    //
+    // Refresh-on-near-expiry / refresh-on-401 is a tracked follow-up.
+    return getCodexAccessToken();
   }
   // Fall through — pi-ai handles real providers via env vars / OAuth
   return undefined;
