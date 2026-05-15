@@ -644,6 +644,83 @@ CONSUMERS (32 total) — all unchanged in this wave:
 - Did not add `unmount()` invocation in bootstrap — same parity stance as waves 1–12.
 - Did not modify any wave-1-through-12 tab module.
 
+### 2026-05-14 — dashboard decomposition wave 14 (Master chat extracted; DECOMPOSITION COMPLETE)
+
+**Decision:** Extract the Master-chat zone — four non-contiguous blocks at `app.js` (chat model selector, supervisor profile pill, `attachOneShotAssistantCapture`, and `wireMasterChat`) plus the chat-only helper bands (tool-display config + thinking indicator) — into `dashboard/public/tabs/chat.js`. App.js shrinks from 3,945 → 2,280 LOC (-1,665 net: -1,683 lines deleted, offset by +12 lines for the wave-14 breadcrumb in the boot comment block, +5 lines for the `window.__subctlHostLabel` bridge introduction in app.js's host-label boot, and +1 line in the existing `applyHostLabel` mirror). Final-wave extraction; the largest tab module ever created (1,862 LOC), built around the codebase's single biggest function (`wireMasterChat` at ~1,133 LOC).
+
+**Why now / finish-line context:** Master chat was always the last item on the wave-1 migration order (HANDOFF 2026-05-13 night: "Logs → Templates → Models → Preferences → Providers/Vault/Memory/Skills → Projects/Settings/Policy → Teams → Orchestration + Dashboard panels (together) → Master chat (last)"). After wave 13 retired `window.notice` ownership to Orch, Master chat could land cleanly as a consumer of `window.notice` instead of a co-owner. Two days of focused decomposition sessions (2026-05-13 night → 2026-05-14 night) extracted all 14 zones in sequence; app.js is now ~58% smaller than the original 8,955 LOC baseline (3,945 → 2,280 here; ~75% smaller than the 8,955 starting point).
+
+**Helper-relocation analysis — which app.js-internal helpers moved with chat vs got new bridges vs stayed orphaned:**
+
+The pre-extraction grep was decisive on every helper. Two scopes mattered:
+  (a) other uses *inside app.js* (the shell), and
+  (b) other uses *across the 13 prior `tabs/*.js` modules*.
+
+| Helper | Old location | Decision | Rationale |
+|---|---|---|---|
+| `TOOL_DISPLAY_FALLBACK` + `_toolDisplayConfig` + `loadToolDisplay` + `_toolDisplayConfigSync` + `resolveToolDisplay` + `formatToolArgsPreview` + `formatToolDetailBlock` + `renderToolPill` + `ensureChatToolPillsRow` | app.js:63–258 | **Moved into chat.js** | Grep returned zero non-chat-zone callers in app.js AND zero callers in any `tabs/*.js` module. These are chat-only helpers that were defined at IIFE top by historical accident, not because they're shared. Moving them with chat reduces app.js further and keeps the helper close to the code that uses it. The eager `loadToolDisplay()` warmup call at the old app.js:121 moved with the function definition — preserves the "cache-warm-before-first-tool-call" behavior. |
+| `showChatThinking` + `hideChatThinking` + `setChatThinkingState` | app.js:259–310 | **Moved into chat.js** | Same grep result — zero non-chat callers anywhere. Chat-only. |
+| `escapeText(s)` | app.js:712 | **Stayed in app.js (orphaned), inlined into chat.js as a local** | HANDOFF directive: "STAYS in app.js". Empirically the helper had zero non-chat callers in app.js at extraction time (every other shell-side caller had previously moved out as part of waves 1–13, and every extracted module inlined its own local copy). Honored the directive conservatively — the standalone is now orphaned, available for a future cleanup wave. chat.js gets its own local inline copy following the same pattern orch.js (wave 13), providers.js (wave 5), teams.js (wave 12), settings.js (wave 10), and projects.js (wave 9) established. |
+| `cssEscape(s)` | app.js:718 | **Stayed in app.js (orphaned), inlined into chat.js as a local** | Same idiom as `escapeText`. Used only at app.js:870 (rehydrateFromTranscript) inside the chat zone before extraction. After chat moved, it's orphaned in app.js. Future cleanup. |
+| `SSH_HOST_ALIAS` | app.js:22 | **Stayed in app.js (orphaned), inlined into chat.js as a const** | Same conservative stance — not strictly named in the HANDOFF as protected, but matches the surrounding helpers' pattern. Two old callers (lines 1556, 1676 inside slash commands) moved with chat; the const is now orphaned. orch.js (wave 13) inlined the same string verbatim. |
+| `HOST_LABEL` (mutable `let` at app.js:14, updated by `/api/host` fetch) | app.js:14 | **Stayed in app.js; new bridge `window.__subctlHostLabel` published from app.js, read by chat.js at SLASH_HELP-build time** | HOST_LABEL is mutated by an async fetch and consumed by app.js's `applyHostLabel()` DOM painter (still in app.js — paints `.host-label` spans across the shell chrome). Moving the variable would break the painter; leaving it static would freeze chat's slash help. New bridge: app.js writes `window.__subctlHostLabel` on every HOST_LABEL update; chat.js reads `window.__subctlHostLabel \|\| "this Mac"` at the moment SLASH_HELP is built inside wireMasterChat(). The capture-at-build-time semantic is identical to today's closure-capture-at-wirer-call-time semantic (the original closed-over HOST_LABEL in the SLASH_HELP array literal — same effective freshness). |
+| `window.__subctlPushNotification` | app.js (notification tray, ~line 2273 post-wave) | **Stays in app.js shell** | Chat is a consumer. App.js still owns the notification tray. No change. |
+| `window.__subctlVoiceEnabled` | written in chat zone | **Kept on `window`** | Owned entirely by chat (set by `refreshVoiceEnabled` and the `voice_config` SSE handler; read by `endAssistantBubble` for the play-button gate). No external readers, but kept on `window` for namespace stability matching the wave-9 / wave-13 idiom. |
+
+**`__subctlAttachOneShotAssistantCapture` bridge preserved:** Published from `chat.js` mount() (verbatim from app.js:802 pre-wave). Consumed at `tabs/projects.js:367` for the per-project chat panels. The mount-time publication is fine: bootstrap mounts the default-active tab (which is `chat` per HTML `<button class="nav-btn active" data-tab="chat">`) immediately via boot-tab catch-up, so the bridge is live by the time the operator can navigate to Projects.
+
+**Lifecycle (forward-looking; bootstrap doesn't call unmount today):**
+
+Module-scope handles lifted in chat.js for unmount():
+- `masterEventSource` — Master chat's long-lived SSE stream. `connect()` reassigns on each reconnect; unmount closes the current one.
+- `profilePillEventSource` — quiet observer SSE for `profile_swapped`.
+- `oneShotEventSources` — Set of per-call `EventSource` from `attachOneShotAssistantCapture`. Each instance self-removes from the Set on natural close or 90 s safety timeout; unmount closes any remaining.
+- `chatModelSelectorPollTimer`, `profilePillPollTimer`, `contextMeterPollTimer` — three intervals for visibility-gated polling.
+- `reconnectingDebounce`, `connectBackoffTimer` — two timeout handles inside the SSE reconnect lifecycle (lifted because they reassign on each error).
+- `chatPanelObserver` — `MutationObserver` watching `body.dataset.activeTab` for re-scroll on Chat re-show.
+- `chatFullscreenEscHandler` — `document` keydown listener for Esc-exits-fullscreen.
+
+**What remains in app.js (the shell, ~2,280 LOC):**
+
+Legitimate shell infrastructure that doesn't fit the per-tab `mount({ root })` model:
+- Sessions browser + Dashboard panel renderers (state-driven render functions, fed by the WS/polling loop).
+- State polling + WebSocket transport (`/api/live`) + render dispatcher.
+- Cell builders + verdict pills + util-bar helpers.
+- Notification tray (the `__subctlPushNotification` owner + its modal/badge surface).
+- Header status pill + manual refresh button.
+- Lucide chrome icons (post-boot icon swap for static chrome).
+- Host-label boot (`/api/host` fetch + `applyHostLabel` painter + new `window.__subctlHostLabel` bridge).
+- Tab nav (`setActiveTab` + `__subctlShellNotifyTabChange` notifier — the bootstrap loader's contract).
+- Two orphaned helpers (`escapeText`, `cssEscape`) and one orphaned const (`SSH_HOST_ALIAS`) preserved per HANDOFF for a future cleanup wave.
+- Verdict-transition desktop notifications.
+
+**Migration table — all 14 waves complete:**
+
+- ✅ Wave 1 — Logs zone scaffold + ES-module bridge (commit `81a1a47`)
+- ✅ Wave 2 — Templates (commit `f10d2ce`)
+- ✅ Wave 3 — Models (commit `b09224c`)
+- ✅ Wave 4 — Preferences (commit `c5a3eef`)
+- ✅ Wave 5 — Providers (commit `2c9c9d2`)
+- ✅ Wave 6 — Vault (commit `27000b5`)
+- ✅ Wave 7 — Memory (commit `6597668`)
+- ✅ Wave 8 — Skills (commit `d926d58`)
+- ✅ Wave 9 — Projects (commit `52e2ae2`)
+- ✅ Wave 10 — Settings (commit `44aa618`)
+- ✅ Wave 11 — Policy + bridge retirement (commit `e8bbd30`)
+- ✅ Wave 12 — Teams (commit `7236f34`)
+- ✅ Wave 13 — Orchestration zone (commit `9368ccf`)
+- ✅ Wave 14 — **Master chat + chat-adjacent + tool-display + thinking helpers** (this entry; DECOMPOSITION COMPLETE)
+
+**Closing the initiative:** The pre-mortem of 2026-05-12 night flagged `app.js` at 8,955 LOC as the slow-burn risk. Two days of focused waves cut that to 2,280 LOC and produced 14 standalone tab modules (16,016 LOC total across `tabs/*.js`) — each independently testable, each with a clear `{ id, mount, unmount }` interface, each ready for a framework migration if/when one is chosen (HANDOFF 2026-05-13 deferred the framework decision until the per-tab split was done; the split is now done). The decomposition initiative is officially closed; further app.js work is shell-level (state polling, notification tray, Dashboard panel renderers) and tracks separately.
+
+**What we explicitly did NOT do this PR:**
+- Did not retire any window bridge. `window.__subctlAttachOneShotAssistantCapture` continues to be the Projects-tab consumer contract; `window.__subctlPushNotification` continues to be the app.js-shell-published notification entry. Bridge retirement is a separate refactor (post-decomp event-bus migration along the wave-11 Policy precedent).
+- Did not move `escapeText`, `cssEscape`, or `SSH_HOST_ALIAS` out of app.js even though grep showed they're orphaned post-wave. HANDOFF directive ("STAYS in app.js") honored conservatively; future cleanup wave handles the orphans.
+- Did not modify any of waves 1–13's tab modules. `tabs/projects.js`'s read of `window.__subctlAttachOneShotAssistantCapture` is unchanged.
+- Did not touch server handlers for `/api/master/*`, `/api/profile`, `/api/master/personality`, `/api/master/events` (SSE), `/api/voice/*`, or `/api/host`. Pure client-side restructure.
+- Did not add `unmount()` invocation in bootstrap — same parity stance as waves 1–13.
+- Did not split `wireMasterChat` into smaller functions. It's ~1,133 LOC but the contract surface (one SSE consumer + one transcript meter + one slash-command dispatcher + one attachments UI) is genuinely cohesive. A future architectural pass can extract sub-components if the cost feels right; for this wave, fidelity > restructure.
+
 ### 2026-05-13 — Account usage on multi-host is by-design partial, no operator-side fix this session (closes HANDOFF.md §2.2)
 
 **Decision:** Accept that the dashboard shows different account usage numbers on different hosts. Not a regression; not fixing this session.

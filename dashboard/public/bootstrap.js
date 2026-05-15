@@ -16,12 +16,15 @@
 // entry here. Waves so far: Logs (1), Templates (2), Models (3),
 // Preferences (4), Providers (5), Vault (6), Memory (7), Skills (8),
 // Projects (9), Settings (10), Policy (11), Teams (12),
-// Orchestration (13).
+// Orchestration (13), Chat (14) — final.
 //
 // Map keys are the DOM `data-tab` attribute value (the routing contract —
 // mountTab() does `Map.get(b.dataset.tab)`). For wave 13 the file is
 // `tabs/orch.js` but the routing key MUST be `"orchestration"` so that
-// `setActiveTab("orchestration")` triggers the dynamic import.
+// `setActiveTab("orchestration")` triggers the dynamic import. Wave 14
+// follows the standard rule — file `tabs/chat.js`, routing key `"chat"`
+// (the default-active tab on first page paint, so bootstrap mounts it
+// immediately via boot-tab catch-up).
 
 const TAB_LOADERS = new Map([
   ["logs", () => import("./tabs/logs.js")],
@@ -37,6 +40,7 @@ const TAB_LOADERS = new Map([
   ["policy", () => import("./tabs/policy.js")],
   ["teams", () => import("./tabs/teams.js")],
   ["orchestration", () => import("./tabs/orch.js")],
+  ["chat", () => import("./tabs/chat.js")],
 ]);
 
 // id -> Promise<module>. Memoizes the dynamic import + mount so a tab is
