@@ -4,6 +4,46 @@ Most recent session at top. Older sessions retained below as historical record.
 
 ---
 
+## Session 2026-05-14 evening — dashboard decomposition wave 10 (Claude Opus 4.7, 1M ctx)
+
+**Protocol start:** 2026-05-14T~21:05 CDT
+**Branch:** `feat/dashboard-decomp-settings` (off `main` @ `d50f3fa`)
+**Mode:** Orchestration with batch authorization.
+
+### Mission
+Wave 10 of `dashboard/public/app.js` decomposition: extract the **Settings** tab. 528 LOC — biggest section so far. **Most sub-helpers of any tab to date**: `loadHealth`, `loadKeys`, `loadSecrets`, `openSecretsModal`, `closeSecretsModal`, `submitSecretsModal`, `wireSecretsModal`, `loadOAuth`, `loadTelegramStatus`, `wireTelegramForm`, `wireConfigViewer`, `loadVault`, `wireVaultForm`, `loadPersonality`, `refreshAll` — all nested inside one `wireSettingsTab()` body. Reads `window.notice` (notification system, still owned by app.js).
+
+### Pre-conditions verified
+- `main` @ `d50f3fa` (wave-9 deployed, pushed)
+- Section bounds: `app.js:797–1324` inclusive (528 lines)
+- Call site at `app.js:464`
+- No `setInterval` (refresh is operator-driven via `#settings-refresh-btn` click)
+- Multiple one-shot `setTimeout`s for "copied!" feedback — leave verbatim
+- Consumer of `window.notice` (5 references in body) — preserve verbatim, same pattern as Projects consuming openVaultDeepLink
+- The Settings vault-config form (`loadVault`/`wireVaultForm`) is DISTINCT from the Vault TAB (already extracted in wave 6). Different DOM IDs (`settings-vault-*` vs `vault-*`), different endpoints (`/api/settings/vault` vs `/api/vault/roots`). No collision.
+
+### Task Ledger
+
+| ID | Task | State | Worker | Started | Finished |
+|----|------|-------|--------|---------|----------|
+| W10 | Extract Settings tab (~15 internal sub-helpers → 1 mount) to `tabs/settings.js` + preserve window.notice consumer + bootstrap registry + server STATIC_FILES + delete from `app.js` + DECISIONS.md wave-10 closeout | ✅ done | settings-extract | 2026-05-14T~21:05 CDT | 2026-05-14T~21:13 CDT (8 min) |
+
+### Verification Evidence — wave 10
+
+- **Commit:** `44aa618` on `feat/dashboard-decomp-settings`
+- **App.js:** 6,398 → 5,870 LOC (−528, exact forecast match)
+- **New module:** `dashboard/public/tabs/settings.js` — 656 lines, biggest module yet, `{ id, mount, unmount }`, no module-scope state, no-op `unmount()` (no timers, no listeners)
+- **Sub-helper accounting:** all ~15 inline functions preserved as locals inside `mount()` — `loadHealth`, `loadKeys`, `loadSecrets` + modal helpers, `loadOAuth`, `loadTelegramStatus` + `wireTelegramForm`, `wireConfigViewer`, `loadVault` + `wireVaultForm`, `loadPersonality`, `refreshAll`
+- **`window.notice` accounting:** 8 hits in `tabs/settings.js` (consumer); publisher `window.notice = (title, body, opts = {}) => _showNotice(...)` remains at `app.js:1921` — untouched as intended
+- **bootstrap.js:** `TAB_LOADERS` now 10 entries
+- **server.ts:** `STATIC_FILES["/tabs/settings.js"]` registered
+- **Worker time:** ~8 min — fast envelope holds (3 of last 4 waves under 15 min)
+
+### Pattern reinforced — operator-driven refresh tabs
+A tab whose refresh is operator-triggered (button click) rather than polled needs no module-scope state and a no-op `unmount()`. The simplest possible shape for the `{ id, mount, unmount }` interface — no `setInterval`, no observer, no published global, no module-level `let`. Future tabs in this shape can ship even faster.
+
+---
+
 ## Session 2026-05-14 evening — dashboard decomposition wave 9 (Claude Opus 4.7, 1M ctx)
 
 **Protocol start:** 2026-05-14T~20:55 CDT
