@@ -214,6 +214,45 @@ The new module continues to **publish** `window.openVaultDeepLink` from `mount()
 - Did not change any server-side `/api/vault/*` handler — only the client moved.
 - Did not wire `unmount()` into the bootstrap — same parity stance as waves 1–5.
 
+### 2026-05-14 — dashboard decomposition wave 7 (Memory extracted; multi-entry collapse)
+
+**Decision:** Extract the Memory tab from `dashboard/public/app.js` into `dashboard/public/tabs/memory.js`, mirroring waves 1–6 (commits `3f58f03`, `b681255`, `2b2c515`, `c633322`, `edc0b73`, `27000b5`). App.js shrinks from 7,544 → 7,263 LOC (-281: 1 boot call site, the `// ----- Memory tab — Obsidian vault status -----` section header + 280 lines covering three function bodies, offset by +1 for the wave-7 breadcrumb dropped into the existing comment block).
+
+This is the FIRST tab in the decomposition with multiple module-scope entry points in app.js. `wireTier1MemoryCards`, `wireMemoryTab`, and `wireEvyMemoryCard` were three independent functions; the boot called `wireMemoryTab`, which in turn called the other two (tier-1 at the top, Evy at the bottom). All three collapse into one `mount()` in the new module.
+
+**Why now:** Memory was next in the wave-1 migration order (Logs → Templates → Models → Preferences → Providers → Vault → **Memory** → …). It introduces no new patterns beyond the multi-entry collapse — no window bridges, no cross-tab state, no SSE — so it's the lowest-risk slot to validate the multi-entry pattern before Skills (~410 LOC) and Projects (~468 LOC) which are bigger payloads.
+
+**Multi-entry collapse pattern:**
+- Three function declarations inline inside `mount()` as `setupTier1Cards`, `setupMainPanel`, `setupEvyCard`. Same body verbatim minus the cross-helper calls and the deduplicated `esc` helper.
+- `mount()` calls all three directly at the bottom — flat orchestration. Considered keeping `setupMainPanel` as the orchestrator that calls the other two (matches the original control flow exactly), but the flat form makes the entry points visible at the top of the module instead of buried inside the main-panel body. The semantic ordering (tier-1 first, main second, Evy last) is preserved.
+- Two `escapeForHtml` / `esc` helpers consolidated to one mount-scope `esc`. The Evy version was strictly broader (null-safe), so the unified form adopts that variant — never narrower.
+
+**Lifecycle — first tab to lift TWO timer handles:**
+- Both original `setInterval`s had `getComputedStyle(panel).display !== "none"` visibility gates (app.js:3466–3468 for the 15s tier-1 refresh, app.js:3545–3548 for the 30s main refresh). Both gates dropped — bootstrap-mounting is the new gate. Same call as waves 4–6.
+- `tier1PollTimer` and `mainPollTimer` lifted to module scope. `unmount()` clears both. Bootstrap never calls `unmount` today; forward-looking hygiene, mirroring waves 1–6.
+- All other listeners (textarea inputs, `[data-mem-save]` clicks, search/refresh/kind controls, per-entry forget buttons inside `.evy-mem-del`) are element-scoped or one-shot; they die with the panel DOM and don't need explicit removal.
+
+**HOST_LABEL drift accepted:** app.js has a module-scope `let HOST_LABEL` that `/api/host` patches asynchronously. The Memory tab's only consumer is the Obsidian-not-installed onboarding card. Rather than re-derive the async path inside the module (or set up a cross-tab broadcast), the new module hardcodes `const HOST_LABEL = "this Mac";` matching the same default as `app.js:14`. Acceptable drift: the onboarding string may say "this Mac" even after the operator has set a custom host_label, until they reload the dashboard. The `.host-label` spans elsewhere in the dashboard still repaint correctly — only this onboarding paragraph is affected, and it's already a one-shot install prompt.
+
+**Migration progress:**
+- ✅ Wave 1 — Logs (commit `3f58f03`)
+- ✅ Wave 2 — Templates (commit `b681255`)
+- ✅ Wave 3 — Models (commit `2b2c515`)
+- ✅ Wave 4 — Preferences (commit `c633322`)
+- ✅ Wave 5 — Providers (commit `edc0b73`)
+- ✅ Wave 6 — Vault (commit `27000b5`)
+- ✅ Wave 7 — Memory (this entry; 7/17 tabs)
+- ⏭ Next — Skills (~410 LOC), then Projects (~468 LOC).
+
+**What we explicitly did NOT do this PR:**
+- Did not modify wave-1/2/3/4/5/6 files (`tabs/logs.js`, `tabs/templates.js`, `tabs/models.js`, `tabs/preferences.js`, `tabs/providers.js`, `tabs/vault.js`, bridge globals, `setActiveTab` notify hook).
+- Did not touch any tab other than Memory.
+- Did not change any server-side `/api/memory/*` handler — only the client moved.
+- Did not modify the FTS5 schema, Obsidian vault paths, or Tier-1 character limits.
+- Did not change Evy backend behavior (search, recent, stats, delete endpoints all unchanged).
+- Did not retire the per-mount `confirm()` in the Evy "forget" path. Behavior preserved verbatim from the original.
+- Did not wire `unmount()` into the bootstrap — same parity stance as waves 1–6.
+
 ### 2026-05-13 — Account usage on multi-host is by-design partial, no operator-side fix this session (closes HANDOFF.md §2.2)
 
 **Decision:** Accept that the dashboard shows different account usage numbers on different hosts. Not a regression; not fixing this session.
