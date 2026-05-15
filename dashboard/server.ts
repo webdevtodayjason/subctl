@@ -225,6 +225,84 @@ function lmstudioAuthHeader(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+// v2.8.7 — LM Studio /api/v0/models response cache.
+//
+// Background: the dashboard polls LM Studio's catalog from TWO surfaces
+// (Models tab every 5s + chat-model-selector every 10s) and several
+// route handlers (/api/models, /api/providers) hit the same endpoint
+// per request. Multiple browser clients multiply that. Without a
+// server-side cache the operator sees a constant `GET /api/v0/models`
+// drumbeat in LM Studio's log even when the model catalog hasn't
+// changed in hours.
+//
+// Design:
+//   * 30s TTL — fresh enough that a freshly-loaded model appears
+//     quickly, slow enough to coalesce hundreds of polls.
+//   * In-flight coalescing — if a fetch is already in progress, all
+//     concurrent callers await the SAME promise rather than each
+//     opening their own connection to LM Studio.
+//   * Cache successes only. 401/4xx/network-fail responses are NOT
+//     cached, so the operator's token rotation or LM Studio restart
+//     takes effect on the next request, not 30s later.
+//   * Cache key is the host string — survives operator switching
+//     SUBCTL_LMSTUDIO_HOST without restart.
+//
+// Manual bust: `POST /api/models/refresh` (see route handler below) or
+// `getLmstudioModels(host, true)` from server code.
+type LmstudioModelsResponse = {
+  data?: Array<Record<string, unknown>>;
+};
+interface LmstudioFetchError extends Error {
+  status?: number;
+  host: string;
+}
+let _lmstudioModelsCache:
+  | { host: string; data: LmstudioModelsResponse; ts: number }
+  | null = null;
+let _lmstudioModelsInFlight: Promise<LmstudioModelsResponse> | null = null;
+const LMSTUDIO_CACHE_TTL_MS = 30_000;
+
+async function getLmstudioModels(
+  host: string,
+  force = false,
+): Promise<LmstudioModelsResponse> {
+  const now = Date.now();
+  if (
+    !force
+    && _lmstudioModelsCache
+    && _lmstudioModelsCache.host === host
+    && now - _lmstudioModelsCache.ts < LMSTUDIO_CACHE_TTL_MS
+  ) {
+    return _lmstudioModelsCache.data;
+  }
+  // Coalesce: if another caller is already fetching, await the same
+  // promise. The `finally` clears the in-flight slot before the
+  // rejection propagates, so awaiters get the error rather than hang.
+  if (_lmstudioModelsInFlight) {
+    return await _lmstudioModelsInFlight;
+  }
+  _lmstudioModelsInFlight = (async () => {
+    try {
+      const r = await fetch(`${host}/api/v0/models`, {
+        headers: { ...lmstudioAuthHeader() },
+        signal: AbortSignal.timeout(2500),
+      });
+      if (!r.ok) {
+        const err = new Error(`LM Studio HTTP ${r.status}`) as LmstudioFetchError;
+        err.status = r.status;
+        err.host = host;
+        throw err;
+      }
+      const data = (await r.json()) as LmstudioModelsResponse;
+      _lmstudioModelsCache = { host, data, ts: Date.now() };
+      return data;
+    } finally {
+      _lmstudioModelsInFlight = null;
+    }
+  })();
+  return await _lmstudioModelsInFlight;
+}
+
 function safeRead(path: string): string | null {
   try { return readFileSync(path, "utf8"); } catch { return null; }
 }
@@ -2527,13 +2605,26 @@ const server = Bun.serve({
       const host = process.env.SUBCTL_LMSTUDIO_HOST ?? "http://localhost:1234";
       const token = resolveSecret("lmstudio_api_token");
       try {
-        const r = await fetch(`${host}/api/v0/models`, {
-          headers: { ...lmstudioAuthHeader() },
-          signal: AbortSignal.timeout(2500),
+        // v2.8.7 — getLmstudioModels caches successful responses for
+        // 30s and coalesces concurrent in-flight requests. Error
+        // shapes below are preserved; only successful upstream JSON
+        // gets cached.
+        const j = await getLmstudioModels(host);
+        const models = j.data ?? [];
+        return Response.json({
+          ok: true,
+          host,
+          ts: new Date().toISOString(),
+          total: models.length,
+          loaded_count: models.filter((m) => m.state === "loaded").length,
+          models,
         });
-        if (r.status === 401) {
+      } catch (err) {
+        const status = (err as LmstudioFetchError).status;
+        if (status === 401) {
           // LM Studio is requiring an API token. Either we sent nothing
-          // (missing) or we sent something that LM Studio rejected (invalid).
+          // (missing) or we sent something that LM Studio rejected
+          // (invalid).
           if (!token) {
             return Response.json({
               ok: false,
@@ -2553,27 +2644,16 @@ const server = Bun.serve({
             host,
           }, { status: 401 });
         }
-        if (!r.ok) {
+        if (status !== undefined) {
           return Response.json({
             ok: false,
             kind: "http_error",
-            error: `HTTP ${r.status}`,
-            message: `LM Studio returned HTTP ${r.status} from /api/v0/models.`,
+            error: `HTTP ${status}`,
+            message: `LM Studio returned HTTP ${status} from /api/v0/models.`,
             hint: "Check the LM Studio app's server logs for the underlying error.",
             host,
           }, { status: 502 });
         }
-        const j = (await r.json()) as { data?: Array<Record<string, unknown>> };
-        const models = j.data ?? [];
-        return Response.json({
-          ok: true,
-          host,
-          ts: new Date().toISOString(),
-          total: models.length,
-          loaded_count: models.filter((m) => m.state === "loaded").length,
-          models,
-        });
-      } catch (err) {
         // fetch threw — almost always a network/connection issue
         // (LM Studio not running, host unreachable, port closed, DNS).
         return Response.json({
@@ -2582,6 +2662,69 @@ const server = Bun.serve({
           error: (err as Error).message,
           message: `LM Studio at ${host} didn't respond.`,
           hint: "Make sure the LM Studio app is running and the server is started (Developer → Start Server). If you bound it to 127.0.0.1, confirm subctl is on the same host.",
+          host,
+        }, { status: 502 });
+      }
+    }
+
+    // ── /api/models/refresh — force-bust the 30s cache and re-fetch
+    // upstream. Used by the "Refresh" buttons in the Models tab and
+    // chat-model-selector. Returns the same shape /api/models would
+    // return on success/failure so the UI can swap a normal fetch for
+    // this one when the operator clicks Refresh.
+    if (url.pathname === "/api/models/refresh" && req.method === "POST") {
+      const host = process.env.SUBCTL_LMSTUDIO_HOST ?? "http://localhost:1234";
+      const token = resolveSecret("lmstudio_api_token");
+      try {
+        const j = await getLmstudioModels(host, true);
+        const models = j.data ?? [];
+        return Response.json({
+          ok: true,
+          host,
+          ts: new Date().toISOString(),
+          refreshed: true,
+          total: models.length,
+          loaded_count: models.filter((m) => m.state === "loaded").length,
+          models,
+        });
+      } catch (err) {
+        const status = (err as LmstudioFetchError).status;
+        if (status === 401) {
+          if (!token) {
+            return Response.json({
+              ok: false,
+              kind: "missing_token",
+              error: "missing token",
+              message: "LM Studio is requiring an API token, but subctl doesn't have one configured.",
+              hint: "Either paste the current token into Settings → API Tokens, or turn off \"Require API Token\" in LM Studio (Developer → Server settings).",
+              host,
+            }, { status: 401 });
+          }
+          return Response.json({
+            ok: false,
+            kind: "invalid_token",
+            error: "token rejected",
+            message: "LM Studio rejected the saved API token. It's likely stale.",
+            hint: "Rotate the token in LM Studio and update Settings → API Tokens, or turn off \"Require API Token\".",
+            host,
+          }, { status: 401 });
+        }
+        if (status !== undefined) {
+          return Response.json({
+            ok: false,
+            kind: "http_error",
+            error: `HTTP ${status}`,
+            message: `LM Studio returned HTTP ${status} from /api/v0/models.`,
+            hint: "Check the LM Studio app's server logs for the underlying error.",
+            host,
+          }, { status: 502 });
+        }
+        return Response.json({
+          ok: false,
+          kind: "unreachable",
+          error: (err as Error).message,
+          message: `LM Studio at ${host} didn't respond.`,
+          hint: "Make sure the LM Studio app is running and the server is started.",
           host,
         }, { status: 502 });
       }
@@ -4515,35 +4658,32 @@ const server = Bun.serve({
       // catalog; cloud providers show up if at least one ready profile.
       const providers: Array<Record<string, unknown>> = [];
 
-      // 1. lmstudio — query LM Studio API directly for loaded state
+      // 1. lmstudio — query LM Studio API directly for loaded state.
+      // v2.8.7 — pulls through the shared 30s response cache (same
+      // upstream call used by /api/models). Single fetch coalesces
+      // across both endpoints + all concurrent clients.
       const lmHost = process.env.SUBCTL_LMSTUDIO_HOST ?? "http://localhost:1234";
       try {
-        const r = await fetch(`${lmHost}/api/v0/models`, {
-          headers: { ...lmstudioAuthHeader() },
-          signal: AbortSignal.timeout(2500),
+        const j = await getLmstudioModels(lmHost);
+        const models = (j.data ?? []).filter((m) => m.type === "vlm" || m.type === "llm");
+        providers.push({
+          id: "lmstudio",
+          display: "LM Studio (local)",
+          kind: "local",
+          host: lmHost,
+          available: true,
+          note: "Always-on local inference. Per-model availability depends on LM Studio's loaded state.",
+          models: models.map((m) => ({
+            id: m.id,
+            state: m.state,                  // "loaded" | "not-loaded"
+            loaded: m.state === "loaded",
+            quantization: m.quantization,
+            loaded_context_length: m.loaded_context_length,
+            max_context_length: m.max_context_length,
+            capabilities: m.capabilities ?? [],
+          })),
         });
-        if (r.ok) {
-          const j = (await r.json()) as { data?: Array<Record<string, unknown>> };
-          const models = (j.data ?? []).filter((m) => m.type === "vlm" || m.type === "llm");
-          providers.push({
-            id: "lmstudio",
-            display: "LM Studio (local)",
-            kind: "local",
-            host: lmHost,
-            available: true,
-            note: "Always-on local inference. Per-model availability depends on LM Studio's loaded state.",
-            models: models.map((m) => ({
-              id: m.id,
-              state: m.state,                  // "loaded" | "not-loaded"
-              loaded: m.state === "loaded",
-              quantization: m.quantization,
-              loaded_context_length: m.loaded_context_length,
-              max_context_length: m.max_context_length,
-              capabilities: m.capabilities ?? [],
-            })),
-          });
-        }
-      } catch { /* lmstudio offline; skip */ }
+      } catch { /* lmstudio offline or auth-rejected; skip */ }
 
       // 2. accounts.conf — find any cloud providers with at least one
       //    authenticated profile. Pull the relevant profile metadata.
