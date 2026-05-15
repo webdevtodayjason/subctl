@@ -4,6 +4,55 @@ Most recent session at top. Older sessions retained below as historical record.
 
 ---
 
+## Session 2026-05-14 evening — dashboard decomposition wave 9 (Claude Opus 4.7, 1M ctx)
+
+**Protocol start:** 2026-05-14T~20:55 CDT
+**Branch:** `feat/dashboard-decomp-projects` (off `main` @ `a489f00`)
+**Mode:** Orchestration with batch authorization.
+
+### Mission
+Wave 9 of `dashboard/public/app.js` decomposition: extract the **Projects** tab — 465 lines. **First tab to extract that BOTH consumes someone else's bridge AND owns cross-tab state of its own:**
+- **Consumes** `window.openVaultDeepLink` (published by tabs/vault.js since wave 6) at the Projects "Open in Vault Viewer" code path
+- **Owns** `window.__policyPresetsCache` — a per-page lazy-memoized fetch promise. Grep confirms it's Projects-only (3 hits, all inside `wireProjectsTab`). The `window.` prefix is cheap memoization, not a real cross-tab bridge.
+
+### Decision — keep both globals as-is
+
+Per the wave-6 DECISIONS.md entry, we said we'd re-evaluate retiring `window.openVaultDeepLink` to a `subctl:vault-deeplink` custom event when Projects extracted. **Decision tonight: keep the window global.** Simpler than introducing an event bus, direct function call is cheaper, behavior-parity is the goal of decomposition. The bridge is small (one function), well-documented, and likely to be wanted by future tabs (Master chat? Skills?). Retirement to events would be a separate refactor with its own justification — not a decomposition concern.
+
+For `window.__policyPresetsCache`: keep `window.`-prefixed for behavior parity. After bootstrap-mounting it's actually equivalent to module-scope (mount runs once per page), but changing the prefix would be a refactor without payoff.
+
+### Pre-conditions verified
+- `main` @ `a489f00` (wave-8 deployed and pushed)
+- Section bounds: `app.js:2532–2996` inclusive (465 lines)
+- Call site at `app.js:453`
+- `window.openVaultDeepLink` consumer at `app.js:2807-2808` (typeof guard + call + fallback at 2810-2814)
+- `window.__policyPresetsCache` owned-and-used at `app.js:2821, 2822, 2827`
+- One `setInterval` for refresh poll around abs line 2866
+- Two one-shot `setTimeout`s (focus, modal close) — no cleanup needed
+
+### Task Ledger
+
+| ID | Task | State | Worker | Started | Finished |
+|----|------|-------|--------|---------|----------|
+| W9 | Extract Projects tab to `tabs/projects.js` + preserve both globals (consume openVaultDeepLink, own __policyPresetsCache) + bootstrap registry + server STATIC_FILES + delete from `app.js` + DECISIONS.md wave-9 closeout | ✅ done | projects-extract | 2026-05-14T~20:55 CDT | 2026-05-14T~21:02 CDT (7 min) |
+
+### Verification Evidence — wave 9
+
+- **Commit:** `52e2ae2` on `feat/dashboard-decomp-projects`
+- **App.js:** 6,860 → 6,398 LOC (−462, forecast was −465)
+- **New module:** `dashboard/public/tabs/projects.js` — 606 lines, biggest module yet, `{ id, mount, unmount }` with single `pollTimer` lifted to module scope, helpers `$` + `escapeText` inlined
+- **Bridge accounting:**
+  - **Consumer (`window.openVaultDeepLink`)** — 4 hits in projects.js (typeof guard + call + 2 doc); 2 hits in app.js (both extraction-note comments). Vault publisher untouched in `tabs/vault.js`. Behavior parity preserved.
+  - **Owner (`window.__policyPresetsCache`)** — 5 hits in projects.js (3 original use sites + 2 doc); 1 hit in app.js (extraction-note comment).
+- **bootstrap.js:** `TAB_LOADERS` now 9 entries
+- **server.ts:** `STATIC_FILES["/tabs/projects.js"]` registered
+- **Worker time:** ~7 min, back in the fast envelope. wave-7's 75min remains the lone outlier.
+
+### Pattern reinforced — dual-role bridge handling
+A tab that **consumes** a foreign bridge AND **owns** a cache global can do both with no special machinery. Type-guard the consumer (handles unmount/never-loaded). Keep the owned cache `window.`-prefixed for behavior parity (don't refactor to module-scope; the prefix is cheap and risk-free). DECISIONS.md wave-9 documents the call to keep both as window globals rather than retire to events — that decision applies forward for any future tab that needs to deep-link into Vault.
+
+---
+
 ## Session 2026-05-14 evening — dashboard decomposition wave 8 (Claude Opus 4.7, 1M ctx)
 
 **Protocol start:** 2026-05-14T~20:35 CDT
