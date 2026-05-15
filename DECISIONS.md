@@ -554,6 +554,96 @@ Teams is the **simple case** of the decomposition. After the wave-9/10/11 sequen
 - Did not wire `unmount()` into the bootstrap — same parity stance as waves 1–11.
 - Did not modify wave-1/2/3/4/5/6/7/8/9/10/11 files. Only the new `tabs/teams.js`, `bootstrap.js` (+1 entry), `dashboard/server.ts` (+1 STATIC_FILES entry), and `app.js` (deletion + breadcrumb) were touched.
 
+### 2026-05-14 — dashboard decomposition wave 13 (Orch zone extracted; deviated from HANDOFF's joint plan)
+
+**Decision:** Extract the Orchestration zone — six contiguous blocks at `app.js:709–1614` (camera grid + cockpit + watchdog history shim + watchdog panel + tmux-preview modal + web-terminal driver + notice/confirm modal) — into `dashboard/public/tabs/orch.js`. App.js shrinks from 4,845 → 3,945 LOC (-900 net: -906 for the zone deletion, offset by +6 lines for the wave-13 breadcrumb in the boot comment block and the rewording of the adjacent v2.7.21 web-terminal commentary). Single largest extraction across all 13 waves.
+
+**Why now:** Orchestration was next in the wave-1 migration order. After waves 1–12, the remaining big chunks in app.js are Orchestration (this wave, ~906 LOC), Master chat (~1,385 LOC, wave 14), Dashboard panels (~985 LOC, wave 15+), Chat/SSE plumbing (~600 LOC, wave 16), and the Projects-chat sub-system (~?LOC, wave 17). Doing Orch now keeps the cadence and lands the entire watchdog/cockpit/notice subsystem in one module before the chat extraction depends on `window.notice`.
+
+**HANDOFF deviation — joint with Dashboard panels was reduced to Orch only:**
+
+The wave-12 closeout (above) telegraphed wave 13 as a JOINT extraction with Dashboard panels (~1,891 LOC combined). The lead retracted that join when dispatching this wave. Reasons:
+
+- **Dashboard panels are shell infrastructure, not a tab module.** The Dashboard zone is driven by the global WS/polling loop and renders into `<section data-tab="dashboard">` from app.js's render functions. It doesn't fit the `mount({ root })` per-tab module shape that bootstrap.js drives. A future extraction will need a different surface (a dedicated `panels/dashboard.js` consumed by app.js, or a tab module that registers via a different mechanism). That's wave 15+ design work, not parity work.
+- **The wave-6 publisher pattern handles cross-tab globals at the unit of a tab.** Orch needs to publish 5 globals (`window.notice` + 4 `__subctl*` helpers) for the 32 consumers across the shell and the extracted modules. Joint extraction wasn't required for that — the publisher idiom works on its own.
+- **Single-wave risk:** 906 LOC is already the largest single extraction across all 13 waves. Adding Dashboard panels on top would compound the risk window. Keeping waves narrow is consistent with the wave-11 lesson (bridge retirement was already enough additional surface for one wave).
+
+The Dashboard panels remain in app.js for a future wave (15+) when their architecture pivot is designed.
+
+**Routing-key correction (also a deviation from HANDOFF):** The HANDOFF specified registering the module under `TAB_LOADERS` key `"orch"` (matching the file basename `tabs/orch.js`). On verification this would silently no-op: `mountTab(tab)` does `Map.get(b.dataset.tab)`, and the DOM data-tab attribute for the Orchestration nav is `"orchestration"`. Every other extracted tab uses its `data-tab` value as the Map key (`logs`, `templates`, `policy`, …), so registering `"orch"` would break the invariant and the dynamic import would never fire — leaving the 5 globals unpublished and the 21+ no-null-check consumers throwing on first use. Corrected to `"orchestration"` and documented the contract in the `TAB_LOADERS` comment block. File path stays `tabs/orch.js`; only the routing key needed correcting.
+
+**5-globals publishing accounting:**
+
+```
+PUBLISHED at end of mount() (5 + 2 sub-method assigns):
+  window.__subctlOpenTmuxPreview      = openTmuxPreview;
+  window.__subctlCopyAttachCommand    = copyAttachCommand;
+  window.__subctlOpenWebTerminal      = openWebTerminal;
+  window.__subctlWireWebTerminalGate  = wireWebTerminalGate;
+  window.notice                       = (title, body, opts) => _showNotice({…});
+  window.notice.error                 = (title, body) => _showNotice({…, kind:"error"});
+  window.notice.confirm               = (title, body) => _showNotice({…, kind:"warn", confirm:true});
+
+NULLED in unmount():
+  window.__subctlOpenTmuxPreview      = null;
+  window.__subctlCopyAttachCommand    = null;
+  window.__subctlOpenWebTerminal      = null;
+  window.__subctlWireWebTerminalGate  = null;
+  window.notice                       = null;   (cascades to .error/.confirm)
+
+CONSUMERS (32 total) — all unchanged in this wave:
+  app.js (in-shell, 24 sites):
+    - 21× window.notice / .error / .confirm     (chat tool pill, supervisor switch,
+                                                 profile pill, compact, clear,
+                                                 attach-failure, project hooks)
+    - 1× window.__subctlOpenTmuxPreview         (Dashboard panel row, line ~3278)
+    - 1× window.__subctlCopyAttachCommand       (Dashboard panel row, line ~3288)
+    - 1× window.__subctlOpenWebTerminal         (none after Teams extracted —
+                                                 kept published for legacy
+                                                 panels + symmetry)
+    - 1× window.__subctlWireWebTerminalGate     (hoist for boot; no live
+                                                 consumer now that Orch owns
+                                                 its own boot wiring)
+
+  extracted tabs/*.js (8 sites):
+    - 8× window.notice / window.notice.error    (settings.js, mostly the
+                                                 personality-switch flow)
+```
+
+**Lifecycle: `_tmuxPollTimer` lifted to module scope (only state lifted).** The original IIFE used three `let` bindings at this top level: `_tmuxPollTimer`, `_tmuxCurrent`, `_termModalKeyHandler`. Only `_tmuxPollTimer` is genuinely cross-call state that needs survive-until-unmount semantics; the other two are transient per-modal handles that the `close()` callback already nulls. So `_tmuxPollTimer` lives at module scope; the other two stay local to `mount()`. Same idiom as wave 3's `pollTimer` and wave 6's `activeTabObserver`.
+
+**Accepted no-null-check risk for `window.notice` consumers (documented, not fixed):** The 21 in-app.js `window.notice` consumers do NOT null-check before calling. If the operator triggers a flow that reads `window.notice` BEFORE this module mounts (e.g. profile-pill confirm on a first page load that lands on `chat` and never activates `orchestration`), the call throws. Mitigation surface:
+
+- Most consumers fire on user interaction, not boot, so the window is the gap between page-load and first Orchestration nav activation.
+- The wave-9 precedent for `window.openVaultDeepLink` had no-op fallbacks at consumer sites; the `window.notice` consumers do not. Adding fallbacks would touch 21 sites; out of scope this wave.
+- Real fix is wave 14 (Master chat) lifting notification surface ownership OR a dedicated wave-15 notification module mounted at boot from bootstrap.js (sibling to TAB_LOADERS). Documented as follow-up.
+
+**Migration progress (13 of 17 dashboard zones now extracted):**
+- ✅ Wave 1 — Logs zone scaffold + ES-module bridge (commit `81a1a47`)
+- ✅ Wave 2 — Templates (commit `f10d2ce`)
+- ✅ Wave 3 — Models (commit `b09224c`)
+- ✅ Wave 4 — Preferences (commit `c5a3eef`)
+- ✅ Wave 5 — Providers (commit `2c9c9d2`)
+- ✅ Wave 6 — Vault (commit `27000b5`)
+- ✅ Wave 7 — Memory (commit `6597668`)
+- ✅ Wave 8 — Skills (commit `d926d58`)
+- ✅ Wave 9 — Projects (commit `52e2ae2`)
+- ✅ Wave 10 — Settings (commit `44aa618`)
+- ✅ Wave 11 — Policy + bridge retirement (commit `e8bbd30`)
+- ✅ Wave 12 — Teams (commit `7236f34`)
+- ✅ Wave 13 — Orchestration zone (this entry; 13/17 — single-largest extraction)
+- ⏭ Next — wave 14: Master chat (~1,385 LOC). Wave 14 is the natural retirement opportunity for `window.notice` if we design the chat module to own a `notice` event surface that other modules publish to (instead of reading a window-attached function). That's the right wave for the notification subsystem refactor, not this one.
+
+**What we explicitly did NOT do this PR:**
+- Did not joint-extract with Dashboard panels (rationale above).
+- Did not retire any of the 5 published globals; all 32 consumers stand exactly as they did after wave 12. Bridge retirement is wave 14+ work.
+- Did not refactor the notice subsystem (modal layout, kind colors, OK/Cancel/Esc/Enter handling, focus management, native-fallback path). Verbatim copy of `_showNotice` from app.js.
+- Did not modify or replace `function escapeText(s)` at app.js:1397 — it stays in app.js because it's also used outside the Orch zone (search "escapeText(" in app.js for the call sites). orch.js has its own LOCAL copy of the 3-line helper to stay self-contained.
+- Did not modify `function cssEscape(s)` at app.js:1618 or `function attachOneShotAssistantCapture(logEl)` at app.js:1627 — these are adjacent to the Orch zone but used outside it (project chat panels). Both stay in app.js.
+- Did not touch server handlers for `/api/orchestration/*`, `/api/watchdog/*`, `/api/master/*`, or `/api/web-terminal/*`. Pure client-side restructure.
+- Did not add `unmount()` invocation in bootstrap — same parity stance as waves 1–12.
+- Did not modify any wave-1-through-12 tab module.
+
 ### 2026-05-13 — Account usage on multi-host is by-design partial, no operator-side fix this session (closes HANDOFF.md §2.2)
 
 **Decision:** Accept that the dashboard shows different account usage numbers on different hosts. Not a regression; not fixing this session.

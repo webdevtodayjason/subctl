@@ -15,7 +15,13 @@
 // Registry of extracted tabs. As each tab migrates out of app.js, add an
 // entry here. Waves so far: Logs (1), Templates (2), Models (3),
 // Preferences (4), Providers (5), Vault (6), Memory (7), Skills (8),
-// Projects (9), Settings (10), Policy (11), Teams (12).
+// Projects (9), Settings (10), Policy (11), Teams (12),
+// Orchestration (13).
+//
+// Map keys are the DOM `data-tab` attribute value (the routing contract —
+// mountTab() does `Map.get(b.dataset.tab)`). For wave 13 the file is
+// `tabs/orch.js` but the routing key MUST be `"orchestration"` so that
+// `setActiveTab("orchestration")` triggers the dynamic import.
 
 const TAB_LOADERS = new Map([
   ["logs", () => import("./tabs/logs.js")],
@@ -30,6 +36,7 @@ const TAB_LOADERS = new Map([
   ["settings", () => import("./tabs/settings.js")],
   ["policy", () => import("./tabs/policy.js")],
   ["teams", () => import("./tabs/teams.js")],
+  ["orchestration", () => import("./tabs/orch.js")],
 ]);
 
 // id -> Promise<module>. Memoizes the dynamic import + mount so a tab is
