@@ -16,6 +16,11 @@ SUBCTL_SERVICE_PORT="${SUBCTL_SERVICE_PORT:-8787}"
 SUBCTL_DASHBOARD_HOST="${SUBCTL_DASHBOARD_HOST:-127.0.0.1}"
 SUBCTL_SERVICE_PLIST="$HOME/Library/LaunchAgents/${SUBCTL_SERVICE_LABEL}.plist"
 SUBCTL_SERVICE_TPL="$SUBCTL_REPO_ROOT/dashboard/launchd/com.example.subctl.dashboard.plist.tpl"
+# Dev-tree server.ts — used by `subctl service foreground` from a checkout so
+# operators can test feature branches without retargeting the launchd plist.
+# The launchd plist (subctl_service_enable below) deliberately points at the
+# install tree ($SUBCTL_INSTALL_TREE/dashboard/server.ts), NOT this path, so
+# the daily-driver dashboard stays decoupled from dev-tree branch activity.
 SUBCTL_DASHBOARD_TS="$SUBCTL_REPO_ROOT/dashboard/server.ts"
 
 # ── status ───────────────────────────────────────────────────────────────────
@@ -76,10 +81,25 @@ subctl_service_enable() {
   local bun_bin
   bun_bin=$(command -v bun)
 
+  # Plist's __SERVER_TS__ points at the INSTALL tree (NOT $SUBCTL_REPO_ROOT)
+  # so the daily-driver dashboard is decoupled from dev-tree branch activity.
+  # install.sh:ensure_install_tree() creates the worktree + vendors deps so
+  # this path exists on a fresh install. Fallback to dev tree if for some
+  # reason the install tree was skipped — better than refusing to install.
+  local install_server_ts="${SUBCTL_INSTALL_TREE:-$HOME/.local/lib/subctl-install}/dashboard/server.ts"
+  local plist_server_ts
+  if [[ -f "$install_server_ts" ]]; then
+    plist_server_ts="$install_server_ts"
+  else
+    subctl_warn "install tree not found at $install_server_ts — plist will point at dev tree ($SUBCTL_DASHBOARD_TS)"
+    subctl_warn "  run \`bash install.sh\` from the repo to create the install tree (pinned to main)"
+    plist_server_ts="$SUBCTL_DASHBOARD_TS"
+  fi
+
   # Substitute placeholders
   sed -e "s|__OWNER__|com.subctl|g" \
       -e "s|__BUN__|$bun_bin|g" \
-      -e "s|__SERVER_TS__|$SUBCTL_DASHBOARD_TS|g" \
+      -e "s|__SERVER_TS__|$plist_server_ts|g" \
       -e "s|__PORT__|$SUBCTL_SERVICE_PORT|g" \
       -e "s|__DASH_HOST__|$SUBCTL_DASHBOARD_HOST|g" \
       -e "s|__HOME__|$HOME|g" \

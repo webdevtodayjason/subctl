@@ -191,6 +191,14 @@ bash install.sh --dry-run             # show what would happen
 
 **Idempotent.** Re-running on a fully-installed machine prints the ✓ table and skips the install phase entirely.
 
+**Install tree vs. dev tree.** Fresh installs create a separate git worktree at `~/.local/lib/subctl-install`, pinned to `main`, and the launchd dashboard plist points at THAT tree — not at your clone in `~/code/subctl` (or wherever you ran `bash install.sh` from). This means feature-branch checkouts in your dev tree don't silently change what the daily-driver dashboard serves on next restart. Override the install-tree location with `SUBCTL_INSTALL_TREE=/some/path bash install.sh`. To roll a new `main` into the running dashboard:
+
+```bash
+cd ~/.local/lib/subctl-install && git pull origin main
+launchctl kickstart -k gui/$UID/com.subctl.dashboard
+# (or `subctl dashboard deploy` once that CLI verb lands)
+```
+
 Add accounts to `~/.config/subctl/accounts.conf` then run `subctl install` again — per-account isolation model is documented in [`docs/multi-account.md`](docs/multi-account.md).
 
 ---

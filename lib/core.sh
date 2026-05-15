@@ -16,7 +16,20 @@ SUBCTL_CONFIG_DIR="${SUBCTL_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/subctl
 SUBCTL_ACCOUNTS_CONF="${SUBCTL_ACCOUNTS_CONF:-$SUBCTL_CONFIG_DIR/accounts.conf}"
 SUBCTL_LOG_DIR="${SUBCTL_LOG_DIR:-$HOME/Library/Logs/subctl}"
 SUBCTL_RL_LOG="$HOME/.claude/rate-limit-events.log"
-export SUBCTL_CONFIG_DIR SUBCTL_ACCOUNTS_CONF SUBCTL_LOG_DIR SUBCTL_RL_LOG
+
+# Install tree — a git worktree pinned to `main` that the launchd daemons
+# (dashboard, master) point at instead of the dev tree ($SUBCTL_REPO_ROOT).
+# Decouples the running daily-driver from feature-branch checkouts in the
+# dev tree (otherwise any `git checkout` in $SUBCTL_REPO_ROOT silently
+# changes what the daemons would serve on next restart — slow-burn bug
+# documented in ORCHESTRATION.md, 2026-05-13 night).
+#
+# Default: $HOME/.local/lib/subctl-install. Override at install time:
+#   SUBCTL_INSTALL_TREE=/some/other/path bash install.sh
+# Created idempotently by install.sh:ensure_install_tree.
+SUBCTL_INSTALL_TREE="${SUBCTL_INSTALL_TREE:-$HOME/.local/lib/subctl-install}"
+
+export SUBCTL_CONFIG_DIR SUBCTL_ACCOUNTS_CONF SUBCTL_LOG_DIR SUBCTL_RL_LOG SUBCTL_INSTALL_TREE
 
 # ── colors ────────────────────────────────────────────────────────────────────
 if [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]]; then

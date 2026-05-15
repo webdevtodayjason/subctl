@@ -340,6 +340,14 @@ subctl_settings_install_master() {
 # v2.7.21 (ADR 0011 L2): dashboard now has its own package.json (xterm.js +
 # node-pty for the web-terminal escape hatch). Mirrors the master daemon
 # install pattern above.
+#
+# Vendors deps in BOTH the dev tree ($SUBCTL_REPO_ROOT/dashboard) — so
+# `subctl service foreground` from a checkout still works — and the
+# install tree ($SUBCTL_INSTALL_TREE/dashboard, when it exists) — so the
+# launchd-managed daemon has its own node_modules independent of any
+# branch-checkout activity in the dev tree. The install-tree vendor step
+# is also performed by install.sh:ensure_install_tree() at first install;
+# this function re-runs it to upgrade deps on re-install.
 subctl_settings_install_dashboard_deps() {
   local dashboard_dir="$SUBCTL_REPO_ROOT/dashboard"
   local pkg_json="$dashboard_dir/package.json"
@@ -350,12 +358,27 @@ subctl_settings_install_dashboard_deps() {
     return 0
   fi
 
+  # Dev tree (always)
+  _subctl_settings_install_dashboard_deps_in "$dashboard_dir"
+
+  # Install tree (only if it exists — install.sh:ensure_install_tree created it)
+  local install_dashboard="${SUBCTL_INSTALL_TREE:-$HOME/.local/lib/subctl-install}/dashboard"
+  if [[ -f "$install_dashboard/package.json" ]] && [[ "$install_dashboard" != "$dashboard_dir" ]]; then
+    _subctl_settings_install_dashboard_deps_in "$install_dashboard"
+  fi
+}
+
+# Internal: bun install + node-pty chmod fix-up for a single dashboard dir.
+_subctl_settings_install_dashboard_deps_in() {
+  local dashboard_dir="$1"
+  [[ -z "$dashboard_dir" || ! -f "$dashboard_dir/package.json" ]] && return 0
+
   # node-pty (a native module) installs prebuilt binaries that bun may
   # forget to chmod +x. Fix-up is below.
   if [[ ! -d "$dashboard_dir/node_modules" ]]; then
-    subctl_info "installing dashboard vendor dependencies (xterm.js + node-pty)..."
+    subctl_info "installing dashboard vendor dependencies in $dashboard_dir (xterm.js + node-pty)..."
     (cd "$dashboard_dir" && bun install >/dev/null 2>&1) \
-      && subctl_ok "dashboard deps installed" \
+      && subctl_ok "dashboard deps installed in $dashboard_dir" \
       || { subctl_warn "bun install failed in $dashboard_dir — web terminal will be unavailable until fixed"; return 0; }
   fi
 

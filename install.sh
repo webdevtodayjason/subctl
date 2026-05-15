@@ -61,6 +61,62 @@ done
 
 run() { $DRY_RUN && echo "[dry-run] $*" || eval "$@"; }
 
+# ── install tree (worktree pinned to main, decoupled from dev tree) ──────────
+#
+# Why this exists: before this function, the launchd plist for the dashboard
+# (and master) pointed `ProgramArguments` directly at $SUBCTL_REPO_ROOT/...,
+# i.e. the dev tree. ANY `git checkout <branch>` in the dev tree would change
+# what the launchd daemon would serve on next restart — slow-burn bug. The
+# fix (documented in ORCHESTRATION.md 2026-05-13 night, applied manually
+# first on the local Mac) is to pin a separate worktree to `main` at
+# $SUBCTL_INSTALL_TREE and target the plist there.
+#
+# Idempotent: re-running on a system that already has the install tree is a
+# no-op early-return. Override the path via $SUBCTL_INSTALL_TREE.
+ensure_install_tree() {
+  local install_tree="${SUBCTL_INSTALL_TREE:-$HOME/.local/lib/subctl-install}"
+  if [[ -e "$install_tree/.git" ]]; then  # worktree's `.git` is a FILE, not a dir → -e
+    subctl_info "install tree already exists at $install_tree (skipping create)"
+    return 0
+  fi
+  if [[ -e "$install_tree" ]]; then
+    subctl_err "$install_tree exists but isn't a git worktree — refusing to overwrite"
+    subctl_err "  move or remove it, then re-run install.sh, or set SUBCTL_INSTALL_TREE elsewhere"
+    return 1
+  fi
+  if ! command -v git >/dev/null 2>&1; then
+    subctl_warn "git missing — cannot create install tree. Falling back to dev tree for launchd plists."
+    subctl_warn "  install git, then re-run install.sh to create $install_tree"
+    return 0
+  fi
+
+  subctl_info "creating install tree (pinned to main): $install_tree"
+  run mkdir -p "$(dirname "$install_tree")" || return 1
+  if $DRY_RUN; then
+    echo "[dry-run] git -C $SUBCTL_REPO_ROOT worktree add $install_tree main"
+    echo "[dry-run] (cd $install_tree/dashboard && bun install)"
+    return 0
+  fi
+
+  if ! git -C "$SUBCTL_REPO_ROOT" worktree add "$install_tree" main 2>&1; then
+    subctl_err "git worktree add failed — see message above. Plist will fall back to dev tree."
+    return 1
+  fi
+
+  if [[ -f "$install_tree/dashboard/package.json" ]] && command -v bun >/dev/null 2>&1; then
+    subctl_info "vendoring dashboard deps in install tree"
+    if ! (cd "$install_tree/dashboard" && bun install >/dev/null 2>&1); then
+      subctl_warn "bun install in $install_tree/dashboard failed — web terminal may be unavailable on install-tree dashboard until fixed"
+    else
+      subctl_ok "install-tree dashboard deps installed"
+    fi
+  fi
+
+  subctl_ok "install tree ready: $install_tree"
+  subctl_info "  daily-driver launchd plists will target this path, not the dev tree at $SUBCTL_REPO_ROOT"
+  subctl_info "  to redeploy after a main merge: cd $install_tree && git pull origin main && launchctl kickstart -k gui/\$UID/com.subctl.dashboard"
+}
+
 # ── jq is the manifest reader; bootstrap it before we can read the manifest ──
 _bootstrap_jq() {
   if command -v jq >/dev/null 2>&1; then return 0; fi
@@ -532,6 +588,13 @@ component_install() {
   # is a no-op on pre-v2.7.21 layouts that lack dashboard/package.json.
   subctl_info "installing dashboard vendor deps (web terminal — xterm.js + node-pty)"
   $DRY_RUN || subctl_settings_install_dashboard_deps
+
+  # Decouple the daily-driver dashboard from dev-tree branch activity by
+  # creating $SUBCTL_INSTALL_TREE — a git worktree pinned to `main`. Must
+  # happen BEFORE the dashboard service plist is generated below (so the
+  # plist's ProgramArguments can point at the install tree).
+  subctl_info "ensuring install tree (worktree pinned to main, decoupled from dev tree)"
+  ensure_install_tree || subctl_warn "ensure_install_tree returned non-zero — plist will fall back to dev tree"
 
   # shell aliases
   if ! $NO_SHELL; then
