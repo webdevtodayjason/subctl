@@ -253,6 +253,42 @@ This is the FIRST tab in the decomposition with multiple module-scope entry poin
 - Did not retire the per-mount `confirm()` in the Evy "forget" path. Behavior preserved verbatim from the original.
 - Did not wire `unmount()` into the bootstrap — same parity stance as waves 1–6.
 
+### 2026-05-14 — dashboard decomposition wave 8 (Skills extracted; dead-bridge preservation)
+
+**Decision:** Extract the Skills tab from `dashboard/public/app.js` into `dashboard/public/tabs/skills.js`, mirroring waves 1–7 (commits `3f58f03`, `b681255`, `2b2c515`, `c633322`, `edc0b73`, `27000b5`, `6597668`). App.js shrinks from 7,263 → 6,860 LOC (-403: 1 boot call site + the `// ----- Skills tab — catalog + import flow -----` section header through the closing `// ── end v2.8.1 skills clarity ──` comment, offset by +3 for the wave-8 breadcrumb dropped into the existing comment block).
+
+This is the biggest tab in the migration so far. Two module-scope entry points in app.js (`wireSkillsTab` and `wireSkillsClarityView`) plus four module-scope helpers (`emptyCopyForCategory`, `renderSkillCard`, `whereCopyFor`, `showEvySkillBody`) and the `SKILLS_INFO_COPY` constant all collapse into one module. Same multi-entry collapse pattern as wave 7 (Memory).
+
+**Why now:** Skills was next in the wave-1 migration order after Memory. It exercises three patterns at once — multi-entry collapse (proven in wave 7), two `setInterval` handles with visibility gates (proven in wave 7), and a window-bridge publication (proven in wave 6). No single new pattern, just the densest combination so far. Validates that the wave-5/6/7 lifecycle idioms generalize to the largest payloads before Projects (~468 LOC).
+
+**Bridge preservation rationale:** The original `wireSkillsClarityView` publishes `window.__skillsClarityRefresh = refreshCategorized` so external triggers (SSE evy-authored-skill events per the original comment) can force a categorized re-render. A `grep -rn '__skillsClarityRefresh' dashboard/ components/master/` finds ZERO readers other than the assignment itself — the bridge is effectively dead inside the dashboard codebase. BUT external consumers might still call into it: the master daemon's `/master/skills/*` route, an operator bookmarklet, or a browser extension Jason has set up. Wave 8 is a refactor, not a behavior-change. The bridge stays published from `mount()` exactly where the original placed it; `unmount()` nulls it (same hygiene as wave 6's `window.openVaultDeepLink`). **Retirement deferred to a separate housekeeping task** once we audit external readers — at that point the bridge graduates to a `subctl:skills-clarity-refresh` custom event, or just gets removed.
+
+**Lifecycle — two timers + a document-scoped click handler:**
+- `pollTimer` (30s catalog refresh): app.js:979 had a `getComputedStyle(panel).display !== "none"` visibility gate; dropped. Bootstrap-mounting is the new gate.
+- `clarityPollTimer` (15s categorized refresh): app.js:1056 had the same gate; dropped.
+- `documentClickHandler`: the clarity popover installs `document.addEventListener("click", ...)` to close itself when the operator clicks outside the popover or its trigger. Genuinely document-scoped (not element-scoped), so if `mount()` ever runs twice without an intervening `unmount()`, two handlers would stack. Lifted to module scope and `removeEventListener`'d in `unmount()`. First module in the decomposition to lift a `document.addEventListener` handler — wave 4's listener-lifecycle pattern proven at panel scope, this wave extends it to document scope.
+- All other listeners (filter input, refresh button, source rows, skill rows, [?] popover-trigger buttons, the import form's submit/close/cancel/overlay-click, per-card View/Promote/Delete buttons) are element-scoped and die with the panel DOM. The `setTimeout(closeImport, 2200)` after a successful import is one-shot and self-collecting.
+
+**Migration progress:**
+- ✅ Wave 1 — Logs (commit `3f58f03`)
+- ✅ Wave 2 — Templates (commit `b681255`)
+- ✅ Wave 3 — Models (commit `2b2c515`)
+- ✅ Wave 4 — Preferences (commit `c633322`)
+- ✅ Wave 5 — Providers (commit `edc0b73`)
+- ✅ Wave 6 — Vault (commit `27000b5`)
+- ✅ Wave 7 — Memory (commit `6597668`)
+- ✅ Wave 8 — Skills (this entry; 8/17 tabs)
+- ⏭ Next — Projects (~468 LOC).
+
+**What we explicitly did NOT do this PR:**
+- Did not retire the `window.__skillsClarityRefresh` bridge. Preserved verbatim from inside `mount()` pending an external-reader audit (deferred housekeeping pass).
+- Did not refactor the clarity view's category model, popover positioning, or `SKILLS_INFO_COPY` content.
+- Did not change the import modal UX (form layout, close-on-overlay-click behavior, the `setTimeout(closeImport, 2200)` post-success delay).
+- Did not modify wave-1/2/3/4/5/6/7 files (`tabs/logs.js`, `tabs/templates.js`, `tabs/models.js`, `tabs/preferences.js`, `tabs/providers.js`, `tabs/vault.js`, `tabs/memory.js`, bridge globals, `setActiveTab` notify hook).
+- Did not touch any server-side `/api/skills/*` handler — only the client moved.
+- Did not change the Skills router, categorized backend, evy-skills directory layout, or the promote/delete endpoints.
+- Did not wire `unmount()` into the bootstrap — same parity stance as waves 1–7.
+
 ### 2026-05-13 — Account usage on multi-host is by-design partial, no operator-side fix this session (closes HANDOFF.md §2.2)
 
 **Decision:** Accept that the dashboard shows different account usage numbers on different hosts. Not a regression; not fixing this session.
