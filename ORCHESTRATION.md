@@ -4,6 +4,53 @@ Most recent session at top. Older sessions retained below as historical record.
 
 ---
 
+## Session 2026-05-14 evening — dashboard decomposition wave 6 (Claude Opus 4.7, 1M ctx)
+
+**Protocol start:** 2026-05-14T~19:05 CDT
+**Branch:** `feat/dashboard-decomp-vault` (off `main` @ `ead78c3`)
+**Mode:** Orchestration. Operator authorization: full cycle on wave-5 (merge → deploy → push), then dispatch wave-6 immediately.
+
+### Mission
+Wave 6 of `dashboard/public/app.js` decomposition: extract the **Vault** tab into `dashboard/public/tabs/vault.js`. First tab to *publish* a window bridge global (`window.openVaultDeepLink`) for downstream consumers. Pattern-setter for "tabs that other tabs depend on" — symmetric to wave-1 (Logs) which only consumed.
+
+### Pre-conditions verified
+- `main` @ `ead78c3` (wave-5 deployed at :8787, MIME smoke 200)
+- Vault tab body at `app.js:1946–2255` (310 lines: section header + `wireVaultTab` body)
+- Call site at `app.js:455` (`wireVaultTab();`)
+- Bridge published at `app.js:2245–2254` — `window.openVaultDeepLink` is closure over mount's `checkActive`
+- Bridge consumer at `app.js:3519–3520` — inside Projects tab body, calls `window.openVaultDeepLink("master", target)`. Worker MUST NOT touch the consumer (Projects = wave 9). Consumer's fallback (3522-3526) covers the unmounted-Vault case; preserved by extraction since bridge is published at mount.
+- `MutationObserver(data-active-tab)` at 2239 — refire `checkActive` on tab activations. Bootstrap-mounting makes the *initial* mount redundant, but the observer still fires for hash deep-links from Projects. Keep — lift handle to module scope, disconnect in unmount.
+- No SSE. No setInterval. `setTimeout` for marked.js ready-polling fires once.
+
+### Task Ledger
+
+| ID | Task | State | Worker | Started | Finished |
+|----|------|-------|--------|---------|----------|
+| W6 | Extract Vault tab to `tabs/vault.js` + bridge `window.openVaultDeepLink` continues to publish from mount + bootstrap registry + server `STATIC_FILES` + `app.js` deletion + DECISIONS.md wave-6 closeout | ✅ done | vault-extract | 2026-05-14T~19:05 CDT | 2026-05-14T~19:12 CDT |
+
+### Verification Evidence — wave 6
+
+- **Commit:** `27000b5` on `feat/dashboard-decomp-vault` (`refactor(dashboard): extract Vault tab to ES module — wave 6 (publisher bridge)`)
+- **App.js:** 7,853 → 7,544 LOC (−309, forecast was −311)
+- **New module:** `dashboard/public/tabs/vault.js` — 389 lines, `{ id, mount, unmount }` shape, MutationObserver lifted to module scope (`activeTabObserver`), helpers `$` and `esc` inlined
+- **Bridge accounting (correct on both sides):**
+  - `dashboard/public/tabs/vault.js`: 3 hits — top-of-file doc comment (line 9), `window.openVaultDeepLink = function(...)` at mount end (line 367), `window.openVaultDeepLink = null` in unmount (line 388)
+  - `dashboard/public/app.js`: 3 hits — extraction-note comment in boot block (line 467), Projects consumer `typeof` guard (line 3210), Projects consumer call (line 3211). Consumer untouched as required.
+- **bootstrap.js:** `TAB_LOADERS` now 6 entries; wave-tracking comment updated
+- **server.ts:** `STATIC_FILES["/tabs/vault.js"]` registered alongside existing 5 `/tabs/*.js` entries
+- **Gates:**
+  - `node --check` clean on `vault.js`, `app.js`, `bootstrap.js`
+  - `grep wireVaultTab` and `grep '----- Vault viewer'` on app.js → empty
+  - Worker self-ran live MIME smoke on `PORT=8799` per commit log
+- **Worker behaviour:** silent-idle after commit — pattern holds across all 6 waves now
+- **DECISIONS.md:** appended wave-6 closeout (publisher bridge pattern documented for wave-9 reference)
+
+### Pattern established this wave: publisher-side bridge
+
+`mount()` assigns `window.openVaultDeepLink`; `unmount()` nulls it. The function closes over mount-scope locals (`checkActive`). Symmetric to wave-1's consumer-side pattern. When Projects extracts in wave 9, we'll re-evaluate whether the bridge should retire to a `subctl:vault-deeplink` custom event (now that both sides would be modules and could communicate via DOM events) or keep the global (simpler, cheaper). That decision is wave-9 scope; the bridge stays as-is until then.
+
+---
+
 ## Session 2026-05-14 evening — dashboard decomposition wave 5 (Claude Opus 4.7, 1M ctx)
 
 **Protocol start:** 2026-05-14T~18:50 CDT
