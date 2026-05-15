@@ -804,20 +804,18 @@ export async function ensureModelLoaded(cfg: { provider: string; model: string; 
       lmReachable = true;
       const j = (await r.json()) as { data?: Array<{ id: string; state?: string; loaded_context_length?: number }> };
       const current = (j.data ?? []).find((m) => m.id === cfg.model);
-      if (current?.state === "loaded" && current.loaded_context_length === desired) {
-        return { ok: true, detail: `${role}=${cfg.model} already loaded with ctx ${desired.toLocaleString()}` };
-      }
-      // Already loaded but at a different context — and another role may
-      // share this exact model. If desired <= currently-loaded, treat as
-      // good enough (no need to evict + reload). This avoids the
-      // supervisor-at-65K-then-reviewer-wants-32K cascade that crashed
-      // the daemon during the LM Studio recovery 2026-05-10.
-      if (current?.state === "loaded" &&
-          typeof current.loaded_context_length === "number" &&
-          current.loaded_context_length >= desired) {
+      // If model is already loaded at ANY context, leave it alone. The
+      // operator's manual config (and LM Studio's own state) wins. The
+      // previous "upgrade ctx if loaded < desired" path tried to
+      // unload+reload, but unload-by-model-name silently fails in current
+      // LM Studio (it requires instance_id), so the load step created a
+      // duplicate :2 instance. Master only enforces ctx on cold start
+      // (model not yet loaded) — see commit fix(master): ctx-pin respects
+      // existing model load.
+      if (current?.state === "loaded") {
         return {
           ok: true,
-          detail: `${role}=${cfg.model} already loaded with ctx ${current.loaded_context_length.toLocaleString()} (≥ desired ${desired.toLocaleString()}) — skipping reload`,
+          detail: `${role}=${cfg.model} already loaded at ctx ${(current.loaded_context_length ?? 0).toLocaleString()} — respecting existing load (operator/LM Studio config wins)`,
         };
       }
     }
