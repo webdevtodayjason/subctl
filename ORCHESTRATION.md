@@ -4,6 +4,45 @@ Most recent session at top. Older sessions retained below as historical record.
 
 ---
 
+## Session 2026-05-14 evening — dashboard decomposition wave 7 (Claude Opus 4.7, 1M ctx)
+
+**Protocol start:** 2026-05-14T~19:15 CDT
+**Branch:** `feat/dashboard-decomp-memory` (off `main` @ `1468858`)
+**Mode:** Orchestration with batch authorization.
+
+### Mission
+Wave 7 of `dashboard/public/app.js` decomposition: extract the **Memory** tab into `dashboard/public/tabs/memory.js`. First tab with **multiple internal entry points** (Tier-1 user/memory editors + main Obsidian vault status + Evy Memory Tier-3 card). Three sub-functions in app.js collapsed into one `mount()`.
+
+### Pre-conditions verified
+- `main` @ `1468858` (wave-6 deployed, pushed)
+- Memory section at `app.js:3400–3680` (281 lines)
+- Two `setInterval`s to lift to module scope; visibility gates dropped (mount-on-activate is new contract)
+- No SSE, no `window.__subctl*` bridges, no cross-tab consumers
+
+### Task Ledger
+
+| ID | Task | State | Worker | Started | Finished |
+|----|------|-------|--------|---------|----------|
+| W7 | Extract Memory tab to `tabs/memory.js` + bootstrap registry + server STATIC_FILES + delete from `app.js` + DECISIONS.md wave-7 closeout | ✅ done | memory-extract | 2026-05-14T~19:15 CDT | 2026-05-14T~20:28 CDT (75 min — slow but clean) |
+
+### Verification Evidence — wave 7
+
+- **Commit:** `6597668` on `feat/dashboard-decomp-memory` (`refactor(dashboard): extract Memory tab to ES module — wave 7 (multi-entry collapse)`)
+- **App.js:** 7,544 → 7,263 LOC (−281, forecast was −282)
+- **New module:** `dashboard/public/tabs/memory.js` — 379 lines, `{ id, mount, unmount }` shape
+  - Three sub-helpers preserved as locals inside `mount()` (mirrors original control flow)
+  - `tier1PollTimer` + `mainPollTimer` lifted to module scope; visibility gates dropped
+  - Unified `esc` helper consolidates the prior `escapeForHtml`/`esc` duplicate
+- **bootstrap.js:** `TAB_LOADERS` now 7 entries
+- **server.ts:** `STATIC_FILES["/tabs/memory.js"]` registered
+- **Gates:** `node --check` clean on all 3 JS files; all `wireMemoryTab`/`wireTier1MemoryCards`/`wireEvyMemoryCard` purged from app.js; registry + STATIC_FILES entries verified
+
+### Operational note — Agent worker timing variability
+
+This worker took **75 minutes** vs the prior two waves' ~7 minutes each. Same dispatch pattern (`Agent` + `subagent_type=expert-bun-typescript` + `team_name=dashboard-decomp`); same prompt shape; same scope envelope; same end-state quality. The slowness happened during the work, not at the bookend. Lesson: **Agent worker latency is highly variable**, ranging from 7 min to 75 min for comparable extractions, with no operator-visible signal during the long path. The orchestrator-mode skill promises iTerm2 panes (`Agent` + `team_name` → "their own iTerm2 pane") but on this machine that integration isn't placing workers in visible panes — operator has no way to watch progress. Considered redispatch via `subctl orch spawn -a claude-jason` (visible tmux pane) mid-incident but `claude-jason` returned `401 Invalid authentication credentials` and the spawned session was killed. The Agent worker then completed unaided. **Open follow-up:** decide for future waves whether to (a) re-auth `claude-jason`/`claude-titanium` and switch to subctl orch for visibility, (b) keep using Agent and accept the variable latency, (c) build a thin "agent worker progress" surface that the orchestrator can poll (e.g. periodic disk-mtime checks). Tactical for tonight: continue Agent + team_name, accept slow-tail risk.
+
+---
+
 ## Session 2026-05-14 evening — dashboard decomposition wave 6 (Claude Opus 4.7, 1M ctx)
 
 **Protocol start:** 2026-05-14T~19:05 CDT
