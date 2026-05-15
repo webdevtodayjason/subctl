@@ -115,6 +115,14 @@ import {
   SUBCTL_TO_PI_AI,
   type CatalogProvider,
 } from "../components/master/pi-ai-catalog.ts";
+// v2.8.7 — supervisor dropdown sync. POST /api/master/supervisor edits
+// providers.json AND profiles.json so the operator's dropdown pick survives
+// the next master restart (master overrides supervisor.model + host from
+// profiles.json[active] at boot — see components/master/server.ts:931).
+import {
+  loadProfiles,
+  setProfileEntry,
+} from "../components/master/profiles.ts";
 // v2.7.21 (ADR 0011 Layer 2): web terminal escape hatch. Routes are gated
 // by a flag file at ~/.config/subctl/terminal.enabled; absent = OFF (the
 // default). When enabled, the dashboard upgrades a WebSocket to a node
@@ -4734,6 +4742,7 @@ const server = Bun.serve({
       const WIRED_PROVIDERS = new Set([
         "anthropic",
         "openai",          // API-key-based; works
+        "openai-codex",    // v2.8.7 — ChatGPT Pro OAuth via components/master/openai-codex-auth.ts
         "google",
         "google-vertex",
         "amazon-bedrock",
@@ -4744,12 +4753,23 @@ const server = Bun.serve({
         "vllm",
         "openrouter",      // v2.7.17 — OpenAI-compat gateway, hundreds of models (incl. free preview tier)
       ]);
+      // Local providers — host stays under operator control (or defaults
+      // to localhost:1234/v1). Cloud providers — host clears to "" so
+      // master's buildModel falls back to the provider's canonical
+      // baseURL (DEFAULT_CODEX_BASE_URL for openai-codex,
+      // openrouter.ai/api/v1 for openrouter, etc.).
+      const LOCAL_PROVIDER_IDS = new Set([
+        "lmstudio",
+        "mlx",
+        "ollama",
+        "vllm",
+      ]);
       if (newProvider && !WIRED_PROVIDERS.has(newProvider)) {
         return Response.json(
           {
             ok: false,
             error: `provider "${newProvider}" is not wired into pi-ai yet`,
-            hint: `wired providers: ${[...WIRED_PROVIDERS].sort().join(", ")}. openai-codex (ChatGPT OAuth) is planned for v1.1 — see providers/openai/README.md.`,
+            hint: `wired providers: ${[...WIRED_PROVIDERS].sort().join(", ")}.`,
           },
           { status: 400 },
         );
@@ -4786,6 +4806,40 @@ const server = Bun.serve({
         (cfg as any)._comment = `models.supervisor switched via /api/master/supervisor at ${new Date().toISOString()} (was: ${prev})`;
         const { writeFileSync } = require("node:fs") as typeof import("node:fs");
         writeFileSync(providersPath, JSON.stringify(cfg, null, 2));
+
+        // v2.8.7 — sync profiles.json so the operator's pick survives a
+        // master restart. Master overrides supervisorCfg.model + .host
+        // from profiles.json[active] at boot (components/master/server.ts
+        // around the let supervisorCfg block); without this sync the
+        // restart silently reverts to whatever stale value profiles.json
+        // already had. Non-fatal on failure — providers.json was already
+        // written and the restart will at least proceed; the swap will
+        // appear "stuck" until the next dropdown apply OR a profile-pill
+        // toggle.
+        let profilesSyncMessage = "profiles.json updated";
+        try {
+          const profiles = loadProfiles();
+          const active = profiles.active;
+          // Host policy. Operator intent is "what I select sticks", so we
+          // do NOT preserve any prior profile host — that would let a stale
+          // custom URL outlive the switch that was supposed to replace it.
+          //   - explicit body.host  → use as-is (e.g. proxies, regional)
+          //   - local provider, no host  → "http://localhost:1234/v1"
+          //   - cloud provider, no host  → "" (master.buildModel falls back
+          //     to the provider's canonical baseURL)
+          const effectiveProvider =
+            newProvider || cfg.models.supervisor.provider || "";
+          const resolvedHost = newHost
+            ? newHost
+            : LOCAL_PROVIDER_IDS.has(effectiveProvider)
+              ? "http://localhost:1234/v1"
+              : "";
+          setProfileEntry(active, { supervisor: modelId, host: resolvedHost });
+        } catch (err) {
+          profilesSyncMessage = `profiles.json sync FAILED: ${(err as Error).message}`;
+          console.error(`[supervisor-switch] ${profilesSyncMessage}`);
+        }
+
         // Bounce master via launchctl. The new daemon's boot-time
         // ensureModelLoaded() will re-pin the LM Studio context for the
         // supervisor (and reviewer) using the freshly-written providers.json,
@@ -4803,7 +4857,7 @@ const server = Bun.serve({
           ok: true,
           previous: prev,
           new: modelId,
-          message: "providers.json updated, master daemon restarted, supervisor will be re-pinned at the configured context_length on first boot tick",
+          message: `providers.json updated, ${profilesSyncMessage}, master daemon restarted, supervisor will be re-pinned at the configured context_length on first boot tick`,
         });
       } catch (err) {
         return Response.json(

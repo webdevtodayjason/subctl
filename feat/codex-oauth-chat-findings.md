@@ -231,3 +231,95 @@ Expected transcript: an assistant turn containing the text "CODEX-WORKING".
 - Multi-account routing (using `openai-titanium` instead of `openai-jason`).
 - Pi-ai upstream change to honor `originator: codex_cli` or to expose a
   Codex-specific env var.
+
+---
+
+## Scope addendum (2026-05-15) — supervisor-pick override fix
+
+### Problem (operator-reported)
+
+When the operator picks a model in the chat tab's supervisor dropdown and
+clicks "apply", their selection silently doesn't stick across the next
+master restart. After-the-fact diagnosis pinned this to the boot path in
+`components/master/server.ts`:
+
+```ts
+let supervisorCfg: Providers["models"][string] = {
+  ...supervisorCfgFromProviders,                         // ← from providers.json
+  model: profilesFile.profiles[profilesFile.active].supervisor,
+  host:  profilesFile.profiles[profilesFile.active].host,
+};
+```
+
+Pre-fix, the dashboard's `POST /api/master/supervisor` wrote ONLY
+`providers.json` — `profiles.json[active]` kept whatever stale
+`supervisor + host` it already had. On restart, the boot path read
+providers.json (provider id from the new pick) but then clobbered the model
+and host with the stale profiles.json values. Net: with `provider="openai-codex"` from providers.json and
+`supervisor="qwen/qwen3.6-27b", host="http://localhost:1234/v1"` from
+profiles.json, master tries to call the codex provider with a qwen model
+ID at localhost:1234. The dropdown selection is effectively a noop.
+
+### Chosen path — Option A (dashboard writes both files)
+
+Two options were considered; Option A wins on pragmatics.
+
+**Option A.** `POST /api/master/supervisor` writes BOTH providers.json AND
+profiles.json[active]. Master's boot path stays unchanged — the override
+just becomes a noop when the two files agree, which they now will after
+every dropdown apply. Preserves the profile-pill UX (chat / heavy toggle)
+because the pill still touches profiles.json[active]'s name pointer, not
+its entries. Single small surface change inside the existing handler.
+
+**Option B.** Stop overriding from profiles.json at master boot; only
+override when the operator explicitly toggles the profile pill. This is a
+bigger semantic change (the profile system in v2.7.18 was designed
+precisely so profiles.json IS the source of truth for the active model,
+even across restarts) and would break the muscle memory of "click chat /
+click heavy" reliably reloading the named model. Rejected.
+
+### Implementation summary
+
+Files touched in this addendum:
+
+- **`components/master/profiles.ts`** — added `setProfileEntry(name,
+  entry)`. Validates name + entry shape (supervisor + host both strings;
+  empty host legal). Persists via the same `writeFileSecure` chmod-600
+  path as `setActiveProfile`.
+- **`dashboard/server.ts`** — supervisor POST handler:
+  - Added `openai-codex` to `WIRED_PROVIDERS` (this branch wires the
+    OAuth path, so the dropdown can now legally pick it; previously the
+    guard rejected with "not wired yet").
+  - After `writeFileSync(providersPath, …)`, calls `setProfileEntry`
+    with `{ supervisor: modelId, host: <resolved> }`:
+    - `body.host` wins if explicit (operator-supplied host override —
+      proxies, regional endpoints).
+    - Local providers (lmstudio/mlx/ollama/vllm) with no explicit host:
+      default to `http://localhost:1234/v1`. We deliberately do NOT
+      preserve any prior `profiles.json[active].host` — the operator's
+      stated intent is "what I select in the chat sticks", and
+      preserving a stale custom URL across a provider switch would
+      perpetuate exactly the kind of stale state this fix is removing.
+      If the operator needs a non-default local host (custom proxy,
+      remote LM Studio), they pass it explicitly as `body.host`.
+    - Cloud providers (anthropic/openai/openai-codex/openrouter/…)
+      with no explicit host: empty string — master's `buildModel`
+      falls back to the canonical baseURL
+      (`DEFAULT_CODEX_BASE_URL` for openai-codex,
+      `https://openrouter.ai/api/v1` for openrouter, etc.).
+  - `profiles.json` sync failures are **non-fatal**: providers.json was
+    already written, the restart proceeds, but the response message
+    surfaces "profiles.json sync FAILED" so the operator sees the
+    partial outcome instead of a silent regression.
+
+Test surface:
+- New: `components/master/__tests__/profiles.test.ts > setProfileEntry`
+  (7 tests — persist, leave-others-untouched, empty-string-host,
+  validation throws, chmod 600).
+- Full master suite still green (937 pass / 0 fail; was 930 before
+  this addendum's 7 tests).
+- Dashboard builds clean (`bun build --target=bun server.ts`).
+
+Live test was NOT run per the team-lead's HALT (operator is actively in
+the chat tab). See `feat/codex-oauth-chat-TEST.md` for the test recipe the
+orchestrator will run once the operator's session is paused.

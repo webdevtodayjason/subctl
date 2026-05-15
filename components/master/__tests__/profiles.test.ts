@@ -26,6 +26,7 @@ import {
   getActiveProfile,
   loadProfiles,
   setActiveProfile,
+  setProfileEntry,
   watchProfiles,
 } from "../profiles";
 
@@ -175,6 +176,91 @@ describe("setActiveProfile", () => {
     loadProfiles();
     expect(() => setActiveProfile("ludicrous")).toThrow(/unknown profile/i);
     expect(() => setActiveProfile("")).toThrow(/unknown profile/i);
+  });
+});
+
+// ─── setProfileEntry ─────────────────────────────────────────────────────
+//
+// v2.8.7. The dashboard's POST /api/master/supervisor handler calls this
+// after editing providers.json so master's boot-time override of supervisor
+// model + host (from profiles.json[active]) doesn't silently clobber the
+// operator's dropdown pick. Same validation contract as setActiveProfile.
+
+describe("setProfileEntry", () => {
+  test("persists the new supervisor + host for a profile", () => {
+    loadProfiles(); // seed
+    const next = setProfileEntry("chat", {
+      supervisor: "openai-codex/gpt-5.5",
+      host: "",
+    });
+    expect(next.profiles.chat.supervisor).toBe("openai-codex/gpt-5.5");
+    expect(next.profiles.chat.host).toBe("");
+    // Re-read from disk to confirm persistence.
+    const reread = loadProfiles();
+    expect(reread.profiles.chat.supervisor).toBe("openai-codex/gpt-5.5");
+    expect(reread.profiles.chat.host).toBe("");
+  });
+
+  test("leaves the OTHER profile untouched and the active pointer alone", () => {
+    loadProfiles();
+    const before = loadProfiles();
+    setActiveProfile("heavy");
+    setProfileEntry("chat", {
+      supervisor: "lmstudio/qwen/qwen3.6-27b",
+      host: "http://localhost:1234/v1",
+    });
+    const after = loadProfiles();
+    expect(after.active).toBe("heavy"); // active pointer NOT changed
+    expect(after.profiles.heavy.supervisor).toBe(
+      before.profiles.heavy.supervisor,
+    );
+    expect(after.profiles.chat.supervisor).toBe("lmstudio/qwen/qwen3.6-27b");
+  });
+
+  test("empty-string host is a legal value (cloud providers use it)", () => {
+    loadProfiles();
+    const next = setProfileEntry("chat", {
+      supervisor: "anthropic/claude-sonnet-4-6",
+      host: "",
+    });
+    expect(next.profiles.chat.host).toBe("");
+  });
+
+  test("throws on an unknown profile name", () => {
+    loadProfiles();
+    expect(() =>
+      setProfileEntry("ludicrous", { supervisor: "x", host: "" }),
+    ).toThrow(/unknown profile/i);
+    expect(() =>
+      setProfileEntry("", { supervisor: "x", host: "" }),
+    ).toThrow(/unknown profile/i);
+  });
+
+  test("throws when supervisor is not a string", () => {
+    loadProfiles();
+    expect(() =>
+      setProfileEntry("chat", {
+        supervisor: undefined as unknown as string,
+        host: "",
+      }),
+    ).toThrow(/supervisor/i);
+  });
+
+  test("throws when host is not a string (must use \"\" for absent)", () => {
+    loadProfiles();
+    expect(() =>
+      setProfileEntry("chat", {
+        supervisor: "x",
+        host: null as unknown as string,
+      }),
+    ).toThrow(/host/i);
+  });
+
+  test("persists the new entry with chmod 600", () => {
+    loadProfiles();
+    setProfileEntry("chat", { supervisor: "x", host: "" });
+    const mode = statSync(profilesPath).mode & 0o777;
+    expect(mode).toBe(0o600);
   });
 });
 

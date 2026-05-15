@@ -257,6 +257,56 @@ export function setActiveProfile(name: string): ProfilesFile {
 }
 
 /**
+ * Update a single profile's entry (supervisor + host) in-place and persist.
+ *
+ * Why this exists. The dashboard's POST /api/master/supervisor handler
+ * writes providers.json to switch the supervisor model and then kickstarts
+ * the master daemon. On reboot, master reads providers.json BUT then
+ * overrides `model + host` from profiles.json[active]. Pre-v2.8.7 the
+ * dashboard did NOT touch profiles.json, so the operator's dropdown pick
+ * was silently clobbered every boot by the stale value in profiles.json.
+ *
+ * Calling this with `{ supervisor: <modelId>, host: <empty|local|cloud> }`
+ * keeps both files in sync so the pick survives a restart. The `host`
+ * value the caller passes should match providers.json's host-policy
+ * (empty for cloud providers; localhost:1234/v1 or operator-supplied
+ * URL for local providers) — buildModel() in server.ts falls back to
+ * provider-specific canonical baseURLs when host is empty.
+ *
+ * Throws on unknown profile name. Same validation contract as
+ * setActiveProfile.
+ */
+export function setProfileEntry(
+  name: string,
+  entry: ProfileEntry,
+): ProfilesFile {
+  if (!(PROFILE_NAMES as ReadonlyArray<string>).includes(name)) {
+    throw new Error(
+      `unknown profile "${name}". valid: ${PROFILE_NAMES.join(", ")}`,
+    );
+  }
+  if (typeof entry.supervisor !== "string") {
+    throw new Error("entry.supervisor must be a string");
+  }
+  if (typeof entry.host !== "string") {
+    throw new Error("entry.host must be a string (use \"\" for cloud providers)");
+  }
+  const current = loadProfiles();
+  const next: ProfilesFile = {
+    active: current.active,
+    profiles: {
+      ...current.profiles,
+      [name as ProfileName]: {
+        supervisor: entry.supervisor,
+        host: entry.host,
+      },
+    },
+  };
+  writeFileSecure(currentPath(), JSON.stringify(next, null, 2));
+  return next;
+}
+
+/**
  * fs.watch profiles.json. Debounce 200ms — the fs.watch event fires
  * twice on macOS (one for the rename, one for the new inode being
  * created) when an editor saves via the atomic-rename pattern. The
