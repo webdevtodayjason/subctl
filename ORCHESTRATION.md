@@ -4,6 +4,58 @@ Most recent session at top. Older sessions retained below as historical record.
 
 ---
 
+## Session 2026-05-14 evening — dashboard decomposition wave 13 (Claude Opus 4.7, 1M ctx)
+
+**Protocol start:** 2026-05-14T~22:00 CDT
+**Branch:** `feat/dashboard-decomp-orch` (off `main` @ `7b6a758`)
+**Mode:** Orchestration with batch authorization. Operator authorized finishing through wave 14 tonight.
+
+### Mission deviation from HANDOFF — Orch only, NOT joint
+
+HANDOFF.md planned wave 13 as a JOINT extraction of "Orchestration + Dashboard panel renderers" (1,891 LOC combined) because Orch publishes 5 globals that Dashboard panels consume. **Revised decision: extract Orch only.** Reasoning:
+
+- The Dashboard panel renderers (`render(state)`, `renderOrchSidecar`, `renderOrchestrations`, `renderSessions`, all the cell builders/formatters) are not a tab — they're the **rendering infrastructure for the dashboard screen**, driven by the state polling/WS loop in app.js. They belong to the shell, not to a tab module.
+- The publisher-consumer dynamic is exactly what wave 6 (Vault publishes `openVaultDeepLink`, Projects consumes) established: extract the publisher first, leave consumers in place reading the still-published global. No joint extraction needed.
+- After wave 13 + wave 14, what remains in app.js is genuinely the shell: state polling + WS transport + render dispatcher + cell builders + verdict-transition notifications + status pill + lucide chrome + host-label boot + tab nav. That's the legitimate stopping point for this decomposition.
+
+This is documented in DECISIONS.md so HANDOFF can be updated post-wave-14 to retire the "joint" plan.
+
+### Mission
+Wave 13: extract the **Orchestration zone** into `dashboard/public/tabs/orch.js`. Largest single extraction tonight (~905 LOC). Publishes 5 globals from mount(): `window.__subctlOpenTmuxPreview`, `window.__subctlCopyAttachCommand`, `window.__subctlOpenWebTerminal`, `window.__subctlWireWebTerminalGate`, and the entire `window.notice` + `.error` + `.confirm` notification system.
+
+### Pre-conditions verified
+- `main` @ `7b6a758` (wave-12 deployed & pushed)
+- Orch zone bounds: `app.js:709–1614` inclusive (~906 lines)
+  - 709-829: Camera grid (`wireOrchCameraGrid`)
+  - 830-1110: Cockpit (`fmtTimeShort`, `renderWatchdogPanel`, `escForWatchdog`, `wireOrchestrationCockpit`)
+  - 1112-1395: Watchdog panel (`wireWatchdogPanel`)
+  - 1397: `function escapeText(s)` — **STAYS in app.js** (module-scope helper used widely outside Orch zone)
+  - 1401-1488: TMux preview modal (`openTmuxPreview`, `copyAttachCommand`) + 2 global publications
+  - 1490-1542: Web terminal driver (`openWebTerminal`, `wireWebTerminalGate`) + 2 global publications
+  - 1544-1614: Notice modal (`_showNotice`) + 3 publications (`window.notice`, `.error`, `.confirm`)
+- 4 boot calls to delete: `app.js:455` (cockpit), `456` (camera), `460` (terminal gate), `1395` (watchdog)
+- Consumer count for the 5 globals: 24 hits in app.js + 8 hits in extracted tabs/*.js. ALL must continue working.
+
+### Task Ledger
+
+| ID | Task | State | Worker | Started | Finished |
+|----|------|-------|--------|---------|----------|
+| W13 | Extract Orch zone (~906 LOC: camera + cockpit + watchdog + 3 modal subsystems) to `tabs/orch.js` + publish 5 globals from mount() + delete 4 boot calls + bootstrap registry + server STATIC_FILES + DECISIONS.md wave-13 closeout | ✅ done | orch-extract | 2026-05-14T~22:00 CDT | 2026-05-14T~22:17 CDT (17 min) |
+
+### Verification Evidence — wave 13
+
+- **Commit:** `9368ccf` on `feat/dashboard-decomp-orch`
+- **App.js:** 4,845 → 3,945 LOC (−900, forecast was −906)
+- **tabs/orch.js:** 1,039 lines — biggest module yet (surpasses policy.js at 758)
+- **5 globals published from mount:** verified — `__subctlOpenTmuxPreview`, `__subctlCopyAttachCommand`, `__subctlOpenWebTerminal`, `__subctlWireWebTerminalGate` all show 3 hits each (assignment + null + doc comment); `window.notice` + `.error` + `.confirm` all present
+- **Consumer preservation verified:** 22 `window.notice` consumer sites still in app.js shell (down from 24 — the 2 dropped were inside the Orch zone that got deleted); 2 `__subctlOpen*` consumer sites still in app.js (the renderOrchestrations call sites at lines 3278/3288). All 8 in extracted tabs/*.js modules untouched.
+- **Routing key smart-catch:** worker correctly registered the bootstrap key as `"orchestration"` (matching HTML `data-tab="orchestration"`) while keeping the file name `tabs/orch.js` (shorter). Documented in bootstrap.js comment.
+- **bootstrap.js:** `TAB_LOADERS` now 13 entries
+- **server.ts:** `STATIC_FILES["/tabs/orch.js"]` registered
+- All 3 `node --check` pass; `bun build` of server clean.
+
+---
+
 ## Session 2026-05-14 evening — dashboard decomposition wave 12 (Claude Opus 4.7, 1M ctx)
 
 **Protocol start:** 2026-05-14T~21:50 CDT
