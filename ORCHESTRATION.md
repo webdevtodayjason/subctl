@@ -4,6 +4,50 @@ Most recent session at top. Older sessions retained below as historical record.
 
 ---
 
+## Session 2026-05-14 evening — dashboard decomposition wave 5 (Claude Opus 4.7, 1M ctx)
+
+**Protocol start:** 2026-05-14T~18:50 CDT
+**Branch:** `feat/dashboard-decomp-providers` (off `main` @ `246224d`)
+**Mode:** Orchestration. Operator authorization: wave-5 dispatch. One feature branch in the main worktree; one worker; one commit; no push, no merge.
+
+### Mission
+Wave 5 of `dashboard/public/app.js` decomposition: extract the Providers tab into `dashboard/public/tabs/providers.js`. Mirrors waves 2+3 (Templates, Models) — fully self-contained tab, zero bridges, `setInterval` poll lifecycle that needs `pollTimer` lifted to module scope for `unmount()` symmetry.
+
+### Pre-conditions verified
+- `main` @ `246224d` (HANDOFF closeout), local Mac install tree pinned to main, daily-driver healthy
+- `app.js` at 8,122 LOC at session start
+- Providers body at `app.js:791–1058`; call site at `app.js:466`
+- No `window.__subctl*` reads or writes in `wireProvidersTab` body — grep clean
+- Only HTTP boundary: `GET /api/providers`, `POST /api/providers/profiles`, `DELETE /api/providers/profiles` — server handlers untouched this wave
+- `SUBCTL_AGENT_ROLE=<unset>` — orchestrator activation legitimate
+
+### Task Ledger
+
+| ID | Task | State | Worker | Started | Finished |
+|----|------|-------|--------|---------|----------|
+| W5 | Extract Providers tab to `dashboard/public/tabs/providers.js` + bootstrap registry + server `STATIC_FILES` + delete from `app.js` + DECISIONS.md closeout | ✅ done | providers-extract | 2026-05-14T~18:50 CDT | 2026-05-14T~18:57 CDT |
+
+### Verification Evidence — wave 5
+
+- **Commit:** `edc0b73` on `feat/dashboard-decomp-providers` (`refactor(dashboard): extract Providers tab to ES module — wave 5`)
+- **App.js:** 8,122 → 7,853 LOC (−269, exactly on forecast)
+- **New module:** `dashboard/public/tabs/providers.js` — 320 lines, `{ id, mount, unmount }` shape, `pollTimer` lifted to module scope, helpers `$` + `escapeText` inlined, visibility gate dropped (mount-on-activate is the new contract)
+- **bootstrap.js:** `TAB_LOADERS` now 5 entries (`logs, templates, models, preferences, providers`); wave-tracking comment updated to `Waves so far: Logs (1), Templates (2), Models (3), Preferences (4), Providers (5).`
+- **server.ts:** `STATIC_FILES["/tabs/providers.js"]` registered alongside the existing 4 `/tabs/*.js` entries
+- **Gates:**
+  - `node --check` clean on `providers.js`, `app.js`, `bootstrap.js`
+  - `grep wireProvidersTab dashboard/public/app.js` → empty (clean delete)
+  - `grep '----- Providers tab' dashboard/public/app.js` → empty
+  - Worker self-ran live MIME smoke on `PORT=8799` (their commit message confirms all 9 gates passed)
+- **Worker behaviour:** silent-idle after commit, consistent with HANDOFF.md §5
+- **DECISIONS.md:** appended wave-5 closeout entry under Architectural calls
+
+### Worker silent-idle protocol — still consistent
+
+`providers-extract` (subagent_type `expert-bun-typescript`) completed work, committed, went idle without sending the `SendMessage` report-back the dispatch spec asked for. Same pattern as all 4 prior workers. Self-verified via `git log` + gate-check script per HANDOFF §5. No remediation needed — protocol is "self-verify after idle."
+
+---
+
 ## Session 2026-05-13 night — dashboard decomposition wave 1 (Claude Opus 4.7, 1M ctx)
 
 **Protocol start:** 2026-05-13T~19:30 CDT
