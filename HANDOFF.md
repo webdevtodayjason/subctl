@@ -1,197 +1,268 @@
-# HANDOFF.md — session 2026-05-13 night → 2026-05-14 early morning
+# HANDOFF.md — session 2026-05-14 night → 2026-05-15 morning
 
 **Operator:** Jason Brashear
-**Hosts:** M3 Ultra (Tailscale 100.84.108.16, LAN 192.168.100.98) + local MacBook (this machine)
-**Branch:** `main` @ `c633322` · **Repo:** webdevtodayjason/subctl · **Origin:** in sync
+**Hosts:** M3 Ultra (Tailscale `100.84.108.16`, LAN `192.168.100.98`) + local Mac (this machine)
+**Branch:** `main` @ `6e1ce0d` · **Repo:** webdevtodayjason/subctl · **Origin:** in sync
+**VERSION file:** `2.8.6` (untagged — last git tag is `v2.8.5`)
+**Next phase:** live testing + enhancement with operator (interactive debug/improve loop)
 
-Every claim below is marked **[VERIFIED]** (I observed it tonight) or **[ASSUMED]** (likely true but not directly checked). Don't trust [ASSUMED] without re-checking on next session.
-
----
-
-## 0. Current state (snapshot 2026-05-14 ~00:00 CDT)
-
-- **`main` HEAD:** `c633322` **[VERIFIED]** (`git log --oneline -1`). Origin in sync — `git push origin main` returned `2b2c515..c633322` after each wave.
-- **`dashboard/public/app.js`:** 8,122 lines **[VERIFIED]** (`wc -l`). Was 8,955 at session start. **−833 LOC, 9.3% of the monolith gone in 4 waves.**
-- **Daily-driver dashboard (M3? no — local Mac):** running on `:8787` from a NEW location, `~/.local/lib/subctl-install/dashboard/` — a git worktree pinned to `main`. **[VERIFIED]** via `ps -ef` + `curl /api/version`. PID 1473 (the old May-12 v2.7.7-in-memory daemon) is **gone**, replaced by the new PID running c633322.
-- **Dev tree at `~/code/subctl`:** on `feat/dashboard-decomp-preferences` branch tip (= same SHA as `main`, harmless leftover label). Future work creates a fresh branch from current HEAD.
-- **Local feature-branch sandbox:** killed. `PORT=8788 bun run dashboard/server.ts` was running mid-session for the operator to test wave-1 isolated; that process is no longer needed since merges/deploys flowed through.
-- **M3 dashboard:** still at v2.8.5 from the previous session. **[ASSUMED]** — I did NOT update M3 tonight. The infra-split that decouples daily-driver from dev-tree was applied to local Mac only. M3 was untouched. See §2 for the recommended next step there.
+Every claim below is marked **[VERIFIED]** (observed/curl'd this session) or **[ASSUMED]** (likely true but not directly checked at handoff time). Don't trust [ASSUMED] without re-checking.
 
 ---
 
-## 1. What this session shipped
+## 0. Read first
 
-### Dashboard decomposition — recommendation #1 of the 2026-05-12 pre-mortem
+If you're a fresh Claude Code session, your fastest ramp is:
 
-4 waves of per-tab module extraction. Plain JS native ES modules, no framework, no build step, no new deps. Each wave was a single worker dispatched via `expert-bun-typescript` + `team_name`. Each wave was committed, merged into main (`--ff-only`), deployed to daily-driver via `launchctl kickstart`, pushed to origin.
+1. This file (you're here)
+2. Run the health-check block in §1 below to verify nothing drifted
+3. Greet the operator with "what did you find?" — this phase is operator-driven
 
-| Wave | Tab | LOC | Commit | New thing it proved |
-|---|---|---|---|---|
-| 1 | Logs | 192 (incl. policy chip) | `3f58f03` | Two entry points + per-stream SSE + cross-tab bridge globals (`__subctlGetPolicyTeams` etc.) for Policy-owned `cachedTeams` |
-| 2 | Templates | 122 | `b681255` | Fully isolated extraction — zero bridges, zero shared state — proves the clean case |
-| 3 | Models | 111 | `2b2c515` | Trivial confidence win; established the pattern is well-grooved |
-| 4 | Preferences | 286 | `c633322` | **Listener lifecycle** — `mount()` installs `document.addEventListener` + `window.addEventListener("focus")`; `unmount()` removes them. The pattern Master chat will need at scale. |
-
-**Architecture artifacts now in place:**
-
-- `dashboard/public/bootstrap.js` — ES-module shell loader. Lazy-imports tab modules via dynamic `import("./tabs/<id>.js")`. Mounts on first activation. Listens for `setActiveTab` notifications from app.js via `window.__subctlShellNotifyTabChange`.
-- `dashboard/public/tabs/{logs,templates,models,preferences}.js` — 4 extracted modules. All export `{ id, mount, unmount }`. Logs additionally exports nothing publicly; reads `window.__subctlGetPolicyTeams()`, `window.__subctlRefreshPolicyTeams()`, `window.__subctlRenderAuditEntries()` as temporary bridges (retire when Policy tab extracts).
-- `dashboard/server.ts:1601+` — `STATIC_FILES` map registers `/bootstrap.js` + 4 `/tabs/*.js` entries with `application/javascript; charset=utf-8` MIME.
-- `dashboard/public/app.js` — IIFE shrunk. Patched `setActiveTab` with `window.__subctlShellNotifyTabChange?.(tab)`. Publishes 3 temporary bridge globals near the Policy tab's `refreshPolicyTeamsForDropdowns` definition.
-- `DECISIONS.md` — wave-1 entry captures the architectural calls (module interface, loader strategy, state-ownership ruling for `cachedTeams`, migration order). Subsequent waves added shorter closeout entries.
-- `ORCHESTRATION.md` — full ledger of each wave's dispatch + verification gates + decision log + infra split.
-
-### Infrastructure split — daily-driver decoupled from dev tree
-
-Discovered mid-session that the local launchd dashboard plist pointed `ProgramArguments` directly at `/Users/sem/code/subctl/dashboard/server.ts` — the dev tree. ANY branch checkout in that path would change what the daemon would serve on next restart. **No separate install copy existed.**
-
-Operator chose Option A via AskUserQuestion: separate install worktree.
-
-**Executed (operator-authorized):**
-1. `git worktree add ~/.local/lib/subctl-install main` **[VERIFIED]**
-2. `cd ~/.local/lib/subctl-install/dashboard && bun install` — vendor deps in install tree's `node_modules/` **[VERIFIED]**
-3. Backed up plist to `~/Library/LaunchAgents/com.subctl.dashboard.plist.bak-20260513-211858` **[VERIFIED]**
-4. `/usr/libexec/PlistBuddy -c "Set :ProgramArguments:2 /Users/sem/.local/lib/subctl-install/dashboard/server.ts"` **[VERIFIED]** — plist now points at install tree
-5. `launchctl bootout` + `launchctl bootstrap` **[VERIFIED]** — kills old PID 1473, starts fresh PID running install-tree code
-
-**Loss accepted:** PID 1473's in-memory v2.7.7-era account data is gone. Operator authorized this explicitly. HANDOFF (previous session)'s "don't restart" caveat is now retired.
+The Obsidian vault at `/Users/sem/Documents/Obsidian Vault/Subctl/` is the deeper reference:
+- `01 - Current State.md` — live snapshot (parallel to this file, refreshed same time)
+- `03 - Architecture.md` — module ownership map (where does X live)
+- `07 - Initiative History.md` — wave-by-wave decomposition ledger
+- `Lessons Learned/` — judgment-level takeaways from the decomposition
 
 ---
 
-## 2. Deploy flow + next-session infrastructure to-do
+## 1. State at handoff (snapshot 2026-05-15 ~6:15 AM CDT)
 
-### Local Mac deploy flow (now established)
+### Quick health-check (run this first)
 
 ```bash
-cd ~/.local/lib/subctl-install
-git pull origin main                 # or merge a feature branch
+cd /Users/sem/code/subctl
+git log --oneline -5
+cat VERSION                         # 2.8.6
+curl -sS http://127.0.0.1:8787/api/version   # local dashboard
+ssh sem@100.84.108.16 'curl -sS http://127.0.0.1:8787/api/version'   # M3 dashboard
+ssh sem@100.84.108.16 '/usr/bin/curl -sS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8788/health'   # M3 master
+```
+
+Expected: top commit `6e1ce0d`, VERSION `2.8.6`, both dashboards return `{"version":"2.8.6"}`, M3 master `/health` returns `200`.
+
+### Daemons at handoff
+
+| Host | Service | Version (reported) | Code source | PID notes |
+|---|---|---|---|---|
+| Local Mac | `com.subctl.dashboard` | `2.8.6` | `~/.local/lib/subctl-install/dashboard/server.ts` | Kickstarted post-bugfix at `6e1ce0d`. **[VERIFIED]** |
+| M3 Ultra | `com.subctl.dashboard` | `2.8.6` | `~/.local/lib/subctl-install/dashboard/server.ts` | Kickstarted this morning at `6e1ce0d`. **[VERIFIED]** |
+| M3 Ultra | `com.subctl.master` | `2.8.5` in memory | `~/.local/lib/subctl-install/components/master/server.ts` on disk | Daemon hasn't been kickstarted since the VERSION bump. PID 27432 (or successor). `/health` returns 200. **[VERIFIED]** — restart to converge when convenient |
+| M3 Ultra | `com.subctl.tts` | running (VoxCPM2) | `~/code/subctl/services/tts/server.py` | **[VERIFIED]** still dev-tree-locked; out of scope this session |
+| Local Mac | `com.subctl.tts` | n/a | n/a | Local Mac doesn't run TTS |
+
+### Plist backups for rollback (M3)
+
+```
+~/Library/LaunchAgents/com.subctl.dashboard.plist.bak-20260515-055638
+~/Library/LaunchAgents/com.subctl.master.plist.bak-20260515-055638
+```
+
+Restoring is the symmetric procedure: `mv .bak* .plist; launchctl bootout && launchctl bootstrap`.
+
+### Repo state
+
+- `main` @ `6e1ce0d` (origin in sync)
+- Working tree: dev tree on `feat/dashboard-decomp-master` branch label (same SHA as main, harmless leftover from the decomposition session; cleanup blocked because dev tree has it checked out)
+- Local Mac install tree (`~/.local/lib/subctl-install`) on `main` at `6e1ce0d`
+- M3 install tree (`~/.local/lib/subctl-install` on `sem@100.84.108.16`) on `main` at `6e1ce0d`
+- M3 dev tree (`/Users/sem/code/subctl` on `sem@100.84.108.16`) on `dev` branch (label at `6e1ce0d`)
+
+---
+
+## 2. What this session shipped
+
+### Dashboard decomposition (waves 1–14, complete)
+
+Decomposed `dashboard/public/app.js` from **8,955 LOC** (pre-decomposition) to **2,280 LOC** (post-decomposition) — a **74.5% reduction** — across 14 waves over 1.5 days. Each tab now lives in its own ES module under `dashboard/public/tabs/` with a uniform `{ id, mount, unmount }` interface. The `dashboard/public/bootstrap.js` shell loader lazy-imports modules on first tab activation.
+
+Full wave ledger is in Obsidian `Subctl/07 - Initiative History.md`. Summary:
+
+| Wave | Tab | Commit | LOC delta | Pattern proven |
+|---|---|---|---|---|
+| 1–4 | Logs, Templates, Models, Preferences | (prior session) | −715 | Interface + lazy-loader + listener-lifecycle |
+| 5 | Providers | `edc0b73` | −269 | Self-contained extraction |
+| 6 | Vault | `27000b5` | −309 | **Window-global publisher pattern** (`window.openVaultDeepLink`) |
+| 7 | Memory | `6597668` | −281 | Multi-entry function collapse (3 sub-fns → 1 mount). **75-min outlier.** |
+| 8 | Skills | `d926d58` | −403 | Dead-bridge preservation |
+| 9 | Projects | `52e2ae2` | −462 | Dual-role: consumes Vault's bridge + owns its own cache |
+| 10 | Settings | `44aa618` | −528 | Operator-driven refresh (no pollTimer) |
+| 11 | Policy | `e8bbd30` | −709 | **Inter-module DOM event contract** retires wave-1 `window.__subctl*` bridges. First wave to modify a shipped module (`tabs/logs.js`). |
+| 12 | Teams | `7236f34` | −316 | Simple isolated extraction |
+| 13 | Orch | `9368ccf` | −900 | **5-globals batch publishing** (modal helpers). HANDOFF "joint with Dashboard panels" plan deviated — Dashboard panels are shell rendering infrastructure, not a tab. |
+| 14 | Chat | `3cc7757` | −1,665 | **FINAL** — Master chat + chat-adjacent helpers. 4 non-contiguous blocks. Biggest module (`tabs/chat.js` = 1,862 lines). |
+
+### Morning sweep (2026-05-15)
+
+| # | Item | Commit | What landed |
+|---|---|---|---|
+| 2a | `subctl dashboard deploy` CLI verb | `c25018a` | `lib/dashboard.sh` + `bin/subctl` subverb dispatch. Idempotent. `bun install` only when `dashboard/package.json` differs. |
+| 2b | M3 install-worktree split | (operational + `c384d7b` docs) | Both M3 daemons (`com.subctl.dashboard` + `com.subctl.master`) now reading from install tree. |
+| 2c | `install.sh` install-worktree pattern | `5d5749e` | Fresh installs create `~/.local/lib/subctl-install/` automatically. Dashboard plist points at install tree. `SUBCTL_INSTALL_TREE` env var in `lib/core.sh`. |
+| 2d | Worktree branch cleanup | (direct) | 10 of 11 dashboard-decomp feature branches deleted. |
+| — | VERSION bump | `dd28286` | 2.8.5 → 2.8.6 to match module headers. |
+
+### Emergent bugfix wave (2026-05-15)
+
+Three bugs surfaced when operator started live-testing v2.8.6:
+
+| Bug | Cause | Fix |
+|---|---|---|
+| Chat tab apply button did nothing | `window.notice` null at page boot (wave-13 regression — was published from `tabs/orch.js` which doesn't mount until Orchestration tab is clicked) | `8e33f3c` — reclaimed `_showNotice` + `window.notice` publication to `app.js` shell |
+| Chat dropdown showed 31 cloud providers | Filter was `kind === "cloud"` only | `6e1ce0d` — added profile-count filter |
+| Provider TAB showed 31 cards, 29 empty | Same root cause | `6e1ce0d` — same filter; full catalog stays in "+ New Profile" modal |
+
+---
+
+## 3. The next phase — live testing + enhancement
+
+Operator's framing: "**working with the operator, Jason, to debug and enhance from live testing.**"
+
+The decomposition is shipped. Tonight's bugfix wave was the first live-test pass. The next session is interactive: operator clicks around, identifies issues or enhancement opportunities, and the next Claude session works with them.
+
+### How to handle the first ~5 minutes
+
+1. Run the health check from §1
+2. Read `Subctl/01 - Current State.md` in the Obsidian vault
+3. Greet the operator with **"what did you find?"** — let them drive
+4. For each issue:
+   - Identify which module owns the affected functionality (see Obsidian `03 - Architecture.md` for the map)
+   - Read that module before touching anything
+   - Reproduce the bug if you can (curl against `/api/...` endpoints, grep the rendering logic)
+   - One-commit fixes preferred — keep rollback granularity
+5. Deploy after each fix: `git push origin main` then `subctl dashboard deploy`
+
+### Likely areas operator may surface issues
+
+Given the decomposition just finished, the most-likely-problematic surfaces are:
+
+- **Tabs that use multi-entry collapse** (Memory, Skills, Settings) — sub-helpers became locals inside mount, so any cross-function scoping subtlety could surface as a bug
+- **The wave-11 event contract** (Logs ↔ Policy via `subctl:policy-teams-updated`) — first use of this pattern, could expose race conditions or one-shot ordering quirks
+- **Chat tab SSE handling** (Master chat is the biggest module + has multiple EventSources) — listener lifecycle was scaled up significantly
+- **Project deep-links** (Projects consumes Vault's `openVaultDeepLink`) — first dual-role tab; worth testing the chain: Projects → "Open in Vault Viewer" → Vault tab activates → hash deep-link routes correctly
+- **Master-routed UIs on local Mac** (Memory, Templates, Upstreams, Skills, Preferences) — local Mac has no master daemon, so these proxy 404s. Pre-existing, not a regression. Don't chase those.
+
+---
+
+## 4. Outstanding work (low priority)
+
+### Infra polish
+
+1. **Master plist install.sh wiring** — `install.sh:ensure_install_tree` only handles the dashboard plist's `ProgramArguments`. The master plist still bakes in `$SUBCTL_REPO_ROOT/components/master/server.ts` on fresh installs. Manual M3 surgery this morning fixed it on M3 specifically, but install.sh should match the pattern. ~20 lines.
+2. **`com.subctl.tts` plist on M3** — still dev-tree-locked at `~/code/subctl/services/tts/server.py`. Vulnerable to same checkout-changes-running-daemon bug. Either apply the install-tree pattern OR document explicitly that TTS is intentionally pinned to dev tree.
+3. **21 orphan worktrees on local Mac** — `subctl-v2.7.21` through `subctl-v2.8.6-skills-redesign`. All branches merged. `git worktree remove <path>` each. 5-minute hygiene.
+4. **`feat/dashboard-decomp-master` branch label** on dev tree (same SHA as main; blocks `git branch -d`). Switch dev tree to `dev` label like we did on M3 to delete this leftover.
+5. **Master daemon kickstart on M3** — currently running v2.8.5 code in memory; files on disk are at v2.8.6. `launchctl kickstart -k gui/$UID/com.subctl.master` on M3 to converge.
+6. **v2.8.6 git tag** — operator's call when ready to mark the formal release.
+
+### Code cleanup
+
+7. **`window.__skillsClarityRefresh` retirement** — confirmed zero in-codebase readers via grep. 3-line delete in `tabs/skills.js` (assignment in mount, null in unmount, top-of-file doc comment line). Tiny worker dispatch.
+
+### Investigations queued
+
+8. **Worker-visibility integration** — the orchestrator-mode skill promises iTerm2 panes when using `Agent` + `team_name`. They never appeared during the 10-wave session. The skill defers to "the Claude Code iTerm2 integration when team_name is set" — meaning an external helper that isn't installed on this Mac. Diagnostic plan in `Subctl/Lessons Learned/2026-05-15 - Worker visibility gap.md`.
+
+### Auth status
+
+- `claude-jason` — **EXPIRED** (`401 Invalid authentication credentials`). Re-auth needed before subctl orch can use it.
+- `claude-titanium` — last known ready
+- `claude-semfreak` — last known ready (currently leading a paypunch_io orch session)
+- `openai-jason` — last known ready
+- `openai-titanium` — last known ready
+
+If you need to dispatch a visible-pane worker via `subctl orch spawn`, use `claude-titanium`. Don't burn `claude-semfreak` (busy elsewhere).
+
+---
+
+## 5. Worker silent-idle protocol (still consistent across 12 workers this session)
+
+All 12 workers dispatched this session (10 decomposition + 2 morning-sweep) completed cleanly. None of them sent the structured `SendMessage` report-back the dispatch spec asked for. The "silent-idle" pattern is consistent: verify completion via `git log` on the feature branch + the gate-check commands in the spec.
+
+**Operational implication for next session:** **assume idle == complete-but-silent.** Always self-verify by reading git log and running structural gates. Don't wait for SendMessage that won't come. The wave-7 outlier (75 min) was the only deviation from the 7-22 min envelope; recovery path was `subctl orch spawn` with a known-good account.
+
+---
+
+## 6. Deploy flow (refresher)
+
+### Standard cycle after a feature lands
+
+```bash
+# Push origin main (assumes you've already ff-merged into install tree or pushed first)
+git push origin main
+
+# Local Mac
+subctl dashboard deploy        # idempotent — kickstarts only if origin/main is ahead
+
+# M3
+ssh sem@100.84.108.16 'subctl dashboard deploy'    # same idempotent path
+```
+
+### Edge case to remember
+
+If you ff-merge directly INTO `~/.local/lib/subctl-install` (instead of pushing to origin first), `subctl dashboard deploy` will detect "already up to date" and skip the kickstart — but the running daemon hasn't loaded the new code. **In that case, manually kickstart:**
+
+```bash
 launchctl kickstart -k gui/$UID/com.subctl.dashboard
 ```
 
-That's it. Daily driver at `:8787` adopts the new code.
+This is documented in Obsidian `Subctl/06 - Known Gotchas.md`.
 
-To test a feature branch WITHOUT deploying:
+### Test a feature branch WITHOUT deploying
+
 ```bash
 cd /Users/sem/code/subctl
-git checkout -b feat/dashboard-decomp-<NEXT>  # or just `git checkout feat/whatever`
-PORT=8799 bun run dashboard/server.ts          # browse http://localhost:8799
+git checkout -b feat/<NEW_BRANCH>
+PORT=8799 bun run dashboard/server.ts    # browse http://localhost:8799
 # Daily driver on :8787 is untouched.
 ```
 
-### M3 Ultra — same split NOT yet applied
+---
 
-M3's `com.subctl.master` + `com.subctl.dashboard` plists **[ASSUMED]** point at a remote checkout of this same repo. If the operator (or any future session) does branch work on M3, the same lock-in risk recurs there. **Recommended next-session step:** apply the same install-worktree split to M3. The pattern is documented in §2 above.
+## 7. Architecture quick reference
 
-### Parked follow-ups (in priority order)
+`dashboard/public/`:
+- `app.js` — shell: state polling, WS transport, render dispatcher, cell builders, notification tray (`_showNotice` + `window.notice`), status pill, lucide chrome, host-label boot, tab nav, upstreams card init. **2,280 LOC.**
+- `bootstrap.js` — ES-module shell loader. `TAB_LOADERS` registers 14 tabs. Lazy-imports + memoizes mount per tab.
+- `tabs/` — 14 modules, each `{ id, mount, unmount }`.
 
-1. **`subctl dashboard deploy` CLI verb** — wraps the 3-command deploy flow above. ~30 lines in `lib/cli.sh`. One worker can do this in 10 min after wave-5/6.
-2. **M3 infra split** — apply the same install-tree pattern to M3. Slightly involved because operator does it via SSH. Probably a focused session of its own.
-3. **`install.sh` patch** — bake the install-tree pattern into fresh installs so this isn't a manual surgery for the next operator who runs `install.sh`. ~50 lines.
-4. **Worktree cleanup** — `git worktree list` shows 21+ orphan worktrees from prior sessions (`subctl-v2.7.21`, `subctl-v2.7.24-pi-ai`, etc.). All merged. `git worktree remove <path>` for each. 5-minute hygiene task.
+`dashboard/server.ts`:
+- `STATIC_FILES` map registers each `/tabs/*.js` with `application/javascript; charset=utf-8` MIME.
+
+Cross-tab communication (in priority order):
+1. **Self-contained** — most tabs
+2. **Window-global publisher** — `window.openVaultDeepLink`, `window.__subctlAttachOneShotAssistantCapture`, `window.__subctlOpenTmuxPreview`, etc.
+3. **Document-level custom event** — `subctl:policy-teams-updated`, `subctl:policy-teams-refresh-request`
+
+Full ownership map is in Obsidian `Subctl/03 - Architecture.md`.
 
 ---
 
-## 3. Migration progress + what's next
+## 8. Files of interest
 
-### Done (4 of 17 tabs)
-
-- ✅ Logs
-- ✅ Templates
-- ✅ Models
-- ✅ Preferences
-
-### Remaining (13 tabs, in migration order)
-
-| # | Tab | LOC | Key consideration |
-|---|---|---|---|
-| 5 | Providers | 269 | No SSE, no cross-tab. Simple. |
-| 6 | Vault | 311 | Exposes `window.openVaultDeepLink` — Projects depends on this. Vault must extract before Projects. |
-| 7 | Memory | 278 | Tier1 + main + Evy card sub-functions. Three internal entry points. |
-| 8 | Skills | 410 | Exposes `window.__skillsClarityRefresh` (no external reader found, may be dead). Two views (main + clarity). |
-| 9 | Projects | 468 | Reads `window.openVaultDeepLink`. Reads + writes `window.__policyPresetsCache` (own cache). |
-| 10 | Settings | 528 | Many sub-panels: health, keys, secrets, OAuth, telegram, vault config, personality. |
-| 11 | Policy | 609 | **Retires the temporary bridges** (`__subctlGetPolicyTeams`, `__subctlRefreshPolicyTeams`, `__subctlRenderAuditEntries`) when it owns `cachedTeams` and `refreshPolicyTeamsForDropdowns` directly. |
-| 12 | Teams | 319 | Mild templates/policy interop. |
-| 13 | **Orchestration** + Dashboard-tab panel renderers | 987 + 904 = **1,891** | **Must extract TOGETHER.** Orch installs `window.__subctlOpenTmuxPreview`, `__subctlCopyAttachCommand`, `__subctlOpenWebTerminal`, `__subctlWireWebTerminalGate`, `notice`. Dashboard panels CONSUME those. Both belong in the same wave. Probably 2 workers in parallel coordinating via team task list, OR one big serial wave. |
-| 14 | **Master chat** | **1,385** | **LAST.** Biggest, deepest SSE entanglement (master events, voice flag, tool-display config, transcript context meter, chat selectors + profile pill). Reuses the listener-lifecycle pattern from wave 4. |
-
-**Total remaining LOC to extract:** ~5,460. Cumulative drop tonight: 833. If the next sessions hit similar per-wave reductions, the monolith would land somewhere around ~2,500–3,000 lines (the shell: transport, render(state), notification tray, lucide chrome, host-label boot, etc.).
-
-### Next-session first actions (in order)
-
-1. **Verify daily-driver still healthy** — hard-refresh `:8787`, click Logs/Templates/Models/Preferences. All should be functional. Confirm `app.js` is at 8122 LOC (`wc -l ~/.local/lib/subctl-install/dashboard/public/app.js`).
-2. **Decide wave-5 target.** Default per migration order: **Providers**. Operator may prefer **Vault** instead (unblocks Projects). Both are ~270-310 LOC, similar effort.
-3. **Dispatch wave-5 worker** mirroring the pattern from `c633322` (wave-4 commit). Use `expert-bun-typescript` subagent_type + `team_name="dashboard-decomp"`.
-4. **EXPECT silent-idle.** See §5 — workers don't SendMessage report-back even when asked. Self-verify via `git log` + the gate-check script.
+- `dashboard/public/bootstrap.js` — 14-entry `TAB_LOADERS`
+- `dashboard/public/tabs/chat.js` — 1,862 lines, biggest module, master chat + 3 chat-adjacent helpers
+- `dashboard/public/tabs/orch.js` — 1,039 lines, modal subsystems + camera/cockpit/watchdog
+- `dashboard/public/tabs/policy.js` — 758 lines, event contract publisher
+- `dashboard/public/tabs/logs.js` — 504 lines, event contract subscriber + audit renderers
+- `dashboard/public/app.js` — 2,280-line shell
+- `lib/dashboard.sh` — `subctl dashboard deploy` implementation
+- `install.sh:ensure_install_tree` — install-worktree pattern for fresh installs
+- `lib/core.sh:SUBCTL_INSTALL_TREE` — env var (override at install time)
 
 ---
 
-## 4. Pre-existing dashboard bugs — out of scope, but next session will see them
+## 9. Surprising facts worth remembering
 
-Operator noted during wave-1 testing that several tabs show errors on local Mac:
-
-- **Templates:** `load failed: Unexpected token 'N', "Not Found" is not valid JSON`
-- **Memory:** same SyntaxError shape on the search call
-- **Upstreams card:** `master unreachable: Unexpected token 'N', "Not Found" is not valid JSON`
-- **Skills tab:** completely empty (all 4 category counts = 0)
-- **Preferences:** `load failed: HTTP 404`
-
-**Verified [VERIFIED] via curl on 2026-05-13:** all 5 endpoints return identical 404s on both `:8787` (main) and `:8788` (feature branch). **They are NOT regressions from decomposition.** Root cause: every one of these tabs proxies to a master daemon. Local Mac has no master (master runs on M3). On local Mac, anything that hits `/api/master/*` or `/api/team-templates` (which forwards to master) or `/api/preferences` (master-managed file) returns 404.
-
-**Real fix is the host-aware dashboard story** (HANDOFF previous-session §2.2's multi-host theme). Two options:
-- (a) Each dashboard knows the master URL of the host that runs master, and proxies cross-host. Requires multi-host config.
-- (b) The dashboard you point at IS the host running master. Local Mac's dashboard becomes "view only" or is killed off entirely.
-
-Either way it's v2.9.0+ scope, sequenced AFTER decomposition completes (so the fix lives in one place per tab rather than one place per concern in a monolith). **Don't chase these errors during decomp** — that's how scope creep happens.
+1. **Local dashboard's master-routed UIs (Memory, Templates, Upstreams, Skills, Preferences) return 404** because local Mac has no master daemon. NOT a decomposition regression — pre-existing. Don't chase those bugs.
+2. **The wave-7 75-minute worker** was a one-off in an otherwise tight 7-22 min envelope. Cause unknown. Don't assume slow == hung.
+3. **Wave-13 grouping `window.notice` with modal helpers was an authoring-history artifact, not architecture.** This bit us within 12 hours via the chat-apply silent-fail bug. Lesson saved in `Subctl/Lessons Learned/2026-05-15 - Shell concerns belong in the shell.md`.
+4. **Dev tree on local Mac is labeled `feat/dashboard-decomp-master`** but at SHA `6e1ce0d` = same as main. Harmless. Cleanup blocked by worktree-on-branch.
+5. **M3 dev tree is on `dev` branch** (also same SHA as main). Created this morning so the install tree could take `main` — same pattern as locally.
+6. **Master plist on M3 was manually patched this morning to install tree.** Same install-tree pattern as the dashboard plist. install.sh DOESN'T bake this for fresh installs yet (only dashboard plist is automated). Future cleanup.
+7. **`claude-jason` account auth is expired.** Don't use it for `subctl orch spawn` until re-authed.
+8. **The decomposition shipped 14 commits + 10 orchestration-log commits + various morning-sweep/bugfix commits over 1.5 days.** All on `main`. No PR opened to GitHub — this was an internal solo-operator initiative; the operator chose direct-to-main with detailed `DECISIONS.md` + `ORCHESTRATION.md` durables.
 
 ---
 
-## 5. Worker silent-idle protocol — important observation
-
-**All 4 workers** dispatched this session (`logs-extract`, `templates-extract`, `models-extract`, `preferences-extract`) — all subagent_type `expert-bun-typescript` — completed their work, committed, and then went idle **without sending the structured SendMessage report-back** that the dispatch spec explicitly demanded.
-
-Verified by:
-- Each worker's branch had a clean commit when I checked git log
-- Each worker's deliverables passed every verification gate I ran
-- The team task list showed tasks as pending (they didn't update via TaskUpdate either)
-
-**This is consistent.** It's not a one-off. Either:
-- `expert-bun-typescript` doesn't have SendMessage in its tool list, OR
-- The agent body skips SendMessage even when it's available, OR
-- Some other systemic reason
-
-**Operational implication:** **assume idle == complete-but-silent.** Always self-verify by `git log` on the feature branch. Run gates directly. Don't wait for a report that won't come.
-
-**Next-session investigation (low priority):**
-- Check `~/.claude/agents/expert-bun-typescript.md` for available tools
-- Compare to `general-purpose` agent (which presumably does send messages)
-- Consider switching dispatch subagent_type to one that reliably sends report-backs, OR
-- Just codify "self-verify after idle" as the standing pattern
-
----
-
-## 6. Loose ends + things I deliberately did NOT do
-
-- **No HANDOFF carry-over of pre-mortem text.** The 2026-05-12 pre-mortem (in git history at HANDOFF.md commit `dd958ba`) identified app.js as the slow-burn risk. That's been actioned — 4 waves done, 13 to go. No need to keep re-quoting it; the migration plan IS the response.
-- **No `subctl dashboard deploy` CLI verb yet.** Parked as follow-up §2.
-- **No M3 deploy.** M3 daemons remain on previous-session state. Operator authorized push-to-origin so M3 *can* pull, but I didn't issue the M3-side update.
-- **No vault update.** The `obsidian-vault` skill triggered earlier but I didn't update `/Users/sem/Documents/Obsidian Vault/Subctl/`. Operator's "stop, write HANDOFF, close" took priority. Vault sits at the previous session's state.
-- **No worktree cleanup.** 21+ orphans still on local Mac.
-- **No browser UX verification of the merged wave-4 state.** Operator visually tested wave-1 on `:8788` and confirmed Logs worked. For waves 2/3/4 we relied on structural gates + live MIME smoke + curl. The operator should hard-refresh `:8787` and click through Logs/Templates/Models/Preferences at next sit-down to confirm the deployed state is clean.
-
----
-
-## Surprising facts worth remembering
-
-1. **The local launchd dashboard literally read from `~/code/subctl/dashboard/server.ts`** at session start — the dev tree. Any branch checkout would have changed daily-driver behavior on next restart. The infra split documented in §2 fixes this. **Same pattern almost certainly exists on M3.**
-2. **PID 1473's in-memory state is gone.** The "don't restart" caveat from previous HANDOFF was honored until the operator authorized the infra-split switchover. That long-running daemon is no longer a reference; the new daemon at `c633322` is.
-3. **The dev tree is currently labeled `feat/dashboard-decomp-preferences`** because git worktree-per-branch enforcement blocked the switch back to `main`. SHA is identical to main; harmless. Next-session can `git checkout -b feat/dashboard-decomp-<NEXT>` from there.
-4. **3 temporary `window.__subctl*` bridge globals** live in app.js (the Logs ↔ Policy cross-cut from wave 1). They retire when Policy extracts (wave 11). Don't audit them out before then — they're load-bearing.
-5. **`expert-bun-typescript` workers silent-idle after commit.** See §5.
-6. **`bun install` in `~/.local/lib/subctl-install/dashboard/` is required** before the install tree can serve. Already done this session. Future deploys via `git pull` will need a re-`bun install` only when `dashboard/package.json` changes.
-7. **Cron loop `d7420c37`** (10-min status pings during wave-1) was cancelled mid-session; no active session loops.
-8. **Plist backup at** `~/Library/LaunchAgents/com.subctl.dashboard.plist.bak-20260513-211858`. Rollback restores dev-tree-pointing but does NOT restore PID 1473's in-memory state (that's permanently gone).
-
----
-
-*Generated 2026-05-14 ~00:00 CDT by Claude Opus 4.7. Session length ~4.5 hours. Operator engaged throughout; no autonomous-mode used.*
+*Generated 2026-05-15 ~11:30 AM CDT by Claude Opus 4.7 (1M context). Session length ~17h wall-clock (operator slept ~6h of that). 12 workers dispatched, 12 clean landings, 0 rollbacks. Decomposition: complete.*
