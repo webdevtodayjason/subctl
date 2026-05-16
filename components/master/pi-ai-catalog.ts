@@ -311,10 +311,15 @@ export function isCatalogProvider(id: string): boolean {
 // Resolution: getDefaultModel() reads override first, falls back to shipped.
 // File is tiny (<1KB) so we read on every call; no caching layer needed.
 
-const PROVIDER_DEFAULTS_PATH = (() => {
+// v2.8.9 hot-fix — resolve SUBCTL_CONFIG_DIR on EVERY call rather than at
+// module load. The earlier constant captured the env var at import time,
+// which made the path immutable for the process — fine in production, but
+// tests that set process.env.SUBCTL_CONFIG_DIR AFTER import had their
+// writes land in the real config dir. Lazy resolution fixes that.
+function getProviderDefaultsPath(): string {
   const dir = process.env.SUBCTL_CONFIG_DIR ?? join(homedirImport(), ".config", "subctl");
   return join(dir, "provider-defaults.json");
-})();
+}
 
 function homedirImport(): string {
   // Avoid a top-level `import {homedir} from "node:os"` rewrite — this is
@@ -330,8 +335,8 @@ export function loadProviderDefaults(): Record<string, string> {
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { existsSync, readFileSync } = require("node:fs") as typeof import("node:fs");
-    if (!existsSync(PROVIDER_DEFAULTS_PATH)) return {};
-    const parsed = JSON.parse(readFileSync(PROVIDER_DEFAULTS_PATH, "utf8")) as Record<string, unknown>;
+    if (!existsSync(getProviderDefaultsPath())) return {};
+    const parsed = JSON.parse(readFileSync(getProviderDefaultsPath(), "utf8")) as Record<string, unknown>;
     const out: Record<string, string> = {};
     for (const [k, v] of Object.entries(parsed)) {
       if (typeof v === "string" && v.trim().length > 0) out[k] = v.trim();
@@ -356,9 +361,9 @@ export function setProviderDefault(providerId: string, model: string): Record<st
   } else {
     delete current[canonical];
   }
-  const dir = path.dirname(PROVIDER_DEFAULTS_PATH);
+  const dir = path.dirname(getProviderDefaultsPath());
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
-  writeFileSync(PROVIDER_DEFAULTS_PATH, JSON.stringify(current, null, 2));
+  writeFileSync(getProviderDefaultsPath(), JSON.stringify(current, null, 2));
   return current;
 }
 
