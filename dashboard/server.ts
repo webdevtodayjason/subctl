@@ -4745,7 +4745,24 @@ const server = Bun.serve({
             // Auth detection per provider (matches /api/settings/oauth)
             let authed = false;
             if (provider === "claude") {
-              authed = existsSync(join(configDir, ".credentials.json"));
+              // Claude Code keeps the OAuth bearer token in macOS Keychain;
+              // .claude.json is the per-config-dir state file that gets
+              // written the first time the profile is used. Pre-v2026.x
+              // versions used .credentials.json — left as fallback for
+              // operators still on those builds. Either-or: if any of the
+              // expected markers is present at non-trivial size, treat the
+              // profile as authed. Keychain-only detection would require
+              // shelling out to `security find-generic-password`, which is
+              // too invasive for a hot /api/providers handler.
+              const markers = [".claude.json", ".credentials.json"];
+              for (const m of markers) {
+                const path = join(configDir, m);
+                if (!existsSync(path)) continue;
+                try {
+                  const st = statSync(path);
+                  if (st.size > 100) { authed = true; break; }
+                } catch { /* ignore */ }
+              }
             } else if (provider === "openai" || provider === "openai-codex") {
               // openai-codex was missing from this chain before v2.8.9 — every
               // codex profile rendered as unauthenticated regardless of what
