@@ -4746,7 +4746,12 @@ const server = Bun.serve({
             let authed = false;
             if (provider === "claude") {
               authed = existsSync(join(configDir, ".credentials.json"));
-            } else if (provider === "openai") {
+            } else if (provider === "openai" || provider === "openai-codex") {
+              // openai-codex was missing from this chain before v2.8.9 — every
+              // codex profile rendered as unauthenticated regardless of what
+              // was on disk. Both providers persist tokens in <configDir>/auth.json
+              // with the same shape (top-level `tokens` object with access_token +
+              // refresh_token), so the check is identical.
               const codexAuth = join(configDir, "auth.json");
               if (existsSync(codexAuth)) {
                 try {
