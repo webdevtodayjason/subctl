@@ -113,6 +113,8 @@ import {
   isCatalogProvider,
   legacyAliasFor,
   SUBCTL_TO_PI_AI,
+  getDefaultModel,
+  isObviouslyInvalidModel,
   type CatalogProvider,
 } from "../components/master/pi-ai-catalog.ts";
 // v2.8.7 — supervisor dropdown sync. POST /api/master/supervisor edits
@@ -4745,6 +4747,11 @@ const server = Bun.serve({
           auth_method: entry.auth_method,
           model_count: entry.model_count,
           available: entry.available,
+          // v2.8.8 Phase 1a — surface the shipped default model so the chat
+          // tab dropdown can pick a sensible model when the operator chooses
+          // a provider without specifying one (replacing the "?" bug that
+          // wrote model="?" into providers.json on 2026-05-15).
+          default_model: entry.default_model ?? null,
           // Surface a legacy alias when one exists so the UI can render
           // `subctl auth <legacy> <alias>` correctly without having to
           // know the alias table.
@@ -4868,9 +4875,33 @@ const server = Bun.serve({
         return Response.json({ ok: false, error: "invalid JSON body" }, { status: 400 });
       }
       const newProvider = (body.provider ?? "").trim();
-      const modelId = (body.model ?? "").trim();
+      let modelId = (body.model ?? "").trim();
       const newHost = (body.host ?? "").trim();
-      if (!modelId) return Response.json({ ok: false, error: "model required" }, { status: 400 });
+
+      // v2.8.8 Phase 1b — reject obviously bad model values BEFORE writing
+      // providers.json. The unwired-dropdown bug on 2026-05-15 wrote model="?"
+      // into providers.json, breaking chat for hours. Catches: empty string,
+      // whitespace-only, "?", "-".
+      if (isObviouslyInvalidModel(modelId)) {
+        // If the operator picked a provider but not a model AND we ship a
+        // default for that provider, fill it in rather than 400'ing. Surfaces
+        // in the response so the operator sees what was chosen.
+        const fallback = newProvider ? getDefaultModel(newProvider) : undefined;
+        if (fallback) {
+          modelId = fallback;
+        } else {
+          return Response.json(
+            {
+              ok: false,
+              error: `invalid model "${body.model ?? ""}" — pick a real model id (or set body.provider so we can use its default)`,
+              hint: newProvider
+                ? `provider "${newProvider}" has no shipped default — supply body.model explicitly`
+                : "set body.provider to use its default_model, or supply body.model directly",
+            },
+            { status: 400 },
+          );
+        }
+      }
 
       // Guard: refuse to set a provider that pi-ai can't actually call.
       // Mirror of components/master/server.ts PROVIDER_API table — must stay

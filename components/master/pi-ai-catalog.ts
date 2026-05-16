@@ -48,6 +48,11 @@ export interface CatalogProvider {
   model_count: number;
   /** Caveats / hints surfaced to the operator. */
   notes?: string;
+  /** Suggested model id to use when the operator hasn't picked one. Surfaces
+   *  in the chat dropdown's "default" badge and is used by the supervisor-
+   *  switch validation as a fallback hint. Undefined means we don't ship an
+   *  opinion for this provider — the operator must pick explicitly. */
+  default_model?: string;
 }
 
 /**
@@ -114,22 +119,30 @@ export function resolveProviderId(id: string): string {
  */
 const PROVIDER_META: Record<
   string,
-  { display: string; auth: CatalogProvider["auth_method"]; notes?: string }
+  {
+    display: string;
+    auth: CatalogProvider["auth_method"];
+    notes?: string;
+    default?: string;
+  }
 > = {
   anthropic: {
     display: "Anthropic Claude",
     auth: "oauth",
     notes: "Claude Code OAuth (preferred) or ANTHROPIC_API_KEY",
+    default: "claude-sonnet-4-6",
   },
   openai: {
     display: "OpenAI",
     auth: "api-key",
     notes: "OPENAI_API_KEY",
+    default: "gpt-5",
   },
   "openai-codex": {
     display: "OpenAI Codex (ChatGPT subscription)",
     auth: "oauth",
     notes: "OAuth via ChatGPT account — no API key path",
+    default: "gpt-5.2",
   },
   "azure-openai-responses": {
     display: "Azure OpenAI",
@@ -269,6 +282,7 @@ export function listCatalogProviders(): CatalogProvider[] {
       available: true,
       model_count: modelCount,
       notes: meta?.notes,
+      default_model: meta?.default,
     };
   });
   // Stable sort: display_name asc, so the dashboard dropdown is
@@ -283,4 +297,24 @@ export function listCatalogProviders(): CatalogProvider[] {
 export function isCatalogProvider(id: string): boolean {
   const canonical = resolveProviderId(id);
   return listCatalogProviders().some((p) => p.id === canonical);
+}
+
+/** Default model for a provider, post-alias-resolution. Returns undefined
+ *  when the provider has no shipped default (operator must pick explicitly).
+ *  Used by /api/master/supervisor validation and the chat-tab dropdown to
+ *  fill in a sensible model when the operator picks a provider without
+ *  specifying a model. */
+export function getDefaultModel(providerId: string): string | undefined {
+  const canonical = resolveProviderId(providerId);
+  return PROVIDER_META[canonical]?.default;
+}
+
+/** True iff a (provider, model) pair is rejectable on its face — empty,
+ *  whitespace-only, or the sentinel "?" placeholder produced by an
+ *  unwired dropdown option. Used by the supervisor-switch validation to
+ *  catch the most obvious bad inputs before any catalog lookup. */
+export function isObviouslyInvalidModel(model: unknown): boolean {
+  if (typeof model !== "string") return true;
+  const trimmed = model.trim();
+  return trimmed.length === 0 || trimmed === "?" || trimmed === "-";
 }

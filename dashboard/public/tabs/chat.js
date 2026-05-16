@@ -429,11 +429,23 @@ export async function mount({ root: _root }) {
           for (const p of cloud) {
             const dot = p.available ? "●" : "○";
             const wired = p.wired !== false; // default-true for legacy entries
-            const state = !wired ? "not yet wired" : (p.available ? "ready" : "not authed");
-            const model = p.default_model || "?";
-            const value = `${p.id}|${model}`;
-            const isCurrent = supervisor === `${p.id}/${model}`;
-            const disabledAttr = !wired ? " disabled" : "";
+            // v2.8.8 Phase 1c — disable cloud options that have no shipped
+            // default_model. Previously these rendered as "<provider>|?" which
+            // POSTed model="?" to /api/master/supervisor and wrote garbage
+            // into providers.json. Server-side validation now rejects this,
+            // but disabling the option is the better UX.
+            const hasDefault = !!p.default_model;
+            const model = p.default_model || "(no default)";
+            const value = hasDefault ? `${p.id}|${p.default_model}` : "";
+            const state = !wired
+              ? "not yet wired"
+              : !hasDefault
+                ? "no default model — pick via + New Profile"
+                : p.available
+                  ? "ready"
+                  : "not authed";
+            const isCurrent = hasDefault && supervisor === `${p.id}/${p.default_model}`;
+            const disabledAttr = (!wired || !hasDefault) ? " disabled" : "";
             const noteAttr = !wired && p.wired_note ? ` title="${escapeText(p.wired_note)}"` : "";
             html += `<option value="${escapeText(value)}"${disabledAttr}${noteAttr} ${isCurrent ? "selected" : ""}>${dot}  ${escapeText(p.display)} · ${escapeText(model)} · ${state}</option>`;
           }
@@ -936,11 +948,6 @@ export async function mount({ root: _root }) {
     // Compact transcript button: summarize older turns into a single
     // message so the supervisor's prompt window stays manageable.
     async function runCompact(_initiator) {
-      const ok = await window.notice.confirm(
-        "Compact transcript",
-        "Master will keep the last 6 messages intact and replace everything before them with a structured summary (your asks + assistant highlights + tools used). The original transcript is archived to ~/.config/subctl/master/agent-state.archive-compact-*.json.",
-      );
-      if (!ok) return;
       try {
         const r = await fetch("/api/master/transcript/compact", { method: "POST" });
         const j = await r.json();
@@ -970,11 +977,6 @@ export async function mount({ root: _root }) {
     // New Chat button: archive the transcript and start fresh.
     if (newBtn) {
       newBtn.addEventListener("click", async () => {
-        const ok = await window.notice.confirm(
-          "Start a fresh conversation",
-          "Archive the current transcript and start fresh? Your transcript is saved to ~/.config/subctl/master/agent-state.archive-*.json — nothing is lost. The chat log here will clear and the master daemon's working memory resets.",
-        );
-        if (!ok) return;
         newBtn.disabled = true;
         newBtn.textContent = "clearing…";
         try {
@@ -1100,13 +1102,18 @@ export async function mount({ root: _root }) {
       activeAssistantEl = appendMessage("assistant", "", { label: "evy" });
     }
 
+    // Some local models (notably gemma-4-26b-a4b-it MLX 4-bit) leak malformed
+    // reasoning-channel markers — <|channel>thought\n<channel|> — into the
+    // assistant text. Strip on every render so the live stream stays clean;
+    // master also strips on persistence so re-renders from transcript match.
+    const CHANNEL_MARKER_RE = /<\|?channel\|?>[\s\S]*?<\|?channel\|?>/g;
     function appendDelta(delta) {
       // First delta of a turn = master has started speaking. Drop the
       // thinking indicator so it doesn't sit between text and pills.
       hideChatThinking(log);
       if (!activeAssistantEl) startAssistantBubble();
       activeAssistantText += delta;
-      activeAssistantEl.textContent = activeAssistantText;
+      activeAssistantEl.textContent = activeAssistantText.replace(CHANNEL_MARKER_RE, "");
       log.scrollTop = log.scrollHeight;
     }
 
