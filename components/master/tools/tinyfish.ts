@@ -856,10 +856,105 @@ const tinyfish_agent = {
   invoke: async (args: TinyfishAgentArgs = {}) => callTinyfishAgent(args),
 };
 
+// ─── tool 4: tinyfish_agent_async (v2.8.10) ────────────────────────────────
+//
+// Fire-and-forget wrapper around callTinyfishAgent. Returns a run_id
+// immediately so the operator can keep the conversation moving while
+// the agent runs on TinyFish's cloud. On completion the result is
+// surfaced (a) via tray notification and (b) prepended to the
+// operator's NEXT chat/telegram prompt — see
+// components/master/background-runs.ts for the surfacing mechanism.
+//
+// Limitation: this run does NOT survive a master restart. The underlying
+// fetch terminates with the process. For restart-durable runs against
+// TinyFish use the MCP `run_web_automation_async` flow directly (it
+// keeps state on TinyFish's side). Phase A trades durability for
+// simplicity.
+
+import { startBackgroundRun } from "../background-runs";
+
+const tinyfish_agent_async = {
+  description:
+    "**Use this when** you'd otherwise call `tinyfish_agent` but the task is likely to take more than ~15s and the operator wants to keep talking while it runs. Returns immediately with a `run_id`; the result is delivered as a tray notification and prepended to the operator's next message. Same arguments as `tinyfish_agent`. Limitation: the run terminates if master is restarted before it completes.",
+  schema: {
+    type: "object",
+    properties: {
+      task: {
+        type: "string",
+        description: "Natural-language goal description (same as tinyfish_agent).",
+      },
+      starting_url: {
+        type: "string",
+        description: "Target URL the agent starts from (same as tinyfish_agent).",
+      },
+      timeout_seconds: {
+        type: "number",
+        description: "Max seconds the agent may spend (1–600, default 120).",
+        minimum: 1,
+        maximum: 600,
+      },
+      max_steps: {
+        type: "integer",
+        description: "Optional cap on agent steps (1–500).",
+        minimum: 1,
+        maximum: 500,
+      },
+      browser_profile: {
+        type: "string",
+        enum: ["lite", "stealth"],
+        description: "'lite' (default) or 'stealth'.",
+      },
+      label: {
+        type: "string",
+        description:
+          "Optional short label so the operator + Evy can recognize this run in background_status output.",
+      },
+    },
+    required: ["task", "starting_url"],
+  },
+  invoke: async (args: TinyfishAgentArgs & { label?: string } = {}) => {
+    const task = typeof args.task === "string" ? args.task.trim() : "";
+    const starting_url =
+      typeof args.starting_url === "string" ? args.starting_url.trim() : "";
+    if (!task || !starting_url) {
+      return {
+        ok: false,
+        error:
+          "tinyfish_agent_async requires both `task` and `starting_url` (same as tinyfish_agent).",
+      };
+    }
+    const argsSummary = `${task.slice(0, 80)} @ ${starting_url}`;
+    const id = startBackgroundRun({
+      tool_name: "tinyfish_agent",
+      args_summary: argsSummary,
+      label: args.label,
+      executor: async (_signal) => {
+        // Note: callTinyfishAgent builds its own AbortSignal.timeout
+        // internally. Phase A doesn't thread _signal through yet — Phase
+        // C's cancel UX needs to refactor fetchHttp to accept an external
+        // signal. Tracked in the Phase C task.
+        const out = await callTinyfishAgent(args);
+        if (out.ok) return { ok: true, result: out };
+        return { ok: false, error: out.error };
+      },
+    });
+    return {
+      ok: true,
+      run_id: id,
+      status: "started",
+      tool_name: "tinyfish_agent",
+      args_summary: argsSummary,
+      label: args.label ?? null,
+      note: "Result will be delivered as a notification and prepended to the operator's next chat/telegram message.",
+    };
+  },
+};
+
 // ─── family export ──────────────────────────────────────────────────────────
 
 export const tinyfishTools = {
   tinyfish_search,
   tinyfish_fetch,
   tinyfish_agent,
+  tinyfish_agent_async,
 };

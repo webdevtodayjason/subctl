@@ -2525,6 +2525,13 @@ body.terminal-disabled #terminal-modal { display: none !important; }
   color: #d6c46c;
 }
 .chat-toolbar-btn-warn:hover { background: #3a2f1a; }
+/* v2.8.10 — voice-on state for the chat-header voice toggle. */
+.chat-toolbar-btn--active {
+  background: #143822;
+  border-color: #2a5a3a;
+  color: #6cd693;
+}
+.chat-toolbar-btn--active:hover { background: #1a4a2c; }
 .chat-toolbar-btn-icon {
   padding: 4px 9px;
   font-size: 14px;

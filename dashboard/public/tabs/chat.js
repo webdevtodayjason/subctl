@@ -981,6 +981,61 @@ export async function mount({ root: _root }) {
     const bannerCompact = $("ctx-overflow-compact");
     if (bannerCompact) bannerCompact.addEventListener("click", () => runCompact("banner"));
 
+    // v2.8.10 — Voice on/off toggle in chat header. Source-of-truth is
+    // master's voice.json (read via /api/voice/status, hot-reloaded via
+    // SSE `voice_config`). Click flips `enabled` via POST /api/voice/config;
+    // the per-bubble 🔊 play button keys off window.__subctlVoiceEnabled
+    // so the audio button only appears when voice is on.
+    const voiceBtn = $("chat-voice-toggle-btn");
+    function renderVoiceBtnState(enabled) {
+      if (!voiceBtn) return;
+      if (enabled) {
+        voiceBtn.textContent = "🔊 voice on";
+        voiceBtn.classList.add("chat-toolbar-btn--active");
+      } else {
+        voiceBtn.textContent = "🔇 voice off";
+        voiceBtn.classList.remove("chat-toolbar-btn--active");
+      }
+    }
+    // Initial paint — refreshVoiceEnabled() sets the global a few lines
+    // down; mirror onto the button as soon as the global lands.
+    fetch("/api/voice/status", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => {
+        if (j && j.config) {
+          window.__subctlVoiceEnabled = !!j.config.enabled;
+          renderVoiceBtnState(!!j.config.enabled);
+        }
+      })
+      .catch(() => {});
+    if (voiceBtn) {
+      voiceBtn.addEventListener("click", async () => {
+        voiceBtn.disabled = true;
+        const current = !!window.__subctlVoiceEnabled;
+        const next = !current;
+        try {
+          const r = await fetch("/api/voice/config", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ enabled: next }),
+          });
+          const j = await r.json();
+          if (!j.ok) {
+            await window.notice.error("voice toggle failed", j.error || "unknown");
+          } else {
+            // Optimistic — the SSE voice_config event will also fire and
+            // confirm. Update the button now so the click feels instant.
+            window.__subctlVoiceEnabled = !!j.config?.enabled;
+            renderVoiceBtnState(!!j.config?.enabled);
+          }
+        } catch (err) {
+          await window.notice.error("voice toggle error", String(err));
+        } finally {
+          voiceBtn.disabled = false;
+        }
+      });
+    }
+
     // v2.8.9 — Restart master button. POSTs /api/master/restart which does
     // launchctl kickstart -k. Master's SIGTERM handler saves the transcript
     // before exit, so no chat state is lost. Polls /api/master/health until
@@ -1459,6 +1514,9 @@ export async function mount({ root: _root }) {
         try {
           const d = JSON.parse(e.data);
           window.__subctlVoiceEnabled = !!d.enabled;
+          // v2.8.10 — keep header toggle in sync with file changes
+          // (master's fs.watch on voice.json or another tab flipping it).
+          renderVoiceBtnState(!!d.enabled);
         } catch {}
       });
       es.addEventListener("team_event", (e) => {

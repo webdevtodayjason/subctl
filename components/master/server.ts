@@ -80,6 +80,10 @@ import { policyTools } from "./tools/policy";
 import { diagTools, bindWatchdogState } from "./tools/diag";
 import { webTools } from "./tools/web";
 import { tinyfishTools } from "./tools/tinyfish";
+import {
+  backgroundTools,
+  bindBackgroundToolRegistry,
+} from "./tools/background";
 import { linearTools } from "./tools/linear";
 import { knowledgeTools } from "./tools/knowledge";
 import { teamDocsTools } from "./tools/team-docs";
@@ -150,6 +154,12 @@ import {
   subscribeNotifications,
   type Notification,
 } from "./notifications";
+import {
+  hydrateFromSidecar as hydrateBackgroundRuns,
+  drainPendingForNextTurn as drainBackgroundCompletions,
+  formatPrependForOperator as formatBackgroundPrepend,
+  _setDepsForTesting as _setBackgroundRunsDeps,
+} from "./background-runs";
 import {
   runStaleTeamSweep,
   type TeamNudgeState,
@@ -568,6 +578,17 @@ export const toolRegistry: Record<string, InternalTool> = {
   // tinyfish_* — gated on TINYFISH_API_KEY (~.config/subctl/secrets.json or env).
   // Parallel to web_* (Brave + Firecrawl). v2.7.16.
   ...(spreadIf(TOOL_GATES.tinyfish, undefined, tinyfishTools) as Record<string, InternalTool>),
+  // background_* — v2.8.10 background-run runtime surface. Always
+  // registered; the runtime itself is always available. Tools:
+  //   background_run    — dispatch any registered tool in the background
+  //   background_status — inspect active + recent runs
+  //   background_cancel — abort a running run by id
+  ...Object.fromEntries(
+    Object.entries(backgroundTools).map(([k, v]) => [
+      k,
+      v as unknown as InternalTool,
+    ]),
+  ),
   // linear_* — gated on LINEAR_API_KEY. Operator-funded Linear API access
   // configured 2026-05-12. v2.7.2.
   ...(spreadIf(TOOL_GATES.linear, undefined, linearTools) as Record<string, InternalTool>),
@@ -608,6 +629,15 @@ export const toolRegistry: Record<string, InternalTool> = {
 // system_my_tools needs to introspect the live registry. Bind it here so
 // the tool can answer "what tools do you have?" without a circular import.
 bindSystemToolRegistry(toolRegistry as Record<string, { description?: string }>);
+
+// v2.8.10 — background_run needs to resolve tool_name → invoke() at
+// dispatch time, so bind it to the live registry here (post-construction).
+bindBackgroundToolRegistry(
+  toolRegistry as unknown as Record<
+    string,
+    { description: string; schema: unknown; invoke: (args: Record<string, unknown>) => Promise<unknown> }
+  >,
+);
 
 // ─── SDK adapters ──────────────────────────────────────────────────────────
 // pi-agent-core wants AgentTool<TSchema> (typebox parameters + `execute`). Our
@@ -1489,6 +1519,13 @@ async function main() {
     `[master] agent ready — supervisor=${supervisorCfg.provider}/${supervisorCfg.model}, tools=${tools.length}, transcript=${agent.state.messages.length} msgs`,
   );
 
+  // v2.8.10 — background-task runtime. Wire emitNotification into the
+  // module's deps so tray notifications fire on run completion, then
+  // hydrate sidecar state (any "running" entries from a prior boot get
+  // marked failed with "lost on master restart").
+  _setBackgroundRunsDeps({ emitNotification });
+  await hydrateBackgroundRuns();
+
   logDecision({
     project: "_master",
     action: "boot",
@@ -1806,6 +1843,16 @@ async function main() {
       // not new operator intent.
       if (p.source === "chat" || p.source === "telegram") {
         resetCircuitBreakerOnNewTurn();
+        // v2.8.10 — drain any background-run completions that landed
+        // while the operator was away and prepend them to the prompt
+        // text BEFORE composeSystemPrompt/agent.prompt see it. We mutate
+        // p.text (not a copy) so downstream code paths (compose, verify,
+        // memory recording) all see the augmented prompt.
+        const completed = drainBackgroundCompletions();
+        const prepend = formatBackgroundPrepend(completed);
+        if (prepend) {
+          p.text = `${prepend}\n\n${p.text}`;
+        }
       }
 
       // ── v2.7.18 profile-swap gate ─────────────────────────────────────
