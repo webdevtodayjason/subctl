@@ -62,6 +62,12 @@ export const SECRET_KEYS = [
   "context7_api_key",
   "tinyfish_api_key",
   "openrouter_api_key",
+  // v2.8.10 — memory substrate migration. Cognee = local HTTP service
+  // shared with ArgentOS (knowledge graph + semantic recall). Memori =
+  // Tier 3 conversation/event substrate (BYODB sqlite). Both auth tokens
+  // here so the operator can rotate via the dashboard secrets panel.
+  "cognee_auth_token",
+  "memori_api_key",
 ] as const;
 export type SecretKey = (typeof SECRET_KEYS)[number];
 
@@ -272,6 +278,10 @@ export function envVarFor(key: string): string {
       return "TINYFISH_API_KEY";
     case "openrouter_api_key":
       return "OPENROUTER_API_KEY";
+    case "cognee_auth_token":
+      return "COGNEE_AUTH_TOKEN";
+    case "memori_api_key":
+      return "MEMORI_API_KEY";
     default:
       // Best-effort uppercase fallback so a hand-added secret name still
       // resolves predictably (`foo_api_key` → `FOO_API_KEY`).

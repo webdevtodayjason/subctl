@@ -161,6 +161,10 @@ import {
   _setDepsForTesting as _setBackgroundRunsDeps,
 } from "./background-runs";
 import {
+  health as cogneeHealth,
+  resolveCogneeUrl,
+} from "./cognee-client";
+import {
   runStaleTeamSweep,
   type TeamNudgeState,
   type TeamSnapshot,
@@ -469,6 +473,15 @@ const TOOL_GATES = {
   context7: hasSecretOrEnv("CONTEXT7_API_KEY", "context7_api_key"),
   linear: hasSecretOrEnv("LINEAR_API_KEY", "linear_api_key"),
   tinyfish: hasSecretOrEnv("TINYFISH_API_KEY", "tinyfish_api_key"),
+  // v2.8.10 — memory substrate migration. Cognee gates on configuration
+  // presence (URL override OR auth token); actual reachability is probed
+  // async post-boot and logged. Phase 1 scaffold — no tools wired yet,
+  // so the gate just flags whether configuration exists.
+  cognee:
+    hasSecretOrEnv("COGNEE_AUTH_TOKEN", "cognee_auth_token") ||
+    (process.env.COGNEE_SERVICE_URL ?? "").trim().length > 0,
+  // Memori gates on api key — Tier 3 substrate (task #8).
+  memori: hasSecretOrEnv("MEMORI_API_KEY", "memori_api_key"),
   voice: isVoiceEnabled(),
   skillRouter: isSkillRouterEnabled(),
 };
@@ -1525,6 +1538,37 @@ async function main() {
   // marked failed with "lost on master restart").
   _setBackgroundRunsDeps({ emitNotification });
   await hydrateBackgroundRuns();
+
+  // v2.8.10 — memory substrate scaffold (task #6). Probe Cognee
+  // reachability at boot, log the result, and broadcast on the SSE bus
+  // so the dashboard can show the gate state. Non-blocking — if the
+  // service is down, master still boots normally; Tier 4 fallback
+  // (claude-mem) keeps memory_search alive in the interim.
+  if (TOOL_GATES.cognee) {
+    void (async () => {
+      try {
+        const probe = await cogneeHealth();
+        if (probe.reachable) {
+          console.error(
+            `[cognee] reachable at ${probe.url}${probe.version ? ` (v${probe.version})` : ""} — ${probe.latency_ms}ms — auth=${probe.auth_status}`,
+          );
+        } else {
+          console.error(
+            `[cognee] UNREACHABLE at ${probe.url} — ${probe.error ?? "unknown"} (auth=${probe.auth_status}). Tier 4 tools fall back to claude-mem until the service is up.`,
+          );
+        }
+        broadcast("cognee_health", probe);
+      } catch (err) {
+        console.error(
+          `[cognee] probe threw: ${(err as Error).message ?? err}`,
+        );
+      }
+    })();
+  } else {
+    console.error(
+      `[cognee] not configured (set COGNEE_SERVICE_URL or write cognee_auth_token via secrets panel). Memory init #1 scaffold inactive until configured.`,
+    );
+  }
 
   logDecision({
     project: "_master",
