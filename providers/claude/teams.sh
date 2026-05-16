@@ -60,19 +60,28 @@ _provider_claude_apply_template() {
 }
 
 # Write a .mcp.json into the worker's CLAUDE_CONFIG_DIR so MCP servers
-# (Context7 today, more later) register at Claude Code session boot.
-# Idempotent — overwrites every spawn so updated keys land without
-# operator surgery. Only includes a server entry if its API key is
-# present in the spawning shell's env; otherwise the entry is omitted
-# (Claude Code is happy with an empty mcpServers map).
+# register at Claude Code session boot. Idempotent — overwrites every
+# spawn so updated configs land without operator surgery.
+#
+# Propagated MCPs (operator-controlled, opt-in per server):
+#   - Context7 — HTTP transport, key from $CONTEXT7_API_KEY env
+#   - Ghost    — stdio transport, copied verbatim from ~/.claude.json
+#                where `ghost mcp install` writes it (v2026.5+)
+#
+# Adding a new MCP here means it lands in every spawned worker's
+# CLAUDE_CONFIG_DIR/.mcp.json automatically — operators don't have to
+# run `<tool> mcp install` once per account dir.
 _provider_claude_drop_mcp_config() {
   local cfg_dir="$1"
   [[ -z "$cfg_dir" || ! -d "$cfg_dir" ]] && return 0
   local mcp_file="$cfg_dir/.mcp.json"
-  local context7_block=""
+  # Start from an empty map and accrete server entries; whichever ones
+  # have the inputs they need get included, the rest are skipped.
+  local servers='{}'
+
+  # ── Context7 — HTTP transport, conditional on env var ────────────────────
   if [[ -n "${CONTEXT7_API_KEY:-}" ]]; then
-    # Context7 MCP is HTTP-transport. Header name is the literal key name
-    # (matches their gateway expectation).
+    local context7_block
     context7_block=$(jq -nc \
       --arg key "$CONTEXT7_API_KEY" \
       '{
@@ -80,14 +89,26 @@ _provider_claude_drop_mcp_config() {
         url: "https://mcp.context7.com/mcp",
         headers: {CONTEXT7_API_KEY: $key}
       }')
+    servers=$(jq -nc --argjson s "$servers" --argjson v "$context7_block" \
+      '$s + {context7: $v}')
   fi
-  if [[ -n "$context7_block" ]]; then
-    jq -n --argjson c7 "$context7_block" '{mcpServers: {context7: $c7}}' > "$mcp_file"
-  else
-    # No keys to populate — write an empty map so Claude Code doesn't
-    # complain about a missing file when it expects one.
-    echo '{"mcpServers": {}}' > "$mcp_file"
+
+  # ── Ghost — stdio transport, copied from ~/.claude.json ──────────────────
+  # `ghost mcp install` writes its config into ~/.claude.json's mcpServers
+  # map. Spawned workers use a different CLAUDE_CONFIG_DIR so they don't
+  # see that config unless we copy it forward. The source-of-truth is the
+  # operator's global config — if they didn't install Ghost, the jq query
+  # returns empty and we silently skip.
+  if [[ -f "$HOME/.claude.json" ]]; then
+    local ghost_block
+    ghost_block=$(jq -c '.mcpServers.ghost // empty' "$HOME/.claude.json" 2>/dev/null)
+    if [[ -n "$ghost_block" && "$ghost_block" != "null" ]]; then
+      servers=$(jq -nc --argjson s "$servers" --argjson v "$ghost_block" \
+        '$s + {ghost: $v}')
+    fi
   fi
+
+  jq -n --argjson s "$servers" '{mcpServers: $s}' > "$mcp_file"
 }
 
 # Implements the provider interface: provider_teams [opts]
