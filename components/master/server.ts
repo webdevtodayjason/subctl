@@ -1020,13 +1020,47 @@ function loadAgentTranscript(): AgentMessage[] {
   try {
     const raw = readFileSync(AGENT_STATE_PATH, "utf8");
     const parsed = JSON.parse(raw) as { messages?: AgentMessage[] };
-    return Array.isArray(parsed.messages) ? parsed.messages : [];
+    const msgs = Array.isArray(parsed.messages) ? parsed.messages : [];
+    return dropOrphanToolResults(msgs);
   } catch (err) {
     console.error(
       `[master] WARN agent-state.json corrupt, starting fresh: ${(err as Error).message}`,
     );
     return [];
   }
+}
+
+// v2.8.10 (task #5) — defensive orphan filter. The compactor was leaving
+// behind toolResult messages whose parent toolCall got folded into the
+// summary. Codex's /responses API rejects those with HTTP 400. We
+// already filter on the way OUT (in compactTranscriptInline post-2.8.10)
+// but this load-time sweep catches state files written by older daemon
+// builds that never had the filter.
+export function dropOrphanToolResults(messages: AgentMessage[]): AgentMessage[] {
+  const calledIds = new Set<string>();
+  for (const m of messages) {
+    if ((m as { role?: string }).role !== "assistant") continue;
+    const c = ((m as { content?: unknown }).content ?? []) as Array<
+      { type?: string; id?: string }
+    >;
+    for (const p of c) if (p?.type === "toolCall" && typeof p.id === "string") calledIds.add(p.id);
+  }
+  let dropped = 0;
+  const filtered = messages.filter((m) => {
+    const role = (m as { role?: string }).role;
+    const tcid = (m as { toolCallId?: string }).toolCallId;
+    if (role === "toolResult" && typeof tcid === "string" && !calledIds.has(tcid)) {
+      dropped++;
+      return false;
+    }
+    return true;
+  });
+  if (dropped > 0) {
+    console.error(
+      `[master] dropped ${dropped} orphan toolResult(s) at load — preempted Codex/OpenAI HTTP 400.`,
+    );
+  }
+  return filtered;
 }
 
 // v2.8.9 — strip helpers moved to components/master/text-sanitize.ts so the
@@ -1804,6 +1838,42 @@ async function main() {
         timestamp: Date.now(),
       } as any);
       for (const m of recent) agent.state.messages.push(m as any);
+
+      // v2.8.10 (task #5) — drop orphan toolResults. Compaction folds
+      // older assistant messages (which contain toolCall blocks) into
+      // the summary, but a `toolResult` may sit in `recent` whose
+      // parent `toolCall` was just absorbed into the summary. Codex's
+      // /responses API rejects orphan `function_call_output`s with
+      // HTTP 400 ("No tool call found for function call output with
+      // call_id ..."). This caused two operator-visible chat breaks
+      // today (2026-05-16 21:35 / 21:36). Filter them out here so the
+      // post-compact transcript is structurally valid for ANY provider.
+      const _calledIds = new Set<string>();
+      for (const m of agent.state.messages) {
+        if ((m as { role?: string }).role !== "assistant") continue;
+        const c = ((m as { content?: unknown }).content ?? []) as Array<
+          { type?: string; id?: string }
+        >;
+        for (const p of c) if (p?.type === "toolCall" && typeof p.id === "string") _calledIds.add(p.id);
+      }
+      const _orphans: number[] = [];
+      agent.state.messages.forEach((m, i) => {
+        const role = (m as { role?: string }).role;
+        const toolCallId = (m as { toolCallId?: string }).toolCallId;
+        if (role === "toolResult" && typeof toolCallId === "string" && !_calledIds.has(toolCallId)) {
+          _orphans.push(i);
+        }
+      });
+      if (_orphans.length > 0) {
+        // Iterate from the tail so indexes stay valid as we splice.
+        for (let i = _orphans.length - 1; i >= 0; i--) {
+          agent.state.messages.splice(_orphans[i]!, 1);
+        }
+        console.error(
+          `[compact] dropped ${_orphans.length} orphan toolResult(s) — parent toolCalls folded into compaction summary; ids would have caused Codex HTTP 400.`,
+        );
+      }
+
       saveAgentTranscript(agent.state.messages);
       broadcast("transcript_compacted", {
         ts: new Date().toISOString(),
