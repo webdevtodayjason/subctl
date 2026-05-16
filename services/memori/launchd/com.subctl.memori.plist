@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  subctl Memori sidecar launchd template — v2.8.10.
+
+  Template — placeholders substituted at install time by
+  lib/memori.sh (added in v2.8.10):
+    __OWNER__       reverse-DNS prefix (e.g. com.subctl)
+    __PYTHON__      absolute path to the python3 binary (>=3.10)
+    __SERVER_PY__   absolute path to services/memori/server.py
+    __HOME__        absolute path to user's $HOME
+    __DB_PATH__     SUBCTL_MEMORI_DB value (default ~/.config/subctl/master/memori.db)
+    __AUGMENT__     SUBCTL_MEMORI_AUGMENTATION ("on" or "off")
+
+  Stays on 127.0.0.1 — ADR 0009 self-hosted-only floor.
+  Logs to ~/Library/Logs/subctl/memori.log (merged stdout+stderr).
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>__OWNER__.memori</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PYTHON__</string>
+        <string>__SERVER_PY__</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>SUBCTL_MEMORI_HOST</key>
+        <string>127.0.0.1</string>
+        <key>SUBCTL_MEMORI_PORT</key>
+        <string>8746</string>
+        <key>SUBCTL_MEMORI_DB</key>
+        <string>__DB_PATH__</string>
+        <key>SUBCTL_MEMORI_AUGMENTATION</key>
+        <string>__AUGMENT__</string>
+    </dict>
+
+    <key>WorkingDirectory</key>
+    <string>__HOME__</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/Library/Logs/subctl/memori.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Library/Logs/subctl/memori.log</string>
+</dict>
+</plist>

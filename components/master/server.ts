@@ -165,6 +165,10 @@ import {
   resolveCogneeUrl,
 } from "./cognee-client";
 import {
+  health as memoriHealth,
+  resolveMemoriUrl,
+} from "./memori-client";
+import {
   runStaleTeamSweep,
   type TeamNudgeState,
   type TeamSnapshot,
@@ -1567,6 +1571,37 @@ async function main() {
   } else {
     console.error(
       `[cognee] not configured (set COGNEE_SERVICE_URL or write cognee_auth_token via secrets panel). Memory init #1 scaffold inactive until configured.`,
+    );
+  }
+
+  // v2.8.10 — Memori sidecar probe (task #8 Phase 3a). Same pattern as
+  // Cognee: async, non-blocking, broadcast result on SSE bus. The
+  // sidecar itself lives at services/memori/server.py (Phase 3b);
+  // until that's installed + running, probe fails → Tier 3 falls
+  // back to evy-memory (the existing substrate).
+  if (TOOL_GATES.memori) {
+    void (async () => {
+      try {
+        const probe = await memoriHealth();
+        if (probe.reachable) {
+          console.error(
+            `[memori] reachable at ${probe.url}${probe.version ? ` (v${probe.version})` : ""} — ${probe.latency_ms}ms — db=${probe.database ?? "?"} — auth=${probe.auth_status}`,
+          );
+        } else {
+          console.error(
+            `[memori] UNREACHABLE at ${probe.url} — ${probe.error ?? "unknown"} (auth=${probe.auth_status}). Tier 3 falls back to evy-memory until the sidecar is up.`,
+          );
+        }
+        broadcast("memori_health", probe);
+      } catch (err) {
+        console.error(
+          `[memori] probe threw: ${(err as Error).message ?? err}`,
+        );
+      }
+    })();
+  } else {
+    console.error(
+      `[memori] not configured (set MEMORI_API_KEY env or write memori_api_key via secrets panel). Tier 3 stays on evy-memory until configured.`,
     );
   }
 

@@ -552,6 +552,52 @@ EOF
   esac
 }
 
+# ── memori (v2.8.10, Memory Init #3 Phase 3b) ─────────────────────────────
+# Operator-facing wrapper around lib/memori.sh. Verbs: status (default),
+# install [on|off], uninstall.
+subctl_cli_memori() {
+  local sub="${1:-status}"
+  [[ $# -gt 0 ]] && shift
+  case "$sub" in
+    -h|--help)
+      cat <<EOF
+subctl memori [status | install [on|off] | uninstall]
+
+  Local Memori sidecar (Memory Init #3 Phase 3b). Stores Tier 3 turns
+  in SQLite at ~/.config/subctl/master/memori.db. Master daemon talks
+  to it over HTTP at 127.0.0.1:8746.
+
+  Verbs:
+    status                 health probe + db path + total_memories (default)
+    install [on|off]       install + load the launchd service.
+                           Augmentation flag: 'on' uses memorilabs.Memori
+                           SDK with cloud augmentation (requires
+                           \`pip install memori\` + MEMORI_API_KEY,
+                           conversation content flows to memorilabs.ai
+                           for fact extraction). 'off' (default) is raw
+                           sqlite-only — no content leaves this box.
+    uninstall              unload + remove the plist. DB is preserved.
+EOF
+      return 0 ;;
+    status|"")
+      . "$SUBCTL_REPO_ROOT/lib/memori.sh"
+      subctl_memori_status
+      ;;
+    install)
+      . "$SUBCTL_REPO_ROOT/lib/memori.sh"
+      subctl_memori_install "${1:-off}"
+      ;;
+    uninstall)
+      . "$SUBCTL_REPO_ROOT/lib/memori.sh"
+      subctl_memori_disable
+      ;;
+    *)
+      subctl_err "unknown memori verb: $sub (try: status | install [on|off] | uninstall)"
+      return 1
+      ;;
+  esac
+}
+
 _subctl_cli_memory_render() {
   _subctl_cli_require_jq || return 1
   local url="$1" body
