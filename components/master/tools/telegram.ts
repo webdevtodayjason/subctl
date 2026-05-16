@@ -10,6 +10,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { renderVoice } from "./voice-render";
+import { stripReasoningChannels } from "../text-sanitize";
 
 const MASTER_NOTIFY_CONFIG =
   process.env.SUBCTL_MASTER_NOTIFY_CONFIG ??
@@ -96,9 +97,15 @@ async function sendMessage(
 ): Promise<{ ok: boolean; message_id?: number; error?: string }> {
   const creds = getCreds();
   const url = `https://api.telegram.org/bot${creds.bot_token}/sendMessage`;
+  // v2.8.9 — strip reasoning-channel markers before send. Local models
+  // (notably gemma-4-26b-a4b-it MLX 4-bit) leak `<|channel>thought\n<channel|>`
+  // into Evy's responses; saveAgentTranscript already strips them on
+  // persistence and the dashboard strips on render, but the Telegram
+  // outgoing path was a third surface that hadn't been wired through.
+  const sanitized = stripReasoningChannels(text);
   const body: Record<string, unknown> = {
     chat_id: creds.chat_id,
-    text,
+    text: sanitized,
   };
   if (opts.parse_mode) body.parse_mode = opts.parse_mode;
   const r = await fetch(url, {

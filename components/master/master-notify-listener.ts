@@ -81,6 +81,7 @@ import {
 } from "./notifications";
 import { describeUpstreamState } from "./upstream-check";
 import { describeBackendChain } from "./secrets-backends";
+import { stripReasoningChannels } from "./text-sanitize";
 import {
   recordEntry as recordMemoryEntry,
   recallEntries as recallMemoryEntries,
@@ -1279,10 +1280,14 @@ function formatStatus(): string {
 
 async function sendMessage(chatId: string, text: string, token: string) {
   try {
+    // v2.8.9 — strip reasoning-channel markers in case command echoes or
+    // future automated replies pass through agent-generated text. Matches
+    // the same sanitisation applied in tools/telegram.ts sendMessage.
+    const sanitized = stripReasoningChannels(text);
     await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text }),
+      body: JSON.stringify({ chat_id: chatId, text: sanitized }),
     });
   } catch (e) {
     console.error("[master-notify] sendMessage failed:", (e as any)?.message);

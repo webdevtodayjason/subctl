@@ -878,14 +878,11 @@ function loadAgentTranscript(): AgentMessage[] {
   }
 }
 
-// Some local models (notably gemma-4-26b-a4b-it MLX 4-bit) emit malformed
-// reasoning-channel markers — `<|channel>thought\n<channel|>` — that leak
-// through LM Studio's chat template into the assistant text. Strip them
-// before persisting so the transcript stays readable across model swaps.
-const REASONING_CHANNEL_RE = /<\|?channel\|?>[\s\S]*?<\|?channel\|?>/g;
-function stripReasoningChannels(text: string): string {
-  return text.replace(REASONING_CHANNEL_RE, "");
-}
+// v2.8.9 — strip helpers moved to components/master/text-sanitize.ts so the
+// Telegram outgoing path (tools/telegram.ts) and any future surface can
+// import the same regex without duplicating it. Existing call sites in
+// scrubMessageContent below are unchanged.
+import { stripReasoningChannels } from "./text-sanitize";
 function scrubMessageContent(messages: AgentMessage[]): AgentMessage[] {
   return messages.map((m) => {
     const content = (m as { content?: unknown }).content;
