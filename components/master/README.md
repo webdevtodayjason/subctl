@@ -90,7 +90,7 @@ $EDITOR ~/.config/subctl/master/providers.json
 $EDITOR ~/.config/subctl/master/policy.json
 
 # 3. Configure subctl master's Telegram bot (separate from notify-bot)
-echo '{"bot_token": "YOUR_NEW_BOT_TOKEN", "chat_id": "8693117634"}' > ~/.config/subctl/master-notify.json
+echo '{"bot_token": "YOUR_NEW_BOT_TOKEN", "chat_id": "YOUR_TELEGRAM_CHAT_ID"}' > ~/.config/subctl/master-notify.json
 chmod 600 ~/.config/subctl/master-notify.json
 
 # 4. Enable the launchd service

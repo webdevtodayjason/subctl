@@ -3,7 +3,7 @@
 
   "operator": {
     "name": "Jason",
-    "telegram_chat_id": "8693117634",
+    "telegram_chat_id": "YOUR_TELEGRAM_CHAT_ID",
     "office_hours": "08:00-23:00 CDT",
     "_comment_office_hours": "Outside office hours, master defaults to drive (skip non-blocking pings) for `drive`-tier projects. Always escalates blockers regardless of hour."
   },

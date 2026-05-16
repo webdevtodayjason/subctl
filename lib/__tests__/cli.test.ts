@@ -662,13 +662,16 @@ describe("subctl config (v2.7.36)", () => {
       join(cfgDir, "accounts.conf"),
       "# example\npersonal | claude | me@x.com | ~/.claude-personal | personal\n",
     );
-    // notify.json contains a real-looking Telegram bot token; must be redacted.
+    // notify.json contains a real-looking (but fake) Telegram bot token; must
+    // be redacted. The fake token matches the redaction regex
+    // /[0-9]{8,12}:[A-Za-z0-9_-]{30,}/ so the assertion is meaningful, but the
+    // value is obviously not a real credential. NEVER paste real tokens here.
     writeFileSync(
       join(cfgDir, "notify.json"),
       JSON.stringify(
         {
-          telegram_bot_token: "8775281030:AAGwu98BrijXNl-A3IuKfGr7PCOjg3tbWvE",
-          telegram_chat_id: "8693117634",
+          telegram_bot_token: "0000000000:FAKE_TEST_TOKEN_DO_NOT_USE_IN_PRODUCTION",
+          telegram_chat_id: "1234567890",
         },
         null,
         2,
@@ -719,7 +722,7 @@ describe("subctl config (v2.7.36)", () => {
   test("show notify redacts telegram bot token (textual)", () => {
     const r = run(["config", "show", "notify"], { SUBCTL_CONFIG_DIR: cfgDir });
     expect(r.code).toBe(0);
-    expect(r.stdout).not.toContain("8775281030:AAGwu98BrijXNl-A3IuKfGr7PCOjg3tbWvE");
+    expect(r.stdout).not.toContain("0000000000:FAKE_TEST_TOKEN_DO_NOT_USE_IN_PRODUCTION");
   });
 
   test("show with no section iterates all known files", () => {

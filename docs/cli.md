@@ -223,7 +223,7 @@ $ subctl config show notify
 ══ notify (~/.config/subctl/notify.json) ══
 {
   "telegram_bot_token": "***redacted***",
-  "telegram_chat_id": "8693117634"
+  "telegram_chat_id": "1234567890"
 }
 
 $ subctl config edit providers
