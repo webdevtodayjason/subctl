@@ -434,18 +434,25 @@ export async function mount({ root: _root }) {
             // POSTed model="?" to /api/master/supervisor and wrote garbage
             // into providers.json. Server-side validation now rejects this,
             // but disabling the option is the better UX.
+            //
+            // v2.8.9 — also disable when the current default_model has been
+            // toggled off in the catalog (operator unchecked it in the Models
+            // panel). `default_model_enabled` comes from /api/providers.
             const hasDefault = !!p.default_model;
+            const defaultEnabled = p.default_model_enabled !== false; // default true
             const model = p.default_model || "(no default)";
-            const value = hasDefault ? `${p.id}|${p.default_model}` : "";
+            const value = (hasDefault && defaultEnabled) ? `${p.id}|${p.default_model}` : "";
             const state = !wired
               ? "not yet wired"
               : !hasDefault
                 ? "no default model — pick via + New Profile"
-                : p.available
-                  ? "ready"
-                  : "not authed";
-            const isCurrent = hasDefault && supervisor === `${p.id}/${p.default_model}`;
-            const disabledAttr = (!wired || !hasDefault) ? " disabled" : "";
+                : !defaultEnabled
+                  ? "default disabled — re-enable in Providers tab"
+                  : p.available
+                    ? "ready"
+                    : "not authed";
+            const isCurrent = hasDefault && defaultEnabled && supervisor === `${p.id}/${p.default_model}`;
+            const disabledAttr = (!wired || !hasDefault || !defaultEnabled) ? " disabled" : "";
             const noteAttr = !wired && p.wired_note ? ` title="${escapeText(p.wired_note)}"` : "";
             html += `<option value="${escapeText(value)}"${disabledAttr}${noteAttr} ${isCurrent ? "selected" : ""}>${dot}  ${escapeText(p.display)} · ${escapeText(model)} · ${state}</option>`;
           }

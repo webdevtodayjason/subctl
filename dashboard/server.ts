@@ -4821,6 +4821,22 @@ const server = Bun.serve({
           // in ~/.config/subctl/provider-defaults.json.
           default_model: getDefaultModel(entry.id) ?? null,
           default_model_source: getDefaultModelWithSource(entry.id).source,
+          // v2.8.9 — whether the current default_model is enabled in the
+          // catalog. If the operator disabled their currently-default model
+          // via the Models panel checkbox, this returns false and the chat
+          // dropdown disables the option. true when no cache exists yet
+          // (operator hasn't touched defaults; assume on).
+          default_model_enabled: (() => {
+            const def = getDefaultModel(entry.id);
+            if (!def) return true; // no default; not gating
+            try {
+              const cached = getCatalog(entry.id);
+              const target = cached.models.find((m) => m.id === def);
+              return target?.enabled !== false;
+            } catch {
+              return true; // catalog read fails → assume enabled
+            }
+          })(),
           // Surface a legacy alias when one exists so the UI can render
           // `subctl auth <legacy> <alias>` correctly without having to
           // know the alias table.
