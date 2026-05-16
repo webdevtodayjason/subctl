@@ -183,3 +183,159 @@ export function isKnownProvider(provider: string): boolean {
   const canonical = resolveProviderId(provider);
   return isCatalogProvider(canonical) || listAllProviderIds().includes(canonical);
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// Phase 2b — live refresh from provider /models endpoints
+// ──────────────────────────────────────────────────────────────────────────
+
+const SECRETS_PATH = process.env.SUBCTL_CONFIG_DIR
+  ? join(process.env.SUBCTL_CONFIG_DIR, "secrets.json")
+  : join(HOME, ".config", "subctl", "secrets.json");
+
+/** Read a credential, env var first then secrets.json. Returns undefined
+ *  when neither source has a non-empty value. Mirrors the pattern used by
+ *  components/master/secrets.ts resolveSecret() but doesn't pull in the
+ *  full caching layer — refresh is a rare, operator-initiated action. */
+function readSecret(envName: string, secretKey: string): string | undefined {
+  const envVal = process.env[envName];
+  if (envVal && envVal.trim()) return envVal.trim();
+  try {
+    const data = JSON.parse(readFileSync(SECRETS_PATH, "utf8")) as Record<string, unknown>;
+    const val = data[secretKey];
+    if (typeof val === "string" && val.trim()) return val.trim();
+  } catch {
+    // missing or malformed secrets.json — operator has none configured yet
+  }
+  return undefined;
+}
+
+/** Live-fetch the model list from Anthropic's API. Requires
+ *  ANTHROPIC_API_KEY env or `anthropic_api_key` in secrets.json. Returns
+ *  null when no API key is available (caller falls back to pi-ai bundle). */
+async function refreshAnthropic(): Promise<CatalogFile | null> {
+  const apiKey = readSecret("ANTHROPIC_API_KEY", "anthropic_api_key");
+  if (!apiKey) return null;
+  const url = "https://api.anthropic.com/v1/models";
+  const res = await fetch(url, {
+    headers: {
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+    },
+  });
+  if (!res.ok) {
+    throw new Error(`anthropic /v1/models returned HTTP ${res.status}`);
+  }
+  const j = (await res.json()) as {
+    data?: Array<{ id?: string; display_name?: string; created_at?: string }>;
+  };
+  const live = j.data ?? [];
+  // Anthropic's /v1/models is minimal — id + display_name + created. Enrich
+  // with pi-ai's bundled cost/context data when we have it (joined by id).
+  const bundle = fromPiAiBundle("anthropic").models;
+  const byId = new Map(bundle.map((m) => [m.id, m]));
+  const models: CatalogModel[] = live.map((m) => {
+    const id = String(m.id ?? "");
+    const bundled = byId.get(id);
+    return {
+      id,
+      name: m.display_name ?? bundled?.name ?? id,
+      api: bundled?.api ?? "anthropic-messages",
+      base_url: bundled?.base_url ?? "https://api.anthropic.com",
+      context_window: bundled?.context_window,
+      max_tokens: bundled?.max_tokens,
+      input: bundled?.input,
+      reasoning: bundled?.reasoning,
+      cost: bundled?.cost,
+      enabled: true,
+    };
+  });
+  return {
+    provider: "anthropic",
+    fetched_at: new Date().toISOString(),
+    source: "live-fetch",
+    source_url: url,
+    models,
+  };
+}
+
+/** Live-fetch the model list from OpenRouter's API. No auth required for
+ *  the public /api/v1/models endpoint, though authenticated requests
+ *  return additional fields (we don't currently use them). */
+async function refreshOpenRouter(): Promise<CatalogFile> {
+  const url = "https://openrouter.ai/api/v1/models";
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`openrouter /api/v1/models returned HTTP ${res.status}`);
+  }
+  const j = (await res.json()) as {
+    data?: Array<{
+      id?: string;
+      name?: string;
+      context_length?: number;
+      pricing?: { prompt?: string; completion?: string };
+      architecture?: { input_modalities?: string[] };
+    }>;
+  };
+  const live = j.data ?? [];
+  const models: CatalogModel[] = live.map((m) => ({
+    id: String(m.id ?? ""),
+    name: m.name ?? String(m.id ?? ""),
+    api: "openai-completions",
+    base_url: "https://openrouter.ai/api/v1",
+    context_window: m.context_length,
+    max_tokens: undefined,
+    input: m.architecture?.input_modalities,
+    reasoning: undefined,
+    // OpenRouter reports per-token prices as strings in USD; convert to
+    // per-million for parity with pi-ai's bundled shape (cost.input/output).
+    cost: m.pricing
+      ? {
+          input: m.pricing.prompt ? Number(m.pricing.prompt) * 1_000_000 : undefined,
+          output: m.pricing.completion ? Number(m.pricing.completion) * 1_000_000 : undefined,
+        }
+      : undefined,
+    enabled: true,
+  }));
+  return {
+    provider: "openrouter",
+    fetched_at: new Date().toISOString(),
+    source: "live-fetch",
+    source_url: url,
+    models,
+  };
+}
+
+/** Refresh a provider's catalog. Tries the live-fetch path first; falls
+ *  back to a fresh derivation from pi-ai's bundle on auth failure (return
+ *  null from the live helper) or fetch error (caller catches). The caller
+ *  is responsible for saving via saveCatalog() — this function only
+ *  computes the new value. */
+export async function refreshCatalog(provider: string): Promise<{
+  catalog: CatalogFile;
+  notice?: string;
+}> {
+  const canonical = resolveProviderId(provider);
+  try {
+    if (canonical === "anthropic") {
+      const live = await refreshAnthropic();
+      if (live) return { catalog: live };
+      return {
+        catalog: fromPiAiBundle("anthropic"),
+        notice: "anthropic API key not configured — falling back to pi-ai bundle",
+      };
+    }
+    if (canonical === "openrouter") {
+      return { catalog: await refreshOpenRouter() };
+    }
+  } catch (err) {
+    return {
+      catalog: fromPiAiBundle(canonical),
+      notice: `live fetch failed (${(err as Error).message}) — falling back to pi-ai bundle`,
+    };
+  }
+  // Default: re-derive from pi-ai bundle. Fresh fetched_at, no live source.
+  return {
+    catalog: fromPiAiBundle(canonical),
+    notice: "no live-fetch implementation for this provider yet — using pi-ai bundle",
+  };
+}

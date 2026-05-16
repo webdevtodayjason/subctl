@@ -121,6 +121,8 @@ import {
   getCatalog,
   listCachedCatalogs,
   isKnownProvider,
+  refreshCatalog,
+  saveCatalog,
 } from "./lib/catalogs.ts";
 // v2.8.7 — supervisor dropdown sync. POST /api/master/supervisor edits
 // providers.json AND profiles.json so the operator's dropdown pick survives
@@ -4839,6 +4841,50 @@ const server = Bun.serve({
         );
       }
       return Response.json({ ok: true, catalog: getCatalog(provider) });
+    }
+    if (
+      url.pathname.startsWith("/api/catalogs/") &&
+      url.pathname.endsWith("/refresh") &&
+      req.method === "POST"
+    ) {
+      // POST /api/catalogs/<provider>/refresh — re-derive and persist.
+      // Live-fetches for providers with a public /models endpoint (anthropic,
+      // openrouter today); other providers fall back to a fresh pi-ai bundle
+      // derivation. The endpoint is idempotent: calling repeatedly just
+      // re-derives. Concurrency: per-file writes are atomic on macOS, so
+      // overlapping refreshes settle on whichever finishes last.
+      const provider = url.pathname
+        .slice("/api/catalogs/".length, url.pathname.length - "/refresh".length)
+        .replace(/\/+$/, "");
+      if (!provider || provider.includes("/")) {
+        return Response.json(
+          { ok: false, error: "expected /api/catalogs/<provider>/refresh" },
+          { status: 400 },
+        );
+      }
+      if (!isKnownProvider(provider)) {
+        return Response.json(
+          { ok: false, error: `unknown provider "${provider}"` },
+          { status: 404 },
+        );
+      }
+      try {
+        const { catalog, notice } = await refreshCatalog(provider);
+        saveCatalog(catalog);
+        return Response.json({
+          ok: true,
+          catalog,
+          notice: notice ?? null,
+        });
+      } catch (err) {
+        return Response.json(
+          {
+            ok: false,
+            error: `refresh failed: ${(err as Error).message}`,
+          },
+          { status: 500 },
+        );
+      }
     }
 
     // ── /api/providers/profiles — accounts.conf CRUD ────────────────────
