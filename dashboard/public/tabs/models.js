@@ -141,7 +141,12 @@ export async function mount({ root: _root }) {
     }
   }
 
-  // Refresh once on load + every 5s while the Models tab is visible.
+  // v2.8.9 — refresh every 30s (was 5s) so we don't beat on LM Studio's
+  // /api/v0/models endpoint. The dashboard server caches that response for
+  // 30s anyway, so polling faster than the cache TTL just generates load
+  // without giving the operator any freshness benefit. If a faster update
+  // is needed after loading/unloading a model, the Refresh button hits
+  // POST /api/models/refresh which busts the cache immediately.
   refresh();
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) return;
@@ -151,7 +156,7 @@ export async function mount({ root: _root }) {
   pollTimer = setInterval(() => {
     const panel = document.getElementById("models-panel");
     if (panel && getComputedStyle(panel).display !== "none") refresh();
-  }, 5000);
+  }, 30000);
 }
 
 export function unmount() {
