@@ -1,10 +1,31 @@
-# HANDOFF.md — session 2026-05-14 night → 2026-05-15 morning
+# HANDOFF.md — session 2026-05-15 / 2026-05-16
 
 **Operator:** Jason Brashear
-**Hosts:** M3 Ultra (Tailscale `100.84.108.16`, LAN `192.168.100.98`) + local Mac (this machine)
-**Branch:** `main` @ `6e1ce0d` · **Repo:** webdevtodayjason/subctl · **Origin:** in sync
-**VERSION file:** `2.8.6` (untagged — last git tag is `v2.8.5`)
-**Next phase:** live testing + enhancement with operator (interactive debug/improve loop)
+**Hosts:** M3 Ultra (Tailscale `100.84.108.16`, LAN `192.168.100.98`) + local MacBook Pro (this machine, 128 GB)
+**Branch:** `main` @ `68058e4` (Evy broad eval rubric) · **Repo:** webdevtodayjason/subctl
+**VERSION file:** `2.8.6`
+**Next phase:** operator returns from mowing, runs broad eval rubric smoke test, decides whether to act on tool registry audit findings
+
+## Autonomous session summary (2026-05-16, while operator mowed)
+
+Operator authorized full autonomous mode at ~07:15. The following commits landed without per-step approval:
+
+| SHA | Title |
+|---|---|
+| `b9bd182` | fix(catalog): lazy-eval SUBCTL_CONFIG_DIR — prevents future test pollution |
+| `aa3046e` | perf(master): cache_prompt: true for LM Studio via pi-ai onPayload hook (~55% faster warm turns expected) |
+| `7ad012d` | feat(catalog): Phase 2d — live refresh for openai, google, mistral (graceful fallback to pi-ai bundle on missing keys) |
+| `68058e4` | docs(persona): broad eval rubric — 20 lightweight tests across 5 categories |
+
+Plus a tool-registry audit filed at `Obsidian Vault/subctl/Audits/2026-05-16 — Tool Registry Audit.md` documenting that 74 of 88 registered tools have never fired in the live transcript. No tool removals were made — operator judgment required.
+
+Pollution from my own smoke test (anthropic→claude-opus-4-7 in provider-defaults.json) was cleared. File now contains only the operator's actual choice: `openai-codex: gpt-5.5`.
+
+Two Telegram updates sent to @Semfreakbot during the autonomous window (msg_ids 65 and the final summary).
+
+---
+
+**Previous handoff context preserved below.**
 
 Every claim below is marked **[VERIFIED]** (observed/curl'd this session) or **[ASSUMED]** (likely true but not directly checked at handoff time). Don't trust [ASSUMED] without re-checking.
 
