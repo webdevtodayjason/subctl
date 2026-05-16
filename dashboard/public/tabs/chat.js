@@ -981,6 +981,51 @@ export async function mount({ root: _root }) {
     const bannerCompact = $("ctx-overflow-compact");
     if (bannerCompact) bannerCompact.addEventListener("click", () => runCompact("banner"));
 
+    // v2.8.9 — Restart master button. POSTs /api/master/restart which does
+    // launchctl kickstart -k. Master's SIGTERM handler saves the transcript
+    // before exit, so no chat state is lost. Polls /api/master/health until
+    // it returns ok so the operator sees feedback.
+    const restartBtn = $("chat-restart-master-btn");
+    if (restartBtn) {
+      restartBtn.addEventListener("click", async () => {
+        const orig = restartBtn.textContent;
+        restartBtn.disabled = true;
+        restartBtn.textContent = "restarting…";
+        try {
+          const r = await fetch("/api/master/restart", { method: "POST" });
+          const j = await r.json();
+          if (!j.ok) {
+            restartBtn.textContent = "failed";
+            await window.notice.error("Restart failed", j.error || "unknown");
+            setTimeout(() => { restartBtn.disabled = false; restartBtn.textContent = orig; }, 2500);
+            return;
+          }
+          // Poll /api/master/health until master is back. Max 30s.
+          const deadline = Date.now() + 30_000;
+          while (Date.now() < deadline) {
+            await new Promise((res) => setTimeout(res, 500));
+            try {
+              const hr = await fetch("/api/master/health");
+              const hj = await hr.json();
+              if (hj.ok && hj.uptime_s !== undefined && hj.uptime_s < 30) {
+                // Fresh boot detected (uptime < 30s means we hit the new instance).
+                restartBtn.textContent = "back ✓";
+                refreshContext();
+                setTimeout(() => { restartBtn.disabled = false; restartBtn.textContent = orig; }, 1500);
+                return;
+              }
+            } catch { /* master not back yet, keep polling */ }
+          }
+          restartBtn.textContent = "timed out";
+          setTimeout(() => { restartBtn.disabled = false; restartBtn.textContent = orig; }, 2500);
+        } catch (err) {
+          restartBtn.textContent = "error";
+          await window.notice.error("Restart error", String(err));
+          setTimeout(() => { restartBtn.disabled = false; restartBtn.textContent = orig; }, 2500);
+        }
+      });
+    }
+
     // New Chat button: archive the transcript and start fresh.
     if (newBtn) {
       newBtn.addEventListener("click", async () => {

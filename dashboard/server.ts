@@ -5639,6 +5639,43 @@ const server = Bun.serve({
       }
     }
 
+    // ── /api/master/restart — operator-triggered daemon kickstart ─────────
+    // v2.8.9 — added so the operator can restart the master daemon from the
+    // dashboard UI without dropping to a terminal. Uses launchctl kickstart
+    // -k which sends SIGTERM, waits ExitTimeOut, then SIGKILLs if needed.
+    // Master's shutdown handler saves the transcript before exit so no
+    // chat state is lost. Non-blocking: returns immediately with the
+    // kickstart command's exit code; the dashboard polls /health to know
+    // when master is back.
+    if (url.pathname === "/api/master/restart" && req.method === "POST") {
+      try {
+        const uid = process.getuid?.() ?? 0;
+        const r = spawnSync(
+          "launchctl",
+          ["kickstart", "-k", `gui/${uid}/com.subctl.master`],
+          { encoding: "utf8", timeout: 10_000 },
+        );
+        if (r.status !== 0) {
+          return Response.json(
+            {
+              ok: false,
+              error: `launchctl kickstart returned ${r.status}: ${r.stderr || r.stdout}`,
+            },
+            { status: 500 },
+          );
+        }
+        return Response.json({
+          ok: true,
+          message: "master kickstart issued — poll /api/master/health for return",
+        });
+      } catch (err) {
+        return Response.json(
+          { ok: false, error: (err as Error).message },
+          { status: 500 },
+        );
+      }
+    }
+
     // ── master proxy: /api/master/* → http://127.0.0.1:8788/* ────────────
     // The master daemon listens locally; the dashboard fronts it for the
     // browser. POST /api/master/chat forwards the JSON body. GET
