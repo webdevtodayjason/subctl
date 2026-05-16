@@ -7,12 +7,16 @@ _SUBCTL_ACCOUNTS_LOADED=1
 . "$(dirname "${BASH_SOURCE[0]}")/core.sh"
 
 # ── status table ─────────────────────────────────────────────────────────────
+# v2.8.9 — PROVIDER column widened from 9 → 13 chars so openai-codex (12) and
+# future longer provider names (azure-openai-responses, amazon-bedrock,
+# pi-coding-agent) don't push the rest of the row out of alignment. Width
+# stays modest — wide-screen terminals only.
 subctl_accounts_status_table() {
   subctl_ensure_config_dir
-  printf "%-20s %-9s %-12s %-32s %s\n" "ALIAS" "PROVIDER" "STATUS" "EMAIL" "CONFIG DIR"
-  printf "%-20s %-9s %-12s %-32s %s\n" \
+  printf "%-20s %-13s %-12s %-32s %s\n" "ALIAS" "PROVIDER" "STATUS" "EMAIL" "CONFIG DIR"
+  printf "%-20s %-13s %-12s %-32s %s\n" \
     "$(printf -- '─%.0s' {1..18})" \
-    "$(printf -- '─%.0s' {1..7})" \
+    "$(printf -- '─%.0s' {1..11})" \
     "$(printf -- '─%.0s' {1..10})" \
     "$(printf -- '─%.0s' {1..30})" \
     "$(printf -- '─%.0s' {1..30})"
@@ -25,7 +29,7 @@ subctl_accounts_status_table() {
       missing) status_colored="${C_DIM}not setup${C_RST}" ;;
       *)       status_colored="${C_DIM}$status${C_RST}" ;;
     esac
-    printf "%-20s %-9s %-21s %-32s %s\n" "$alias" "$provider" "$status_colored" "$email" "$cfg_dir"
+    printf "%-20s %-13s %-21s %-32s %s\n" "$alias" "$provider" "$status_colored" "$email" "$cfg_dir"
   done
 }
 
