@@ -878,10 +878,50 @@ function loadAgentTranscript(): AgentMessage[] {
   }
 }
 
+// Some local models (notably gemma-4-26b-a4b-it MLX 4-bit) emit malformed
+// reasoning-channel markers — `<|channel>thought\n<channel|>` — that leak
+// through LM Studio's chat template into the assistant text. Strip them
+// before persisting so the transcript stays readable across model swaps.
+const REASONING_CHANNEL_RE = /<\|?channel\|?>[\s\S]*?<\|?channel\|?>/g;
+function stripReasoningChannels(text: string): string {
+  return text.replace(REASONING_CHANNEL_RE, "");
+}
+function scrubMessageContent(messages: AgentMessage[]): AgentMessage[] {
+  return messages.map((m) => {
+    const content = (m as { content?: unknown }).content;
+    if (typeof content === "string") {
+      const cleaned = stripReasoningChannels(content);
+      return cleaned === content ? m : { ...m, content: cleaned };
+    }
+    if (Array.isArray(content)) {
+      let mutated = false;
+      const next = content.map((block) => {
+        if (block && typeof block === "object" && (block as { type?: string }).type === "text") {
+          const text = (block as { text?: string }).text;
+          if (typeof text === "string") {
+            const cleaned = stripReasoningChannels(text);
+            if (cleaned !== text) {
+              mutated = true;
+              return { ...block, text: cleaned };
+            }
+          }
+        }
+        return block;
+      });
+      return mutated ? { ...m, content: next } : m;
+    }
+    return m;
+  });
+}
+
 function saveAgentTranscript(messages: AgentMessage[]) {
   writeFileSync(
     AGENT_STATE_PATH,
-    JSON.stringify({ saved_at: new Date().toISOString(), messages }, null, 2),
+    JSON.stringify(
+      { saved_at: new Date().toISOString(), messages: scrubMessageContent(messages) },
+      null,
+      2,
+    ),
   );
 }
 
