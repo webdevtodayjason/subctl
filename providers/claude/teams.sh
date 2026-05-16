@@ -108,6 +108,25 @@ _provider_claude_drop_mcp_config() {
     fi
   fi
 
+  # ── TinyFish — HTTP transport with OAuth, copied from ~/.claude.json ─────
+  # `claude mcp add --transport http tinyfish https://agent.tinyfish.ai/mcp`
+  # writes a project-scoped entry under projects[<cwd>].mcpServers.tinyfish
+  # in ~/.claude.json. Workers spawn with a different CLAUDE_CONFIG_DIR, so
+  # we need to forward the entry. We check both the top-level mcpServers
+  # AND every projects[*].mcpServers.tinyfish in case the operator installed
+  # it project-scoped (default for `claude mcp add`). First-found wins.
+  if [[ -f "$HOME/.claude.json" ]]; then
+    local tinyfish_block
+    tinyfish_block=$(jq -c '
+      (.mcpServers.tinyfish // empty)
+      // (.projects | to_entries | map(.value.mcpServers.tinyfish) | map(select(.)) | first // empty)
+    ' "$HOME/.claude.json" 2>/dev/null)
+    if [[ -n "$tinyfish_block" && "$tinyfish_block" != "null" ]]; then
+      servers=$(jq -nc --argjson s "$servers" --argjson v "$tinyfish_block" \
+        '$s + {tinyfish: $v}')
+    fi
+  fi
+
   jq -n --argjson s "$servers" '{mcpServers: $s}' > "$mcp_file"
 }
 
