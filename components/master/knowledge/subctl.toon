@@ -1,8 +1,15 @@
-# subctl self-introspection knowledge base — v2.7.7
+# subctl self-introspection knowledge base — v2.8.9 (2026-05-16 update)
 # Format: TOON (https://github.com/toon-format/toon) for token efficiency.
 # Comments start with "#" and are extracted as section summaries by
 # components/master/tools/knowledge.ts. Top-level keys = sections.
-# This describes subctl AS OF v2.7.7. Phase-3 work marked "planned".
+#
+# Last refreshed 2026-05-16. Sections that drifted significantly since v2.7.7:
+#   - tools (Tier-2 lazy registration shipped; 88 registered → ~65 live for
+#     typical operator config)
+#   - http_routes (new /api/auth/openai-codex/*, /api/catalogs/*,
+#     /api/providers/<p>/default-model, /api/catalogs/<p>/models/<m>/enabled)
+#   - version_history (16+ releases since v2.7.7 — see repo CHANGELOG.md
+#     for the full ledger; this file summarises only)
 
 overview:
   # what subctl is, design philosophy, who it serves.
@@ -12,7 +19,7 @@ overview:
   major_series:
     "1.x": Multi-account subscription dispatch substrate (claude / openai / gemini / zai / minimax).
     "2.x": Agentic harness layered on the 1.x substrate — master daemon, dashboard, dev teams, memory, policy.
-  current_version: 2.7.7
+  current_version: 2.8.6 (untagged; VERSION file at 2.8.6 since 2026-05-15 with substantive 2.8.7-2.8.9 work landed but not yet tagged)
   primary_operator: Jason Brashear (MSP owner, 30+ years IT, Cisco CCIE / RHCE).
   serves:
     operator: One human in the loop via dashboard chat or Telegram.
@@ -122,6 +129,21 @@ tools:
   registry_introspection:
     - Call system_my_tools to enumerate the LIVE bound tool registry — that's the source of truth, not this file.
     - Late-binder pattern in tools/system.ts (bindToolRegistry) avoids a circular import with server.ts.
+  added_since_v2_7_7:
+    - tinyfish (3 tools, v2.7.16) — search + fetch + agent via TinyFish API.
+    - evy_memory (2 tools, v2.7.23) — Tier 3 conversational memory: evy_recall + evy_remember.
+    - evy_skills_author (4 tools, v2.8.1) — operator-reviewable skill drafts under ~/.local/state/subctl/evy-skills/.
+    - voice (2 tools, v2.8.0) — voice_render + voice_status (self-hosted TTS).
+    - watchdog (2 tools, v2.7.19) — list + kill stale watchdogs.
+    - linear (4 tools, v2.7.2) — list / search / create_issue / update_issue.
+    - team_docs (4 tools, v2.7.10) — write / read / list / log_decision under <project>/.subctl/docs/.
+    - knowledge (1 tool, v2.7.7) — system_subctl_knowledge (this very surface).
+  tier2_gating_v2_8_9:
+    - Implemented 2026-05-16 (commit 8e564fa). 7 families now register conditionally at master boot.
+    - Gate decisions logged at boot: [master] tool gates: gh=<on/off>, coderabbit=<>, context7=<>, linear=<>, tinyfish=<>, voice=<>, skillRouter=<>.
+    - Gated families: gh, coderabbit (binary presence), context7, linear, tinyfish (API key in env or secrets.json), voice (~/.config/subctl/voice.json enabled:true), skill_/evy_skills_ (~/.config/subctl/skill-router.enabled marker file).
+    - Always-on families (NOT gated): subctl_orch, system, memory, evy_memory, specforge, telegram, policy, web, vault, notify, team_docs, watchdog, schedule_, attachments, diag, knowledge, project, tier1_memory.
+    - Effect: registry shrinks from 88 → 65 for the typical operator (~4600 prompt-prefix tokens saved per turn).
 
 http_routes:
   # master + dashboard endpoints.
@@ -194,6 +216,20 @@ http_routes:
     POST,/api/notify/inbox/<id>/ack,Ack an operator-notify item.
     GET,/api/sessions/list,All Claude sessions across accounts (searchable).
     POST,/api/orchestration/spawn,Dashboard-driven orchestrator spawn (dev team).
+  dashboard_api_v2_8_9[12]{method,path,purpose}:
+    # Added 2026-05-16 — catalog + OAuth + default-model picker surfaces.
+    GET,/api/catalogs,List cached + uncached provider catalogs (model counts).
+    GET,/api/catalogs/<provider>,Single-provider catalog (cache or pi-ai bundle).
+    POST,/api/catalogs/<provider>/refresh,Live-fetch from provider's /v1/models — anthropic/openai/google/mistral/openrouter supported; falls back to pi-ai bundle for unkeyed providers.
+    POST,/api/catalogs/<provider>/models/<model_id>/enabled,Per-model enable/disable toggle (writes catalog file's models[].enabled).
+    GET,/api/providers/<provider>/default-model,Effective default_model + source (operator/shipped/none).
+    POST,/api/providers/<provider>/default-model,Set operator override (persists to ~/.config/subctl/provider-defaults.json).
+    DELETE,/api/providers/<provider>/default-model,Clear operator override (fall back to shipped default).
+    POST,/api/auth/openai-codex/<alias>/start,Begin device-code OAuth flow for an openai-codex alias from accounts.conf.
+    GET,/api/auth/openai-codex/<alias>/events,SSE stream emitting verification/progress/success/failed events for the in-flight flow.
+    POST,/api/auth/openai-codex/<alias>/cancel,Cancel in-flight device-code flow (trips AbortSignal in pollDeviceCode).
+    GET,/api/models,LM Studio /api/v0/models catalog via 30s server-side cache.
+    POST,/api/models/refresh,Force-bust the LM Studio model cache.
 
 config:
   # ~/.config/subctl/* layout + launchd plists. What each file does.
@@ -447,7 +483,19 @@ diagnostic_tools:
 
 version_history:
   # 2.x major milestones — operator-visible feature deltas, terse.
-  releases[18]{version,date,title}:
+  # Entries above v2.7.7 added 2026-05-16 (catch-up sweep on the knowledge bus).
+  releases[28]{version,date,title}:
+    2.8.9_pending,2026-05-16,Codex OAuth (CLI+dashboard) + cache_prompt + Tier-2 lazy tools (88→65) + tests + persona rewrite. 24+ commits this day.
+    2.8.6,2026-05-15,Dashboard decomposition complete (14 ES module tabs); install-worktree pattern (daemon decoupled from dev tree).
+    2.8.5,2026-05-13,Voice (VoxCPM2) + team templates + skills + policy UI + watchdog dashboard + 1Password integration + plan-approval workflow + CLI bootstrap + dynamic provider catalog (32 providers) + TinyFish agent + web terminal (ADR 0011 L2) + supervisor profiles + HMAC trust + notification channels + memory system (SQLite+FTS5).
+    2.7.36,2026-05-13,subctl CLI v2.7.36 expansion — team mgmt + config + profile subcommands.
+    2.7.28,2026-05-12,subctl CLI v2.7.28 bootstrap — status / logs / deploy / notif / memory.
+    2.7.23,2026-05-12,evy-memory family — Tier 3 conversational memory (evy_recall, evy_remember).
+    2.7.21,2026-05-12,Watchdog reconciliation + CLI PATH + tmux SSH + /health cleanup.
+    2.7.19,2026-05-12,Watchdog kill controls (watchdog_list / watchdog_kill).
+    2.7.18,2026-05-12,Supervisor profiles (chat / heavy) with hot-swap watching profiles.json.
+    2.7.16,2026-05-12,tinyfish family — search / fetch / agent via TinyFish API.
+    2.7.10,2026-05-12,team_docs family — write/read/list/log_decision under <project>/.subctl/docs/.
     2.7.7,2026-05-12,system_subctl_knowledge tool — TOON breakdown for master self-introspection.
     2.7.6,2026-05-12,subctl update — argent-style polish (status / --channel / --json / --yes / --timeout / friendly --help).
     2.7.5,2026-05-12,subctl update UX — version state up front + lockfile drift auto-stashes.
