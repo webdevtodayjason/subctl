@@ -84,6 +84,7 @@ import {
   backgroundTools,
   bindBackgroundToolRegistry,
 } from "./tools/background";
+import { knowledgeGraphTools } from "./tools/knowledge-graph";
 import { linearTools } from "./tools/linear";
 import { knowledgeTools } from "./tools/knowledge";
 import { teamDocsTools } from "./tools/team-docs";
@@ -484,8 +485,31 @@ const TOOL_GATES = {
   cognee:
     hasSecretOrEnv("COGNEE_AUTH_TOKEN", "cognee_auth_token") ||
     (process.env.COGNEE_SERVICE_URL ?? "").trim().length > 0,
-  // Memori gates on api key — Tier 3 substrate (task #8).
-  memori: hasSecretOrEnv("MEMORI_API_KEY", "memori_api_key"),
+  // Memori gates on api key OR a configured sidecar URL OR the launchd
+  // plist existing (operator ran `subctl memori install`). The
+  // operator's chosen "augmentation=off, pure local SQLite" path needs
+  // no API key, so token-only gating would mis-fire. Reachability is
+  // probed runtime per tool call (isMemoriAvailable in
+  // tools/evy-memory.ts) — this gate just tells the boot log whether
+  // we should look.
+  memori:
+    hasSecretOrEnv("MEMORI_API_KEY", "memori_api_key") ||
+    (process.env.MEMORI_SERVICE_URL ?? "").trim().length > 0 ||
+    (() => {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const fs = require("node:fs") as typeof import("node:fs");
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const path = require("node:path") as typeof import("node:path");
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const os = require("node:os") as typeof import("node:os");
+        return fs.existsSync(
+          path.join(os.homedir(), "Library", "LaunchAgents", "com.subctl.memori.plist"),
+        );
+      } catch {
+        return false;
+      }
+    })(),
   voice: isVoiceEnabled(),
   skillRouter: isSkillRouterEnabled(),
 };
@@ -606,6 +630,12 @@ export const toolRegistry: Record<string, InternalTool> = {
       v as unknown as InternalTool,
     ]),
   ),
+  // knowledge_graph_* — v2.8.10 Memory Init #4. Multi-hop reasoning
+  // over the Cognee graph. Tools gate themselves on Cognee
+  // reachability at call time so they're discoverable in the registry
+  // and surface a clean "configure Cognee" error when the service
+  // isn't running.
+  ...(spreadIf(TOOL_GATES.cognee, undefined, knowledgeGraphTools) as Record<string, InternalTool>),
   // linear_* — gated on LINEAR_API_KEY. Operator-funded Linear API access
   // configured 2026-05-12. v2.7.2.
   ...(spreadIf(TOOL_GATES.linear, undefined, linearTools) as Record<string, InternalTool>),
