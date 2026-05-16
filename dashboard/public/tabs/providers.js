@@ -447,6 +447,7 @@ export async function mount({ root: _root }) {
       } catch { /* best effort — radio just won't be filled */ }
       parts.push("<table style=\"width:100%;font-size:0.85em;border-collapse:collapse\">");
       parts.push("<thead><tr style=\"text-align:left;border-bottom:1px solid var(--border,#333)\">");
+      parts.push("<th style=\"padding:4px 4px 4px 0;width:28px\" title=\"enabled — appears in chat dropdown\">on</th>");
       parts.push("<th style=\"padding:4px 6px 4px 0;width:32px\" title=\"set as default for this provider\">★</th>");
       parts.push("<th style=\"padding:4px 8px 4px 0\">id</th>");
       parts.push("<th style=\"padding:4px 8px\">name</th>");
@@ -474,7 +475,9 @@ export async function mount({ root: _root }) {
         const starColor = isDefault && defaultSource === "operator"
           ? "color:#f5c518;font-weight:bold"
           : "color:var(--dim,#666)";
+        const enabledChecked = m.enabled !== false; // default true if absent
         parts.push(`<tr data-default-model-id="${escapeText(m.id)}">`);
+        parts.push(`<td style="padding:3px 4px 3px 0;text-align:center"><input type="checkbox" class="codex-model-enabled" data-provider="${escapeText(providerId)}" data-model="${escapeText(m.id)}" ${enabledChecked ? "checked" : ""} title="enable/disable this model" style="cursor:pointer" /></td>`);
         parts.push(`<td style="padding:3px 6px 3px 0;text-align:center"><button type="button" class="codex-default-radio" data-provider="${escapeText(providerId)}" data-model="${escapeText(m.id)}" data-is-default="${isDefault ? "1" : "0"}" data-source="${escapeText(defaultSource)}" title="${escapeText(starTitle)}" style="background:none;border:none;cursor:pointer;font-size:1.1em;padding:0;${starColor}">${starIcon}</button></td>`);
         parts.push(`<td style="padding:3px 8px 3px 0;font-family:monospace">${escapeText(m.id)}${reason}</td>`);
         parts.push(`<td style="padding:3px 8px">${escapeText(m.name || "")}</td>`);
@@ -484,6 +487,38 @@ export async function mount({ root: _root }) {
       parts.push("</tbody></table>");
     }
     body.innerHTML = parts.join("");
+    // v2.8.9 — wire per-model enabled checkbox handlers. Flip the model's
+    // enabled flag in the cached catalog file; the catalog re-renders below
+    // so the new state is reflected.
+    for (const cb of body.querySelectorAll(".codex-model-enabled")) {
+      cb.addEventListener("change", async (e) => {
+        const target = e.currentTarget;
+        const provider = target.getAttribute("data-provider");
+        const model = target.getAttribute("data-model");
+        const enabled = target.checked;
+        target.disabled = true;
+        try {
+          const res = await fetch(
+            `/api/catalogs/${encodeURIComponent(provider)}/models/${encodeURIComponent(model)}/enabled`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ enabled }),
+            },
+          );
+          const j = await res.json();
+          if (!j.ok) {
+            alert(`Toggle failed: ${j.error || "unknown"}`);
+            target.checked = !enabled; // revert visual
+          }
+        } catch (err) {
+          alert(`Toggle error: ${String(err)}`);
+          target.checked = !enabled;
+        } finally {
+          target.disabled = false;
+        }
+      });
+    }
     // v2.8.9 — wire star-click handlers AFTER innerHTML is set. Each click
     // toggles the operator override: if already-operator-default → DELETE
     // to clear; else POST to set as default.

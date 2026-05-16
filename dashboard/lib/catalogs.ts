@@ -190,6 +190,30 @@ export function isKnownProvider(provider: string): boolean {
   return isCatalogProvider(canonical) || listAllProviderIds().includes(canonical);
 }
 
+/** v2.8.9 — Flip the `enabled` flag for a specific model in a provider's
+ *  cached catalog. If no cache exists yet (operator never refreshed), we
+ *  materialise from the pi-ai bundle first, then flip + save. Returns the
+ *  post-write catalog so the caller can render the new state without an
+ *  extra GET round-trip.
+ *
+ *  Throws when the model id isn't in the provider's catalog (caller
+ *  surfaces as a 404 to the operator). */
+export function setModelEnabled(
+  provider: string,
+  modelId: string,
+  enabled: boolean,
+): CatalogFile {
+  const canonical = resolveProviderId(provider);
+  const current = loadCatalog(canonical) ?? fromPiAiBundle(canonical);
+  const idx = current.models.findIndex((m) => m.id === modelId);
+  if (idx === -1) {
+    throw new Error(`model "${modelId}" not found in ${canonical} catalog`);
+  }
+  current.models[idx] = { ...current.models[idx], enabled };
+  saveCatalog(current);
+  return current;
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Phase 2b — live refresh from provider /models endpoints
 // ──────────────────────────────────────────────────────────────────────────

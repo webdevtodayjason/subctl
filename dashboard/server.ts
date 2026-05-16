@@ -126,6 +126,7 @@ import {
   isKnownProvider,
   refreshCatalog,
   saveCatalog,
+  setModelEnabled,
 } from "./lib/catalogs.ts";
 import {
   completeCodexLogin,
@@ -4902,6 +4903,61 @@ const server = Bun.serve({
         );
       }
       return Response.json({ ok: true, catalog: getCatalog(provider) });
+    }
+    // POST /api/catalogs/<provider>/models/<model_id>/enabled
+    //   body: { enabled: boolean }
+    // Flips a per-model enabled flag in the cached catalog file. UI surface:
+    // checkbox in the Models panel. Effect: future consumers (chat dropdown
+    // filtering, default_model picker) can honour the flag. Today it's a
+    // persistence-only feature — no consumer code filters by it yet.
+    if (
+      url.pathname.startsWith("/api/catalogs/") &&
+      url.pathname.endsWith("/enabled") &&
+      req.method === "POST"
+    ) {
+      // Path: /api/catalogs/<provider>/models/<model_id>/enabled
+      const inner = url.pathname.slice("/api/catalogs/".length, url.pathname.length - "/enabled".length);
+      const [provider, modelsLit, ...modelIdParts] = inner.split("/");
+      if (!provider || modelsLit !== "models" || modelIdParts.length === 0) {
+        return Response.json(
+          {
+            ok: false,
+            error: "expected /api/catalogs/<provider>/models/<model_id>/enabled",
+          },
+          { status: 400 },
+        );
+      }
+      const modelId = modelIdParts.join("/"); // model ids can contain slashes (openrouter)
+      if (!isKnownProvider(provider)) {
+        return Response.json(
+          { ok: false, error: `unknown provider "${provider}"` },
+          { status: 404 },
+        );
+      }
+      let body: { enabled?: boolean };
+      try { body = await req.json(); }
+      catch { return Response.json({ ok: false, error: "invalid JSON body" }, { status: 400 }); }
+      if (typeof body.enabled !== "boolean") {
+        return Response.json(
+          { ok: false, error: "body.enabled must be a boolean" },
+          { status: 400 },
+        );
+      }
+      try {
+        const updated = setModelEnabled(provider, modelId, body.enabled);
+        const target = updated.models.find((m) => m.id === modelId);
+        return Response.json({
+          ok: true,
+          provider: updated.provider,
+          model: modelId,
+          enabled: target?.enabled ?? body.enabled,
+        });
+      } catch (err) {
+        return Response.json(
+          { ok: false, error: (err as Error).message },
+          { status: 404 },
+        );
+      }
     }
     if (
       url.pathname.startsWith("/api/catalogs/") &&
