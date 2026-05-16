@@ -29,6 +29,44 @@ import {
   recallEntries,
   type MemoryEntry,
 } from "../memory";
+import {
+  health as memoriHealth,
+  capture as memoriCapture,
+  recall as memoriRecall,
+} from "../memori-client";
+
+// v2.8.10 Memory Init #3 Phase 3c — Memori availability cache. Same
+// pattern as Tier 4 (Cognee). 30s TTL keeps tool-call latency sub-ms.
+interface _MemoriAvail {
+  available: boolean;
+  checked_at: number;
+}
+let _memoriCache: _MemoriAvail | null = null;
+const MEMORI_PROBE_TTL_MS = 30_000;
+
+async function isMemoriAvailable(): Promise<boolean> {
+  const now = Date.now();
+  if (_memoriCache && now - _memoriCache.checked_at < MEMORI_PROBE_TTL_MS) {
+    return _memoriCache.available;
+  }
+  try {
+    const h = await memoriHealth();
+    _memoriCache = { available: h.reachable, checked_at: now };
+    return h.reachable;
+  } catch {
+    _memoriCache = { available: false, checked_at: now };
+    return false;
+  }
+}
+
+/** Test seam — bypass the probe. Mirrors _setCogneeAvailableForTesting in memory.ts. */
+export function _setMemoriAvailableForTesting(v: boolean | null): void {
+  if (v === null) {
+    _memoriCache = null;
+    return;
+  }
+  _memoriCache = { available: v, checked_at: Date.now() };
+}
 
 // Cap tool-call results at a sane size — the supervisor doesn't need to
 // re-read 200 entries to answer "what did we discuss last week?". 25 is
@@ -116,9 +154,44 @@ const evy_recall = {
       ).toISOString();
     }
 
+    // v2.8.10 Memory Init #3 Phase 3c — try Memori sidecar first; fall
+    // back to the local evy-memory store on miss/unreachable. Both
+    // substrates have the same data thanks to dual-write in
+    // evy_remember (below), but Memori may surface different ranking
+    // when augmentation is on. Use `source` field so caller knows which
+    // answered.
+    if (await isMemoriAvailable()) {
+      const r = await memoriRecall({
+        entity_id: "jason",
+        process_id: team_id ? `evy-team:${team_id}` : "evy-master",
+        query: query ?? "",
+        top_k: limit,
+        since,
+      });
+      if (r.ok && r.data.hits.length > 0) {
+        return {
+          ok: true,
+          source: "memori" as const,
+          query: query ?? null,
+          count: r.data.hits.length,
+          items: r.data.hits.map((h) => ({
+            id: h.id,
+            ts: h.ts ?? null,
+            content: h.text,
+            score: h.score ?? null,
+            kind: h.kind ?? "conversation",
+            metadata: h.metadata ?? null,
+          })),
+        };
+      }
+      // Memori reachable but empty → still try evy-memory; gives a
+      // soft-landing during the migration window when entries pre-date
+      // dual-write.
+    }
     const items = recallEntries({ query, team_id, kind, since, limit });
     return {
       ok: true,
+      source: "evy-memory" as const,
       query: query ?? null,
       count: items.length,
       items: items.map(projectEntry),
@@ -177,8 +250,30 @@ const evy_remember = {
       content,
       team_id,
     });
+    // v2.8.10 Memory Init #3 Phase 3c — dual-write to Memori. Fire-
+    // and-forget: the local evy-memory record is canonical; Memori
+    // gets the same data for richer recall, but a Memori failure
+    // doesn't fail the tool call. The operator's data is always
+    // safe in the local store.
+    if (await isMemoriAvailable()) {
+      void memoriCapture({
+        entity_id: "jason",
+        process_id: team_id ? `evy-team:${team_id}` : "evy-master",
+        turn: {
+          assistant_text: content,
+          decisions: kind === "decision" ? [{ action: content, rationale: "evy_remember" }] : undefined,
+        },
+        metadata: { kind, source: "evy_remember" },
+      }).catch((err) => {
+        // Best-effort — log but don't surface.
+        console.error(
+          `[evy-memory] memori dual-write failed: ${(err as Error).message ?? err}`,
+        );
+      });
+    }
     return {
       ok: true,
+      source: "evy-memory" as const,
       entry: projectEntry(entry),
     };
   },
