@@ -185,7 +185,7 @@ describe("subctl status", () => {
       expect(r.code).toBe(0);
       const doc = JSON.parse(r.stdout);
       expect(doc.ok).toBe(true);
-      expect(doc.cli_version).toBe("2.7.36");
+      expect(doc.cli_version).toBe(CURRENT_VERSION);
       expect(doc.master.version).toBe("2.7.28");
       expect(doc.dashboard.version).toBe("2.7.28");
     } finally {

@@ -91,7 +91,13 @@ Usage:
                                       Token aggregation + API list-price cost
                                       vs subscription savings, per account.
   subctl whoami                       Current shell's CLAUDE_CONFIG_DIR account
-  subctl config edit                  Open accounts.conf
+
+  subctl config show [section]        Pretty-print config file content. Sections:
+                                      accounts | notify | providers | policy.
+                                      Secrets auto-redacted on output.
+  subctl config edit [section]        Open a config file in \$EDITOR
+  subctl config validate [section]    Validate JSON / TOML config files
+  subctl config path                  Print accounts.conf path
   subctl doctor                       Health check
   subctl install [--migrate]          Install / re-install (file copy + symlinks)
   subctl setup                        First-run setup / reconfigure (TUI menu)
@@ -114,16 +120,24 @@ Usage:
   subctl orch msg <name> <text>       Inject text into a session's pane
   subctl orch kill <name>             Kill a session
 
+  subctl team list                    List active orchestrator sessions
+                                      (via /api/orchestration)
+  subctl team kill <name>             Kill the tmux session + archive inbox
+  subctl team exec <name> <command...>
+                                      Inject a one-off message (HMAC-signed)
+  subctl team logs <name> [--tail N]  Tail a team's inbox JSONL
   subctl team report --team <t> --type <kind> --text "..."
                                       Append a status event to a dev-team
-                                      inbox so the master sees it (used by
-                                      team leads in dev-team tmux sessions)
+                                      inbox (used by team leads in dev-team
+                                      tmux sessions)
   subctl team inbox <team> [--tail N] Show recent events for a team
-  subctl team list                    List teams with an inbox
   subctl team spawn --template <name> --project <path> [--account <alias>]
                                       v2.8.0 — spawn a multi-developer team
-                                      from a TOML template (subctl templates
-                                      list to see available templates)
+                                      from a TOML template
+
+  subctl profile show                 Show active profile + supervisor
+  subctl profile switch <name>        Switch active profile (chat | heavy | ...)
+  subctl profile list                 List all profiles
 
   subctl skills import <repo>         Import a skills repo (e.g. mattpocock/skills)
                                       into the local catalog at
@@ -451,14 +465,13 @@ case "$cmd" in
     ;;
 
   config)
-    . "$SUBCTL_REPO_ROOT/lib/accounts.sh"
-    sub="${1:-show}"
-    case "$sub" in
-      edit)        subctl_accounts_edit ;;
-      show|"")     [[ -f "$SUBCTL_ACCOUNTS_CONF" ]] && cat "$SUBCTL_ACCOUNTS_CONF" || subctl_warn "no $SUBCTL_ACCOUNTS_CONF" ;;
-      path)        echo "$SUBCTL_ACCOUNTS_CONF" ;;
-      *) subctl_die "usage: subctl config [show|edit|path]" ;;
-    esac
+    # v2.7.36 dispatcher with secret-redacted multi-section viewer + validate.
+    # Implementation lives in lib/cli.sh subctl_cli_config (got orphaned in a
+    # v2.8.x merge; restored 2026-05-16). Legacy `subctl config edit` /
+    # `path` still work — subctl_cli_config forwards them to the older
+    # subctl_accounts_edit surface to preserve back-compat.
+    . "$SUBCTL_REPO_ROOT/lib/cli.sh"
+    subctl_cli_config "$@"
     ;;
 
   doctor)
@@ -650,8 +663,21 @@ case "$cmd" in
     ;;
 
   team)
-    . "$SUBCTL_REPO_ROOT/components/team/team.sh"
-    subctl_team "$@"
+    # v2.7.36 dispatcher: list / kill / exec / logs verbs route through
+    # the dashboard's /api/orchestration/* surface. report / inbox still
+    # forward to the legacy components/team/team.sh helpers for
+    # team-lead-from-inside-tmux usage (preserving back-compat). Got
+    # orphaned in a v2.8.x merge; restored 2026-05-16.
+    . "$SUBCTL_REPO_ROOT/lib/cli.sh"
+    subctl_cli_team "$@"
+    ;;
+
+  profile)
+    # v2.7.36 dispatcher: show / switch / list supervisor profiles.
+    # Implementation in lib/cli.sh subctl_cli_profile. Got orphaned in
+    # the same v2.8.x merge as `team` and `config`; restored 2026-05-16.
+    . "$SUBCTL_REPO_ROOT/lib/cli.sh"
+    subctl_cli_profile "$@"
     ;;
 
   skills)

@@ -193,8 +193,14 @@ describe("ensureModelLoaded — Bearer header injection (v2.7.4)", () => {
         "supervisor",
       );
       expect(result.ok).toBe(true);
-      // We expect 3 calls: probe, unload, load. Each must carry the bearer.
-      expect(calls.length).toBe(3);
+      // v2.8.9 — Asserts the invariant ("every LM Studio call carries the
+      // Bearer when the token is set") regardless of how many calls
+      // ensureModelLoaded ends up making. Previously this pinned 3 (probe
+      // + unload + load), but a34f72a changed ensureModelLoaded to RESPECT
+      // existing loads rather than unload+reload — the typical case now
+      // makes just 1 call (the probe). The Bearer header invariant we
+      // actually care about still holds for whatever calls do happen.
+      expect(calls.length).toBeGreaterThanOrEqual(1);
       for (const c of calls) {
         const headers = c.init.headers as Record<string, string> | undefined;
         expect(headers).toBeDefined();
@@ -222,7 +228,7 @@ describe("ensureModelLoaded — Bearer header injection (v2.7.4)", () => {
         "supervisor",
       );
       expect(result.ok).toBe(true);
-      expect(calls.length).toBe(3);
+      expect(calls.length).toBeGreaterThanOrEqual(1);
       for (const c of calls) {
         const headers = (c.init.headers ?? {}) as Record<string, string>;
         // The load + unload calls still carry Content-Type; we only
