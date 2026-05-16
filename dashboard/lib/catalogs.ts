@@ -32,9 +32,15 @@ import {
 } from "../../components/master/pi-ai-catalog.ts";
 
 const HOME = homedir();
-const CATALOGS_DIR = process.env.SUBCTL_CONFIG_DIR
-  ? join(process.env.SUBCTL_CONFIG_DIR, "catalogs")
-  : join(HOME, ".config", "subctl", "catalogs");
+// v2.8.9 — Lazy-eval SUBCTL_CONFIG_DIR like the pi-ai-catalog fix in b9bd182.
+// The previous eager const captured the env at module load, so tests that set
+// SUBCTL_CONFIG_DIR after import had their writes/reads land in the operator's
+// real ~/.config/subctl/. Lazy resolution makes per-test isolation viable.
+function catalogsDir(): string {
+  return process.env.SUBCTL_CONFIG_DIR
+    ? join(process.env.SUBCTL_CONFIG_DIR, "catalogs")
+    : join(HOME, ".config", "subctl", "catalogs");
+}
 
 export interface CatalogModel {
   id: string;
@@ -76,8 +82,8 @@ export interface CatalogFile {
 }
 
 function ensureCatalogsDir(): void {
-  if (!existsSync(CATALOGS_DIR)) {
-    mkdirSync(CATALOGS_DIR, { recursive: true });
+  if (!existsSync(catalogsDir())) {
+    mkdirSync(catalogsDir(), { recursive: true });
   }
 }
 
@@ -86,7 +92,7 @@ function catalogPath(provider: string): string {
   // naming convention); the resolveProviderId() pass also drops any
   // funny characters. Defensive: slash-strip just in case.
   const safe = provider.replace(/[^a-z0-9_-]/gi, "");
-  return join(CATALOGS_DIR, `${safe}.json`);
+  return join(catalogsDir(), `${safe}.json`);
 }
 
 /** Materialise pi-ai's bundled catalog for a provider into our CatalogFile
@@ -167,9 +173,9 @@ export function getCatalog(provider: string): CatalogFile {
 
 /** Enumerate every catalog file on disk. Used by GET /api/catalogs. */
 export function listCachedCatalogs(): CatalogFile[] {
-  if (!existsSync(CATALOGS_DIR)) return [];
+  if (!existsSync(catalogsDir())) return [];
   const out: CatalogFile[] = [];
-  for (const f of readdirSync(CATALOGS_DIR)) {
+  for (const f of readdirSync(catalogsDir())) {
     if (!f.endsWith(".json")) continue;
     const provider = f.replace(/\.json$/, "");
     const cat = loadCatalog(provider);
