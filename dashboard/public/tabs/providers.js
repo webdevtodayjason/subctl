@@ -298,12 +298,152 @@ export async function mount({ root: _root }) {
             body.appendChild(row);
           }
         }
+        // v2.8.8 Phase 2c — Models panel. Renders a header with model
+        // count, last-refreshed timestamp, and a Refresh button. The body
+        // is lazily filled on first expand to avoid hammering /api/catalogs
+        // for every card on initial render.
+        const modelsSection = renderModelsPanel(p.id, p.display);
+        body.appendChild(modelsSection);
         card.appendChild(body);
         return card;
       }));
     } catch (err) {
       list.innerHTML = "<div class=\"dim\">error: " + escapeText(String(err)) + "</div>";
     }
+  }
+
+  // Format a relative timestamp like "2m ago", "just now", "3h ago".
+  // Used by the Models panel header for the "last refreshed" badge.
+  function relativeTime(iso) {
+    if (!iso) return "never";
+    const t = new Date(iso).getTime();
+    if (!t) return "—";
+    const ageSec = Math.max(0, Math.floor((Date.now() - t) / 1000));
+    if (ageSec < 5) return "just now";
+    if (ageSec < 60) return ageSec + "s ago";
+    if (ageSec < 3600) return Math.floor(ageSec / 60) + "m ago";
+    if (ageSec < 86400) return Math.floor(ageSec / 3600) + "h ago";
+    return Math.floor(ageSec / 86400) + "d ago";
+  }
+
+  // Build the Models panel for a given provider. Returns a <details>
+  // element that the caller appends to the provider card. Lazy-fetches
+  // the catalog on first expand.
+  function renderModelsPanel(providerId, providerDisplay) {
+    const wrap = document.createElement("details");
+    wrap.className = "provider-card-models";
+    wrap.style.cssText = "margin-top:8px;padding-top:8px;border-top:1px solid var(--border,#333)";
+    const summary = document.createElement("summary");
+    summary.style.cssText = "cursor:pointer;font-size:0.9em;display:flex;align-items:center;gap:8px;list-style:none";
+    summary.innerHTML = "<span class=\"models-summary-label\">Models · click to load</span>";
+    const refreshBtn = document.createElement("button");
+    refreshBtn.type = "button";
+    refreshBtn.textContent = "↻ refresh";
+    refreshBtn.style.cssText = "margin-left:auto;font-size:0.85em;padding:2px 8px";
+    refreshBtn.addEventListener("click", async (e) => {
+      // Don't toggle the <details> when clicking the refresh button.
+      e.preventDefault();
+      e.stopPropagation();
+      refreshBtn.disabled = true;
+      refreshBtn.textContent = "refreshing…";
+      try {
+        const r = await fetch(`/api/catalogs/${providerId}/refresh`, { method: "POST" });
+        const j = await r.json();
+        if (!j.ok) {
+          refreshBtn.textContent = "failed";
+          alert(`Refresh failed: ${j.error || "unknown"}`);
+        } else {
+          renderModelsList(wrap, providerId, j.catalog, j.notice);
+          refreshBtn.textContent = "refreshed ✓";
+        }
+      } catch (err) {
+        refreshBtn.textContent = "error";
+        alert(`Refresh error: ${String(err)}`);
+      } finally {
+        setTimeout(() => { refreshBtn.disabled = false; refreshBtn.textContent = "↻ refresh"; }, 2000);
+      }
+    });
+    summary.appendChild(refreshBtn);
+    wrap.appendChild(summary);
+    // Lazy load on first expand. Subsequent toggles use the cached DOM.
+    let loaded = false;
+    wrap.addEventListener("toggle", async () => {
+      if (!wrap.open || loaded) return;
+      loaded = true;
+      try {
+        const r = await fetch(`/api/catalogs/${providerId}`);
+        const j = await r.json();
+        if (!j.ok) {
+          renderModelsListError(wrap, j.error || "unknown");
+          return;
+        }
+        renderModelsList(wrap, providerId, j.catalog, null);
+      } catch (err) {
+        renderModelsListError(wrap, String(err));
+      }
+    });
+    return wrap;
+  }
+
+  function renderModelsListError(wrap, msg) {
+    let body = wrap.querySelector(".models-body");
+    if (!body) {
+      body = document.createElement("div");
+      body.className = "models-body";
+      body.style.cssText = "padding:8px 0";
+      wrap.appendChild(body);
+    }
+    body.innerHTML = `<div class="dim small">error: ${escapeText(msg)}</div>`;
+  }
+
+  function renderModelsList(wrap, providerId, catalog, notice) {
+    // Update the summary label with model count + freshness.
+    const label = wrap.querySelector(".models-summary-label");
+    if (label) {
+      const src = catalog.source === "live-fetch" ? "live" : "bundled";
+      label.textContent = `Models (${catalog.models.length}) · ${src} · ${relativeTime(catalog.fetched_at)}`;
+    }
+    // Build or replace the body section.
+    let body = wrap.querySelector(".models-body");
+    if (!body) {
+      body = document.createElement("div");
+      body.className = "models-body";
+      body.style.cssText = "padding:8px 0";
+      wrap.appendChild(body);
+    }
+    const parts = [];
+    if (notice) {
+      parts.push(`<div class="dim small" style="padding:4px 0;font-style:italic">${escapeText(notice)}</div>`);
+    }
+    if (!catalog.models.length) {
+      parts.push(`<div class="dim small">no models in catalog</div>`);
+    } else {
+      parts.push("<table style=\"width:100%;font-size:0.85em;border-collapse:collapse\">");
+      parts.push("<thead><tr style=\"text-align:left;border-bottom:1px solid var(--border,#333)\">");
+      parts.push("<th style=\"padding:4px 8px 4px 0\">id</th>");
+      parts.push("<th style=\"padding:4px 8px\">name</th>");
+      parts.push("<th style=\"padding:4px 8px;text-align:right\">ctx</th>");
+      parts.push("<th style=\"padding:4px 0 4px 8px;text-align:right\">$/M in/out</th>");
+      parts.push("</tr></thead><tbody>");
+      // Sort: reasoning models first (often the picks), then by id.
+      const sorted = catalog.models.slice().sort((a, b) => {
+        if (a.reasoning && !b.reasoning) return -1;
+        if (!a.reasoning && b.reasoning) return 1;
+        return (a.id || "").localeCompare(b.id || "");
+      });
+      for (const m of sorted) {
+        const ctx = m.context_window ? m.context_window.toLocaleString() : "—";
+        const costIn = m.cost?.input != null ? `$${m.cost.input.toFixed(2)}` : "—";
+        const costOut = m.cost?.output != null ? `$${m.cost.output.toFixed(2)}` : "—";
+        const reason = m.reasoning ? " 🧠" : "";
+        parts.push(`<tr><td style="padding:3px 8px 3px 0;font-family:monospace">${escapeText(m.id)}${reason}</td>`);
+        parts.push(`<td style="padding:3px 8px">${escapeText(m.name || "")}</td>`);
+        parts.push(`<td style="padding:3px 8px;text-align:right">${ctx}</td>`);
+        parts.push(`<td style="padding:3px 0 3px 8px;text-align:right">${costIn} / ${costOut}</td></tr>`);
+      }
+      parts.push("</tbody></table>");
+    }
+    body.innerHTML = parts.join("");
   }
 
   refresh();

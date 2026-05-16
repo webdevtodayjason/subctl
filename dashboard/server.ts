@@ -5065,17 +5065,30 @@ const server = Bun.serve({
         const prev = `${cfg.models.supervisor.provider}/${cfg.models.supervisor.model}`;
         cfg.models.supervisor.model = modelId;
         if (newProvider) cfg.models.supervisor.provider = newProvider;
-        if (newHost) cfg.models.supervisor.host = newHost;
-        else if (newProvider && newProvider !== "lmstudio") {
-          // Cloud provider switch — clear the local host so the openai-completions
-          // path doesn't try to hit localhost:1234 for an Anthropic / Codex call.
-          delete cfg.models.supervisor.host;
-        }
+        // v2.8.8 hot fix — host handling on provider switch:
+        //   1. explicit body.host wins (operator override)
+        //   2. cloud provider → delete host (pi-ai uses canonical baseUrl)
+        //   3. local provider with no host → restore default localhost URL
+        //      (without this, a cloud→local switch left host=undefined, so
+        //      master fell back to pi-ai's bundled baseUrl which isn't local).
+        const DEFAULT_LOCAL_HOST = "http://localhost:1234/v1";
+        const applyHost = (
+          slot: { host?: string },
+        ): void => {
+          if (newHost) {
+            slot.host = newHost;
+          } else if (newProvider && LOCAL_PROVIDER_IDS.has(newProvider)) {
+            slot.host = DEFAULT_LOCAL_HOST;
+          } else if (newProvider) {
+            delete slot.host;
+          }
+          // No newProvider passed: leave host as-is.
+        };
+        applyHost(cfg.models.supervisor);
         if (cfg.models.reviewer) {
           cfg.models.reviewer.model = modelId;
           if (newProvider) cfg.models.reviewer.provider = newProvider;
-          if (newHost) cfg.models.reviewer.host = newHost;
-          else if (newProvider && newProvider !== "lmstudio") delete cfg.models.reviewer.host;
+          applyHost(cfg.models.reviewer);
         }
         (cfg as any)._comment = `models.supervisor switched via /api/master/supervisor at ${new Date().toISOString()} (was: ${prev})`;
         const { writeFileSync } = require("node:fs") as typeof import("node:fs");
