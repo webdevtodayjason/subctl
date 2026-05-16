@@ -305,6 +305,143 @@ async function refreshOpenRouter(): Promise<CatalogFile> {
   };
 }
 
+/** Live-fetch openai's model catalog. Requires OPENAI_API_KEY env or
+ *  `openai_api_key` in secrets.json. Returns null when no key, caller
+ *  falls back to pi-ai bundle. */
+async function refreshOpenAI(): Promise<CatalogFile | null> {
+  const apiKey = readSecret("OPENAI_API_KEY", "openai_api_key");
+  if (!apiKey) return null;
+  const url = "https://api.openai.com/v1/models";
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
+  if (!res.ok) {
+    throw new Error(`openai /v1/models returned HTTP ${res.status}`);
+  }
+  const j = (await res.json()) as { data?: Array<{ id?: string; owned_by?: string; created?: number }> };
+  const live = j.data ?? [];
+  const bundle = fromPiAiBundle("openai").models;
+  const byId = new Map(bundle.map((m) => [m.id, m]));
+  const models: CatalogModel[] = live.map((m) => {
+    const id = String(m.id ?? "");
+    const bundled = byId.get(id);
+    return {
+      id,
+      name: bundled?.name ?? id,
+      api: bundled?.api ?? "openai-responses",
+      base_url: bundled?.base_url ?? "https://api.openai.com/v1",
+      context_window: bundled?.context_window,
+      max_tokens: bundled?.max_tokens,
+      input: bundled?.input,
+      reasoning: bundled?.reasoning,
+      cost: bundled?.cost,
+      enabled: true,
+    };
+  });
+  return {
+    provider: "openai",
+    fetched_at: new Date().toISOString(),
+    source: "live-fetch",
+    source_url: url,
+    models,
+  };
+}
+
+/** Live-fetch google's model catalog. Requires GEMINI_API_KEY env or
+ *  `gemini_api_key` in secrets.json. Note: Google's models list endpoint
+ *  takes the API key as a query parameter, not a header. */
+async function refreshGoogle(): Promise<CatalogFile | null> {
+  const apiKey = readSecret("GEMINI_API_KEY", "gemini_api_key");
+  if (!apiKey) return null;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`google /v1beta/models returned HTTP ${res.status}`);
+  }
+  const j = (await res.json()) as {
+    models?: Array<{
+      name?: string;
+      displayName?: string;
+      description?: string;
+      inputTokenLimit?: number;
+      outputTokenLimit?: number;
+      supportedGenerationMethods?: string[];
+    }>;
+  };
+  const live = j.models ?? [];
+  const bundle = fromPiAiBundle("google").models;
+  const byId = new Map(bundle.map((m) => [m.id, m]));
+  // Google's `name` looks like "models/gemini-1.5-pro" — strip the prefix
+  // for the canonical id, matching pi-ai's convention.
+  const models: CatalogModel[] = live
+    .filter((m) => m.supportedGenerationMethods?.includes("generateContent"))
+    .map((m) => {
+      const fullName = m.name ?? "";
+      const id = fullName.startsWith("models/") ? fullName.slice("models/".length) : fullName;
+      const bundled = byId.get(id);
+      return {
+        id,
+        name: m.displayName ?? bundled?.name ?? id,
+        api: bundled?.api ?? "google-generative-ai",
+        base_url: bundled?.base_url ?? "https://generativelanguage.googleapis.com",
+        context_window: m.inputTokenLimit ?? bundled?.context_window,
+        max_tokens: m.outputTokenLimit ?? bundled?.max_tokens,
+        input: bundled?.input,
+        reasoning: bundled?.reasoning,
+        cost: bundled?.cost,
+        enabled: true,
+      };
+    });
+  return {
+    provider: "google",
+    fetched_at: new Date().toISOString(),
+    source: "live-fetch",
+    source_url: url.replace(/key=[^&]*/, "key=***redacted***"),
+    models,
+  };
+}
+
+/** Live-fetch mistral's model catalog. Requires MISTRAL_API_KEY env or
+ *  `mistral_api_key` in secrets.json. */
+async function refreshMistral(): Promise<CatalogFile | null> {
+  const apiKey = readSecret("MISTRAL_API_KEY", "mistral_api_key");
+  if (!apiKey) return null;
+  const url = "https://api.mistral.ai/v1/models";
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
+  if (!res.ok) {
+    throw new Error(`mistral /v1/models returned HTTP ${res.status}`);
+  }
+  const j = (await res.json()) as { data?: Array<{ id?: string; max_context_length?: number }> };
+  const live = j.data ?? [];
+  const bundle = fromPiAiBundle("mistral").models;
+  const byId = new Map(bundle.map((m) => [m.id, m]));
+  const models: CatalogModel[] = live.map((m) => {
+    const id = String(m.id ?? "");
+    const bundled = byId.get(id);
+    return {
+      id,
+      name: bundled?.name ?? id,
+      api: bundled?.api ?? "mistral-conversations",
+      base_url: bundled?.base_url ?? "https://api.mistral.ai/v1",
+      context_window: m.max_context_length ?? bundled?.context_window,
+      max_tokens: bundled?.max_tokens,
+      input: bundled?.input,
+      reasoning: bundled?.reasoning,
+      cost: bundled?.cost,
+      enabled: true,
+    };
+  });
+  return {
+    provider: "mistral",
+    fetched_at: new Date().toISOString(),
+    source: "live-fetch",
+    source_url: url,
+    models,
+  };
+}
+
 /** Refresh a provider's catalog. Tries the live-fetch path first; falls
  *  back to a fresh derivation from pi-ai's bundle on auth failure (return
  *  null from the live helper) or fetch error (caller catches). The caller
@@ -326,6 +463,30 @@ export async function refreshCatalog(provider: string): Promise<{
     }
     if (canonical === "openrouter") {
       return { catalog: await refreshOpenRouter() };
+    }
+    if (canonical === "openai") {
+      const live = await refreshOpenAI();
+      if (live) return { catalog: live };
+      return {
+        catalog: fromPiAiBundle("openai"),
+        notice: "OPENAI_API_KEY not configured — falling back to pi-ai bundle",
+      };
+    }
+    if (canonical === "google") {
+      const live = await refreshGoogle();
+      if (live) return { catalog: live };
+      return {
+        catalog: fromPiAiBundle("google"),
+        notice: "GEMINI_API_KEY not configured — falling back to pi-ai bundle",
+      };
+    }
+    if (canonical === "mistral") {
+      const live = await refreshMistral();
+      if (live) return { catalog: live };
+      return {
+        catalog: fromPiAiBundle("mistral"),
+        notice: "MISTRAL_API_KEY not configured — falling back to pi-ai bundle",
+      };
     }
   } catch (err) {
     return {
