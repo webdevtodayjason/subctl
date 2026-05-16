@@ -43,9 +43,20 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import {
+  atomicWriteAuthFile,
+  isAccessTokenExpiring,
+  refreshCodexTokens,
+  REFRESH_SKEW_SECONDS,
+} from "./codex-oauth.ts";
 
 const ACCOUNTS_CONF_DEFAULT = join(homedir(), ".config", "subctl", "accounts.conf");
 const FALLBACK_CODEX_HOME = join(homedir(), ".codex");
+
+// In-flight refresh tracker. Module-scope so multiple chat turns within
+// the 5-min skew window don't each kick a refresh. Keyed by configDir
+// (absolute path) so distinct accounts each get their own slot.
+const _inFlightRefresh: Map<string, Promise<void>> = new Map();
 
 // Pi-ai parses this JWT claim path to extract the chatgpt_account_id needed
 // for the `chatgpt-account-id` header. We mirror it here for the expiry log
@@ -280,22 +291,105 @@ export function getCodexAccessToken(opts: ResolveOptions = {}): string | undefin
   }
   const now = opts.now ?? Math.floor(Date.now() / 1000);
   if (typeof payload.exp === "number" && payload.exp <= now) {
-    console.error(
-      `[codex-auth] tokens.access_token in ${configDir} is EXPIRED ` +
-        `(exp=${payload.exp}, now=${now}) — OAuth refresh is not yet wired; ` +
-        "operator must run `codex login` to mint a fresh token. " +
-        "Chat turn will fail until then.",
-    );
+    // v2.8.9 — Token is already past exp. We can't use it for THIS turn
+    // (pi-ai's getApiKey is sync), but if we have a refresh_token, kick a
+    // background refresh anyway so the operator's NEXT chat turn picks up
+    // a freshly-minted token without them having to re-run any login flow.
+    const refreshToken = auth.tokens?.refresh_token;
+    if (refreshToken && !_inFlightRefresh.has(configDir)) {
+      const cd = configDir;
+      console.error(
+        `[codex-auth] tokens.access_token in ${cd} is EXPIRED ` +
+          `(exp=${payload.exp}, now=${now}) — kicking background refresh; ` +
+          "current turn fails, retry your next message after a few seconds.",
+      );
+      const job = (async () => {
+        try {
+          const fresh = await refreshCodexTokens(refreshToken);
+          const path = join(cd, "auth.json");
+          const current = readCodexAuth(cd) ?? ({} as CodexAuthJson);
+          const updated: CodexAuthJson = {
+            ...current,
+            tokens: {
+              ...(current.tokens ?? {}),
+              access_token: fresh.access_token,
+              refresh_token: fresh.refresh_token,
+            },
+            last_refresh: new Date().toISOString(),
+          };
+          atomicWriteAuthFile(path, updated);
+          console.error(`[codex-auth] post-expiry refresh succeeded for ${cd}`);
+        } catch (err) {
+          console.error(
+            `[codex-auth] post-expiry refresh FAILED for ${cd}: ${(err as Error).message} — ` +
+              "operator must re-run `subctl auth openai-codex <alias>` (or `codex login` on a configured profile)",
+          );
+        } finally {
+          _inFlightRefresh.delete(cd);
+        }
+      })();
+      _inFlightRefresh.set(configDir, job);
+    } else {
+      console.error(
+        `[codex-auth] tokens.access_token in ${configDir} is EXPIRED ` +
+          `(exp=${payload.exp}, now=${now}) and ${refreshToken ? "refresh is already in flight" : "no refresh_token in auth.json"} — ` +
+          "chat turn will fail until operator runs login.",
+      );
+    }
     return undefined;
   }
-  // Soft-warn 5 min before expiry so the operator sees it coming. Doesn't
-  // block — the token is still valid.
-  if (typeof payload.exp === "number" && payload.exp - now < 300) {
+  // v2.8.9 — Background refresh-on-near-expiry. When the access_token is
+  // within REFRESH_SKEW_SECONDS of exp AND we have a refresh_token AND no
+  // refresh is already in flight for this configDir, kick off a refresh in
+  // the background. Return the still-valid current token for THIS turn;
+  // next turn picks up the rotated token off disk.
+  //
+  // Synchronous-return contract is intentional: pi-agent-core's getApiKey
+  // hook is sync, so we can't await the refresh inline. The 5-min skew
+  // (REFRESH_SKEW_SECONDS) gives the background fetch a comfortable window
+  // to land before the operator's current token actually expires.
+  if (
+    typeof payload.exp === "number" &&
+    payload.exp - now < REFRESH_SKEW_SECONDS &&
+    auth.tokens?.refresh_token &&
+    !_inFlightRefresh.has(configDir)
+  ) {
+    const refreshToken = auth.tokens.refresh_token;
+    const cd = configDir;
     console.error(
-      `[codex-auth] tokens.access_token in ${configDir} expires in ` +
-        `${payload.exp - now}s — refresh will be needed soon ` +
-        "(refresh-on-near-expiry tracked as follow-up)",
+      `[codex-auth] token in ${cd} expires in ${payload.exp - now}s — ` +
+        "kicking background refresh (current turn uses still-valid token)",
     );
+    const job = (async () => {
+      try {
+        const fresh = await refreshCodexTokens(refreshToken);
+        // Read-modify-write the auth.json. Re-read in case another process
+        // touched it (unlikely but cheap).
+        const path = join(cd, "auth.json");
+        const current = readCodexAuth(cd) ?? ({} as CodexAuthJson);
+        const updated: CodexAuthJson = {
+          ...current,
+          tokens: {
+            ...(current.tokens ?? {}),
+            access_token: fresh.access_token,
+            refresh_token: fresh.refresh_token,
+          },
+          last_refresh: new Date().toISOString(),
+        };
+        atomicWriteAuthFile(path, updated);
+        console.error(
+          `[codex-auth] refresh succeeded for ${cd} — next turn uses new token`,
+        );
+      } catch (err) {
+        console.error(
+          `[codex-auth] background refresh FAILED for ${cd}: ${(err as Error).message} — ` +
+            "current token still valid until exp; operator may need to re-run login if it actually expires",
+        );
+      } finally {
+        _inFlightRefresh.delete(cd);
+      }
+    })();
+    _inFlightRefresh.set(configDir, job);
   }
   console.error(
     `[codex-auth] using access_token from ${configDir} ` +
