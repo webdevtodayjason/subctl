@@ -453,10 +453,11 @@ subctl_cli_voice() {
   case "$sub" in
     -h|--help)
       cat <<EOF
-subctl voice [status | test | render <text> | on | off]
+subctl voice [status | test | render <text> | on | off | install [backend] | uninstall]
 
   Quick sanity surface for the v2.8.0 voice layer. Routes through the
-  dashboard's /api/voice/* proxy.
+  dashboard's /api/voice/* proxy for read/render verbs; install/uninstall
+  manage the local com.subctl.tts launchd service directly.
 
   Verbs:
     status              voice.json + TTS server reachability (default)
@@ -464,6 +465,9 @@ subctl voice [status | test | render <text> | on | off]
     render <text>       render <text> and print the audio URL + duration
     on                  enable voice (voice.json#enabled=true, hot-reload)
     off                 disable voice
+    install [backend]   install + load the TTS launchd service. backend ∈
+                        {mock, voxcpm, kokoro, system}. Defaults to mock.
+    uninstall           unload + remove the TTS launchd service.
 EOF
       return 0 ;;
     status|"")
@@ -529,8 +533,20 @@ EOF
         fi
       fi
       ;;
+    install)
+      # v2.8.10 — restore install dispatch lost in the monolith→modules
+      # refactor (subctl_voice_install lives in lib/voice.sh; the
+      # dispatcher in lib/cli.sh just wasn't wiring it). Installs the
+      # com.subctl.tts launchd service that masters expects at :8789.
+      . "$SUBCTL_REPO_ROOT/lib/voice.sh"
+      subctl_voice_install "${1:-mock}"
+      ;;
+    uninstall)
+      . "$SUBCTL_REPO_ROOT/lib/voice.sh"
+      subctl_voice_disable
+      ;;
     *)
-      subctl_err "unknown voice verb: $sub (try: status | test | render | on | off)"
+      subctl_err "unknown voice verb: $sub (try: status | test | render | on | off | install | uninstall)"
       return 1
       ;;
   esac
