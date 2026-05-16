@@ -432,8 +432,22 @@ export async function mount({ root: _root }) {
     if (!catalog.models.length) {
       parts.push(`<div class="dim small">no models in catalog</div>`);
     } else {
+      // v2.8.9 — fetch the effective default + source so we can render
+      // the ★ radio next to the right model. /api/catalogs/<p> doesn't
+      // include this today; hit the dedicated endpoint instead.
+      let currentDefault = null;
+      let defaultSource = "none";
+      try {
+        const dmRes = await fetch(`/api/providers/${encodeURIComponent(providerId)}/default-model`);
+        const dmJson = await dmRes.json();
+        if (dmJson.ok) {
+          currentDefault = dmJson.default_model;
+          defaultSource = dmJson.source;
+        }
+      } catch { /* best effort — radio just won't be filled */ }
       parts.push("<table style=\"width:100%;font-size:0.85em;border-collapse:collapse\">");
       parts.push("<thead><tr style=\"text-align:left;border-bottom:1px solid var(--border,#333)\">");
+      parts.push("<th style=\"padding:4px 6px 4px 0;width:32px\" title=\"set as default for this provider\">★</th>");
       parts.push("<th style=\"padding:4px 8px 4px 0\">id</th>");
       parts.push("<th style=\"padding:4px 8px\">name</th>");
       parts.push("<th style=\"padding:4px 8px;text-align:right\">ctx</th>");
@@ -450,7 +464,19 @@ export async function mount({ root: _root }) {
         const costIn = m.cost?.input != null ? `$${m.cost.input.toFixed(2)}` : "—";
         const costOut = m.cost?.output != null ? `$${m.cost.output.toFixed(2)}` : "—";
         const reason = m.reasoning ? " 🧠" : "";
-        parts.push(`<tr><td style="padding:3px 8px 3px 0;font-family:monospace">${escapeText(m.id)}${reason}</td>`);
+        const isDefault = currentDefault === m.id;
+        const starIcon = isDefault
+          ? (defaultSource === "operator" ? "★" : "☆")
+          : "·";
+        const starTitle = isDefault
+          ? (defaultSource === "operator" ? "operator-chosen default — click to clear" : "shipped default (no operator override) — click to lock in")
+          : "click to set as this provider's default";
+        const starColor = isDefault && defaultSource === "operator"
+          ? "color:#f5c518;font-weight:bold"
+          : "color:var(--dim,#666)";
+        parts.push(`<tr data-default-model-id="${escapeText(m.id)}">`);
+        parts.push(`<td style="padding:3px 6px 3px 0;text-align:center"><button type="button" class="codex-default-radio" data-provider="${escapeText(providerId)}" data-model="${escapeText(m.id)}" data-is-default="${isDefault ? "1" : "0"}" data-source="${escapeText(defaultSource)}" title="${escapeText(starTitle)}" style="background:none;border:none;cursor:pointer;font-size:1.1em;padding:0;${starColor}">${starIcon}</button></td>`);
+        parts.push(`<td style="padding:3px 8px 3px 0;font-family:monospace">${escapeText(m.id)}${reason}</td>`);
         parts.push(`<td style="padding:3px 8px">${escapeText(m.name || "")}</td>`);
         parts.push(`<td style="padding:3px 8px;text-align:right">${ctx}</td>`);
         parts.push(`<td style="padding:3px 0 3px 8px;text-align:right">${costIn} / ${costOut}</td></tr>`);
@@ -458,6 +484,52 @@ export async function mount({ root: _root }) {
       parts.push("</tbody></table>");
     }
     body.innerHTML = parts.join("");
+    // v2.8.9 — wire star-click handlers AFTER innerHTML is set. Each click
+    // toggles the operator override: if already-operator-default → DELETE
+    // to clear; else POST to set as default.
+    for (const btn of body.querySelectorAll(".codex-default-radio")) {
+      btn.addEventListener("click", async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const targetBtn = e.currentTarget;
+        const provider = targetBtn.getAttribute("data-provider");
+        const model = targetBtn.getAttribute("data-model");
+        const isOperatorDefault = targetBtn.getAttribute("data-is-default") === "1"
+          && targetBtn.getAttribute("data-source") === "operator";
+        const original = targetBtn.textContent;
+        targetBtn.disabled = true;
+        targetBtn.textContent = "…";
+        try {
+          let res;
+          if (isOperatorDefault) {
+            res = await fetch(`/api/providers/${encodeURIComponent(provider)}/default-model`, { method: "DELETE" });
+          } else {
+            res = await fetch(`/api/providers/${encodeURIComponent(provider)}/default-model`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ model }),
+            });
+          }
+          const j = await res.json();
+          if (!j.ok) {
+            alert(`Default-model update failed: ${j.error || "unknown"}`);
+            targetBtn.textContent = original;
+            return;
+          }
+          // Re-render the table by re-fetching the catalog.
+          const catRes = await fetch(`/api/catalogs/${encodeURIComponent(providerId)}`);
+          const catJson = await catRes.json();
+          if (catJson.ok) {
+            renderModelsList(wrap, providerId, catJson.catalog, null);
+          }
+        } catch (err) {
+          alert(`Default-model update error: ${String(err)}`);
+          targetBtn.textContent = original;
+        } finally {
+          targetBtn.disabled = false;
+        }
+      });
+    }
   }
 
   // v2.8.9 — Codex OAuth modal. Opens when the operator clicks "sign in"

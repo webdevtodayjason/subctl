@@ -114,6 +114,9 @@ import {
   legacyAliasFor,
   SUBCTL_TO_PI_AI,
   getDefaultModel,
+  getDefaultModelWithSource,
+  setProviderDefault,
+  clearProviderDefault,
   isObviouslyInvalidModel,
   type CatalogProvider,
 } from "../components/master/pi-ai-catalog.ts";
@@ -4810,11 +4813,13 @@ const server = Bun.serve({
           auth_method: entry.auth_method,
           model_count: entry.model_count,
           available: entry.available,
-          // v2.8.8 Phase 1a — surface the shipped default model so the chat
-          // tab dropdown can pick a sensible model when the operator chooses
-          // a provider without specifying one (replacing the "?" bug that
-          // wrote model="?" into providers.json on 2026-05-15).
-          default_model: entry.default_model ?? null,
+          // v2.8.8 Phase 1a — surface the EFFECTIVE default model (operator
+          // override if set, else shipped fallback) plus its source so the
+          // UI can render "★ operator" vs "shipped" badges. The default_model
+          // field on `entry` is the shipped value only; the override lives
+          // in ~/.config/subctl/provider-defaults.json.
+          default_model: getDefaultModel(entry.id) ?? null,
+          default_model_source: getDefaultModelWithSource(entry.id).source,
           // Surface a legacy alias when one exists so the UI can render
           // `subctl auth <legacy> <alias>` correctly without having to
           // know the alias table.
@@ -4941,6 +4946,80 @@ const server = Bun.serve({
           { status: 500 },
         );
       }
+    }
+
+    // ── /api/providers/<provider>/default-model — v2.8.9 operator override ──
+    //
+    // Operator-pickable default per provider. Persists to
+    // ~/.config/subctl/provider-defaults.json so the operator's choice
+    // survives subctl upgrades (shipped defaults in pi-ai-catalog.ts are
+    // just fallbacks).
+    //
+    //   GET    → { ok, provider, default_model, source: operator|shipped|none }
+    //   POST   { model: string } → write override, returns new state
+    //   DELETE → clear override, fall back to shipped
+    if (url.pathname.startsWith("/api/providers/") && url.pathname.endsWith("/default-model")) {
+      const provider = url.pathname
+        .slice("/api/providers/".length, url.pathname.length - "/default-model".length)
+        .replace(/\/+$/, "");
+      if (!provider || provider.includes("/")) {
+        return Response.json(
+          { ok: false, error: "expected /api/providers/<provider>/default-model" },
+          { status: 400 },
+        );
+      }
+      if (!isCatalogProvider(provider)) {
+        return Response.json(
+          { ok: false, error: `unknown provider "${provider}"` },
+          { status: 404 },
+        );
+      }
+      if (req.method === "GET") {
+        const { model, source } = getDefaultModelWithSource(provider);
+        return Response.json({
+          ok: true,
+          provider: resolveProviderId(provider),
+          default_model: model ?? null,
+          source,
+        });
+      }
+      if (req.method === "POST") {
+        let body: { model?: string };
+        try {
+          body = await req.json();
+        } catch {
+          return Response.json({ ok: false, error: "invalid JSON body" }, { status: 400 });
+        }
+        const model = (body.model ?? "").trim();
+        if (!model || isObviouslyInvalidModel(model)) {
+          return Response.json(
+            { ok: false, error: "model required (non-empty string)" },
+            { status: 400 },
+          );
+        }
+        setProviderDefault(provider, model);
+        const { model: resolved, source } = getDefaultModelWithSource(provider);
+        return Response.json({
+          ok: true,
+          provider: resolveProviderId(provider),
+          default_model: resolved,
+          source,
+        });
+      }
+      if (req.method === "DELETE") {
+        clearProviderDefault(provider);
+        const { model: resolved, source } = getDefaultModelWithSource(provider);
+        return Response.json({
+          ok: true,
+          provider: resolveProviderId(provider),
+          default_model: resolved,
+          source,
+        });
+      }
+      return Response.json(
+        { ok: false, error: "method must be GET, POST, or DELETE" },
+        { status: 405 },
+      );
     }
 
     // ── /api/auth/openai-codex — v2.8.9 device-code OAuth via dashboard ───

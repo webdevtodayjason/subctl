@@ -20,6 +20,7 @@
 
 import { getProviders, getModels } from "@earendil-works/pi-ai";
 import type { KnownProvider } from "@earendil-works/pi-ai";
+import { join } from "node:path";
 
 /**
  * Shape returned to dashboard / API consumers. Stable contract — bump
@@ -299,14 +300,100 @@ export function isCatalogProvider(id: string): boolean {
   return listCatalogProviders().some((p) => p.id === canonical);
 }
 
-/** Default model for a provider, post-alias-resolution. Returns undefined
- *  when the provider has no shipped default (operator must pick explicitly).
+// ── operator-pickable default_model override ──────────────────────────────
+//
+// v2.8.9 — Shipped defaults in PROVIDER_META are an opinion subctl shouldn't
+// be making for the operator. The override file at
+// ~/.config/subctl/provider-defaults.json lets the operator pick per provider:
+//
+//   { "anthropic": "claude-opus-4-7", "openai-codex": "gpt-5.5" }
+//
+// Resolution: getDefaultModel() reads override first, falls back to shipped.
+// File is tiny (<1KB) so we read on every call; no caching layer needed.
+
+const PROVIDER_DEFAULTS_PATH = (() => {
+  const dir = process.env.SUBCTL_CONFIG_DIR ?? join(homedirImport(), ".config", "subctl");
+  return join(dir, "provider-defaults.json");
+})();
+
+function homedirImport(): string {
+  // Avoid a top-level `import {homedir} from "node:os"` rewrite — this is
+  // the only spot in pi-ai-catalog.ts that needs it.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  return require("node:os").homedir() as string;
+}
+
+/** Read the operator's per-provider default overrides. Returns an empty
+ *  map when the file doesn't exist OR is malformed (best-effort — corrupt
+ *  override gracefully falls back to shipped defaults). */
+export function loadProviderDefaults(): Record<string, string> {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { existsSync, readFileSync } = require("node:fs") as typeof import("node:fs");
+    if (!existsSync(PROVIDER_DEFAULTS_PATH)) return {};
+    const parsed = JSON.parse(readFileSync(PROVIDER_DEFAULTS_PATH, "utf8")) as Record<string, unknown>;
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      if (typeof v === "string" && v.trim().length > 0) out[k] = v.trim();
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/** Write an operator default for a provider. Pass empty string OR call
+ *  clearProviderDefault to remove. Returns the post-write map. */
+export function setProviderDefault(providerId: string, model: string): Record<string, string> {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { writeFileSync, mkdirSync, existsSync } = require("node:fs") as typeof import("node:fs");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const path = require("node:path") as typeof import("node:path");
+  const canonical = resolveProviderId(providerId);
+  const current = loadProviderDefaults();
+  if (model && model.trim().length > 0) {
+    current[canonical] = model.trim();
+  } else {
+    delete current[canonical];
+  }
+  const dir = path.dirname(PROVIDER_DEFAULTS_PATH);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  writeFileSync(PROVIDER_DEFAULTS_PATH, JSON.stringify(current, null, 2));
+  return current;
+}
+
+/** Clear the operator override for a provider, falling back to shipped. */
+export function clearProviderDefault(providerId: string): Record<string, string> {
+  return setProviderDefault(providerId, "");
+}
+
+/** Default model for a provider, post-alias-resolution. Resolution order:
+ *  1. Operator override in ~/.config/subctl/provider-defaults.json
+ *  2. Shipped default in PROVIDER_META
+ *  3. undefined (operator must pick explicitly)
+ *
  *  Used by /api/master/supervisor validation and the chat-tab dropdown to
  *  fill in a sensible model when the operator picks a provider without
  *  specifying a model. */
 export function getDefaultModel(providerId: string): string | undefined {
   const canonical = resolveProviderId(providerId);
-  return PROVIDER_META[canonical]?.default;
+  const overrides = loadProviderDefaults();
+  return overrides[canonical] ?? PROVIDER_META[canonical]?.default;
+}
+
+/** Same as getDefaultModel but also returns whether the value came from
+ *  the operator override or the shipped fallback. Used by the dashboard
+ *  UI to render a "★ operator default" badge vs "default (shipped)". */
+export function getDefaultModelWithSource(providerId: string): {
+  model: string | undefined;
+  source: "operator" | "shipped" | "none";
+} {
+  const canonical = resolveProviderId(providerId);
+  const overrides = loadProviderDefaults();
+  if (overrides[canonical]) return { model: overrides[canonical], source: "operator" };
+  const shipped = PROVIDER_META[canonical]?.default;
+  if (shipped) return { model: shipped, source: "shipped" };
+  return { model: undefined, source: "none" };
 }
 
 /** Return pi-ai's bundled model entries for a provider. Wrapper around
