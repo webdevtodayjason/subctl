@@ -16,7 +16,7 @@
 //     kickstart command without executing it.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -77,12 +77,20 @@ function spawnFake(
   return { port: server.port, stop: () => server.stop(true) };
 }
 
+// v2.8.9 — Version was hardcoded to "2.7.36" when these tests were authored;
+// every release bump made these tests stale. Read VERSION dynamically so the
+// suite stays green across bumps.
+const CURRENT_VERSION = readFileSync(
+  join(import.meta.dir, "..", "..", "VERSION"),
+  "utf8",
+).trim();
+
 // ── --version / --help / -V ─────────────────────────────────────────────────
 describe("subctl --version / --help", () => {
   test("`subctl version` prints VERSION file content", () => {
     const r = run(["version"]);
     expect(r.code).toBe(0);
-    expect(r.stdout).toContain("2.7.36");
+    expect(r.stdout).toContain(CURRENT_VERSION);
   });
 
   test("`subctl --version` and `-V` are accepted", () => {
@@ -90,8 +98,8 @@ describe("subctl --version / --help", () => {
     const b = run(["-V"]);
     expect(a.code).toBe(0);
     expect(b.code).toBe(0);
-    expect(a.stdout).toContain("2.7.36");
-    expect(b.stdout).toContain("2.7.36");
+    expect(a.stdout).toContain(CURRENT_VERSION);
+    expect(b.stdout).toContain(CURRENT_VERSION);
   });
 
   test("`subctl --help` lists v2.7.28 + v2.7.36 subcommands", () => {
