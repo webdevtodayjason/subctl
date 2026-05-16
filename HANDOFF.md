@@ -6,22 +6,61 @@
 **VERSION file:** `2.8.6`
 **Next phase:** operator returns from mowing, runs broad eval rubric smoke test, decides whether to act on tool registry audit findings
 
-## Autonomous session summary (2026-05-16, while operator mowed)
+## Autonomous session summary (2026-05-16)
 
-Operator authorized full autonomous mode at ~07:15. The following commits landed without per-step approval:
+Operator authorized full autonomous mode at ~07:15. After an early "you stopped too fast" callout, the autonomous session ran for another extended block. The following commits landed without per-step approval across the full window:
 
+### Block 1 (initial autonomous burst)
 | SHA | Title |
 |---|---|
 | `b9bd182` | fix(catalog): lazy-eval SUBCTL_CONFIG_DIR — prevents future test pollution |
 | `aa3046e` | perf(master): cache_prompt: true for LM Studio via pi-ai onPayload hook (~55% faster warm turns expected) |
-| `7ad012d` | feat(catalog): Phase 2d — live refresh for openai, google, mistral (graceful fallback to pi-ai bundle on missing keys) |
+| `7ad012d` | feat(catalog): Phase 2d — live refresh for openai, google, mistral |
 | `68058e4` | docs(persona): broad eval rubric — 20 lightweight tests across 5 categories |
+| `9b80c97` | docs(handoff): autonomous session summary (this section's predecessor) |
 
-Plus a tool-registry audit filed at `Obsidian Vault/subctl/Audits/2026-05-16 — Tool Registry Audit.md` documenting that 74 of 88 registered tools have never fired in the live transcript. No tool removals were made — operator judgment required.
+### Block 2 (after operator's call-out + continuation)
+| SHA | Title |
+|---|---|
+| `2d2f262` | fix(status): widen PROVIDER column 9→13 for openai-codex alignment |
+| `8e564fa` | perf(tools): Tier-2 lazy registration — gate 7 tool families on env/config (88→65 tools) |
+| `6ef1cd9` | test: cover text-sanitize, codex-oauth, catalogs modules (39 tests, all passing) |
+| `af6318e` | test(cli): read VERSION dynamically — stop hardcoding 2.7.36 |
+| `f418b3f` | feat(catalog): per-model enabled toggle in Models panel |
+| `24e0d1e` | feat(chat): chat dropdown honors default_model's enabled flag |
+| `818c823` | docs(knowledge): refresh subctl.toon — v2.7.7 → v2.8.9 sweep |
 
-Pollution from my own smoke test (anthropic→claude-opus-4-7 in provider-defaults.json) was cleared. File now contains only the operator's actual choice: `openai-codex: gpt-5.5`.
+### Vault updates (autonomous)
+- `Daily Updates/2026-05-16.md` (new)
+- `Audits/2026-05-16 — Tool Registry Audit.md` (new)
+- `01 - Current State.md` (refreshed)
+- `05 - Decisions Log.md` (appended 6 architectural decisions)
+- `07 - Initiative History.md` (entry for today's work)
+- `Lessons Learned/2026-05-16 - Tmux argv lies.md` (new)
+- `Lessons Learned/2026-05-16 - Lazy-eval env vars in path helpers.md` (new)
+- `Lessons Learned/2026-05-16 - Centralise text sanitisation when N outbound surfaces exist.md` (new)
 
-Two Telegram updates sent to @Semfreakbot during the autonomous window (msg_ids 65 and the final summary).
+### Communications
+Four Telegram updates to @Semfreakbot (msg_ids 65-68) across the autonomous window.
+
+### Pollution cleanup
+The accidentally-set `anthropic → claude-opus-4-7` from my smoke test was cleared mid-session. `provider-defaults.json` contains only the operator's actual choice: `openai-codex: gpt-5.5`.
+
+### Tests
+- 39 new tests pass cleanly (text-sanitize 10 + codex-oauth 14 + catalogs 15)
+- Full suite: **1247 passing**, 23 pre-existing failures (CLI integration tests requiring running infrastructure — not regressions from this session)
+
+### Tool registry impact
+- Pre-Tier-2: 88 tools registered every turn
+- Post-Tier-2: **65 tools live** for current operator config
+- Boot log: `[master] tool gates: gh=on, coderabbit=off, context7=off, linear=off, tinyfish=off, voice=off, skillRouter=off`
+- ~4600 prompt-prefix tokens saved per turn
+
+### Things deliberately NOT done in autonomous mode
+- No tool removals (only gating — operator judgment required for full removals per the audit doc)
+- No VERSION bump or git tag (operator should pick when to ship a release)
+- No CodeRabbit review (manual operator-triggered)
+- No GitHub PR creation (per the "explicit auth required" rule that's saved as a feedback memory)
 
 ---
 
