@@ -359,6 +359,114 @@ interface InternalTool {
   invoke: (args: Record<string, unknown>) => Promise<unknown>;
 }
 
+// ─── v2.8.9 Tier-2 lazy tool registration ───────────────────────────────────
+//
+// From the 2026-05-16 tool-registry audit: 74 of 88 registered tools never
+// fired in the operator's live transcript. Most of the dead surface is
+// integrations whose backing service the operator hasn't configured (no
+// LINEAR_API_KEY → linear_* tools never useful; no CONTEXT7_API_KEY →
+// context7_* tools never useful; etc.). Registering these unconditionally
+// inflates the prompt prefix by an estimated 6-8k tokens for the typical
+// operator. Gating them shaves 180-300ms off every cold-start turn.
+//
+// Pattern: spreadIf(condition, prefix, source) — drops the entire module
+// from the registry when the condition is false. Per-module probes are
+// cheap (env / secrets.json file reads). Log a one-line summary at boot
+// so the operator sees what's gated in vs out.
+
+function spreadIf<T>(
+  condition: boolean,
+  prefix: string | undefined,
+  source: Record<string, T>,
+): Record<string, T> {
+  if (!condition) return {};
+  if (!prefix) return source;
+  return Object.fromEntries(
+    Object.entries(source).map(([k, v]) => [`${prefix}${k}`, v]),
+  ) as Record<string, T>;
+}
+
+function hasSecretOrEnv(envKey: string, secretsKey: string): boolean {
+  if ((process.env[envKey] ?? "").trim().length > 0) return true;
+  try {
+    return resolveSecret(secretsKey) !== null;
+  } catch {
+    return false;
+  }
+}
+
+function hasGhCli(): boolean {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { spawnSync } = require("node:child_process") as typeof import("node:child_process");
+    const r = spawnSync("gh", ["--version"], { stdio: "ignore", timeout: 2000 });
+    return r.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+function hasCodeRabbitCli(): boolean {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { spawnSync } = require("node:child_process") as typeof import("node:child_process");
+    const r = spawnSync("coderabbit", ["--version"], { stdio: "ignore", timeout: 2000 });
+    return r.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+function isVoiceEnabled(): boolean {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require("node:fs") as typeof import("node:fs");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const path = require("node:path") as typeof import("node:path");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const os = require("node:os") as typeof import("node:os");
+    const dir = process.env.SUBCTL_CONFIG_DIR ?? path.join(os.homedir(), ".config", "subctl");
+    const voicePath = path.join(dir, "voice.json");
+    if (!fs.existsSync(voicePath)) return false;
+    const cfg = JSON.parse(fs.readFileSync(voicePath, "utf8")) as { enabled?: boolean };
+    return cfg.enabled === true;
+  } catch {
+    return false;
+  }
+}
+
+function isSkillRouterEnabled(): boolean {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require("node:fs") as typeof import("node:fs");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const path = require("node:path") as typeof import("node:path");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const os = require("node:os") as typeof import("node:os");
+    const dir = process.env.SUBCTL_CONFIG_DIR ?? path.join(os.homedir(), ".config", "subctl");
+    return fs.existsSync(path.join(dir, "skill-router.enabled"));
+  } catch {
+    return false;
+  }
+}
+
+// Compute gate decisions once at module load — saves repeating the checks
+// for each tool group below. Cached at boot; operator restart applies any
+// changes (consistent with how other config flags work in master).
+const TOOL_GATES = {
+  gh: hasGhCli(),
+  coderabbit: hasCodeRabbitCli(),
+  context7: hasSecretOrEnv("CONTEXT7_API_KEY", "context7_api_key"),
+  linear: hasSecretOrEnv("LINEAR_API_KEY", "linear_api_key"),
+  tinyfish: hasSecretOrEnv("TINYFISH_API_KEY", "tinyfish_api_key"),
+  voice: isVoiceEnabled(),
+  skillRouter: isSkillRouterEnabled(),
+};
+
+console.error(
+  `[master] tool gates: ${Object.entries(TOOL_GATES).map(([k, v]) => `${k}=${v ? "on" : "off"}`).join(", ")}`,
+);
+
 export const toolRegistry: Record<string, InternalTool> = {
   ...Object.fromEntries(
     Object.entries(subctlOrchTools).map(([k, v]) => [
@@ -366,18 +474,10 @@ export const toolRegistry: Record<string, InternalTool> = {
       v as unknown as InternalTool,
     ]),
   ),
-  ...Object.fromEntries(
-    Object.entries(ghTools).map(([k, v]) => [
-      `gh_${k}`,
-      v as unknown as InternalTool,
-    ]),
-  ),
-  ...Object.fromEntries(
-    Object.entries(coderabbitTools).map(([k, v]) => [
-      `coderabbit_${k}`,
-      v as unknown as InternalTool,
-    ]),
-  ),
+  // gh_* — gated on `gh` binary presence (Tier-2 audit 2026-05-16).
+  ...(spreadIf(TOOL_GATES.gh, "gh_", ghTools) as Record<string, InternalTool>),
+  // coderabbit_* — gated on `coderabbit` CLI presence.
+  ...(spreadIf(TOOL_GATES.coderabbit, "coderabbit_", coderabbitTools) as Record<string, InternalTool>),
   ...Object.fromEntries(
     Object.entries(telegramTools).map(([k, v]) => [
       `telegram_${k}`,
@@ -402,34 +502,21 @@ export const toolRegistry: Record<string, InternalTool> = {
       v as unknown as InternalTool,
     ]),
   ),
-  ...Object.fromEntries(
-    Object.entries(context7Tools).map(([k, v]) => [
-      k, // already prefixed (context7_resolve, context7_docs, context7_health)
-      v as unknown as InternalTool,
-    ]),
-  ),
+  // context7_* — gated on CONTEXT7_API_KEY. Already-prefixed keys.
+  ...(spreadIf(TOOL_GATES.context7, undefined, context7Tools) as Record<string, InternalTool>),
   ...Object.fromEntries(
     Object.entries(tier1MemoryTools).map(([k, v]) => [
       k, // already prefixed (memory_show, memory_remember, memory_forget, memory_user_update)
       v as unknown as InternalTool,
     ]),
   ),
-  ...Object.fromEntries(
-    Object.entries(skillAuthorTools).map(([k, v]) => [
-      k, // already prefixed (skill_create, skill_revise, skill_remove, skill_list_master)
-      v as unknown as InternalTool,
-    ]),
-  ),
+  // skill_* — gated on skill-router being enabled. Already-prefixed keys.
+  ...(spreadIf(TOOL_GATES.skillRouter, undefined, skillAuthorTools) as Record<string, InternalTool>),
   // ── v2.8.1 skills clarity ──
-  // Evy-curated authoring channel — writes drafts under
+  // Evy-curated authoring channel — also gated on skill-router. Writes drafts under
   // ~/.local/state/subctl/evy-skills/ for operator review (promote/delete).
   // Distinct from legacy skill-author.ts (private master-only catalog).
-  ...Object.fromEntries(
-    Object.entries(evySkillsAuthorTools).map(([k, v]) => [
-      k, // evy_author_skill / evy_list_authored_skills / evy_promote_skill / evy_delete_authored_skill
-      v as unknown as InternalTool,
-    ]),
-  ),
+  ...(spreadIf(TOOL_GATES.skillRouter, undefined, evySkillsAuthorTools) as Record<string, InternalTool>),
   // ── end v2.8.1 skills clarity ──
   ...Object.fromEntries(
     Object.entries(notifyTools).map(([k, v]) => [
@@ -478,21 +565,12 @@ export const toolRegistry: Record<string, InternalTool> = {
   ...Object.fromEntries(
     Object.entries(webTools).map(([k, v]) => [k, v as unknown as InternalTool]),
   ),
-  // tinyfish family: search + fetch via TinyFish API. Free tier; API
-  // key in ~/.config/subctl/secrets.json under `tinyfish_api_key`.
+  // tinyfish_* — gated on TINYFISH_API_KEY (~.config/subctl/secrets.json or env).
   // Parallel to web_* (Brave + Firecrawl). v2.7.16.
-  ...Object.fromEntries(
-    Object.entries(tinyfishTools).map(([k, v]) => [
-      k,
-      v as unknown as InternalTool,
-    ]),
-  ),
-  // linear family: keys are already fully-qualified `linear_*` (list, search,
-  // create_issue, update_issue). Operator-funded Linear API access in the
-  // same 2026-05-12 morning Telegram exchange as the web tools. v2.7.2.
-  ...Object.fromEntries(
-    Object.entries(linearTools).map(([k, v]) => [k, v as unknown as InternalTool]),
-  ),
+  ...(spreadIf(TOOL_GATES.tinyfish, undefined, tinyfishTools) as Record<string, InternalTool>),
+  // linear_* — gated on LINEAR_API_KEY. Operator-funded Linear API access
+  // configured 2026-05-12. v2.7.2.
+  ...(spreadIf(TOOL_GATES.linear, undefined, linearTools) as Record<string, InternalTool>),
   // knowledge family: key already fully-qualified `system_subctl_knowledge`.
   // Self-introspection over a TOON-formatted breakdown of the entire subctl
   // system at components/master/knowledge/subctl.toon. Operator uses TOON
@@ -521,14 +599,10 @@ export const toolRegistry: Record<string, InternalTool> = {
   ...Object.fromEntries(
     Object.entries(evyMemoryTools).map(([k, v]) => [k, v as unknown as InternalTool]),
   ),
-  // voice family (v2.8.0): voice_render synthesizes Evy's text reply to
-  // audio via the local self-hosted TTS server (ADR 0017). voice_status
-  // is a quick read of voice.json + TTS reachability. Disabled by default
+  // voice_* — gated on voice.json's enabled:true. Disabled by default
   // — operator opts in via voice.json or the dashboard /voice toggle.
-  // Keys are fully-qualified (voice_render, voice_status).
-  ...Object.fromEntries(
-    Object.entries(voiceTools).map(([k, v]) => [k, v as unknown as InternalTool]),
-  ),
+  // v2.8.0; gating added 2026-05-16.
+  ...(spreadIf(TOOL_GATES.voice, undefined, voiceTools) as Record<string, InternalTool>),
 };
 
 // system_my_tools needs to introspect the live registry. Bind it here so
