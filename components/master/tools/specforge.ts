@@ -195,17 +195,46 @@ function applyTransition(state: SpecforgeState, args: SpecforgeHandleArgs): { st
     } else {
       note = `couldn't parse project_type from message; ask operator directly.`;
     }
-  } else if (state.stage === "intake_interview" && args.coverage_update) {
-    for (const [k, v] of Object.entries(args.coverage_update)) {
-      const key = k as keyof IntakeCoverage;
-      if (key in state.intake_coverage) {
-        state.intake_coverage[key] = !!v;
-        if (typeof args.intake_notes?.[key] === "string") {
-          state.intake_notes[key] = args.intake_notes[key];
+  } else if (
+    state.stage === "intake_interview"
+    && (args.coverage_update || args.intake_notes)
+  ) {
+    // v2.8.9 — fix infinite-loop bug filed by Evy on 2026-05-15
+    // (Obsidian Vault/subctl/bugs/specforge-loop-failure.md).
+    //
+    // Original logic gated this entire branch on `args.coverage_update`,
+    // so callers who provided `intake_notes` with all 7 dimensions but
+    // omitted `coverage_update` had their notes silently discarded and
+    // coverage stayed at 0/7 — the tool kept asking for the same
+    // dimensions it had just been given.
+    //
+    // New behaviour: substantive intake_notes (non-empty trimmed string)
+    // implies coverage. Explicit coverage_update still works for callers
+    // that want to mark a dimension covered without writing a note.
+
+    // 1. Apply explicit coverage_update first (flip booleans per key).
+    if (args.coverage_update) {
+      for (const [k, v] of Object.entries(args.coverage_update)) {
+        const key = k as keyof IntakeCoverage;
+        if (key in state.intake_coverage) {
+          state.intake_coverage[key] = !!v;
         }
       }
     }
-    const missing = (Object.keys(state.intake_coverage) as Array<keyof IntakeCoverage>).filter((k) => !state.intake_coverage[k]);
+    // 2. Apply intake_notes: substantive notes imply coverage AND store
+    //    the text. Whitespace-only or empty strings don't count.
+    if (args.intake_notes) {
+      for (const [k, v] of Object.entries(args.intake_notes)) {
+        const key = k as keyof IntakeCoverage;
+        if (key in state.intake_coverage && typeof v === "string" && v.trim().length > 0) {
+          state.intake_notes[key] = v;
+          state.intake_coverage[key] = true;
+        }
+      }
+    }
+    // 3. Recompute coverage and transition if complete.
+    const missing = (Object.keys(state.intake_coverage) as Array<keyof IntakeCoverage>)
+      .filter((k) => !state.intake_coverage[k]);
     if (missing.length === 0) {
       state.stage = "draft_review";
       transitioned = true;
@@ -341,11 +370,11 @@ export const specforgeTools = {
         },
         coverage_update: {
           type: "object",
-          description: "Mark intake dimensions as covered (handle action, intake_interview stage). Keys: problem, users, success, constraints, scope, non_scope, technical_context. Values: true to mark covered.",
+          description: "Optional: explicitly mark intake dimensions as covered without supplying notes. Keys: problem, users, success, constraints, scope, non_scope, technical_context. Values: true to mark covered. In practice, providing substantive `intake_notes` for a key is sufficient — coverage is implied. Use this only when you want to mark a dimension covered without writing content for it.",
         },
         intake_notes: {
           type: "object",
-          description: "Operator's actual content per intake dimension. Keys match coverage_update. Saved into final SPEC.md.",
+          description: "Operator's actual content per intake dimension. Keys: problem, users, success, constraints, scope, non_scope, technical_context. Substantive (non-empty trimmed) text for a key auto-marks that key as covered AND stores the text for SPEC.md generation. Passing `intake_notes` alone is sufficient to advance through the intake — no need to also pass `coverage_update`.",
         },
         draft_text: {
           type: "string",
