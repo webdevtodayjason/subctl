@@ -1103,6 +1103,33 @@ async function main() {
     return memBlock + routerBlock + skill + personality;
   }
 
+  // v2.8.9 — LM Studio cache_prompt: true via pi-ai's onPayload hook.
+  // Argent landed this 2026-05-16; mirrored here. Without it, llama.cpp /
+  // LM Studio rebuilds the KV cache from scratch on every turn, even
+  // when the prompt prefix is identical (which it nearly always is —
+  // 14k-char SKILL.md + tool registry + persona). With cache_prompt: true,
+  // LM Studio reuses the KV cache across calls; Argent measured 702ms →
+  // 316ms (~55% faster) on a 624-token prompt; our 14k-char prompts will
+  // see larger absolute savings.
+  //
+  // Detection is substring-based on baseUrl. Reasonable default for
+  // localhost LM Studio; if operator reconfigures the port we'll need a
+  // more robust check. Local providers other than LM Studio (mlx, ollama,
+  // vllm) tolerate the flag — llama.cpp-family servers ignore unknown
+  // fields, OpenAI-compat hosts reject anything they don't know. We
+  // restrict to LM Studio specifically to avoid surprising other backends.
+  function isLmStudioBaseUrl(url: string): boolean {
+    return url.includes("localhost:1234") || url.includes("127.0.0.1:1234");
+  }
+  const onPayload: NonNullable<ConstructorParameters<typeof Agent>[0]["onPayload"]> = (
+    payload,
+    model,
+  ) => {
+    if (!isLmStudioBaseUrl(model.baseUrl ?? "")) return undefined;
+    if (!payload || typeof payload !== "object") return undefined;
+    return { ...(payload as Record<string, unknown>), cache_prompt: true };
+  };
+
   const agent = new Agent({
     initialState: {
       systemPrompt: composeSystemPrompt(),
@@ -1112,6 +1139,7 @@ async function main() {
     },
     sessionId: `subctl-master-${Date.now()}`,
     getApiKey,
+    onPayload,
   });
 
   // ── shared lifecycle flags (declared early so the inbox tailer below
