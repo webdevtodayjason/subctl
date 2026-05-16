@@ -18,8 +18,7 @@
 //   3  operator cancelled (SIGINT during polling)
 
 import {
-  loginCodexDeviceCode,
-  atomicWriteAuthFile,
+  completeCodexLogin,
   type DeviceCodePrompt,
 } from "../codex-oauth.ts";
 import { join } from "node:path";
@@ -60,7 +59,10 @@ async function main(): Promise<void> {
   console.error(`[codex-login] alias=${alias} configDir=${configDir}`);
 
   try {
-    const creds = await loginCodexDeviceCode({
+    const result = await completeCodexLogin({
+      alias,
+      configDir,
+      email: email || undefined,
       onVerification: (prompt: DeviceCodePrompt) => {
         // ANSI colour: cyan-ish to make the URL + code stand out.
         const ESC = "\x1b[";
@@ -87,37 +89,15 @@ async function main(): Promise<void> {
 
     if (cancelled) return;
 
-    // Mirror the codex CLI's auth.json shape so existing readers
-    // (components/master/openai-codex-auth.ts and pi-ai's
-    // openai-codex-responses transport) accept our output without
-    // change. The codex CLI also writes a top-level OPENAI_API_KEY when
-    // the operator pastes a long-lived key during interactive setup —
-    // we never set it; OAuth tokens are sufficient.
-    const authJson = {
-      OPENAI_API_KEY: null,
-      tokens: {
-        access_token: creds.access_token,
-        refresh_token: creds.refresh_token,
-      },
-      last_refresh: new Date().toISOString(),
-      // subctl-specific provenance — purely informational, ignored by readers.
-      _subctl: {
-        alias,
-        email: email || null,
-        minted_by: "subctl auth openai-codex",
-        minted_at: new Date().toISOString(),
-      },
-    };
-
-    const authPath = join(configDir, "auth.json");
-    atomicWriteAuthFile(authPath, authJson);
-
     console.log("");
-    console.log(`✓ signed in. tokens written to ${authPath} (mode 0o600)`);
+    console.log(`✓ signed in. tokens written to ${result.authPath} (mode 0o600)`);
     console.log(
-      `  expires at ${new Date(creds.expires_at_ms).toISOString()} — ` +
+      `  expires at ${new Date(result.expires_at_ms).toISOString()} — ` +
         "subctl master refreshes automatically when the token is near expiry.",
     );
+    if (result.chatgpt_account_id) {
+      console.log(`  chatgpt account: ${result.chatgpt_account_id}`);
+    }
   } catch (err) {
     console.error(`[codex-login] FAILED: ${(err as Error).message}`);
     process.exit(1);

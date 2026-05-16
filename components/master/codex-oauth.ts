@@ -353,9 +353,11 @@ async function pollDeviceCode(params: {
   deviceAuthId: string;
   userCode: string;
   intervalMs: number;
+  signal?: AbortSignal;
 }): Promise<DeviceCodeAuthorization> {
   const deadline = Date.now() + DEVICE_CODE_TIMEOUT_MS;
   while (Date.now() < deadline) {
+    if (params.signal?.aborted) throw new Error("operator cancelled");
     const response = await fetch(`${OPENAI_AUTH_BASE_URL}/api/accounts/deviceauth/token`, {
       method: "POST",
       headers: buildAuthHeaders("application/json"),
@@ -363,6 +365,7 @@ async function pollDeviceCode(params: {
         device_auth_id: params.deviceAuthId,
         user_code: params.userCode,
       }),
+      signal: params.signal,
     });
     const bodyText = await response.text();
     if (response.ok) {
@@ -449,14 +452,20 @@ export interface DeviceCodeLoginOptions {
   onVerification: (prompt: DeviceCodePrompt) => Promise<void> | void;
   /** Optional progress callback for log/CLI prints. */
   onProgress?: (message: string) => void;
+  /** Optional abort signal. When aborted, the polling loop exits cleanly
+   *  with an "operator cancelled" error. The dashboard SSE flow uses this
+   *  so closing the modal mid-flow stops the server-side poll. */
+  signal?: AbortSignal;
 }
 
 /** Run the full device-code login: request → wait for browser confirm →
  *  exchange. Returns the freshly-minted credentials. Caller is responsible
- *  for persisting them (use atomicWriteAuthFile). */
+ *  for persisting them (use atomicWriteAuthFile, or call completeCodexLogin
+ *  for the persist-included variant). */
 export async function loginCodexDeviceCode(
   opts: DeviceCodeLoginOptions,
 ): Promise<DeviceCodeCredentials> {
+  if (opts.signal?.aborted) throw new Error("operator cancelled");
   opts.onProgress?.("Requesting device code…");
   const deviceCode = await requestDeviceCode();
   await opts.onVerification({
@@ -469,7 +478,85 @@ export async function loginCodexDeviceCode(
     deviceAuthId: deviceCode.deviceAuthId,
     userCode: deviceCode.userCode,
     intervalMs: deviceCode.intervalMs,
+    signal: opts.signal,
   });
   opts.onProgress?.("Exchanging device code…");
   return await exchangeDeviceCode(authorization);
+}
+
+// ─── high-level login + persist (used by both CLI and dashboard) ────────────
+
+export interface CompleteCodexLoginOptions extends DeviceCodeLoginOptions {
+  /** subctl alias from accounts.conf (e.g. "openai-jason"). Embedded in
+   *  auth.json's _subctl.alias for provenance. */
+  alias: string;
+  /** Where auth.json gets written. Mirrors accounts.conf row's config_dir
+   *  field (~ expanded by the caller). */
+  configDir: string;
+  /** Operator's email for provenance only. Optional — accounts.conf rows
+   *  often include it; pass through if you have it. */
+  email?: string;
+}
+
+export interface CompletedCodexLogin {
+  alias: string;
+  authPath: string;
+  expires_at_ms: number;
+  /** The chatgpt_account_id claim from the access_token JWT — exposed so
+   *  the caller can confirm the operator authorized against the right
+   *  account (the dashboard modal does a side-by-side display). */
+  chatgpt_account_id: string | undefined;
+}
+
+/** End-to-end device-code login + auth.json persist. Both CLI and
+ *  dashboard SSE endpoint route through this so the file shape stays
+ *  identical regardless of surface. */
+export async function completeCodexLogin(
+  opts: CompleteCodexLoginOptions,
+): Promise<CompletedCodexLogin> {
+  const creds = await loginCodexDeviceCode({
+    onVerification: opts.onVerification,
+    onProgress: opts.onProgress,
+    signal: opts.signal,
+  });
+  // Decode chatgpt_account_id from the JWT for provenance + UI display.
+  let accountId: string | undefined;
+  try {
+    const parts = creds.access_token.split(".");
+    if (parts.length === 3) {
+      const b64 = parts[1]!.replace(/-/g, "+").replace(/_/g, "/");
+      const padded = b64.padEnd(b64.length + ((4 - (b64.length % 4)) % 4), "=");
+      const claims = JSON.parse(Buffer.from(padded, "base64").toString("utf8")) as Record<string, unknown>;
+      const authClaim = claims["https://api.openai.com/auth"];
+      if (authClaim && typeof authClaim === "object") {
+        const id = (authClaim as Record<string, unknown>).chatgpt_account_id;
+        if (typeof id === "string") accountId = id;
+      }
+    }
+  } catch { /* best-effort */ }
+  // Mirror the codex CLI's auth.json shape so existing readers
+  // (components/master/openai-codex-auth.ts, pi-ai's openai-codex-responses
+  // transport) accept our output without change.
+  const authJson = {
+    OPENAI_API_KEY: null,
+    tokens: {
+      access_token: creds.access_token,
+      refresh_token: creds.refresh_token,
+    },
+    last_refresh: new Date().toISOString(),
+    _subctl: {
+      alias: opts.alias,
+      email: opts.email ?? null,
+      minted_by: "subctl auth openai-codex",
+      minted_at: new Date().toISOString(),
+    },
+  };
+  const authPath = `${opts.configDir.replace(/\/+$/, "")}/auth.json`;
+  atomicWriteAuthFile(authPath, authJson);
+  return {
+    alias: opts.alias,
+    authPath,
+    expires_at_ms: creds.expires_at_ms,
+    chatgpt_account_id: accountId,
+  };
 }

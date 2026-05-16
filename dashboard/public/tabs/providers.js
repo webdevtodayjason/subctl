@@ -255,7 +255,21 @@ export async function mount({ root: _root }) {
               "<span class=\"config-dir\">" + escapeText(prof.config_dir || "") + "</span>";
             const actions = document.createElement("div");
             actions.className = "actions";
-            if (!prof.authed) {
+            // v2.8.9 — openai-codex aliases get an inline "Sign in" button
+            // that drives the device-code flow from the dashboard instead
+            // of copying a CLI command. Always shown (not gated on !authed)
+            // so the operator can re-auth at any time.
+            if (p.id === "openai-codex") {
+              const signIn = document.createElement("button");
+              signIn.type = "button";
+              signIn.className = "auth-btn";
+              signIn.textContent = prof.authed ? "re-auth" : "sign in";
+              signIn.title = "open device-code login modal";
+              signIn.addEventListener("click", () => openCodexAuthModal(prof.alias));
+              actions.appendChild(signIn);
+            } else if (!prof.authed) {
+              // Other providers keep the existing "copy CLI command" UX
+              // for now — Claude / Gemini have their own auth surfaces.
               const auth = document.createElement("button");
               auth.type = "button";
               auth.className = "auth-btn";
@@ -444,6 +458,165 @@ export async function mount({ root: _root }) {
       parts.push("</tbody></table>");
     }
     body.innerHTML = parts.join("");
+  }
+
+  // v2.8.9 — Codex OAuth modal. Opens when the operator clicks "sign in"
+  // on an openai-codex profile row. POSTs /start to begin the device-code
+  // flow, opens an EventSource on /events, renders the verification URL +
+  // user code, and auto-closes on success.
+  function openCodexAuthModal(alias) {
+    const overlay = document.createElement("div");
+    overlay.style.cssText =
+      "position:fixed;inset:0;background:rgba(0,0,0,0.6);" +
+      "display:flex;align-items:center;justify-content:center;z-index:1000;" +
+      "font-family:inherit";
+    const dialog = document.createElement("div");
+    dialog.style.cssText =
+      "background:var(--bg,#1a1a1a);border:1px solid var(--border,#444);" +
+      "border-radius:8px;padding:24px;max-width:500px;width:90%;" +
+      "color:var(--fg,#ddd);box-shadow:0 10px 40px rgba(0,0,0,0.5)";
+    overlay.appendChild(dialog);
+
+    let evtSource = null;
+    let cancelled = false;
+    const close = async () => {
+      try { if (evtSource) evtSource.close(); } catch { /* ignore */ }
+      if (!cancelled) {
+        // Best-effort cancel on server so the poll loop stops.
+        try {
+          await fetch(`/api/auth/openai-codex/${encodeURIComponent(alias)}/cancel`, {
+            method: "POST",
+          });
+        } catch { /* ignore */ }
+      }
+      overlay.remove();
+    };
+
+    function render(content) {
+      dialog.innerHTML = content;
+      // Hook up close button if present.
+      const closeBtn = dialog.querySelector("[data-codex-close]");
+      if (closeBtn) closeBtn.addEventListener("click", close);
+    }
+
+    function renderStatus(title, message, allowClose = true) {
+      render(
+        `<h2 style="margin:0 0 12px;font-size:1.1em">${escapeText(title)}</h2>` +
+          `<p style="margin:0 0 16px;color:var(--dim,#999)">${escapeText(message)}</p>` +
+          (allowClose
+            ? `<div style="text-align:right"><button type="button" data-codex-close style="padding:6px 14px">close</button></div>`
+            : ""),
+      );
+    }
+
+    function renderVerification(verificationUrl, userCode, expiresInMs) {
+      const mins = Math.floor(expiresInMs / 60_000);
+      render(
+        `<h2 style="margin:0 0 12px;font-size:1.1em">Sign in to ChatGPT — ${escapeText(alias)}</h2>` +
+          `<p style="margin:0 0 8px;color:var(--dim,#999);font-size:0.9em">In another tab, open this URL:</p>` +
+          `<div style="margin:0 0 16px"><a href="${escapeText(verificationUrl)}" target="_blank" style="font-family:monospace;color:var(--accent,#88f);word-break:break-all">${escapeText(verificationUrl)}</a></div>` +
+          `<p style="margin:0 0 8px;color:var(--dim,#999);font-size:0.9em">and enter this code:</p>` +
+          `<div style="margin:0 0 16px;padding:16px;background:rgba(255,255,255,0.05);border-radius:4px;text-align:center"><span style="font-family:monospace;font-size:1.6em;font-weight:bold;letter-spacing:0.15em">${escapeText(userCode)}</span></div>` +
+          `<p style="margin:0 0 8px;color:var(--dim,#999);font-size:0.85em">⏱ expires in ${mins} min · waiting for browser confirm…</p>` +
+          `<p id="codex-modal-status" style="margin:8px 0 16px;color:var(--dim,#999);font-size:0.85em;font-style:italic"></p>` +
+          `<div style="text-align:right"><button type="button" data-codex-close style="padding:6px 14px">cancel</button></div>`,
+      );
+    }
+
+    function renderSuccess(authPath, expiresAt, accountId) {
+      const expDate = new Date(expiresAt);
+      render(
+        `<h2 style="margin:0 0 12px;font-size:1.1em;color:#6c6">✓ signed in — ${escapeText(alias)}</h2>` +
+          `<dl style="margin:0 0 16px;font-size:0.9em">` +
+          `<dt style="color:var(--dim,#999)">tokens written to</dt>` +
+          `<dd style="margin:4px 0 8px;font-family:monospace">${escapeText(authPath)}</dd>` +
+          `<dt style="color:var(--dim,#999)">expires</dt>` +
+          `<dd style="margin:4px 0 8px">${escapeText(expDate.toLocaleString())} (master will auto-refresh)</dd>` +
+          (accountId
+            ? `<dt style="color:var(--dim,#999)">chatgpt account</dt>` +
+              `<dd style="margin:4px 0 8px;font-family:monospace;font-size:0.85em">${escapeText(accountId)}</dd>`
+            : "") +
+          `</dl>` +
+          `<div style="text-align:right"><button type="button" data-codex-close style="padding:6px 14px">done</button></div>`,
+      );
+    }
+
+    function renderFailed(message) {
+      render(
+        `<h2 style="margin:0 0 12px;font-size:1.1em;color:#c66">✗ sign-in failed</h2>` +
+          `<p style="margin:0 0 16px;font-family:monospace;font-size:0.85em;background:rgba(255,255,255,0.05);padding:8px;border-radius:4px">${escapeText(message)}</p>` +
+          `<div style="text-align:right"><button type="button" data-codex-close style="padding:6px 14px">close</button></div>`,
+      );
+    }
+
+    renderStatus("Connecting…", `Starting device-code flow for ${alias}.`);
+
+    // Allow Escape to cancel.
+    const escListener = (e) => {
+      if (e.key === "Escape") close();
+    };
+    document.addEventListener("keydown", escListener);
+    overlay.addEventListener("remove", () =>
+      document.removeEventListener("keydown", escListener),
+    );
+
+    document.body.appendChild(overlay);
+
+    // POST /start, then open EventSource.
+    (async () => {
+      try {
+        const startRes = await fetch(
+          `/api/auth/openai-codex/${encodeURIComponent(alias)}/start`,
+          { method: "POST" },
+        );
+        const startJson = await startRes.json();
+        if (!startJson.ok) {
+          renderFailed(startJson.error || "failed to start auth session");
+          cancelled = true;
+          return;
+        }
+      } catch (err) {
+        renderFailed(String(err));
+        cancelled = true;
+        return;
+      }
+      evtSource = new EventSource(
+        `/api/auth/openai-codex/${encodeURIComponent(alias)}/events`,
+      );
+      evtSource.addEventListener("verification", (e) => {
+        const d = JSON.parse(e.data);
+        renderVerification(d.verification_url, d.user_code, d.expires_in_ms);
+      });
+      evtSource.addEventListener("progress", (e) => {
+        const d = JSON.parse(e.data);
+        const status = document.getElementById("codex-modal-status");
+        if (status) status.textContent = d.message || "";
+      });
+      evtSource.addEventListener("success", (e) => {
+        const d = JSON.parse(e.data);
+        renderSuccess(d.auth_path, d.expires_at, d.chatgpt_account_id);
+        cancelled = true; // no need to send cancel — flow already done
+        try { evtSource.close(); } catch { /* ignore */ }
+        // Refresh the provider card so the alias's authed badge updates.
+        setTimeout(() => refresh(), 500);
+      });
+      evtSource.addEventListener("failed", (e) => {
+        const d = JSON.parse(e.data);
+        renderFailed(d.error || "unknown failure");
+        cancelled = true;
+        try { evtSource.close(); } catch { /* ignore */ }
+      });
+      evtSource.addEventListener("closed", () => {
+        try { evtSource.close(); } catch { /* ignore */ }
+      });
+      evtSource.onerror = () => {
+        // EventSource auto-reconnects; only surface if no verification
+        // has been seen yet.
+        if (!dialog.querySelector("[data-codex-close]")) {
+          renderFailed("event stream error — server may be unreachable");
+        }
+      };
+    })();
   }
 
   refresh();

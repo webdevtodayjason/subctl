@@ -124,6 +124,11 @@ import {
   refreshCatalog,
   saveCatalog,
 } from "./lib/catalogs.ts";
+import {
+  completeCodexLogin,
+  type DeviceCodePrompt,
+} from "../components/master/codex-oauth.ts";
+import { loadAccountsConf } from "../components/master/openai-codex-auth.ts";
 // v2.8.7 — supervisor dropdown sync. POST /api/master/supervisor edits
 // providers.json AND profiles.json so the operator's dropdown pick survives
 // the next master restart (master overrides supervisor.model + host from
@@ -270,6 +275,35 @@ let _lmstudioModelsCache:
   | null = null;
 let _lmstudioModelsInFlight: Promise<LmstudioModelsResponse> | null = null;
 const LMSTUDIO_CACHE_TTL_MS = 30_000;
+
+// ─── v2.8.9 — in-process state for /api/auth/openai-codex SSE flows ──────────
+//
+// One session per alias. Kicked by POST /start. Subscribers (EventSource
+// readers) receive replayed events on connect + live events thereafter.
+// Cleared 30s after terminal state (success/failed/cancelled).
+interface CodexAuthSession {
+  alias: string;
+  configDir: string;
+  email: string;
+  abortController: AbortController;
+  subscribers: Set<{ write: (chunk: string) => void; close: () => void }>;
+  events: Array<Record<string, unknown>>;
+  state: "starting" | "awaiting_authorization" | "success" | "failed" | "cancelled";
+}
+const codexAuthSessions: Map<string, CodexAuthSession> = new Map();
+function publishCodexAuthEvent(
+  session: CodexAuthSession,
+  event: Record<string, unknown>,
+): void {
+  // Buffer for late-joiners (typed event name comes from event.type).
+  session.events.push(event);
+  const type = String(event.type ?? "message");
+  const payload = JSON.stringify(event);
+  const wire = `event: ${type}\ndata: ${payload}\n\n`;
+  for (const s of session.subscribers) {
+    try { s.write(wire); } catch { /* subscriber dropped */ }
+  }
+}
 
 async function getLmstudioModels(
   host: string,
@@ -4885,6 +4919,199 @@ const server = Bun.serve({
           { status: 500 },
         );
       }
+    }
+
+    // ── /api/auth/openai-codex — v2.8.9 device-code OAuth via dashboard ───
+    //
+    // Three endpoints + module-level session state:
+    //   POST /api/auth/openai-codex/<alias>/start   — kick off the flow
+    //   GET  /api/auth/openai-codex/<alias>/events  — SSE: verification,
+    //                                                 progress, success, failed
+    //   POST /api/auth/openai-codex/<alias>/cancel  — abort in-flight flow
+    //
+    // The dashboard modal POSTs /start, opens an EventSource on /events,
+    // renders the verification URL + user_code when the `verification`
+    // event arrives, then closes on `success` or `failed`. Closing the
+    // modal mid-flow POSTs /cancel which trips the AbortSignal in
+    // codex-oauth.ts's pollDeviceCode, stopping the server-side poll.
+    if (url.pathname.startsWith("/api/auth/openai-codex/")) {
+      const tail = url.pathname.slice("/api/auth/openai-codex/".length);
+      const [alias, action] = tail.split("/");
+      if (!alias || !action) {
+        return Response.json(
+          { ok: false, error: "expected /api/auth/openai-codex/<alias>/<action>" },
+          { status: 400 },
+        );
+      }
+
+      // Look up the alias's config_dir + email from accounts.conf so the
+      // flow knows where to write auth.json. Reject unknown aliases.
+      const rows = loadAccountsConf();
+      const row = rows.find((r) => r.alias === alias && r.provider === "openai-codex");
+      if (!row) {
+        return Response.json(
+          {
+            ok: false,
+            error: `unknown openai-codex alias "${alias}" — add to accounts.conf first`,
+          },
+          { status: 404 },
+        );
+      }
+
+      if (action === "start" && req.method === "POST") {
+        if (codexAuthSessions.has(alias)) {
+          return Response.json(
+            {
+              ok: false,
+              error: `auth flow already in progress for ${alias} — cancel it first or wait`,
+            },
+            { status: 409 },
+          );
+        }
+        const session: CodexAuthSession = {
+          alias,
+          configDir: row.configDir,
+          email: row.email,
+          abortController: new AbortController(),
+          subscribers: new Set(),
+          events: [],
+          state: "starting",
+        };
+        codexAuthSessions.set(alias, session);
+
+        // Kick the flow in the background. Use void to detach — the
+        // promise resolves/rejects independently; we don't await here.
+        void (async () => {
+          try {
+            const result = await completeCodexLogin({
+              alias: row.alias,
+              configDir: row.configDir,
+              email: row.email,
+              signal: session.abortController.signal,
+              onVerification: (prompt: DeviceCodePrompt) => {
+                publishCodexAuthEvent(session, {
+                  type: "verification",
+                  verification_url: prompt.verificationUrl,
+                  user_code: prompt.userCode,
+                  expires_in_ms: prompt.expiresInMs,
+                });
+                session.state = "awaiting_authorization";
+                publishCodexAuthEvent(session, {
+                  type: "progress",
+                  message: "Open the URL, enter the code, click Authorize. Waiting…",
+                });
+              },
+              onProgress: (message: string) => {
+                publishCodexAuthEvent(session, { type: "progress", message });
+              },
+            });
+            session.state = "success";
+            publishCodexAuthEvent(session, {
+              type: "success",
+              alias: result.alias,
+              auth_path: result.authPath,
+              expires_at: new Date(result.expires_at_ms).toISOString(),
+              chatgpt_account_id: result.chatgpt_account_id ?? null,
+            });
+          } catch (err) {
+            session.state = "failed";
+            publishCodexAuthEvent(session, {
+              type: "failed",
+              error: (err as Error).message,
+            });
+          } finally {
+            // Hold the session in the map for ~30s after completion so a
+            // late-joining EventSource still gets the terminal event,
+            // then GC. Subscribers that aren't drained by then miss it,
+            // which is fine — they can re-POST /start.
+            setTimeout(() => {
+              codexAuthSessions.delete(alias);
+              for (const s of session.subscribers) {
+                try { s.write("event: closed\ndata: {}\n\n"); } catch { /* ignore */ }
+              }
+              session.subscribers.clear();
+            }, 30_000);
+          }
+        })();
+
+        return Response.json({
+          ok: true,
+          session: { alias, state: session.state },
+          events_url: `/api/auth/openai-codex/${alias}/events`,
+        });
+      }
+
+      if (action === "events" && req.method === "GET") {
+        const session = codexAuthSessions.get(alias);
+        if (!session) {
+          return Response.json(
+            {
+              ok: false,
+              error: `no auth session for ${alias} — POST /start first`,
+            },
+            { status: 404 },
+          );
+        }
+        // SSE response. ReadableStream is supported by Bun's Response.
+        const stream = new ReadableStream({
+          start(controller) {
+            const enc = new TextEncoder();
+            const subscriber = {
+              write(chunk: string): void {
+                try {
+                  controller.enqueue(enc.encode(chunk));
+                } catch { /* controller closed */ }
+              },
+              close(): void {
+                try { controller.close(); } catch { /* already closed */ }
+              },
+            };
+            session.subscribers.add(subscriber);
+            // Replay buffered events for late-joiners (operator clicked
+            // start, then took 200ms to open the EventSource).
+            for (const ev of session.events) {
+              subscriber.write(`event: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`);
+            }
+            // Keep-alive comment every 15s so proxies don't time out.
+            const keepAlive = setInterval(() => {
+              subscriber.write(": ka\n\n");
+            }, 15_000);
+            // When the underlying connection drops, drop the subscriber.
+            req.signal.addEventListener("abort", () => {
+              clearInterval(keepAlive);
+              session.subscribers.delete(subscriber);
+              subscriber.close();
+            });
+          },
+        });
+        return new Response(stream, {
+          headers: {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+          },
+        });
+      }
+
+      if (action === "cancel" && req.method === "POST") {
+        const session = codexAuthSessions.get(alias);
+        if (!session) {
+          return Response.json(
+            { ok: false, error: `no auth session for ${alias}` },
+            { status: 404 },
+          );
+        }
+        session.abortController.abort();
+        return Response.json({ ok: true, alias, cancelled: true });
+      }
+
+      return Response.json(
+        {
+          ok: false,
+          error: `unknown action "${action}" — expected start, events, or cancel`,
+        },
+        { status: 400 },
+      );
     }
 
     // ── /api/providers/profiles — accounts.conf CRUD ────────────────────
