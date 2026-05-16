@@ -117,6 +117,11 @@ import {
   isObviouslyInvalidModel,
   type CatalogProvider,
 } from "../components/master/pi-ai-catalog.ts";
+import {
+  getCatalog,
+  listCachedCatalogs,
+  isKnownProvider,
+} from "./lib/catalogs.ts";
 // v2.8.7 — supervisor dropdown sync. POST /api/master/supervisor edits
 // providers.json AND profiles.json so the operator's dropdown pick survives
 // the next master restart (master overrides supervisor.model + host from
@@ -4782,6 +4787,58 @@ const server = Bun.serve({
       }
 
       return Response.json({ ok: true, providers });
+    }
+
+    // ── /api/catalogs — v2.8.8 Phase 2 — per-provider model catalogs ────
+    // GET /api/catalogs                — list every cached catalog file
+    // GET /api/catalogs/<provider>     — single catalog (cache or pi-ai bundle)
+    // POST /api/catalogs/<provider>/refresh — re-derive + persist (Phase 2b)
+    if (url.pathname === "/api/catalogs" && req.method === "GET") {
+      const cached = listCachedCatalogs();
+      // For providers that have no on-disk cache yet, surface a thin
+      // record so the UI knows they exist and can offer "Refresh" without
+      // pre-populating every catalog at boot time.
+      const piAiProviderIds = new Set(listCatalogProviders().map((p) => p.id));
+      const cachedIds = new Set(cached.map((c) => c.provider));
+      const uncached: Array<{ provider: string; cached: false; models_in_bundle: number }> = [];
+      for (const id of piAiProviderIds) {
+        if (cachedIds.has(id)) continue;
+        const bundle = getCatalog(id);
+        uncached.push({
+          provider: id,
+          cached: false,
+          models_in_bundle: bundle.models.length,
+        });
+      }
+      return Response.json({
+        ok: true,
+        cached: cached.map((c) => ({
+          provider: c.provider,
+          source: c.source,
+          fetched_at: c.fetched_at,
+          model_count: c.models.length,
+          source_url: c.source_url ?? null,
+        })),
+        uncached,
+      });
+    }
+    if (url.pathname.startsWith("/api/catalogs/") && req.method === "GET") {
+      // /api/catalogs/<provider>  — single-provider read. Trailing /refresh
+      // is handled by the POST branch below; bare GET returns the catalog.
+      const provider = url.pathname.slice("/api/catalogs/".length).replace(/\/+$/, "");
+      if (!provider || provider.includes("/")) {
+        return Response.json(
+          { ok: false, error: "expected /api/catalogs/<provider>" },
+          { status: 400 },
+        );
+      }
+      if (!isKnownProvider(provider)) {
+        return Response.json(
+          { ok: false, error: `unknown provider "${provider}"` },
+          { status: 404 },
+        );
+      }
+      return Response.json({ ok: true, catalog: getCatalog(provider) });
     }
 
     // ── /api/providers/profiles — accounts.conf CRUD ────────────────────

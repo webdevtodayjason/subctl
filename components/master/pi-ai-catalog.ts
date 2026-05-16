@@ -309,6 +309,27 @@ export function getDefaultModel(providerId: string): string | undefined {
   return PROVIDER_META[canonical]?.default;
 }
 
+/** Return pi-ai's bundled model entries for a provider. Wrapper around
+ *  getModels() that lives here so callers outside components/master/ (e.g.
+ *  dashboard/lib/catalogs.ts) don't have to resolve `@earendil-works/pi-ai`
+ *  directly — pi-ai is installed in components/master/node_modules/ and
+ *  isn't visible from dashboard/'s module resolution. Returns an empty
+ *  array for unknown providers instead of throwing. */
+export function getBundledModels(providerId: string): Record<string, unknown>[] {
+  const canonical = resolveProviderId(providerId);
+  try {
+    return getModels(canonical as KnownProvider) as unknown as Record<string, unknown>[];
+  } catch {
+    return [];
+  }
+}
+
+/** Enumerate every provider id pi-ai recognises. Wrapper around getProviders()
+ *  for the same reason as getBundledModels — keeps the pi-ai dep contained. */
+export function listAllProviderIds(): string[] {
+  return getProviders().slice();
+}
+
 /** True iff a (provider, model) pair is rejectable on its face — empty,
  *  whitespace-only, or the sentinel "?" placeholder produced by an
  *  unwired dropdown option. Used by the supervisor-switch validation to
