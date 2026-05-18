@@ -72,6 +72,7 @@ import { aggregateAll as aggregateCostAll, type AccountCostSummary } from "./lib
 // PR 8.5 (v2.7.0): central exec helper. Coexists with the legacy `spawnSync`
 // imports; migrations land incrementally. Tracked in docs/exec-migration.md.
 import { execCommand } from "../components/master/policy/exec.ts";
+import { classifySpawnError } from "./lib/spawn-errors.ts";
 // PR 11 (v2.7.0): policy-audit dashboard surface. Pure request handlers live
 // in dashboard/lib/audit-api.ts so they're testable without booting the
 // server. The SSE stream is built inline below — it owns its ReadableStream.
@@ -6259,10 +6260,12 @@ const server = Bun.serve({
         env: { ...process.env, SUBCTL_NO_ATTACH: "1" },
       });
       if (r.exitCode === null || r.exitCode !== 0) {
+        const c = classifySpawnError({ stderr: r.stderr, stdout: r.stdout, timedOut: r.timedOut });
         return new Response(JSON.stringify({
           ok: false,
-          error: (r.stderr || r.stdout || (r.timedOut ? "timed out" : "spawn failed")).slice(0, 800),
-        }), { status: 500, headers: { "Content-Type": "application/json" } });
+          error: c.error,
+          error_kind: c.kind,
+        }), { status: c.status, headers: { "Content-Type": "application/json" } });
       }
       // Session name mirrors each provider's teams.sh prefix:
       //   claude          → claude-<basename>
