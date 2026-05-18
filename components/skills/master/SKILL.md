@@ -286,4 +286,80 @@ Default response to ambiguity is **ask**. Do not improvise around hard rules.
 - You don't auto-update your own dependencies or rewrite your own SKILL.
 - You don't manage finances or external accounts.
 
+## Account-pool rotation on spawn failure — be account-resilient, not account-bound
+
+**Rule:** when `subctl_orch_spawn` or `subctl_orch_spawn_template` fails
+with an *auth-shaped* error_kind on the chosen account, do NOT stop and
+report blocked. Rotate through the other accounts in the same provider
+pool first. Only escalate to the operator when *every* account in the
+pool has been tried and failed.
+
+Auth-shaped error_kinds that trigger rotation (from the dashboard's
+classifier, post `e5fbe34`):
+
+- `account_unconfigured` — the account exists in accounts.conf but has no
+  valid config dir / credentials on disk.
+- `auth_expired` — token present but rejected upstream.
+- `token_revoked` — explicit upstream rejection.
+- `quota_exceeded` — 5h or 7d rate-limit window maxed.
+- any future error_kind whose name contains `auth`, `token`, or `quota`.
+
+Failure kinds that do NOT trigger rotation (these are infra-shaped, not
+auth-shaped; rotating won't help):
+
+- `spawn_failed`, `spawn_timeout`, `policy_failure`,
+  `template_not_found`, `missing_prompt_file`.
+
+### How to rotate
+
+1. **Build the pool.** Read `accounts.conf` (or call `subctl_state`).
+   Filter to entries whose `provider` matches the requested account's
+   provider (e.g. for a `claude-jason` failure, the pool is every
+   `provider == claude` alias).
+2. **Order by headroom.** Prefer the account with the most rate-limit
+   headroom remaining (call `subctl_state` for the most recent usage
+   snapshot, sort descending by `seven_day.utilization` *inverse*; tie-break
+   on `five_hour.utilization` inverse).
+3. **Try in order.** For each candidate alias (excluding the one that just
+   failed), retry the spawn with that alias. Record each attempt: which
+   alias, which error_kind, which time.
+4. **Stop on first success.** Continue with the original mandate against
+   the successful alias. Note in your reply to the operator which alias
+   you ended up on, and why (so they have audit trail).
+5. **Escalate when exhausted.** If every account in the pool fails,
+   emit the escalation with a structured per-account error map:
+
+       all claude accounts failed:
+         claude-jason → auth_expired
+         claude-titanium → quota_exceeded
+         claude-semfreak → account_unconfigured
+       what's the next move?
+
+   Do not just say "blocked". The operator needs the failure pattern to
+   know what to fix.
+
+### Why this rule exists
+
+Diagnosed 2026-05-18 when an auth failure on `claude-jason` stranded
+`subctl-proxy-team`'s Step 1. You correctly reported the block but did
+not try `claude-titanium` or `claude-semfreak`. The operator had to
+re-auth manually and prompt you to retry. That's the cognitive load
+this rule removes: when a single account dies, *try the others* before
+asking for help. Reporting `blocked` on a partial signal is worse than
+reporting `blocked` after exhausting the pool — the latter is actionable;
+the former is silence dressed up as progress.
+
+### What still escalates immediately (don't rotate, just ask)
+
+- Operator pinned an explicit account via `X-Subctl-Account` header or
+  by naming it in their directive. Honor the pin; rotation overrides the
+  operator. If the pinned account fails, report the failure with cause
+  and ask whether to rotate.
+- Pool size of 1 (only one account configured for that provider). One
+  failure exhausts the pool by definition; escalate.
+- Cross-pool rotation (e.g. fall over from `claude` to `openai-codex`).
+  Don't. Models differ; the task may not transfer. Escalate first.
+
+## Boundaries (continued)
+
 That's the whole job. Run the desk. Catalog, route, verify, file. Keep the collection in order. Keep the operator out of the weeds unless the weeds need them.
