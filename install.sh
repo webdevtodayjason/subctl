@@ -94,7 +94,9 @@ ensure_install_tree() {
   run mkdir -p "$(dirname "$install_tree")" || return 1
   if $DRY_RUN; then
     echo "[dry-run] git -C $SUBCTL_REPO_ROOT worktree add $install_tree main"
-    echo "[dry-run] (cd $install_tree/dashboard && bun install)"
+    for sub in dashboard components/master components/mcp; do
+      echo "[dry-run] (cd $install_tree/$sub && bun install)"
+    done
     return 0
   fi
 
@@ -103,13 +105,23 @@ ensure_install_tree() {
     return 1
   fi
 
-  if [[ -f "$install_tree/dashboard/package.json" ]] && command -v bun >/dev/null 2>&1; then
-    subctl_info "vendoring dashboard deps in install tree"
-    if ! (cd "$install_tree/dashboard" && bun install >/dev/null 2>&1); then
-      subctl_warn "bun install in $install_tree/dashboard failed — web terminal may be unavailable on install-tree dashboard until fixed"
-    else
-      subctl_ok "install-tree dashboard deps installed"
-    fi
+  # Vendor deps for every workspace that has a package.json. The master
+  # daemon's policy snapshot bridge resolves smol-toml etc. relative to
+  # components/master/, so a missing node_modules there blocks every
+  # team spawn with an opaque HTTP 500 ("policy snapshot bridge failed:
+  # Cannot find package 'smol-toml'") — diagnosed 2026-05-18 when Evy
+  # could not spawn subctl-proxy-team.
+  if command -v bun >/dev/null 2>&1; then
+    for sub in dashboard components/master components/mcp; do
+      if [[ -f "$install_tree/$sub/package.json" ]]; then
+        subctl_info "vendoring $sub deps in install tree"
+        if ! (cd "$install_tree/$sub" && bun install >/dev/null 2>&1); then
+          subctl_warn "bun install in $install_tree/$sub failed — runtime may be missing deps"
+        else
+          subctl_ok "install-tree $sub deps installed"
+        fi
+      fi
+    done
   fi
 
   subctl_ok "install tree ready: $install_tree"
