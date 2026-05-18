@@ -244,6 +244,34 @@ function lmstudioAuthHeader(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+// v2.8.2 — Best-effort lifecycle notify to the master daemon when a
+// dev-team tmux session is killed via the dashboard. The master keeps
+// its own `teamLastActivity` + `teamNudgeState` maps for the staleness
+// watchdog; without this hook those maps would only get pruned by the
+// next watchdog tick's tmux-prune block, leaving a ~3min window where
+// an escalation could fire on the corpse (bug 2026-05-18).
+//
+// Failure modes are non-fatal: master down, route 404 (older master
+// version), network blip — we log and continue. The watchdog tick has
+// its own per-team `tmux has-session` safety net that will catch the
+// same case on the next interval.
+async function notifyMasterTeamPruned(name: string): Promise<void> {
+  const masterPort = process.env.SUBCTL_MASTER_PORT ?? "8788";
+  const url = `http://127.0.0.1:${masterPort}/teams/${encodeURIComponent(name)}/prune`;
+  try {
+    const r = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(2_000),
+    });
+    if (!r.ok && r.status !== 404) {
+      console.log(`[dashboard] master prune notify ${name}: HTTP ${r.status}`);
+    }
+  } catch (err) {
+    console.log(`[dashboard] master prune notify ${name} failed: ${(err as Error).message}`);
+  }
+}
+
 // v2.8.7 — LM Studio /api/v0/models response cache.
 //
 // Background: the dashboard polls LM Studio's catalog from TWO surfaces
@@ -6461,6 +6489,13 @@ const server = Bun.serve({
           return new Response(JSON.stringify({ ok: false, error: (r.stderr || r.stdout || (r.timedOut ? "timed out" : "spawn failed")).slice(0, 500) }),
             { status: 500, headers: { "Content-Type": "application/json" } });
         }
+        // v2.8.2 — Lifecycle notify to master so the team-staleness
+        // watchdog drops `name` from its tracking maps immediately and
+        // doesn't fire a nudge/escalation on a corpse. Best-effort:
+        // master may be down, the watchdog tick has its own safety-net
+        // prune that will catch this on next interval. Don't block or
+        // fail the kill on this.
+        await notifyMasterTeamPruned(name);
         try {
           const fresh = buildState();
           for (const ws of sockets) { try { ws.send(JSON.stringify(fresh)); } catch {} }
@@ -6490,6 +6525,11 @@ const server = Bun.serve({
           return new Response(JSON.stringify({ ok: false, error: (r.stderr || r.stdout || String(r.error)).slice(0, 500) }),
             { status: 500, headers: { "Content-Type": "application/json" } });
         }
+        // v2.8.2 — Same lifecycle notify as /api/orchestration/:name/kill.
+        // Both routes funnel through `subctl session-kill`; both must
+        // tell the master to unregister the team or the watchdog will
+        // keep escalating against the gone session.
+        await notifyMasterTeamPruned(name);
         // Push a fresh state immediately so the row disappears in real-time.
         const fresh = buildState();
         for (const ws of sockets) {

@@ -193,6 +193,11 @@ import {
   type TeamSnapshot,
 } from "./auto-nudge";
 import {
+  defaultTmuxRunner,
+  pruneOneTeam,
+  pruneVanishedTeams,
+} from "./watchdog-prune";
+import {
   recordEntry as recordMemoryEntry,
   recallEntries as recallMemoryEntries,
   deleteEntry as deleteMemoryEntry,
@@ -1504,6 +1509,21 @@ async function main() {
   };
   const teamLastActivity = new Map<string, { ts: number; lastEvent?: TeamEvent }>();
   const teamReadOffsets = new Map<string, number>(); // file path → last byte read
+  // v2.8.2 — Hoisted up here (was declared near the watchdog ticker
+  // further down) so the inbox first-scan reconciliation and the
+  // HTTP /teams/:name/prune route can reference them without TDZ
+  // risk during the brief window between Bun.serve() returning and
+  // the ticker block running. Both maps are still mutated only by
+  // the watchdog/inbox paths — the new HTTP route and prune helpers
+  // operate on them by reference.
+  const teamPaneHash = new Map<string, string>();
+  const teamNudgeState = new Map<string, TeamNudgeState>();
+  // v2.8.2 — Cheap per-team `tmux has-session` check, used both by the
+  // inbox first-scan reconciliation (refuse to re-seed activity for a
+  // team whose tmux session is gone) and by the watchdog tick's
+  // per-team safety net. Centralised here so server.ts has a single
+  // mockable seam during tests.
+  const inboxTmux = defaultTmuxRunner();
 
   function teamNameFromPath(p: string): string {
     return p.replace(/^.*\//, "").replace(/\.jsonl$/, "");
@@ -1531,9 +1551,46 @@ async function main() {
       // since those events ARE live for us.
       prev = firstScanDone ? 0 : stat.size;
       teamReadOffsets.set(filePath, prev);
-      // Still backfill last_event metadata from the existing file so /teams
-      // and the dashboard show real state right after boot.
+      // v2.8.2 — Before backfilling last_event metadata from an
+      // existing-on-disk inbox file, reconcile against tmux. If the
+      // session is gone, the file is an orphan from a prior boot:
+      // re-seeding teamLastActivity from it is exactly the bug that
+      // re-armed the staleness watchdog on stale state across master
+      // restarts (2026-05-18 incident). Archive the orphan file out
+      // of the polled dir so the next boot's scan doesn't trip on it
+      // again, and skip the seed.
       if (!firstScanDone && stat.size > 0) {
+        const sessionAlive = inboxTmux.hasSession(team);
+        if (!sessionAlive) {
+          try {
+            // teamNudgeState isn't declared until the watchdog ticker
+            // initialises (further down in startMaster). At first-scan
+            // boot time it's empty by construction, so we don't pass it.
+            const moved = pruneOneTeam(
+              team,
+              {
+                teamLastActivity,
+                teamReadOffsets,
+                inboxDir: INBOX_DIR,
+                tmux: inboxTmux,
+              },
+              "orphan-inbox-on-boot",
+            );
+            if (moved) {
+              broadcast("team_pruned", {
+                ts: new Date().toISOString(),
+                teams: [team],
+                reason: "orphan inbox file at boot — tmux session no longer exists",
+              });
+              logDecision({
+                project: "_master",
+                action: "watchdog_pruned",
+                rationale: `orphan inbox file at boot for ${team} (tmux session gone); archived`,
+              });
+            }
+          } catch { /* ignore */ }
+          return;
+        }
         try {
           const raw = require("node:fs").readFileSync(filePath, "utf8") as string;
           const lines = raw.trimEnd().split("\n").filter((l) => l.trim());
@@ -1597,6 +1654,14 @@ async function main() {
 
   // Initial pass to populate teamLastActivity from existing files.
   scanInboxOnce();
+  // v2.8.2 — Flip the boot flag so any future "never seen this file"
+  // discoveries (a new team file appearing while master is running)
+  // start at offset 0 instead of stat.size — they're live events for
+  // us, not historical replay. Without this flip the flag was dead
+  // code: it was declared `false` and never assigned, so newly-
+  // appearing post-boot jsonl files were also being skipped to EOF
+  // and their first batch of events vanished into the void.
+  firstScanDone = true;
   // ALWAYS poll — fs.watch on macOS fires unreliably (filename arg often
   // undefined for content writes inside the watched dir), so we can't depend
   // on it. The watcher below is an opportunistic "wake sooner" optimization;
@@ -3265,6 +3330,47 @@ async function main() {
         return Response.json({ ok: true, teams });
       }
 
+      // v2.8.2 — Lifecycle hook called by the dashboard's
+      // POST /api/orchestration/:name/kill (and /api/sessions/:name/kill)
+      // immediately after `subctl session-kill` returns 0. Drops the
+      // team from the watchdog tracking maps + archives its inbox file,
+      // so the next watchdog tick won't escalate on a corpse. Internal
+      // 127.0.0.1-only endpoint; no auth (matches /profile, /watchdogs,
+      // etc. — same trust boundary).
+      {
+        const m = url.pathname.match(/^\/teams\/([^/]+)\/prune\/?$/);
+        if (m && req.method === "POST") {
+          const teamName = decodeURIComponent(m[1]!);
+          const decision = pruneOneTeam(teamName, {
+            teamLastActivity,
+            teamNudgeState,
+            teamPaneHash,
+            teamReadOffsets,
+            inboxDir: INBOX_DIR,
+            // tmux runner is unused by pruneOneTeam (operator already
+            // told us the session is gone), but the type requires it.
+            tmux: inboxTmux,
+          });
+          if (decision) {
+            broadcast("team_pruned", {
+              ts: new Date().toISOString(),
+              teams: [teamName],
+              reason: "operator-initiated kill",
+            });
+            logDecision({
+              project: "_master",
+              action: "watchdog_pruned",
+              rationale: `operator-killed ${teamName}; removed from staleness tracker${decision.inbox_archived ? "; inbox archived" : ""}`,
+            });
+          }
+          return Response.json({
+            ok: true,
+            pruned: decision !== null,
+            inbox_archived: decision?.inbox_archived ?? false,
+          });
+        }
+      }
+
       if (url.pathname === "/diag" && req.method === "GET") {
         // Fan out connectivity + readiness checks in parallel. Each check
         // returns {name, ok, detail} — UI renders a green/red row per check.
@@ -3863,7 +3969,9 @@ async function main() {
   // The reliable signal is capture-pane content. Hash the visible pane
   // for each session; if the hash changed since the last tick, that's
   // activity, bump the timestamp to now.
-  const teamPaneHash = new Map<string, string>();
+  // (teamPaneHash declaration hoisted to the inbox-setup block above
+  // in v2.8.2 — the HTTP /teams/:name/prune route + first-scan
+  // reconciliation need it at server-construction time.)
   async function refreshTeamActivityFromTmux() {
     try {
       // 1. Enumerate sessions whose names start with "claude-" (the
@@ -3978,8 +4086,9 @@ async function main() {
   // "alert"` notification if the team fails to respond within 30 min.
   //
   // The decision logic lives in ./auto-nudge.ts so it's unit-testable.
-  // This map holds the per-team state across ticks.
-  const teamNudgeState = new Map<string, TeamNudgeState>();
+  // (teamNudgeState declaration hoisted to the inbox-setup block above
+  // in v2.8.2 — the HTTP /teams/:name/prune route + first-scan
+  // reconciliation need it at server-construction time.)
   // Re-nudge cadence — if a team is still stale 30 min after our last
   // nudge, the spec says fire an alert AND re-nudge.
   const NUDGE_RETRY_MS = 30 * 60_000;
@@ -4022,6 +4131,39 @@ async function main() {
     // writing to the inbox; window_activity captures keystrokes and
     // pane output regardless of whether the lead self-reported.
     await refreshTeamActivityFromTmux();
+
+    // v2.8.2 — Per-team safety prune. refreshTeamActivityFromTmux's
+    // bulk prune block can silently skip on tmux errors (no server
+    // running, transient EAGAIN, list-sessions exit ≠ 0) — that was
+    // one half of the 2026-05-18 stale-watchdog bug. Here we do a
+    // direct `tmux has-session` for each tracked team and drop the
+    // ones that are gone. Per-team `has-session` is cheap (single
+    // exit-code check) and won't accidentally wipe everything if the
+    // tmux server is down (it returns non-zero, we treat as gone,
+    // which is safe: a wrongly-pruned live team will be re-seeded
+    // by its next inbox event or pane capture).
+    const safetyPruned = pruneVanishedTeams({
+      teamLastActivity,
+      teamNudgeState,
+      teamPaneHash,
+      teamReadOffsets,
+      inboxDir: INBOX_DIR,
+      tmux: inboxTmux,
+      claudeOnly: true,
+    });
+    if (safetyPruned.length > 0) {
+      broadcast("team_pruned", {
+        ts: new Date().toISOString(),
+        teams: safetyPruned.map((d) => d.team_id),
+        reason: "tmux session no longer exists",
+      });
+      logDecision({
+        project: "_master",
+        action: "watchdog_pruned",
+        rationale: `safety-net prune dropped ${safetyPruned.length} team(s): ${safetyPruned.map((d) => d.team_id).join(", ")}`,
+      });
+    }
+
     const now = Date.now();
     const teams: TeamSnapshot[] = [];
     for (const [team, v] of teamLastActivity) {
@@ -4049,6 +4191,19 @@ async function main() {
           emitNotification({ kind: "team-unresponsive", severity: "alert", title, body, team_id }),
         logDecision: (team_id, action, rationale) =>
           logDecision({ project: team_id, action, rationale }),
+        // v2.8.2 — Third line of defense: the sweep itself rechecks
+        // tmux before deciding nudge/escalate. The safety-net prune
+        // above ALREADY removed gone-teams from teamLastActivity, so
+        // in practice this predicate only fires if a team's session
+        // dies between the prune and this loop (microseconds).
+        // Cheap belt-and-braces.
+        teamRegistryExists: (team_id) => inboxTmux.hasSession(team_id),
+        emitVanished: (team_id, title, body) =>
+          // v2.8.2 — Low-noise info-level (not alert): the bug doc
+          // explicitly calls for one quiet "stopped watching ..." event,
+          // not another Telegram page. severity:info short-circuits the
+          // telegram-push fanout in notifications.ts subscribers.
+          emitNotification({ kind: "team-vanished", severity: "info", title, body, team_id }),
       },
     });
 
