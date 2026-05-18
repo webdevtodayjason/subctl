@@ -441,6 +441,7 @@ INSTALL_ORDER=(
   lm-studio
   lms
   claude-mem
+  cloakbrowser
   telegram-bot
   context7-key
 )
