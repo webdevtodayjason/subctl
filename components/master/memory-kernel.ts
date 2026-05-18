@@ -42,6 +42,7 @@ import {
   type ReviewerContext,
   type ReviewerOutput,
 } from "./memory-kernel-reviewer";
+import { appendCandidate as appendTier1Candidate } from "./tier1-candidates";
 
 // ─── public types ─────────────────────────────────────────────────────────
 
@@ -383,6 +384,7 @@ export async function runOneCycle(
 
   // 3. Enact decisions. Dry-run skips every write (mark_reviewed + promote).
   let promotionsCount = 0;
+  let tier1CandidatesCount = 0;
   let errorsCount = 0;
   let escalations = 0;
   let firstError: string | undefined;
@@ -403,6 +405,9 @@ export async function runOneCycle(
           },
           onEscalated: () => {
             escalations++;
+          },
+          onTier1Candidate: () => {
+            tier1CandidatesCount++;
           },
           recordError,
         });
@@ -426,7 +431,8 @@ export async function runOneCycle(
   const cycle_ms = deps.now() - t0;
   const rationale =
     `${events.length} events reviewed, ${promotionsCount} promoted, ` +
-    `${escalations} escalated, model=${_lastReviewerModel}` +
+    `${tier1CandidatesCount} tier1-candidates, ${escalations} escalated, ` +
+    `model=${_lastReviewerModel}` +
     (opts.dry_run ? ", dry_run=true" : "") +
     (errorsCount > 0 ? `, errors=${errorsCount}` : "");
   deps.logDecision({
@@ -480,6 +486,7 @@ async function enactDecision(
     reviewer_model: string;
     onPromoted: () => void;
     onEscalated: () => void;
+    onTier1Candidate: () => void;
     recordError: (msg: string) => void;
   },
 ): Promise<void> {
@@ -539,13 +546,36 @@ async function enactDecision(
       return;
     }
     case "propose_tier1": {
-      // Phase 3 — no curated Tier 1 writer yet. Mark reviewed so we don't
-      // re-evaluate the same rows on every cycle.
+      // Phase 3 — append the proposal to the Tier 1 candidate queue for
+      // operator/Evy review. Still mark the source rows reviewed so the
+      // reviewer doesn't re-evaluate them on every cycle. If the reviewer
+      // omitted the memory text we treat it as an error (validation would
+      // normally reject this).
       const r = await deps.markReviewed({ ...baseMark, review_state: "reviewed" });
-      if (!r.ok) ctx.recordError(`mark_reviewed(reviewed): ${r.error}`);
-      console.error(
-        `[memory-kernel] tier1-proposal-deferred: ${(d.memory ?? "").slice(0, 80)}`,
-      );
+      if (!r.ok) {
+        ctx.recordError(`mark_reviewed(reviewed): ${r.error}`);
+        // continue — still queue the candidate so the operator sees it
+      }
+      if (!d.memory) {
+        ctx.recordError("propose_tier1 decision missing memory text");
+        return;
+      }
+      try {
+        const candidate = appendTier1Candidate({
+          source_event_ids: d.source_event_ids,
+          memory: d.memory,
+          kind: d.kind ?? "preference",
+          reason: d.reason,
+          confidence: d.confidence,
+          reviewer_model: ctx.reviewer_model,
+        });
+        ctx.onTier1Candidate();
+        console.error(
+          `[memory-kernel] tier1-candidate queued ${candidate.id}: ${d.memory.slice(0, 80)}`,
+        );
+      } catch (err) {
+        ctx.recordError(`appendTier1Candidate: ${(err as Error).message}`);
+      }
       return;
     }
     case "escalate": {

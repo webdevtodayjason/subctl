@@ -179,6 +179,11 @@ import {
   _setDepsForTesting as _setMemoryKernelDepsForTesting,
 } from "./memory-kernel";
 import {
+  approveCandidate as approveTier1Candidate,
+  listPending as listTier1Pending,
+  rejectCandidate as rejectTier1Candidate,
+} from "./tier1-candidates";
+import {
   callSupervisor as memoryKernelSupervisorFetcher,
   reviewEvents as memoryKernelReviewEvents,
 } from "./memory-kernel-reviewer";
@@ -2902,6 +2907,89 @@ async function main() {
       if (url.pathname === "/memory/kernel/resume" && req.method === "POST") {
         resumeMemoryKernel();
         return Response.json({ ok: true, paused: false });
+      }
+
+      // ── /memory/tier1/* — Tier 1 candidate queue (Memory Init #5 Phase 3) ─
+      //
+      //   GET  /memory/tier1/pending  → { ok, count, candidates[] }
+      //   POST /memory/tier1/approve  → body {candidate_id, note?}; on success
+      //                                 routes through memory_remember so the
+      //                                 Tier 1 char-budget guardrails apply.
+      //   POST /memory/tier1/reject   → body {candidate_id, note?}; resolves
+      //                                 without touching memory.md.
+      if (url.pathname === "/memory/tier1/pending" && req.method === "GET") {
+        const pending = listTier1Pending();
+        return Response.json({
+          ok: true,
+          count: pending.length,
+          candidates: pending,
+        });
+      }
+      if (url.pathname === "/memory/tier1/approve" && req.method === "POST") {
+        let body: { candidate_id?: unknown; note?: unknown };
+        try {
+          const text = await req.text();
+          body = text ? (JSON.parse(text) as typeof body) : {};
+        } catch {
+          return Response.json(
+            { ok: false, error: "invalid JSON body" },
+            { status: 400 },
+          );
+        }
+        const candidateId =
+          typeof body.candidate_id === "string" ? body.candidate_id.trim() : "";
+        if (!candidateId) {
+          return Response.json(
+            { ok: false, error: "candidate_id required" },
+            { status: 400 },
+          );
+        }
+        const note = typeof body.note === "string" ? body.note : undefined;
+        try {
+          const result = await approveTier1Candidate(candidateId, {
+            resolved_by: "operator",
+            note,
+          });
+          return Response.json(result, { status: result.ok ? 200 : 404 });
+        } catch (err) {
+          return Response.json(
+            { ok: false, error: (err as Error).message },
+            { status: 500 },
+          );
+        }
+      }
+      if (url.pathname === "/memory/tier1/reject" && req.method === "POST") {
+        let body: { candidate_id?: unknown; note?: unknown };
+        try {
+          const text = await req.text();
+          body = text ? (JSON.parse(text) as typeof body) : {};
+        } catch {
+          return Response.json(
+            { ok: false, error: "invalid JSON body" },
+            { status: 400 },
+          );
+        }
+        const candidateId =
+          typeof body.candidate_id === "string" ? body.candidate_id.trim() : "";
+        if (!candidateId) {
+          return Response.json(
+            { ok: false, error: "candidate_id required" },
+            { status: 400 },
+          );
+        }
+        const note = typeof body.note === "string" ? body.note : undefined;
+        try {
+          const result = rejectTier1Candidate(candidateId, {
+            resolved_by: "operator",
+            note,
+          });
+          return Response.json(result, { status: result.ok ? 200 : 404 });
+        } catch (err) {
+          return Response.json(
+            { ok: false, error: (err as Error).message },
+            { status: 500 },
+          );
+        }
       }
 
       // ── /memory/backfill/* — operator-invoked memory substrate backfill ──

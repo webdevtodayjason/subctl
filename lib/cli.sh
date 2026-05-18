@@ -389,7 +389,7 @@ subctl_cli_memory() {
   case "$sub" in
     -h|--help)
       cat <<EOF
-subctl memory [recent <N> | search <query> | remember <text> | kernel <verb> | backfill <verb>]
+subctl memory [recent <N> | search <query> | remember <text> | kernel <verb> | tier1 <verb> | backfill <verb>]
 
   Query / append to master's Evy Memory (Tier 3, SQLite-backed). Goes through
   the dashboard's /api/memory/* proxy → master's /memory/*.
@@ -400,6 +400,8 @@ subctl memory [recent <N> | search <query> | remember <text> | kernel <verb> | b
     remember <text>     Append a new entry (kind=note, no team scope).
     kernel <verb>       Memory consciousness cycle (Memory Init #5).
                         Sub-verbs: status (default) | run-now | pause | resume.
+    tier1 <verb>        Tier 1 candidate queue (Memory Init #5 Phase 3).
+                        Sub-verbs: pending (default) | approve <id> | reject <id>.
     backfill <verb>     Operator-invoked ingest into new memory substrates.
                         Sub-verbs: evy-to-memori | claude-mem-to-cognee |
                         obsidian-to-cognee. See 'subctl memory backfill --help'.
@@ -473,6 +475,40 @@ EOF
           return 1 ;;
       esac
       ;;
+    tier1)
+      # Tier 1 candidate queue (Memory Init #5 Phase 3). Operator surface
+      # for approving / rejecting facts the memory consciousness cycle
+      # flagged for promotion. Sourced lazily to keep `subctl memory`
+      # fast for the bare recent/search/remember paths.
+      . "$SUBCTL_REPO_ROOT/lib/memory-tier1.sh"
+      local tverb="${1:-pending}"
+      [[ $# -gt 0 ]] && shift
+      case "$tverb" in
+        -h|--help)
+          cat <<EOF
+subctl memory tier1 [pending | approve <id> [note] | reject <id> [note]]
+
+  Operator surface for the Tier 1 candidate queue. When the memory
+  consciousness cycle's reviewer flags a fact for promotion, it lands
+  here for human review before it's durably committed to Tier 1
+  (~/.config/subctl/master/memory.md).
+
+  Verbs:
+    pending             List candidates awaiting review (default)
+    approve <id> [note] Approve a candidate by id; routes through
+                        memory_remember so Tier 1 char-budget guardrails
+                        apply (may fail and leave the candidate pending).
+    reject <id> [note]  Reject without touching memory.md.
+EOF
+          return 0 ;;
+        pending|"")     subctl_memory_tier1_pending ;;
+        approve)        subctl_memory_tier1_approve "$@" ;;
+        reject)         subctl_memory_tier1_reject "$@" ;;
+        *)
+          subctl_err "unknown memory tier1 verb: $tverb (try: pending | approve <id> | reject <id>)"
+          return 1 ;;
+      esac
+      ;;
     backfill)
       # Operator-invoked memory substrate backfill. Sourced lazily — same
       # reasoning as `kernel` above. Nothing here auto-runs at boot.
@@ -517,7 +553,7 @@ EOF
       esac
       ;;
     *)
-      subctl_err "unknown memory verb: $sub (try: recent | search | remember | kernel | backfill)"
+      subctl_err "unknown memory verb: $sub (try: recent | search | remember | kernel | tier1 | backfill)"
       return 1
       ;;
   esac
