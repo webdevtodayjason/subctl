@@ -57,6 +57,48 @@ Most recent session at top. Older sessions retained below as historical record.
 - **Tests**: 12 pass, 0 fail in memory-kernel-reviewer.test.ts.
 - **LLM call path**: pure HTTP via `callSupervisor` helper inside the module — caller supplies auth via deps. No coupling to pi-agent-core's Agent. Matches the spec.
 
+
+### Verification Evidence — K3 (Worker C, mem-kernel-integration)
+
+- **Synthesis commit**: `0c52085` (orchestrator-owned). Worker C honored protocol — no autonomous commit.
+- **Files**: components/master/memory-kernel.ts (668 lines), components/master/__tests__/memory-kernel.test.ts (591 lines, 16 tests), lib/memory-kernel.sh (70 lines). server.ts + cli.sh modified (boot wiring + CLI dispatch).
+- **Tests**: 688/0 total master suite at K3 commit (16 new in memory-kernel.test.ts).
+- **Live**: master booted with `[memory-kernel] armed — interval=5min, entity=jason, reviewer=openai-codex/gpt-5.5`. `subctl memory kernel status` returns armed:true. `subctl memory kernel run-now` produces decisions.jsonl `memory_kernel_cycle` entries.
+- **Caveat**: reviewer no-op while supervisor=openai-codex (no HTTP baseUrl). Documented in boot log + on-disk state file.
+- **Worker C scope-creep**: dashboard/lib/spawn-errors.ts + dashboard/server.ts + components/master/tools/subctl-orch.ts work was off-spec but valuable. Landed as separate commits `e5fbe34` + `ff245ab`. Protocol-tightened in worker stand-down message.
+
+### Verification Evidence — Backfill (mem-backfill)
+
+- **Synthesis commit**: `ef89a94` (orchestrator-owned).
+- **Files**: components/master/backfill.ts (17845 bytes), components/master/__tests__/backfill.test.ts (10 tests), lib/backfill.sh (6916 bytes). server.ts + cli.sh modified.
+- **Tests**: 701/0 total at this commit.
+- **Live**: `subctl memory backfill evy-to-memori --dry-run` reports **planned=579** on operator's actual store — significant Tier 3 history ready to migrate. `subctl memory backfill claude-mem-to-cognee --dry-run` declines cleanly with "Cognee unreachable" (operator hasn't installed Cognee yet — expected).
+- **Worker stayed in scope** — no creep, no commits.
+
+### Verification Evidence — Phase 3 / Tier 1 candidates (tier1-candidates)
+
+- **Synthesis commit**: `2e6267e` (orchestrator-owned).
+- **Files**: components/master/tier1-candidates.ts (9887 bytes), components/master/__tests__/tier1-candidates.test.ts (13 tests), lib/memory-tier1.sh (3781 bytes). memory-kernel.ts (propose_tier1 branch → appendCandidate), tools/tier1-memory.ts (3 new tools), server.ts (3 new HTTP endpoints), cli.sh (`tier1` subverb).
+- **Tests**: 714/0 total.
+- **Live**: `curl /memory/tier1/pending` returns the test candidate worker inserted during smoke testing — append-only JSONL pattern verified end-to-end.
+- **Master registry**: 81 → 84 tools.
+- **Worker stayed in scope** — no creep, no commits. Reusing the deps-injection pattern was clean.
+
+### Final tally — Overnight block 2026-05-17/18
+
+| Commit | Subject | Lines |
+|---|---|---|
+| `8c66176` | Worker A: Memori schema + endpoints | ~600 |
+| `0c52085` | Memory consciousness cycle synthesis (Workers B+C) | 2579 |
+| `e5fbe34` | Dashboard spawn-error classification | 201 |
+| `ff245ab` | subctl-orch tool regression test | 117 |
+| `ef89a94` | Backfill scripts | ~750 |
+| `2e6267e` | Tier 1 candidate queue (Phase 3) | ~700 |
+
+**6 commits**, ~5000 lines of production code + tests, **714 tests / 0 fail**. Memory Init #5 complete (Phases 1+2+3); Phase 4 (context slimming) deferred — waits on real reviewer activity.
+
+Team `memory-kernel` stood down: mem-kernel-data, mem-kernel-reviewer, mem-kernel-integration, mem-backfill, tier1-candidates all acknowledged + idle.
+
 ---
 
 # Orchestration Log — subctl
