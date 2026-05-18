@@ -109,8 +109,69 @@ export interface MemoriHealth {
   database: string | null;
   /** Number of memories — best effort; null if sidecar doesn't expose. */
   total_memories: number | null;
+  /**
+   * Raw events not yet reviewed by the memory-kernel reviewer.
+   * Null when the sidecar predates Memory Init #5.
+   */
+  total_unreviewed: number | null;
+  /**
+   * Promoted curated memories (the survivors of the consciousness cycle).
+   * Null when the sidecar predates Memory Init #5.
+   */
+  total_curated: number | null;
   auth_status: "ok" | "missing_token" | "rejected" | "n/a";
   error: string | null;
+}
+
+/**
+ * Review-state lifecycle for raw events flowing through the memory-kernel.
+ * Mirrors VALID_REVIEW_STATES in services/memori/server.py.
+ */
+export type MemoriReviewState =
+  | "unreviewed"
+  | "reviewed"
+  | "promoted"
+  | "discarded"
+  | "escalated";
+
+export interface MemoriUnreviewedEvent {
+  id: string;
+  ts: string;
+  user_text: string | null;
+  assistant_text: string | null;
+  tool_calls_json: string | null;
+  decisions_json: string | null;
+  outcomes_json: string | null;
+  metadata_json: string | null;
+  review_state: MemoriReviewState;
+}
+
+export interface MemoriSelectUnreviewedInput {
+  entity_id: string;
+  /** ISO timestamp lower bound (inclusive). */
+  since?: string;
+  /** Max events returned. Server clamps to [1, 200], default 50. */
+  limit?: number;
+}
+
+export interface MemoriMarkReviewedInput {
+  ids: string[];
+  review_state: MemoriReviewState;
+  reviewer_model?: string;
+  reason?: string;
+  confidence?: number;
+  /** Optional override; server defaults to "now". */
+  reviewed_at?: string;
+}
+
+export interface MemoriPromoteInput {
+  entity_id: string;
+  source_ids: string[];
+  memory: string;
+  kind?: string;
+  reason?: string;
+  confidence?: number;
+  reviewer_model?: string;
 }
 
 export type MemoriResult<T> =
@@ -255,6 +316,8 @@ export async function health(): Promise<MemoriHealth> {
     version?: string;
     database?: string;
     total_memories?: number;
+    total_unreviewed?: number;
+    total_curated?: number;
   }>("/health");
   const elapsed = Date.now() - t0;
   if (r.ok) {
@@ -265,6 +328,8 @@ export async function health(): Promise<MemoriHealth> {
       version: r.data?.version ?? null,
       database: r.data?.database ?? null,
       total_memories: r.data?.total_memories ?? null,
+      total_unreviewed: r.data?.total_unreviewed ?? null,
+      total_curated: r.data?.total_curated ?? null,
       auth_status: token ? "ok" : "n/a",
       error: null,
     };
@@ -277,6 +342,8 @@ export async function health(): Promise<MemoriHealth> {
     version: null,
     database: null,
     total_memories: null,
+    total_unreviewed: null,
+    total_curated: null,
     auth_status: isAuthRejected
       ? "rejected"
       : token
@@ -331,11 +398,63 @@ export async function forget(input: {
   });
 }
 
+/**
+ * Memory-kernel reviewer feed: pull raw events still pending review.
+ * Memory Init #5 Phase 1 (observe-only).
+ */
+export async function selectUnreviewed(
+  input: MemoriSelectUnreviewedInput,
+): Promise<MemoriResult<{ events: MemoriUnreviewedEvent[] }>> {
+  return request<{ events?: MemoriUnreviewedEvent[] }>("/select_unreviewed", {
+    method: "POST",
+    body: input,
+  }).then((r) => {
+    if (!r.ok) return r;
+    return { ok: true, data: { events: r.data?.events ?? [] } };
+  });
+}
+
+/**
+ * Bulk-update review_state on raw rows after the reviewer adjudicates
+ * them. Returns the count of rows actually modified.
+ */
+export async function markReviewed(
+  input: MemoriMarkReviewedInput,
+): Promise<MemoriResult<{ marked: number }>> {
+  return request<{ marked?: number }>("/mark_reviewed", {
+    method: "POST",
+    body: input,
+  }).then((r) => {
+    if (!r.ok) return r;
+    return { ok: true, data: { marked: r.data?.marked ?? 0 } };
+  });
+}
+
+/**
+ * Memory Init #5 Phase 2: promote one or more raw events into a curated
+ * memory. Atomic on the server side — either the curated row lands AND
+ * source rows flip to review_state='promoted', or neither happens.
+ */
+export async function promote(
+  input: MemoriPromoteInput,
+): Promise<MemoriResult<{ id: string | null }>> {
+  return request<{ id?: string | null }>("/promote", {
+    method: "POST",
+    body: input,
+  }).then((r) => {
+    if (!r.ok) return r;
+    return { ok: true, data: { id: r.data?.id ?? null } };
+  });
+}
+
 export const memoriClient = {
   health,
   capture,
   recall,
   forget,
+  selectUnreviewed,
+  markReviewed,
+  promote,
   resolveMemoriUrl,
   resolveMemoriAuthToken,
 };

@@ -15,10 +15,14 @@ This server wraps memorilabs.Memori with a sqlite3 connection at
 enough to migrate to Postgres later).
 
 Endpoints (must match components/master/memori-client.ts contract):
-  GET  /health   → { version, database, total_memories }
-  POST /capture  → { id }
-  POST /recall   → { hits: [...] }
-  POST /forget   → { removed }
+  GET  /health             → { version, database, total_memories,
+                              total_unreviewed, total_curated }
+  POST /capture            → { id }
+  POST /recall             → { hits: [...] }    (raw + curated)
+  POST /forget             → { removed }
+  POST /select_unreviewed  → { events: [...] }  (memory-kernel review feed)
+  POST /mark_reviewed      → { marked: N }
+  POST /promote            → { id }             (curated memory)
 
 Augmentation note (cloud trade-off):
   Memori's "Advanced Augmentation" — the structured fact/preference/
@@ -93,6 +97,11 @@ except Exception as e:  # noqa: BLE001
 # ─── fallback sqlite schema (used when real SDK unavailable) ─────────────
 
 
+VALID_REVIEW_STATES = frozenset(
+    {"unreviewed", "reviewed", "promoted", "discarded", "escalated"}
+)
+
+
 def _ensure_schema():
     Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
@@ -122,6 +131,56 @@ def _ensure_schema():
             "CREATE INDEX IF NOT EXISTS idx_memori_process "
             "ON subctl_memori_raw (process_id)"
         )
+
+        # Review-state migration (Memory Init #5 — memory-consciousness-cycle).
+        # Each ALTER must run in its own try/except — sqlite aborts the
+        # transaction on the first duplicate-column error, and the operator's
+        # production DB may already have *some* of these columns from a
+        # partial prior migration.
+        migrations = (
+            "ALTER TABLE subctl_memori_raw ADD COLUMN review_state TEXT "
+            "DEFAULT 'unreviewed'",
+            "ALTER TABLE subctl_memori_raw ADD COLUMN reviewed_at TEXT",
+            "ALTER TABLE subctl_memori_raw ADD COLUMN reviewer_model TEXT",
+            "ALTER TABLE subctl_memori_raw ADD COLUMN review_reason TEXT",
+            "ALTER TABLE subctl_memori_raw ADD COLUMN review_confidence REAL",
+        )
+        for stmt in migrations:
+            try:
+                conn.execute(stmt)
+            except sqlite3.OperationalError as e:
+                # "duplicate column name" — already migrated. Anything else
+                # we surface so it isn't silently swallowed.
+                if "duplicate column" not in str(e).lower():
+                    LOG.warning("schema migration %r failed: %s", stmt, e)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_memori_review_state "
+            "ON subctl_memori_raw (review_state, ts)"
+        )
+
+        # Curated memory table — what Phase 2 (memory-kernel promotion)
+        # writes. Source rows in subctl_memori_raw flip to
+        # review_state='promoted' when their content is promoted here.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS subctl_memori_curated (
+              id TEXT PRIMARY KEY,
+              entity_id TEXT NOT NULL,
+              source_event_ids TEXT NOT NULL,
+              memory TEXT NOT NULL,
+              kind TEXT,
+              reason TEXT,
+              confidence REAL,
+              reviewer_model TEXT,
+              ts TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_curated_entity_ts "
+            "ON subctl_memori_curated (entity_id, ts DESC)"
+        )
+
         conn.commit()
     finally:
         conn.close()
@@ -167,38 +226,67 @@ def _fallback_recall(payload: dict[str, Any]) -> list[dict[str, Any]]:
     top_k = max(1, min(int(payload.get("top_k") or 10), 200))
     conn = sqlite3.connect(DB_PATH)
     try:
-        cur = conn.execute(
-            "SELECT id, ts, user_text, assistant_text, tool_calls_json, "
-            "decisions_json FROM subctl_memori_raw WHERE entity_id = ? "
-            "ORDER BY ts DESC LIMIT ?",
-            (entity_id, top_k * 4),  # over-fetch so the lexical filter still
-                                      # gives top_k results
+        hits: list[dict[str, Any]] = []
+
+        # Curated memories first — they outrank raw turns by design (a human
+        # or higher-tier reviewer already endorsed them). We score them at
+        # 1.5x when matching the lexical filter, 1.2x when no query, so a
+        # downstream caller mixing both surfaces curated above raw.
+        cur_curated = conn.execute(
+            "SELECT id, ts, memory, kind FROM subctl_memori_curated "
+            "WHERE entity_id = ? ORDER BY ts DESC LIMIT ?",
+            (entity_id, top_k * 4),
         )
-        hits = []
-        for row in cur:
-            mid, ts, user_text, assistant_text, tool_calls_json, decisions_json = row
-            blob = " ".join(
-                [
-                    user_text or "",
-                    assistant_text or "",
-                    tool_calls_json or "",
-                    decisions_json or "",
-                ]
-            ).lower()
-            score = 1.0 if not query else (1.0 if query in blob else 0.0)
-            if score <= 0 and query:
+        for row in cur_curated:
+            cid, cts, memory, kind = row
+            blob = (memory or "").lower()
+            if query and query not in blob:
                 continue
             hits.append(
                 {
-                    "id": mid,
-                    "text": (assistant_text or user_text or "")[:500],
-                    "score": score,
-                    "ts": ts,
-                    "kind": "conversation",
+                    "id": cid,
+                    "text": (memory or "")[:500],
+                    "score": 1.5 if query else 1.2,
+                    "ts": cts,
+                    "kind": kind or "fact",
                 }
             )
             if len(hits) >= top_k:
-                break
+                return hits
+
+        # Raw turns fill any remaining slots.
+        remaining = top_k - len(hits)
+        if remaining > 0:
+            cur = conn.execute(
+                "SELECT id, ts, user_text, assistant_text, tool_calls_json, "
+                "decisions_json FROM subctl_memori_raw WHERE entity_id = ? "
+                "ORDER BY ts DESC LIMIT ?",
+                (entity_id, remaining * 4),
+            )
+            for row in cur:
+                mid, ts, user_text, assistant_text, tool_calls_json, decisions_json = row
+                blob = " ".join(
+                    [
+                        user_text or "",
+                        assistant_text or "",
+                        tool_calls_json or "",
+                        decisions_json or "",
+                    ]
+                ).lower()
+                score = 1.0 if not query else (1.0 if query in blob else 0.0)
+                if score <= 0 and query:
+                    continue
+                hits.append(
+                    {
+                        "id": mid,
+                        "text": (assistant_text or user_text or "")[:500],
+                        "score": score,
+                        "ts": ts,
+                        "kind": "conversation",
+                    }
+                )
+                if len(hits) >= top_k:
+                    break
         return hits
     finally:
         conn.close()
@@ -242,6 +330,204 @@ def _total_memories() -> int:
         return 0
 
 
+def _total_unreviewed() -> int:
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            cur = conn.execute(
+                "SELECT COUNT(*) FROM subctl_memori_raw "
+                "WHERE review_state = 'unreviewed' OR review_state IS NULL"
+            )
+            return int(cur.fetchone()[0])
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _total_curated() -> int:
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            cur = conn.execute("SELECT COUNT(*) FROM subctl_memori_curated")
+            return int(cur.fetchone()[0])
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _select_unreviewed(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    entity_id = payload.get("entity_id")
+    if not entity_id:
+        raise ValueError("entity_id is required")
+    since = payload.get("since")
+    raw_limit = payload.get("limit")
+    try:
+        limit = int(raw_limit) if raw_limit is not None else 50
+    except (TypeError, ValueError):
+        limit = 50
+    limit = max(1, min(limit, 200))
+
+    sql = (
+        "SELECT id, ts, user_text, assistant_text, tool_calls_json, "
+        "decisions_json, outcomes_json, metadata_json, review_state "
+        "FROM subctl_memori_raw "
+        "WHERE entity_id = ? AND "
+        "(review_state = 'unreviewed' OR review_state IS NULL)"
+    )
+    params: list[Any] = [entity_id]
+    if since:
+        sql += " AND ts >= ?"
+        params.append(since)
+    sql += " ORDER BY ts ASC LIMIT ?"
+    params.append(limit)
+
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.execute(sql, params)
+        events: list[dict[str, Any]] = []
+        for row in cur:
+            (
+                rid,
+                rts,
+                user_text,
+                assistant_text,
+                tool_calls_json,
+                decisions_json,
+                outcomes_json,
+                metadata_json,
+                review_state,
+            ) = row
+            events.append(
+                {
+                    "id": rid,
+                    "ts": rts,
+                    "user_text": user_text,
+                    "assistant_text": assistant_text,
+                    "tool_calls_json": tool_calls_json,
+                    "decisions_json": decisions_json,
+                    "outcomes_json": outcomes_json,
+                    "metadata_json": metadata_json,
+                    "review_state": review_state or "unreviewed",
+                }
+            )
+        return events
+    finally:
+        conn.close()
+
+
+def _mark_reviewed(payload: dict[str, Any]) -> int:
+    ids = payload.get("ids") or []
+    if not isinstance(ids, list) or not ids:
+        raise ValueError("ids must be a non-empty list")
+    if not all(isinstance(i, str) for i in ids):
+        raise ValueError("ids must be strings")
+    review_state = payload.get("review_state")
+    if review_state not in VALID_REVIEW_STATES:
+        raise ValueError(
+            f"review_state must be one of {sorted(VALID_REVIEW_STATES)}"
+        )
+    reviewer_model = payload.get("reviewer_model")
+    reason = payload.get("reason")
+    confidence = payload.get("confidence")
+    reviewed_at = payload.get("reviewed_at") or time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+    )
+    if confidence is not None:
+        try:
+            confidence = float(confidence)
+        except (TypeError, ValueError):
+            confidence = None
+
+    placeholders = ",".join("?" for _ in ids)
+    sql = (
+        "UPDATE subctl_memori_raw SET "
+        "review_state = ?, reviewed_at = ?, reviewer_model = ?, "
+        "review_reason = ?, review_confidence = ? "
+        f"WHERE id IN ({placeholders})"
+    )
+    params: list[Any] = [
+        review_state,
+        reviewed_at,
+        reviewer_model,
+        reason,
+        confidence,
+        *ids,
+    ]
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.execute(sql, params)
+        marked = cur.rowcount
+        conn.commit()
+        return int(marked)
+    finally:
+        conn.close()
+
+
+def _promote(payload: dict[str, Any]) -> str:
+    source_ids = payload.get("source_ids") or []
+    if not isinstance(source_ids, list) or not source_ids:
+        raise ValueError("source_ids must be a non-empty list")
+    if not all(isinstance(i, str) for i in source_ids):
+        raise ValueError("source_ids must be strings")
+    memory = payload.get("memory")
+    if not isinstance(memory, str) or not memory.strip():
+        raise ValueError("memory must be a non-empty string")
+    entity_id = payload.get("entity_id")
+    if not isinstance(entity_id, str) or not entity_id:
+        raise ValueError("entity_id must be a non-empty string")
+    kind = payload.get("kind")
+    reason = payload.get("reason")
+    reviewer_model = payload.get("reviewer_model")
+    confidence = payload.get("confidence")
+    if confidence is not None:
+        try:
+            confidence = float(confidence)
+        except (TypeError, ValueError):
+            confidence = None
+    ts = payload.get("ts") or time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+    )
+    cid = f"curated_{uuid.uuid4().hex[:12]}"
+
+    placeholders = ",".join("?" for _ in source_ids)
+    reviewed_at = ts
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        # Single transaction: insert curated + mark sources as promoted.
+        # If either side fails the whole thing rolls back — no orphan
+        # curated rows with un-marked sources.
+        with conn:
+            conn.execute(
+                "INSERT INTO subctl_memori_curated "
+                "(id, entity_id, source_event_ids, memory, kind, reason, "
+                "confidence, reviewer_model, ts) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (
+                    cid,
+                    entity_id,
+                    json.dumps(source_ids),
+                    memory,
+                    kind,
+                    reason,
+                    confidence,
+                    reviewer_model,
+                    ts,
+                ),
+            )
+            conn.execute(
+                "UPDATE subctl_memori_raw SET "
+                "review_state = 'promoted', reviewed_at = ?, "
+                "reviewer_model = ?, review_reason = ?, review_confidence = ? "
+                f"WHERE id IN ({placeholders})",
+                [reviewed_at, reviewer_model, reason, confidence, *source_ids],
+            )
+    finally:
+        conn.close()
+    return cid
+
+
 # ─── HTTP handler ────────────────────────────────────────────────────────
 
 
@@ -279,6 +565,8 @@ class Handler(BaseHTTPRequestHandler):
                     "database": "sqlite",
                     "db_path": DB_PATH,
                     "total_memories": _total_memories(),
+                    "total_unreviewed": _total_unreviewed(),
+                    "total_curated": _total_curated(),
                     "using_real_sdk": USING_REAL_SDK,
                     "augmentation": AUGMENTATION,
                 },
@@ -314,6 +602,36 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, {"ok": True, "removed": removed})
             except Exception as e:  # noqa: BLE001
                 LOG.exception("forget failed")
+                self._send_json(500, {"ok": False, "error": str(e)})
+            return
+        if self.path == "/select_unreviewed":
+            try:
+                events = _select_unreviewed(payload)
+                self._send_json(200, {"ok": True, "events": events})
+            except ValueError as e:
+                self._send_json(400, {"ok": False, "error": str(e)})
+            except Exception as e:  # noqa: BLE001
+                LOG.exception("select_unreviewed failed")
+                self._send_json(500, {"ok": False, "error": str(e)})
+            return
+        if self.path == "/mark_reviewed":
+            try:
+                marked = _mark_reviewed(payload)
+                self._send_json(200, {"ok": True, "marked": marked})
+            except ValueError as e:
+                self._send_json(400, {"ok": False, "error": str(e)})
+            except Exception as e:  # noqa: BLE001
+                LOG.exception("mark_reviewed failed")
+                self._send_json(500, {"ok": False, "error": str(e)})
+            return
+        if self.path == "/promote":
+            try:
+                cid = _promote(payload)
+                self._send_json(200, {"ok": True, "id": cid})
+            except ValueError as e:
+                self._send_json(400, {"ok": False, "error": str(e)})
+            except Exception as e:  # noqa: BLE001
+                LOG.exception("promote failed")
                 self._send_json(500, {"ok": False, "error": str(e)})
             return
         self._send_json(404, {"ok": False, "error": "not found"})
