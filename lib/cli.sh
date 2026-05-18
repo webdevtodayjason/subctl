@@ -389,7 +389,7 @@ subctl_cli_memory() {
   case "$sub" in
     -h|--help)
       cat <<EOF
-subctl memory [recent <N> | search <query> | remember <text> | kernel <verb>]
+subctl memory [recent <N> | search <query> | remember <text> | kernel <verb> | backfill <verb>]
 
   Query / append to master's Evy Memory (Tier 3, SQLite-backed). Goes through
   the dashboard's /api/memory/* proxy → master's /memory/*.
@@ -400,6 +400,9 @@ subctl memory [recent <N> | search <query> | remember <text> | kernel <verb>]
     remember <text>     Append a new entry (kind=note, no team scope).
     kernel <verb>       Memory consciousness cycle (Memory Init #5).
                         Sub-verbs: status (default) | run-now | pause | resume.
+    backfill <verb>     Operator-invoked ingest into new memory substrates.
+                        Sub-verbs: evy-to-memori | claude-mem-to-cognee |
+                        obsidian-to-cognee. See 'subctl memory backfill --help'.
 EOF
       return 0 ;;
     recent|"")
@@ -470,8 +473,51 @@ EOF
           return 1 ;;
       esac
       ;;
+    backfill)
+      # Operator-invoked memory substrate backfill. Sourced lazily — same
+      # reasoning as `kernel` above. Nothing here auto-runs at boot.
+      . "$SUBCTL_REPO_ROOT/lib/backfill.sh"
+      local bverb="${1:-}"
+      [[ $# -gt 0 ]] && shift
+      case "$bverb" in
+        ""|-h|--help)
+          cat <<EOF
+subctl memory backfill <verb> [flags]
+
+  Operator-invoked ingest from existing storage into the new memory
+  substrates. Nothing auto-runs at boot — fire only when the operator
+  asks. Idempotent: re-runs skip rows that carry the backfill marker.
+
+  Verbs:
+    evy-to-memori [--dry-run] [--limit N]
+        Ingest every entry from ~/.local/state/subctl/memory/evy.db into
+        the Memori sidecar at 127.0.0.1:8746.
+
+    claude-mem-to-cognee [--dry-run] [--limit N]
+        Pull observations from claude-mem (localhost:37701/api/observations)
+        into Cognee. Cognee unreachable → ok:false (clean error, no throws).
+
+    obsidian-to-cognee [--dry-run] [--vault-path PATH]
+        Walk an Obsidian vault and ingest each *.md file into Cognee.
+        Defaults to ~/Documents/Obsidian Vault/Subctl.
+EOF
+          return 0 ;;
+        evy-to-memori)
+          subctl_backfill_evy_to_memori "$@"
+          ;;
+        claude-mem-to-cognee)
+          subctl_backfill_claude_mem_to_cognee "$@"
+          ;;
+        obsidian-to-cognee)
+          subctl_backfill_obsidian_to_cognee "$@"
+          ;;
+        *)
+          subctl_err "unknown backfill verb: $bverb (try: evy-to-memori | claude-mem-to-cognee | obsidian-to-cognee)"
+          return 1 ;;
+      esac
+      ;;
     *)
-      subctl_err "unknown memory verb: $sub (try: recent | search | remember | kernel)"
+      subctl_err "unknown memory verb: $sub (try: recent | search | remember | kernel | backfill)"
       return 1
       ;;
   esac

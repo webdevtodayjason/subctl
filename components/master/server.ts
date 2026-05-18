@@ -197,6 +197,11 @@ import {
 } from "./memory";
 import { evyMemoryTools } from "./tools/evy-memory";
 import {
+  backfillEvyMemoryToMemori,
+  backfillClaudeMemToCognee,
+  backfillObsidianToCognee,
+} from "./backfill";
+import {
   startUpstreamWatchdog,
   describeUpstreamState,
   type UpstreamWatchdogHandle,
@@ -2897,6 +2902,115 @@ async function main() {
       if (url.pathname === "/memory/kernel/resume" && req.method === "POST") {
         resumeMemoryKernel();
         return Response.json({ ok: true, paused: false });
+      }
+
+      // ── /memory/backfill/* — operator-invoked memory substrate backfill ──
+      //
+      // Ingest existing storage (evy.db, claude-mem, Obsidian vault) into
+      // the new memory substrates. Each verb returns a BackfillResult shape
+      // directly as JSON. Nothing here runs at boot — these only fire when
+      // the operator hits the endpoint or runs `subctl memory backfill`.
+      //
+      //   POST /memory/backfill/evy-to-memori           body {dryRun?, limit?}
+      //   POST /memory/backfill/claude-mem-to-cognee    body {dryRun?, limit?}
+      //   POST /memory/backfill/obsidian-to-cognee      body {dryRun?, vault_path?}
+      if (
+        url.pathname === "/memory/backfill/evy-to-memori" &&
+        req.method === "POST"
+      ) {
+        let body: { dryRun?: unknown; limit?: unknown; entity_id?: unknown };
+        try {
+          const text = await req.text();
+          body = text ? (JSON.parse(text) as typeof body) : {};
+        } catch {
+          return Response.json(
+            { ok: false, error: "invalid JSON body" },
+            { status: 400 },
+          );
+        }
+        const dryRun = body.dryRun === true;
+        const limit =
+          typeof body.limit === "number" && body.limit > 0
+            ? Math.floor(body.limit)
+            : undefined;
+        const entity_id =
+          typeof body.entity_id === "string" && body.entity_id.trim()
+            ? body.entity_id.trim()
+            : (policy.operator.name ?? "operator").toLowerCase();
+        try {
+          const result = await backfillEvyMemoryToMemori({
+            dryRun,
+            limit,
+            entity_id,
+          });
+          return Response.json(result);
+        } catch (err) {
+          return Response.json(
+            { ok: false, error: (err as Error).message },
+            { status: 500 },
+          );
+        }
+      }
+      if (
+        url.pathname === "/memory/backfill/claude-mem-to-cognee" &&
+        req.method === "POST"
+      ) {
+        let body: { dryRun?: unknown; limit?: unknown };
+        try {
+          const text = await req.text();
+          body = text ? (JSON.parse(text) as typeof body) : {};
+        } catch {
+          return Response.json(
+            { ok: false, error: "invalid JSON body" },
+            { status: 400 },
+          );
+        }
+        const dryRun = body.dryRun === true;
+        const limit =
+          typeof body.limit === "number" && body.limit > 0
+            ? Math.floor(body.limit)
+            : undefined;
+        try {
+          const result = await backfillClaudeMemToCognee({ dryRun, limit });
+          return Response.json(result);
+        } catch (err) {
+          return Response.json(
+            { ok: false, error: (err as Error).message },
+            { status: 500 },
+          );
+        }
+      }
+      if (
+        url.pathname === "/memory/backfill/obsidian-to-cognee" &&
+        req.method === "POST"
+      ) {
+        let body: { dryRun?: unknown; vault_path?: unknown };
+        try {
+          const text = await req.text();
+          body = text ? (JSON.parse(text) as typeof body) : {};
+        } catch {
+          return Response.json(
+            { ok: false, error: "invalid JSON body" },
+            { status: 400 },
+          );
+        }
+        const dryRun = body.dryRun === true;
+        const vault_path =
+          typeof body.vault_path === "string" && body.vault_path.trim()
+            ? body.vault_path.trim()
+            : undefined;
+        try {
+          const result = await backfillObsidianToCognee({
+            dryRun,
+            vault_path,
+          });
+          return Response.json(result);
+        } catch (err) {
+          return Response.json(
+            { ok: false, error: (err as Error).message },
+            { status: 500 },
+          );
+        }
       }
 
       // /transcript — return the persisted transcript so the dashboard can
