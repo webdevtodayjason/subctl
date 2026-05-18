@@ -170,6 +170,19 @@ import {
   resolveMemoriUrl,
 } from "./memori-client";
 import {
+  runOneCycle as runMemoryKernelCycle,
+  getState as getMemoryKernelState,
+  getLastDecisions as getMemoryKernelLastDecisions,
+  pause as pauseMemoryKernel,
+  resume as resumeMemoryKernel,
+  startTicker as startMemoryKernelTicker,
+  _setDepsForTesting as _setMemoryKernelDepsForTesting,
+} from "./memory-kernel";
+import {
+  callSupervisor as memoryKernelSupervisorFetcher,
+  reviewEvents as memoryKernelReviewEvents,
+} from "./memory-kernel-reviewer";
+import {
   runStaleTeamSweep,
   type TeamNudgeState,
   type TeamSnapshot,
@@ -512,7 +525,14 @@ const TOOL_GATES = {
     })(),
   voice: isVoiceEnabled(),
   skillRouter: isSkillRouterEnabled(),
+  // Memory consciousness cycle (Memory Init #5 Phase 3). Kernel only
+  // runs when Memori sidecar is reachable — no point reviewing if
+  // there's no Tier 3 source data.
+  memory_kernel: false as boolean, // resolved below after TOOL_GATES.memori is known
 };
+
+// Backfill the post-aggregation gates (here so the literal stays readable above).
+TOOL_GATES.memory_kernel = TOOL_GATES.memori;
 
 console.error(
   `[master] tool gates: ${Object.entries(TOOL_GATES).map(([k, v]) => `${k}=${v ? "on" : "off"}`).join(", ")}`,
@@ -1657,6 +1677,101 @@ async function main() {
           );
         }
         broadcast("memori_health", probe);
+
+        // ── memory consciousness cycle (Memory Init #5 Phase 3) ──────────
+        // Gate the kernel on BOTH the static memori gate (env / plist) and
+        // a live reachability probe. The kernel reviewer needs the sidecar
+        // to be answering — no point arming the ticker if /select_unreviewed
+        // would just 502 every minute.
+        if (TOOL_GATES.memory_kernel && probe.reachable) {
+          // Pick the reviewer-role model if configured; fall back to the
+          // active supervisor. Matches the rolesToPin logic above — same
+          // provider/model identity that the LM Studio ctx-pin honored.
+          const reviewerCfg = providers.models.reviewer ?? supervisorCfg;
+          // baseUrl resolution: providers.host is the OpenAI-compatible
+          // root (`http://localhost:1234/v1` etc.); the reviewer's
+          // callSupervisor helper appends `/v1/...` paths, so strip a
+          // trailing /v1 to avoid /v1/v1.
+          //
+          // Bail-out: when the reviewer is on an auth-flow provider that
+          // doesn't expose an OpenAI-compatible host on a known port
+          // (openai-codex talks to ChatGPT's backend-api with bespoke
+          // headers handled by pi-ai), the default callSupervisor helper
+          // can't speak to it. Arm the kernel anyway so /status + the
+          // ticker freshness signal stay live, but skip the
+          // operator-visible LLM call until the operator wires a local
+          // reviewer.
+          const baseUrl = (reviewerCfg.host ?? "").replace(/\/v1\/?$/, "");
+          const reviewerHasUsableHost = baseUrl.length > 0;
+          if (!reviewerHasUsableHost) {
+            console.error(
+              `[memory-kernel] reviewer host not configured for ${reviewerCfg.provider}/${reviewerCfg.model} — ticker will run no-op cycles until providers.json.models.reviewer has a host (or a local provider is selected). To enable: set models.reviewer to an lmstudio/ollama route.`,
+            );
+          }
+          const llmFetcher = async (
+            messages: Parameters<typeof memoryKernelSupervisorFetcher>[0],
+            opts: Parameters<typeof memoryKernelSupervisorFetcher>[1],
+          ): Promise<string> => {
+            if (!reviewerHasUsableHost) {
+              // Empty completion → reviewer's JSON parser produces []
+              // decisions → cycle exits cleanly with 0 promotions.
+              return "";
+            }
+            const token = getApiKeyForProvider(reviewerCfg.provider);
+            return memoryKernelSupervisorFetcher(messages, {
+              ...opts,
+              baseUrl,
+              authToken: token === "not-needed" ? undefined : token,
+            });
+          };
+          const reviewEventsWired: Parameters<typeof _setMemoryKernelDepsForTesting>[0]["reviewEvents"] =
+            async (events, ctx) =>
+              memoryKernelReviewEvents(events, ctx, {
+                llmFetcher,
+                configuredSupervisor: () => ({
+                  provider: reviewerCfg.provider,
+                  model: reviewerCfg.model,
+                }),
+              });
+          _setMemoryKernelDepsForTesting({
+            operatorName: () => policy.operator.name,
+            recentTier1Facts: () => [],
+            recentEvyMemories: () => [],
+            activeProject: () => undefined,
+            emitNotification: (n) => { emitNotification(n); },
+            logDecision: (entry) => logDecision(entry),
+            broadcast: (type, payload) => broadcast(type, payload),
+            reviewEvents: reviewEventsWired,
+          });
+          const intervalMs = 5 * 60 * 1000;
+          // entity_id matches what tools/evy-memory.ts uses for capture so
+          // /select_unreviewed pulls the same scope master is writing to.
+          // The capture path lowercases the operator name (tools/evy-memory.ts
+          // pins it as "jason"); mirror that here so the kernel reads what
+          // the capture writes.
+          const entityId = (policy.operator.name ?? "operator").toLowerCase();
+          startMemoryKernelTicker({
+            intervalMs,
+            entityId,
+            registerWatchdog,
+            touchWatchdog,
+            onError: (err) => {
+              emitNotification({
+                kind: "memory-kernel-error",
+                severity: "warn",
+                title: "memory-kernel: cycle threw",
+                body: `runOneCycle surfaced an error: ${err.message}`,
+              });
+            },
+          });
+          console.error(
+            `[memory-kernel] armed — interval=5min, entity=${entityId}, reviewer=${reviewerCfg.provider}/${reviewerCfg.model}`,
+          );
+        } else if (TOOL_GATES.memory_kernel && !probe.reachable) {
+          console.error(
+            `[memory-kernel] not armed — Memori sidecar unreachable (${probe.error ?? "unknown"}). Will not retry until master restart.`,
+          );
+        }
       } catch (err) {
         console.error(
           `[memori] probe threw: ${(err as Error).message ?? err}`,
@@ -2734,6 +2849,54 @@ async function main() {
             { status: found ? 200 : 404 },
           );
         }
+      }
+
+      // ── /memory/kernel/* — memory consciousness cycle controls ──────────
+      // Memory Init #5 Phase 3. Reachable through the dashboard's existing
+      // /api/memory/* proxy (dashboard/server.ts L5852) without any
+      // dashboard-side changes — operator's `subctl memory kernel ...` CLI
+      // verbs forward through the same path.
+      //
+      //   GET  /memory/kernel/status   → { ok, state, last_decisions[] }
+      //   POST /memory/kernel/run-now  → { ok, result } (forces one cycle)
+      //   POST /memory/kernel/pause    → { ok, paused: true }
+      //   POST /memory/kernel/resume   → { ok, paused: false }
+      if (url.pathname === "/memory/kernel/status" && req.method === "GET") {
+        const state = getMemoryKernelState();
+        const last = getMemoryKernelLastDecisions();
+        return Response.json({
+          ok: true,
+          armed: TOOL_GATES.memory_kernel,
+          state,
+          reviewer_model: last.reviewer_model,
+          last_decisions: last.decisions,
+        });
+      }
+      if (url.pathname === "/memory/kernel/run-now" && req.method === "POST") {
+        if (!TOOL_GATES.memory_kernel) {
+          return Response.json(
+            { ok: false, error: "memory_kernel gate is off — install + load Memori sidecar first" },
+            { status: 503 },
+          );
+        }
+        const entityId = (policy.operator.name ?? "operator").toLowerCase();
+        try {
+          const result = await runMemoryKernelCycle({ entity_id: entityId });
+          return Response.json({ ok: result.ok, result });
+        } catch (err) {
+          return Response.json(
+            { ok: false, error: (err as Error).message },
+            { status: 500 },
+          );
+        }
+      }
+      if (url.pathname === "/memory/kernel/pause" && req.method === "POST") {
+        pauseMemoryKernel();
+        return Response.json({ ok: true, paused: true });
+      }
+      if (url.pathname === "/memory/kernel/resume" && req.method === "POST") {
+        resumeMemoryKernel();
+        return Response.json({ ok: true, paused: false });
       }
 
       // /transcript — return the persisted transcript so the dashboard can

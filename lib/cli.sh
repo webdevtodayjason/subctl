@@ -389,7 +389,7 @@ subctl_cli_memory() {
   case "$sub" in
     -h|--help)
       cat <<EOF
-subctl memory [recent <N> | search <query> | remember <text>]
+subctl memory [recent <N> | search <query> | remember <text> | kernel <verb>]
 
   Query / append to master's Evy Memory (Tier 3, SQLite-backed). Goes through
   the dashboard's /api/memory/* proxy → master's /memory/*.
@@ -398,6 +398,8 @@ subctl memory [recent <N> | search <query> | remember <text>]
     recent [N]          Last N entries (default 10, max 200).
     search <query>      Full-text search.
     remember <text>     Append a new entry (kind=note, no team scope).
+    kernel <verb>       Memory consciousness cycle (Memory Init #5).
+                        Sub-verbs: status (default) | run-now | pause | resume.
 EOF
       return 0 ;;
     recent|"")
@@ -435,8 +437,41 @@ EOF
       id=$(printf '%s' "$body" | jq -r '.entry.id // .id // "?"')
       subctl_ok "remembered as id=$id"
       ;;
+    kernel)
+      # Memory consciousness cycle controls (Memory Init #5 Phase 3).
+      # Sub-verbs forwarded into lib/memory-kernel.sh helpers — sourced
+      # lazily to keep the bare `subctl memory` path fast (most operator
+      # invocations are recent/search/remember).
+      . "$SUBCTL_REPO_ROOT/lib/memory-kernel.sh"
+      local kverb="${1:-status}"
+      [[ $# -gt 0 ]] && shift
+      case "$kverb" in
+        -h|--help)
+          cat <<EOF
+subctl memory kernel [status | run-now | pause | resume]
+
+  Operator surface for the memory consciousness cycle. Default verb is
+  'status'. Read-only, except run-now (forces one cycle) and pause/resume
+  (flip the ticker's pause flag).
+
+  Verbs:
+    status              JSON dump of kernel state + last cycle's decisions
+    run-now             Force one cycle now and return its result
+    pause               Stop the periodic ticker (persisted across restart)
+    resume              Resume after pause
+EOF
+          return 0 ;;
+        status|"")  subctl_memory_kernel_status ;;
+        run-now)    subctl_memory_kernel_run_now ;;
+        pause)      subctl_memory_kernel_pause ;;
+        resume)     subctl_memory_kernel_resume ;;
+        *)
+          subctl_err "unknown memory kernel verb: $kverb (try: status | run-now | pause | resume)"
+          return 1 ;;
+      esac
+      ;;
     *)
-      subctl_err "unknown memory verb: $sub (try: recent | search | remember)"
+      subctl_err "unknown memory verb: $sub (try: recent | search | remember | kernel)"
       return 1
       ;;
   esac
