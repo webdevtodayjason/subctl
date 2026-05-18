@@ -434,3 +434,125 @@ describe("computeHmac", () => {
     expect(computeHmac("a".repeat(64), "p", "t", "b2")).not.toBe(base);
   });
 });
+
+// ─── worker-prompt ↔ master-side contract (regression for 2026-05-18 incident) ─
+//
+// Bug: workers spawned via providers/claude/teams.sh refused master directives
+// with "HMAC verification failed" even though the secret on disk matched the
+// secret in the worker's spawn-time prompt. Root cause was an interpretation
+// gap — the worker's prompt described the HMAC input shape in pseudo-code
+// (`phase + "\n" + ts + "\n" + body`) without a runnable recipe or test
+// vector, so the worker LLM sometimes computed the digest over a different
+// byte sequence than master signed. The fix replaced the pseudo-code with an
+// explicit `node -e` block, a self-test vector the worker can run at boot,
+// and a precise definition of the empty-phase case.
+//
+// These tests pin the two contracts the worker prompt now relies on:
+//   (a) the self-test vector baked into the prompt (`secret=0123…(x4)`,
+//       `phase="ph"`, `ts="T"`, `body="B"` → `4adef968060ec740`) must match
+//       what master's computeHmac produces — if `computeHmac`'s input shape
+//       ever drifts (e.g. someone changes the separator), the worker would
+//       boot, run its self-test, and pass, while master signs differently;
+//       this test catches that.
+//   (b) the empty-phase case the prompt now explicitly defines (phase="")
+//       must match what `buildDirectiveMarker` actually signs when the
+//       caller passes no phase — keeps the no-phase marker in lockstep
+//       between the documented worker behavior and the master code path.
+//
+// If you change `computeHmac`'s input construction, update the baked
+// self-test vector in providers/claude/teams.sh in the SAME COMMIT, and
+// kick this test to recompute the expected value. Workers spawned with
+// the old prompt will refuse new directives — that's the intended fail-
+// loud behavior.
+
+describe("worker prompt self-test vector parity", () => {
+  test("the self-test vector baked into providers/claude/teams.sh matches computeHmac", () => {
+    // Mirror of the self-test that the spawn-time worker prompt instructs
+    // the worker to run via `node -e` at boot. If the prompt's expected
+    // value ever drifts from this, replacement workers spawn into a state
+    // where they self-test-fail before processing any real directive —
+    // which is loud, but also means the trust channel is broken for that
+    // team until a redeploy.
+    const SELFTEST_SECRET = "0123456789abcdef".repeat(4);
+    const SELFTEST_PHASE = "ph";
+    const SELFTEST_TS = "T";
+    const SELFTEST_BODY = "B";
+    const SELFTEST_EXPECTED = "4adef968060ec740";
+
+    const fromMaster = computeHmac(
+      SELFTEST_SECRET,
+      SELFTEST_PHASE,
+      SELFTEST_TS,
+      SELFTEST_BODY,
+    );
+    expect(fromMaster).toBe(SELFTEST_EXPECTED);
+  });
+
+  test("buildDirectiveMarker(no phase) signs with phase='' — matches the prompt's empty-phase rule", () => {
+    // Regression: the worker prompt now explicitly defines the no-phase
+    // case as "use the EMPTY STRING ''", so the HMAC input begins with
+    // "\n". This pins that buildDirectiveMarker signs the same way — if
+    // someone changes master to sign with `null` or skip the leading
+    // separator, the worker (following the documented rule) would refuse.
+    const teamId = "claude-noprompt-phase";
+    const secret = "f".repeat(64);
+    const path = getSecretPath(teamId);
+    require("node:fs").mkdirSync(require("node:path").dirname(path), {
+      recursive: true,
+    });
+    writeFileSync(path, secret + "\n");
+
+    const ts = "2026-05-18T18:00:00.000Z";
+    const body = "do the thing";
+    const { marker } = buildDirectiveMarker({ teamId, body, ts });
+
+    // What the worker, following the prompt verbatim, would compute:
+    //   input = "" + "\n" + ts + "\n" + body
+    const workerExpected = require("node:crypto")
+      .createHmac("sha256", secret)
+      .update("" + "\n" + ts + "\n" + body)
+      .digest("hex")
+      .slice(0, 16);
+
+    expect(marker).toContain(`hmac:${workerExpected}`);
+  });
+
+  test("end-to-end: master's marker verifies under the worker's literal recipe", () => {
+    // Simulates the worker copying the recipe block out of its prompt and
+    // running it with the four values extracted from a real marker. If
+    // this test ever fails, master + worker are out of sync and any team
+    // spawned post-deploy will refuse directives.
+    const teamId = "claude-recipe-parity";
+    const secret = "deadbeef".repeat(8); // 64 hex chars
+    const path = getSecretPath(teamId);
+    require("node:fs").mkdirSync(require("node:path").dirname(path), {
+      recursive: true,
+    });
+    writeFileSync(path, secret + "\n");
+
+    const phase = "phase-b";
+    const ts = "2026-05-18T18:00:00.000Z";
+    const body = "continue Phase B work\nwith a multi-line body";
+
+    const { marker, hmac: masterHmac } = buildDirectiveMarker({
+      teamId,
+      phase,
+      body,
+      ts,
+    });
+
+    // Verbatim recipe from the worker prompt:
+    //   const input = phase + "\n" + ts + "\n" + body;
+    //   HMAC-SHA256 → first 16 hex chars
+    const workerHmac = require("node:crypto")
+      .createHmac("sha256", secret)
+      .update(phase + "\n" + ts + "\n" + body)
+      .digest("hex")
+      .slice(0, 16);
+
+    expect(workerHmac).toBe(masterHmac);
+    expect(marker).toContain(`hmac:${workerHmac}`);
+    // And the canonical verifier round-trips clean.
+    expect(verifyDirectiveMarker({ teamId, marker, body })).toBe(true);
+  });
+});

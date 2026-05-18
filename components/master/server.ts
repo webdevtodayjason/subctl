@@ -80,6 +80,11 @@ import { policyTools } from "./tools/policy";
 import { diagTools, bindWatchdogState } from "./tools/diag";
 import { webTools } from "./tools/web";
 import { tinyfishTools } from "./tools/tinyfish";
+import {
+  backgroundTools,
+  bindBackgroundToolRegistry,
+} from "./tools/background";
+import { knowledgeGraphTools } from "./tools/knowledge-graph";
 import { linearTools } from "./tools/linear";
 import { knowledgeTools } from "./tools/knowledge";
 import { teamDocsTools } from "./tools/team-docs";
@@ -151,10 +156,47 @@ import {
   type Notification,
 } from "./notifications";
 import {
+  hydrateFromSidecar as hydrateBackgroundRuns,
+  drainPendingForNextTurn as drainBackgroundCompletions,
+  formatPrependForOperator as formatBackgroundPrepend,
+  _setDepsForTesting as _setBackgroundRunsDeps,
+} from "./background-runs";
+import {
+  health as cogneeHealth,
+  resolveCogneeUrl,
+} from "./cognee-client";
+import {
+  health as memoriHealth,
+  resolveMemoriUrl,
+} from "./memori-client";
+import {
+  runOneCycle as runMemoryKernelCycle,
+  getState as getMemoryKernelState,
+  getLastDecisions as getMemoryKernelLastDecisions,
+  pause as pauseMemoryKernel,
+  resume as resumeMemoryKernel,
+  startTicker as startMemoryKernelTicker,
+  _setDepsForTesting as _setMemoryKernelDepsForTesting,
+} from "./memory-kernel";
+import {
+  approveCandidate as approveTier1Candidate,
+  listPending as listTier1Pending,
+  rejectCandidate as rejectTier1Candidate,
+} from "./tier1-candidates";
+import {
+  callSupervisor as memoryKernelSupervisorFetcher,
+  reviewEvents as memoryKernelReviewEvents,
+} from "./memory-kernel-reviewer";
+import {
   runStaleTeamSweep,
   type TeamNudgeState,
   type TeamSnapshot,
 } from "./auto-nudge";
+import {
+  defaultTmuxRunner,
+  pruneOneTeam,
+  pruneVanishedTeams,
+} from "./watchdog-prune";
 import {
   recordEntry as recordMemoryEntry,
   recallEntries as recallMemoryEntries,
@@ -164,6 +206,11 @@ import {
   type MemoryEntry,
 } from "./memory";
 import { evyMemoryTools } from "./tools/evy-memory";
+import {
+  backfillEvyMemoryToMemori,
+  backfillClaudeMemToCognee,
+  backfillObsidianToCognee,
+} from "./backfill";
 import {
   startUpstreamWatchdog,
   describeUpstreamState,
@@ -464,9 +511,48 @@ const TOOL_GATES = {
   context7: hasSecretOrEnv("CONTEXT7_API_KEY", "context7_api_key"),
   linear: hasSecretOrEnv("LINEAR_API_KEY", "linear_api_key"),
   tinyfish: hasSecretOrEnv("TINYFISH_API_KEY", "tinyfish_api_key"),
+  // v2.8.10 — memory substrate migration. Cognee gates on configuration
+  // presence (URL override OR auth token); actual reachability is probed
+  // async post-boot and logged. Phase 1 scaffold — no tools wired yet,
+  // so the gate just flags whether configuration exists.
+  cognee:
+    hasSecretOrEnv("COGNEE_AUTH_TOKEN", "cognee_auth_token") ||
+    (process.env.COGNEE_SERVICE_URL ?? "").trim().length > 0,
+  // Memori gates on api key OR a configured sidecar URL OR the launchd
+  // plist existing (operator ran `subctl memori install`). The
+  // operator's chosen "augmentation=off, pure local SQLite" path needs
+  // no API key, so token-only gating would mis-fire. Reachability is
+  // probed runtime per tool call (isMemoriAvailable in
+  // tools/evy-memory.ts) — this gate just tells the boot log whether
+  // we should look.
+  memori:
+    hasSecretOrEnv("MEMORI_API_KEY", "memori_api_key") ||
+    (process.env.MEMORI_SERVICE_URL ?? "").trim().length > 0 ||
+    (() => {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const fs = require("node:fs") as typeof import("node:fs");
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const path = require("node:path") as typeof import("node:path");
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const os = require("node:os") as typeof import("node:os");
+        return fs.existsSync(
+          path.join(os.homedir(), "Library", "LaunchAgents", "com.subctl.memori.plist"),
+        );
+      } catch {
+        return false;
+      }
+    })(),
   voice: isVoiceEnabled(),
   skillRouter: isSkillRouterEnabled(),
+  // Memory consciousness cycle (Memory Init #5 Phase 3). Kernel only
+  // runs when Memori sidecar is reachable — no point reviewing if
+  // there's no Tier 3 source data.
+  memory_kernel: false as boolean, // resolved below after TOOL_GATES.memori is known
 };
+
+// Backfill the post-aggregation gates (here so the literal stays readable above).
+TOOL_GATES.memory_kernel = TOOL_GATES.memori;
 
 console.error(
   `[master] tool gates: ${Object.entries(TOOL_GATES).map(([k, v]) => `${k}=${v ? "on" : "off"}`).join(", ")}`,
@@ -573,6 +659,23 @@ export const toolRegistry: Record<string, InternalTool> = {
   // tinyfish_* — gated on TINYFISH_API_KEY (~.config/subctl/secrets.json or env).
   // Parallel to web_* (Brave + Firecrawl). v2.7.16.
   ...(spreadIf(TOOL_GATES.tinyfish, undefined, tinyfishTools) as Record<string, InternalTool>),
+  // background_* — v2.8.10 background-run runtime surface. Always
+  // registered; the runtime itself is always available. Tools:
+  //   background_run    — dispatch any registered tool in the background
+  //   background_status — inspect active + recent runs
+  //   background_cancel — abort a running run by id
+  ...Object.fromEntries(
+    Object.entries(backgroundTools).map(([k, v]) => [
+      k,
+      v as unknown as InternalTool,
+    ]),
+  ),
+  // knowledge_graph_* — v2.8.10 Memory Init #4. Multi-hop reasoning
+  // over the Cognee graph. Tools gate themselves on Cognee
+  // reachability at call time so they're discoverable in the registry
+  // and surface a clean "configure Cognee" error when the service
+  // isn't running.
+  ...(spreadIf(TOOL_GATES.cognee, undefined, knowledgeGraphTools) as Record<string, InternalTool>),
   // linear_* — gated on LINEAR_API_KEY. Operator-funded Linear API access
   // configured 2026-05-12. v2.7.2.
   ...(spreadIf(TOOL_GATES.linear, undefined, linearTools) as Record<string, InternalTool>),
@@ -613,6 +716,15 @@ export const toolRegistry: Record<string, InternalTool> = {
 // system_my_tools needs to introspect the live registry. Bind it here so
 // the tool can answer "what tools do you have?" without a circular import.
 bindSystemToolRegistry(toolRegistry as Record<string, { description?: string }>);
+
+// v2.8.10 — background_run needs to resolve tool_name → invoke() at
+// dispatch time, so bind it to the live registry here (post-construction).
+bindBackgroundToolRegistry(
+  toolRegistry as unknown as Record<
+    string,
+    { description: string; schema: unknown; invoke: (args: Record<string, unknown>) => Promise<unknown> }
+  >,
+);
 
 // ─── SDK adapters ──────────────────────────────────────────────────────────
 // pi-agent-core wants AgentTool<TSchema> (typebox parameters + `execute`). Our
@@ -1046,13 +1158,47 @@ function loadAgentTranscript(): AgentMessage[] {
   try {
     const raw = readFileSync(AGENT_STATE_PATH, "utf8");
     const parsed = JSON.parse(raw) as { messages?: AgentMessage[] };
-    return Array.isArray(parsed.messages) ? parsed.messages : [];
+    const msgs = Array.isArray(parsed.messages) ? parsed.messages : [];
+    return dropOrphanToolResults(msgs);
   } catch (err) {
     console.error(
       `[master] WARN agent-state.json corrupt, starting fresh: ${(err as Error).message}`,
     );
     return [];
   }
+}
+
+// v2.8.10 (task #5) — defensive orphan filter. The compactor was leaving
+// behind toolResult messages whose parent toolCall got folded into the
+// summary. Codex's /responses API rejects those with HTTP 400. We
+// already filter on the way OUT (in compactTranscriptInline post-2.8.10)
+// but this load-time sweep catches state files written by older daemon
+// builds that never had the filter.
+export function dropOrphanToolResults(messages: AgentMessage[]): AgentMessage[] {
+  const calledIds = new Set<string>();
+  for (const m of messages) {
+    if ((m as { role?: string }).role !== "assistant") continue;
+    const c = ((m as { content?: unknown }).content ?? []) as Array<
+      { type?: string; id?: string }
+    >;
+    for (const p of c) if (p?.type === "toolCall" && typeof p.id === "string") calledIds.add(p.id);
+  }
+  let dropped = 0;
+  const filtered = messages.filter((m) => {
+    const role = (m as { role?: string }).role;
+    const tcid = (m as { toolCallId?: string }).toolCallId;
+    if (role === "toolResult" && typeof tcid === "string" && !calledIds.has(tcid)) {
+      dropped++;
+      return false;
+    }
+    return true;
+  });
+  if (dropped > 0) {
+    console.error(
+      `[master] dropped ${dropped} orphan toolResult(s) at load — preempted Codex/OpenAI HTTP 400.`,
+    );
+  }
+  return filtered;
 }
 
 // v2.8.9 — strip helpers moved to components/master/text-sanitize.ts so the
@@ -1466,6 +1612,21 @@ async function main() {
   };
   const teamLastActivity = new Map<string, { ts: number; lastEvent?: TeamEvent }>();
   const teamReadOffsets = new Map<string, number>(); // file path → last byte read
+  // v2.8.2 — Hoisted up here (was declared near the watchdog ticker
+  // further down) so the inbox first-scan reconciliation and the
+  // HTTP /teams/:name/prune route can reference them without TDZ
+  // risk during the brief window between Bun.serve() returning and
+  // the ticker block running. Both maps are still mutated only by
+  // the watchdog/inbox paths — the new HTTP route and prune helpers
+  // operate on them by reference.
+  const teamPaneHash = new Map<string, string>();
+  const teamNudgeState = new Map<string, TeamNudgeState>();
+  // v2.8.2 — Cheap per-team `tmux has-session` check, used both by the
+  // inbox first-scan reconciliation (refuse to re-seed activity for a
+  // team whose tmux session is gone) and by the watchdog tick's
+  // per-team safety net. Centralised here so server.ts has a single
+  // mockable seam during tests.
+  const inboxTmux = defaultTmuxRunner();
 
   function teamNameFromPath(p: string): string {
     return p.replace(/^.*\//, "").replace(/\.jsonl$/, "");
@@ -1493,9 +1654,46 @@ async function main() {
       // since those events ARE live for us.
       prev = firstScanDone ? 0 : stat.size;
       teamReadOffsets.set(filePath, prev);
-      // Still backfill last_event metadata from the existing file so /teams
-      // and the dashboard show real state right after boot.
+      // v2.8.2 — Before backfilling last_event metadata from an
+      // existing-on-disk inbox file, reconcile against tmux. If the
+      // session is gone, the file is an orphan from a prior boot:
+      // re-seeding teamLastActivity from it is exactly the bug that
+      // re-armed the staleness watchdog on stale state across master
+      // restarts (2026-05-18 incident). Archive the orphan file out
+      // of the polled dir so the next boot's scan doesn't trip on it
+      // again, and skip the seed.
       if (!firstScanDone && stat.size > 0) {
+        const sessionAlive = inboxTmux.hasSession(team);
+        if (!sessionAlive) {
+          try {
+            // teamNudgeState isn't declared until the watchdog ticker
+            // initialises (further down in startMaster). At first-scan
+            // boot time it's empty by construction, so we don't pass it.
+            const moved = pruneOneTeam(
+              team,
+              {
+                teamLastActivity,
+                teamReadOffsets,
+                inboxDir: INBOX_DIR,
+                tmux: inboxTmux,
+              },
+              "orphan-inbox-on-boot",
+            );
+            if (moved) {
+              broadcast("team_pruned", {
+                ts: new Date().toISOString(),
+                teams: [team],
+                reason: "orphan inbox file at boot — tmux session no longer exists",
+              });
+              logDecision({
+                project: "_master",
+                action: "watchdog_pruned",
+                rationale: `orphan inbox file at boot for ${team} (tmux session gone); archived`,
+              });
+            }
+          } catch { /* ignore */ }
+          return;
+        }
         try {
           const raw = require("node:fs").readFileSync(filePath, "utf8") as string;
           const lines = raw.trimEnd().split("\n").filter((l) => l.trim());
@@ -1559,6 +1757,14 @@ async function main() {
 
   // Initial pass to populate teamLastActivity from existing files.
   scanInboxOnce();
+  // v2.8.2 — Flip the boot flag so any future "never seen this file"
+  // discoveries (a new team file appearing while master is running)
+  // start at offset 0 instead of stat.size — they're live events for
+  // us, not historical replay. Without this flip the flag was dead
+  // code: it was declared `false` and never assigned, so newly-
+  // appearing post-boot jsonl files were also being skipped to EOF
+  // and their first batch of events vanished into the void.
+  firstScanDone = true;
   // ALWAYS poll — fs.watch on macOS fires unreliably (filename arg often
   // undefined for content writes inside the watched dir), so we can't depend
   // on it. The watcher below is an opportunistic "wake sooner" optimization;
@@ -1591,6 +1797,170 @@ async function main() {
   console.error(
     `[master] agent ready — supervisor=${supervisorCfg.provider}/${supervisorCfg.model}, tools=${tools.length}, transcript=${agent.state.messages.length} msgs`,
   );
+
+  // v2.8.10 — background-task runtime. Wire emitNotification into the
+  // module's deps so tray notifications fire on run completion, then
+  // hydrate sidecar state (any "running" entries from a prior boot get
+  // marked failed with "lost on master restart").
+  _setBackgroundRunsDeps({ emitNotification });
+  await hydrateBackgroundRuns();
+
+  // v2.8.10 — memory substrate scaffold (task #6). Probe Cognee
+  // reachability at boot, log the result, and broadcast on the SSE bus
+  // so the dashboard can show the gate state. Non-blocking — if the
+  // service is down, master still boots normally; Tier 4 fallback
+  // (claude-mem) keeps memory_search alive in the interim.
+  if (TOOL_GATES.cognee) {
+    void (async () => {
+      try {
+        const probe = await cogneeHealth();
+        if (probe.reachable) {
+          console.error(
+            `[cognee] reachable at ${probe.url}${probe.version ? ` (v${probe.version})` : ""} — ${probe.latency_ms}ms — auth=${probe.auth_status}`,
+          );
+        } else {
+          console.error(
+            `[cognee] UNREACHABLE at ${probe.url} — ${probe.error ?? "unknown"} (auth=${probe.auth_status}). Tier 4 tools fall back to claude-mem until the service is up.`,
+          );
+        }
+        broadcast("cognee_health", probe);
+      } catch (err) {
+        console.error(
+          `[cognee] probe threw: ${(err as Error).message ?? err}`,
+        );
+      }
+    })();
+  } else {
+    console.error(
+      `[cognee] not configured (set COGNEE_SERVICE_URL or write cognee_auth_token via secrets panel). Memory init #1 scaffold inactive until configured.`,
+    );
+  }
+
+  // v2.8.10 — Memori sidecar probe (task #8 Phase 3a). Same pattern as
+  // Cognee: async, non-blocking, broadcast result on SSE bus. The
+  // sidecar itself lives at services/memori/server.py (Phase 3b);
+  // until that's installed + running, probe fails → Tier 3 falls
+  // back to evy-memory (the existing substrate).
+  if (TOOL_GATES.memori) {
+    void (async () => {
+      try {
+        const probe = await memoriHealth();
+        if (probe.reachable) {
+          console.error(
+            `[memori] reachable at ${probe.url}${probe.version ? ` (v${probe.version})` : ""} — ${probe.latency_ms}ms — db=${probe.database ?? "?"} — auth=${probe.auth_status}`,
+          );
+        } else {
+          console.error(
+            `[memori] UNREACHABLE at ${probe.url} — ${probe.error ?? "unknown"} (auth=${probe.auth_status}). Tier 3 falls back to evy-memory until the sidecar is up.`,
+          );
+        }
+        broadcast("memori_health", probe);
+
+        // ── memory consciousness cycle (Memory Init #5 Phase 3) ──────────
+        // Gate the kernel on BOTH the static memori gate (env / plist) and
+        // a live reachability probe. The kernel reviewer needs the sidecar
+        // to be answering — no point arming the ticker if /select_unreviewed
+        // would just 502 every minute.
+        if (TOOL_GATES.memory_kernel && probe.reachable) {
+          // Pick the reviewer-role model if configured; fall back to the
+          // active supervisor. Matches the rolesToPin logic above — same
+          // provider/model identity that the LM Studio ctx-pin honored.
+          const reviewerCfg = providers.models.reviewer ?? supervisorCfg;
+          // baseUrl resolution: providers.host is the OpenAI-compatible
+          // root (`http://localhost:1234/v1` etc.); the reviewer's
+          // callSupervisor helper appends `/v1/...` paths, so strip a
+          // trailing /v1 to avoid /v1/v1.
+          //
+          // Bail-out: when the reviewer is on an auth-flow provider that
+          // doesn't expose an OpenAI-compatible host on a known port
+          // (openai-codex talks to ChatGPT's backend-api with bespoke
+          // headers handled by pi-ai), the default callSupervisor helper
+          // can't speak to it. Arm the kernel anyway so /status + the
+          // ticker freshness signal stay live, but skip the
+          // operator-visible LLM call until the operator wires a local
+          // reviewer.
+          const baseUrl = (reviewerCfg.host ?? "").replace(/\/v1\/?$/, "");
+          const reviewerHasUsableHost = baseUrl.length > 0;
+          if (!reviewerHasUsableHost) {
+            console.error(
+              `[memory-kernel] reviewer host not configured for ${reviewerCfg.provider}/${reviewerCfg.model} — ticker will run no-op cycles until providers.json.models.reviewer has a host (or a local provider is selected). To enable: set models.reviewer to an lmstudio/ollama route.`,
+            );
+          }
+          const llmFetcher = async (
+            messages: Parameters<typeof memoryKernelSupervisorFetcher>[0],
+            opts: Parameters<typeof memoryKernelSupervisorFetcher>[1],
+          ): Promise<string> => {
+            if (!reviewerHasUsableHost) {
+              // Empty completion → reviewer's JSON parser produces []
+              // decisions → cycle exits cleanly with 0 promotions.
+              return "";
+            }
+            const token = getApiKeyForProvider(reviewerCfg.provider);
+            return memoryKernelSupervisorFetcher(messages, {
+              ...opts,
+              baseUrl,
+              authToken: token === "not-needed" ? undefined : token,
+            });
+          };
+          const reviewEventsWired: Parameters<typeof _setMemoryKernelDepsForTesting>[0]["reviewEvents"] =
+            async (events, ctx) =>
+              memoryKernelReviewEvents(events, ctx, {
+                llmFetcher,
+                configuredSupervisor: () => ({
+                  provider: reviewerCfg.provider,
+                  model: reviewerCfg.model,
+                }),
+              });
+          _setMemoryKernelDepsForTesting({
+            operatorName: () => policy.operator.name,
+            recentTier1Facts: () => [],
+            recentEvyMemories: () => [],
+            activeProject: () => undefined,
+            emitNotification: (n) => { emitNotification(n); },
+            logDecision: (entry) => logDecision(entry),
+            broadcast: (type, payload) => broadcast(type, payload),
+            reviewEvents: reviewEventsWired,
+          });
+          const intervalMs = 5 * 60 * 1000;
+          // entity_id matches what tools/evy-memory.ts uses for capture so
+          // /select_unreviewed pulls the same scope master is writing to.
+          // The capture path lowercases the operator name (tools/evy-memory.ts
+          // pins it as "jason"); mirror that here so the kernel reads what
+          // the capture writes.
+          const entityId = (policy.operator.name ?? "operator").toLowerCase();
+          startMemoryKernelTicker({
+            intervalMs,
+            entityId,
+            registerWatchdog,
+            touchWatchdog,
+            onError: (err) => {
+              emitNotification({
+                kind: "memory-kernel-error",
+                severity: "warn",
+                title: "memory-kernel: cycle threw",
+                body: `runOneCycle surfaced an error: ${err.message}`,
+              });
+            },
+          });
+          console.error(
+            `[memory-kernel] armed — interval=5min, entity=${entityId}, reviewer=${reviewerCfg.provider}/${reviewerCfg.model}`,
+          );
+        } else if (TOOL_GATES.memory_kernel && !probe.reachable) {
+          console.error(
+            `[memory-kernel] not armed — Memori sidecar unreachable (${probe.error ?? "unknown"}). Will not retry until master restart.`,
+          );
+        }
+      } catch (err) {
+        console.error(
+          `[memori] probe threw: ${(err as Error).message ?? err}`,
+        );
+      }
+    })();
+  } else {
+    console.error(
+      `[memori] not configured (set MEMORI_API_KEY env or write memori_api_key via secrets panel). Tier 3 stays on evy-memory until configured.`,
+    );
+  }
 
   logDecision({
     project: "_master",
@@ -1761,6 +2131,42 @@ async function main() {
         timestamp: Date.now(),
       } as any);
       for (const m of recent) agent.state.messages.push(m as any);
+
+      // v2.8.10 (task #5) — drop orphan toolResults. Compaction folds
+      // older assistant messages (which contain toolCall blocks) into
+      // the summary, but a `toolResult` may sit in `recent` whose
+      // parent `toolCall` was just absorbed into the summary. Codex's
+      // /responses API rejects orphan `function_call_output`s with
+      // HTTP 400 ("No tool call found for function call output with
+      // call_id ..."). This caused two operator-visible chat breaks
+      // today (2026-05-16 21:35 / 21:36). Filter them out here so the
+      // post-compact transcript is structurally valid for ANY provider.
+      const _calledIds = new Set<string>();
+      for (const m of agent.state.messages) {
+        if ((m as { role?: string }).role !== "assistant") continue;
+        const c = ((m as { content?: unknown }).content ?? []) as Array<
+          { type?: string; id?: string }
+        >;
+        for (const p of c) if (p?.type === "toolCall" && typeof p.id === "string") _calledIds.add(p.id);
+      }
+      const _orphans: number[] = [];
+      agent.state.messages.forEach((m, i) => {
+        const role = (m as { role?: string }).role;
+        const toolCallId = (m as { toolCallId?: string }).toolCallId;
+        if (role === "toolResult" && typeof toolCallId === "string" && !_calledIds.has(toolCallId)) {
+          _orphans.push(i);
+        }
+      });
+      if (_orphans.length > 0) {
+        // Iterate from the tail so indexes stay valid as we splice.
+        for (let i = _orphans.length - 1; i >= 0; i--) {
+          agent.state.messages.splice(_orphans[i]!, 1);
+        }
+        console.error(
+          `[compact] dropped ${_orphans.length} orphan toolResult(s) — parent toolCalls folded into compaction summary; ids would have caused Codex HTTP 400.`,
+        );
+      }
+
       saveAgentTranscript(agent.state.messages);
       broadcast("transcript_compacted", {
         ts: new Date().toISOString(),
@@ -1909,6 +2315,16 @@ async function main() {
       // not new operator intent.
       if (p.source === "chat" || p.source === "telegram") {
         resetCircuitBreakerOnNewTurn();
+        // v2.8.10 — drain any background-run completions that landed
+        // while the operator was away and prepend them to the prompt
+        // text BEFORE composeSystemPrompt/agent.prompt see it. We mutate
+        // p.text (not a copy) so downstream code paths (compose, verify,
+        // memory recording) all see the augmented prompt.
+        const completed = drainBackgroundCompletions();
+        const prepend = formatBackgroundPrepend(completed);
+        if (prepend) {
+          p.text = `${prepend}\n\n${p.text}`;
+        }
       }
 
       // ── v2.7.18 profile-swap gate ─────────────────────────────────────
@@ -2613,6 +3029,246 @@ async function main() {
         }
       }
 
+      // ── /memory/kernel/* — memory consciousness cycle controls ──────────
+      // Memory Init #5 Phase 3. Reachable through the dashboard's existing
+      // /api/memory/* proxy (dashboard/server.ts L5852) without any
+      // dashboard-side changes — operator's `subctl memory kernel ...` CLI
+      // verbs forward through the same path.
+      //
+      //   GET  /memory/kernel/status   → { ok, state, last_decisions[] }
+      //   POST /memory/kernel/run-now  → { ok, result } (forces one cycle)
+      //   POST /memory/kernel/pause    → { ok, paused: true }
+      //   POST /memory/kernel/resume   → { ok, paused: false }
+      if (url.pathname === "/memory/kernel/status" && req.method === "GET") {
+        const state = getMemoryKernelState();
+        const last = getMemoryKernelLastDecisions();
+        return Response.json({
+          ok: true,
+          armed: TOOL_GATES.memory_kernel,
+          state,
+          reviewer_model: last.reviewer_model,
+          last_decisions: last.decisions,
+        });
+      }
+      if (url.pathname === "/memory/kernel/run-now" && req.method === "POST") {
+        if (!TOOL_GATES.memory_kernel) {
+          return Response.json(
+            { ok: false, error: "memory_kernel gate is off — install + load Memori sidecar first" },
+            { status: 503 },
+          );
+        }
+        const entityId = (policy.operator.name ?? "operator").toLowerCase();
+        try {
+          const result = await runMemoryKernelCycle({ entity_id: entityId });
+          return Response.json({ ok: result.ok, result });
+        } catch (err) {
+          return Response.json(
+            { ok: false, error: (err as Error).message },
+            { status: 500 },
+          );
+        }
+      }
+      if (url.pathname === "/memory/kernel/pause" && req.method === "POST") {
+        pauseMemoryKernel();
+        return Response.json({ ok: true, paused: true });
+      }
+      if (url.pathname === "/memory/kernel/resume" && req.method === "POST") {
+        resumeMemoryKernel();
+        return Response.json({ ok: true, paused: false });
+      }
+
+      // ── /memory/tier1/* — Tier 1 candidate queue (Memory Init #5 Phase 3) ─
+      //
+      //   GET  /memory/tier1/pending  → { ok, count, candidates[] }
+      //   POST /memory/tier1/approve  → body {candidate_id, note?}; on success
+      //                                 routes through memory_remember so the
+      //                                 Tier 1 char-budget guardrails apply.
+      //   POST /memory/tier1/reject   → body {candidate_id, note?}; resolves
+      //                                 without touching memory.md.
+      if (url.pathname === "/memory/tier1/pending" && req.method === "GET") {
+        const pending = listTier1Pending();
+        return Response.json({
+          ok: true,
+          count: pending.length,
+          candidates: pending,
+        });
+      }
+      if (url.pathname === "/memory/tier1/approve" && req.method === "POST") {
+        let body: { candidate_id?: unknown; note?: unknown };
+        try {
+          const text = await req.text();
+          body = text ? (JSON.parse(text) as typeof body) : {};
+        } catch {
+          return Response.json(
+            { ok: false, error: "invalid JSON body" },
+            { status: 400 },
+          );
+        }
+        const candidateId =
+          typeof body.candidate_id === "string" ? body.candidate_id.trim() : "";
+        if (!candidateId) {
+          return Response.json(
+            { ok: false, error: "candidate_id required" },
+            { status: 400 },
+          );
+        }
+        const note = typeof body.note === "string" ? body.note : undefined;
+        try {
+          const result = await approveTier1Candidate(candidateId, {
+            resolved_by: "operator",
+            note,
+          });
+          return Response.json(result, { status: result.ok ? 200 : 404 });
+        } catch (err) {
+          return Response.json(
+            { ok: false, error: (err as Error).message },
+            { status: 500 },
+          );
+        }
+      }
+      if (url.pathname === "/memory/tier1/reject" && req.method === "POST") {
+        let body: { candidate_id?: unknown; note?: unknown };
+        try {
+          const text = await req.text();
+          body = text ? (JSON.parse(text) as typeof body) : {};
+        } catch {
+          return Response.json(
+            { ok: false, error: "invalid JSON body" },
+            { status: 400 },
+          );
+        }
+        const candidateId =
+          typeof body.candidate_id === "string" ? body.candidate_id.trim() : "";
+        if (!candidateId) {
+          return Response.json(
+            { ok: false, error: "candidate_id required" },
+            { status: 400 },
+          );
+        }
+        const note = typeof body.note === "string" ? body.note : undefined;
+        try {
+          const result = rejectTier1Candidate(candidateId, {
+            resolved_by: "operator",
+            note,
+          });
+          return Response.json(result, { status: result.ok ? 200 : 404 });
+        } catch (err) {
+          return Response.json(
+            { ok: false, error: (err as Error).message },
+            { status: 500 },
+          );
+        }
+      }
+
+      // ── /memory/backfill/* — operator-invoked memory substrate backfill ──
+      //
+      // Ingest existing storage (evy.db, claude-mem, Obsidian vault) into
+      // the new memory substrates. Each verb returns a BackfillResult shape
+      // directly as JSON. Nothing here runs at boot — these only fire when
+      // the operator hits the endpoint or runs `subctl memory backfill`.
+      //
+      //   POST /memory/backfill/evy-to-memori           body {dryRun?, limit?}
+      //   POST /memory/backfill/claude-mem-to-cognee    body {dryRun?, limit?}
+      //   POST /memory/backfill/obsidian-to-cognee      body {dryRun?, vault_path?}
+      if (
+        url.pathname === "/memory/backfill/evy-to-memori" &&
+        req.method === "POST"
+      ) {
+        let body: { dryRun?: unknown; limit?: unknown; entity_id?: unknown };
+        try {
+          const text = await req.text();
+          body = text ? (JSON.parse(text) as typeof body) : {};
+        } catch {
+          return Response.json(
+            { ok: false, error: "invalid JSON body" },
+            { status: 400 },
+          );
+        }
+        const dryRun = body.dryRun === true;
+        const limit =
+          typeof body.limit === "number" && body.limit > 0
+            ? Math.floor(body.limit)
+            : undefined;
+        const entity_id =
+          typeof body.entity_id === "string" && body.entity_id.trim()
+            ? body.entity_id.trim()
+            : (policy.operator.name ?? "operator").toLowerCase();
+        try {
+          const result = await backfillEvyMemoryToMemori({
+            dryRun,
+            limit,
+            entity_id,
+          });
+          return Response.json(result);
+        } catch (err) {
+          return Response.json(
+            { ok: false, error: (err as Error).message },
+            { status: 500 },
+          );
+        }
+      }
+      if (
+        url.pathname === "/memory/backfill/claude-mem-to-cognee" &&
+        req.method === "POST"
+      ) {
+        let body: { dryRun?: unknown; limit?: unknown };
+        try {
+          const text = await req.text();
+          body = text ? (JSON.parse(text) as typeof body) : {};
+        } catch {
+          return Response.json(
+            { ok: false, error: "invalid JSON body" },
+            { status: 400 },
+          );
+        }
+        const dryRun = body.dryRun === true;
+        const limit =
+          typeof body.limit === "number" && body.limit > 0
+            ? Math.floor(body.limit)
+            : undefined;
+        try {
+          const result = await backfillClaudeMemToCognee({ dryRun, limit });
+          return Response.json(result);
+        } catch (err) {
+          return Response.json(
+            { ok: false, error: (err as Error).message },
+            { status: 500 },
+          );
+        }
+      }
+      if (
+        url.pathname === "/memory/backfill/obsidian-to-cognee" &&
+        req.method === "POST"
+      ) {
+        let body: { dryRun?: unknown; vault_path?: unknown };
+        try {
+          const text = await req.text();
+          body = text ? (JSON.parse(text) as typeof body) : {};
+        } catch {
+          return Response.json(
+            { ok: false, error: "invalid JSON body" },
+            { status: 400 },
+          );
+        }
+        const dryRun = body.dryRun === true;
+        const vault_path =
+          typeof body.vault_path === "string" && body.vault_path.trim()
+            ? body.vault_path.trim()
+            : undefined;
+        try {
+          const result = await backfillObsidianToCognee({
+            dryRun,
+            vault_path,
+          });
+          return Response.json(result);
+        } catch (err) {
+          return Response.json(
+            { ok: false, error: (err as Error).message },
+            { status: 500 },
+          );
+        }
+      }
+
       // /transcript — return the persisted transcript so the dashboard can
       // rehydrate the chat log on page load. Optional ?limit=N (default 100).
       if (url.pathname === "/transcript" && req.method === "GET") {
@@ -2775,6 +3431,47 @@ async function main() {
           last_event: v.lastEvent ?? null,
         }));
         return Response.json({ ok: true, teams });
+      }
+
+      // v2.8.2 — Lifecycle hook called by the dashboard's
+      // POST /api/orchestration/:name/kill (and /api/sessions/:name/kill)
+      // immediately after `subctl session-kill` returns 0. Drops the
+      // team from the watchdog tracking maps + archives its inbox file,
+      // so the next watchdog tick won't escalate on a corpse. Internal
+      // 127.0.0.1-only endpoint; no auth (matches /profile, /watchdogs,
+      // etc. — same trust boundary).
+      {
+        const m = url.pathname.match(/^\/teams\/([^/]+)\/prune\/?$/);
+        if (m && req.method === "POST") {
+          const teamName = decodeURIComponent(m[1]!);
+          const decision = pruneOneTeam(teamName, {
+            teamLastActivity,
+            teamNudgeState,
+            teamPaneHash,
+            teamReadOffsets,
+            inboxDir: INBOX_DIR,
+            // tmux runner is unused by pruneOneTeam (operator already
+            // told us the session is gone), but the type requires it.
+            tmux: inboxTmux,
+          });
+          if (decision) {
+            broadcast("team_pruned", {
+              ts: new Date().toISOString(),
+              teams: [teamName],
+              reason: "operator-initiated kill",
+            });
+            logDecision({
+              project: "_master",
+              action: "watchdog_pruned",
+              rationale: `operator-killed ${teamName}; removed from staleness tracker${decision.inbox_archived ? "; inbox archived" : ""}`,
+            });
+          }
+          return Response.json({
+            ok: true,
+            pruned: decision !== null,
+            inbox_archived: decision?.inbox_archived ?? false,
+          });
+        }
       }
 
       if (url.pathname === "/diag" && req.method === "GET") {
@@ -3375,7 +4072,9 @@ async function main() {
   // The reliable signal is capture-pane content. Hash the visible pane
   // for each session; if the hash changed since the last tick, that's
   // activity, bump the timestamp to now.
-  const teamPaneHash = new Map<string, string>();
+  // (teamPaneHash declaration hoisted to the inbox-setup block above
+  // in v2.8.2 — the HTTP /teams/:name/prune route + first-scan
+  // reconciliation need it at server-construction time.)
   async function refreshTeamActivityFromTmux() {
     try {
       // 1. Enumerate sessions whose names start with "claude-" (the
@@ -3490,8 +4189,9 @@ async function main() {
   // "alert"` notification if the team fails to respond within 30 min.
   //
   // The decision logic lives in ./auto-nudge.ts so it's unit-testable.
-  // This map holds the per-team state across ticks.
-  const teamNudgeState = new Map<string, TeamNudgeState>();
+  // (teamNudgeState declaration hoisted to the inbox-setup block above
+  // in v2.8.2 — the HTTP /teams/:name/prune route + first-scan
+  // reconciliation need it at server-construction time.)
   // Re-nudge cadence — if a team is still stale 30 min after our last
   // nudge, the spec says fire an alert AND re-nudge.
   const NUDGE_RETRY_MS = 30 * 60_000;
@@ -3534,6 +4234,39 @@ async function main() {
     // writing to the inbox; window_activity captures keystrokes and
     // pane output regardless of whether the lead self-reported.
     await refreshTeamActivityFromTmux();
+
+    // v2.8.2 — Per-team safety prune. refreshTeamActivityFromTmux's
+    // bulk prune block can silently skip on tmux errors (no server
+    // running, transient EAGAIN, list-sessions exit ≠ 0) — that was
+    // one half of the 2026-05-18 stale-watchdog bug. Here we do a
+    // direct `tmux has-session` for each tracked team and drop the
+    // ones that are gone. Per-team `has-session` is cheap (single
+    // exit-code check) and won't accidentally wipe everything if the
+    // tmux server is down (it returns non-zero, we treat as gone,
+    // which is safe: a wrongly-pruned live team will be re-seeded
+    // by its next inbox event or pane capture).
+    const safetyPruned = pruneVanishedTeams({
+      teamLastActivity,
+      teamNudgeState,
+      teamPaneHash,
+      teamReadOffsets,
+      inboxDir: INBOX_DIR,
+      tmux: inboxTmux,
+      claudeOnly: true,
+    });
+    if (safetyPruned.length > 0) {
+      broadcast("team_pruned", {
+        ts: new Date().toISOString(),
+        teams: safetyPruned.map((d) => d.team_id),
+        reason: "tmux session no longer exists",
+      });
+      logDecision({
+        project: "_master",
+        action: "watchdog_pruned",
+        rationale: `safety-net prune dropped ${safetyPruned.length} team(s): ${safetyPruned.map((d) => d.team_id).join(", ")}`,
+      });
+    }
+
     const now = Date.now();
     const teams: TeamSnapshot[] = [];
     for (const [team, v] of teamLastActivity) {
@@ -3561,6 +4294,19 @@ async function main() {
           emitNotification({ kind: "team-unresponsive", severity: "alert", title, body, team_id }),
         logDecision: (team_id, action, rationale) =>
           logDecision({ project: team_id, action, rationale }),
+        // v2.8.2 — Third line of defense: the sweep itself rechecks
+        // tmux before deciding nudge/escalate. The safety-net prune
+        // above ALREADY removed gone-teams from teamLastActivity, so
+        // in practice this predicate only fires if a team's session
+        // dies between the prune and this loop (microseconds).
+        // Cheap belt-and-braces.
+        teamRegistryExists: (team_id) => inboxTmux.hasSession(team_id),
+        emitVanished: (team_id, title, body) =>
+          // v2.8.2 — Low-noise info-level (not alert): the bug doc
+          // explicitly calls for one quiet "stopped watching ..." event,
+          // not another Telegram page. severity:info short-circuits the
+          // telegram-push fanout in notifications.ts subscribers.
+          emitNotification({ kind: "team-vanished", severity: "info", title, body, team_id }),
       },
     });
 

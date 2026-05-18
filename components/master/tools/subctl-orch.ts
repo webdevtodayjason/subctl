@@ -8,9 +8,42 @@ import { existsSync, mkdirSync, appendFileSync } from "node:fs";
 
 const API = process.env.SUBCTL_API ?? "http://127.0.0.1:8787";
 
+// Format a non-OK response so the supervisor sees the actual cause and
+// can decide whether to retry, escalate, or fall back. Previously these
+// helpers threw `subctl /api/... → HTTP 500` with no body — the supervisor
+// (Evy) saw an opaque 500 from subctl_orch_spawn_template and abandoned
+// the template path for raw spawn on first failure. Surfacing the
+// dashboard's structured body (incl. error_kind) lets the model recover.
+async function describeFailure(path: string, r: Response): Promise<string> {
+  let detail = "";
+  try {
+    const text = await r.text();
+    if (text) {
+      try {
+        const parsed = JSON.parse(text) as {
+          error?: unknown;
+          error_kind?: unknown;
+        };
+        const err = typeof parsed.error === "string" ? parsed.error : "";
+        const kind = typeof parsed.error_kind === "string" ? parsed.error_kind : "";
+        if (err && kind) detail = `${kind}: ${err}`;
+        else detail = err || text;
+      } catch {
+        detail = text;
+      }
+    }
+  } catch {
+    // best-effort; fall through to bare status code
+  }
+  const head = detail.length > 600 ? detail.slice(0, 600) + "…" : detail;
+  return head
+    ? `subctl ${path} → HTTP ${r.status}: ${head}`
+    : `subctl ${path} → HTTP ${r.status}`;
+}
+
 async function apiGet<T = unknown>(path: string): Promise<T> {
   const r = await fetch(`${API}${path}`);
-  if (!r.ok) throw new Error(`subctl ${path} → HTTP ${r.status}`);
+  if (!r.ok) throw new Error(await describeFailure(path, r));
   return r.json() as Promise<T>;
 }
 
@@ -23,7 +56,7 @@ async function apiPost<T = unknown>(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!r.ok) throw new Error(`subctl ${path} → HTTP ${r.status}`);
+  if (!r.ok) throw new Error(await describeFailure(path, r));
   return r.json() as Promise<T>;
 }
 

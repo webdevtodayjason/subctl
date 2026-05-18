@@ -389,7 +389,7 @@ subctl_cli_memory() {
   case "$sub" in
     -h|--help)
       cat <<EOF
-subctl memory [recent <N> | search <query> | remember <text>]
+subctl memory [recent <N> | search <query> | remember <text> | kernel <verb> | tier1 <verb> | backfill <verb>]
 
   Query / append to master's Evy Memory (Tier 3, SQLite-backed). Goes through
   the dashboard's /api/memory/* proxy → master's /memory/*.
@@ -398,6 +398,13 @@ subctl memory [recent <N> | search <query> | remember <text>]
     recent [N]          Last N entries (default 10, max 200).
     search <query>      Full-text search.
     remember <text>     Append a new entry (kind=note, no team scope).
+    kernel <verb>       Memory consciousness cycle (Memory Init #5).
+                        Sub-verbs: status (default) | run-now | pause | resume.
+    tier1 <verb>        Tier 1 candidate queue (Memory Init #5 Phase 3).
+                        Sub-verbs: pending (default) | approve <id> | reject <id>.
+    backfill <verb>     Operator-invoked ingest into new memory substrates.
+                        Sub-verbs: evy-to-memori | claude-mem-to-cognee |
+                        obsidian-to-cognee. See 'subctl memory backfill --help'.
 EOF
       return 0 ;;
     recent|"")
@@ -435,8 +442,118 @@ EOF
       id=$(printf '%s' "$body" | jq -r '.entry.id // .id // "?"')
       subctl_ok "remembered as id=$id"
       ;;
+    kernel)
+      # Memory consciousness cycle controls (Memory Init #5 Phase 3).
+      # Sub-verbs forwarded into lib/memory-kernel.sh helpers — sourced
+      # lazily to keep the bare `subctl memory` path fast (most operator
+      # invocations are recent/search/remember).
+      . "$SUBCTL_REPO_ROOT/lib/memory-kernel.sh"
+      local kverb="${1:-status}"
+      [[ $# -gt 0 ]] && shift
+      case "$kverb" in
+        -h|--help)
+          cat <<EOF
+subctl memory kernel [status | run-now | pause | resume]
+
+  Operator surface for the memory consciousness cycle. Default verb is
+  'status'. Read-only, except run-now (forces one cycle) and pause/resume
+  (flip the ticker's pause flag).
+
+  Verbs:
+    status              JSON dump of kernel state + last cycle's decisions
+    run-now             Force one cycle now and return its result
+    pause               Stop the periodic ticker (persisted across restart)
+    resume              Resume after pause
+EOF
+          return 0 ;;
+        status|"")  subctl_memory_kernel_status ;;
+        run-now)    subctl_memory_kernel_run_now ;;
+        pause)      subctl_memory_kernel_pause ;;
+        resume)     subctl_memory_kernel_resume ;;
+        *)
+          subctl_err "unknown memory kernel verb: $kverb (try: status | run-now | pause | resume)"
+          return 1 ;;
+      esac
+      ;;
+    tier1)
+      # Tier 1 candidate queue (Memory Init #5 Phase 3). Operator surface
+      # for approving / rejecting facts the memory consciousness cycle
+      # flagged for promotion. Sourced lazily to keep `subctl memory`
+      # fast for the bare recent/search/remember paths.
+      . "$SUBCTL_REPO_ROOT/lib/memory-tier1.sh"
+      local tverb="${1:-pending}"
+      [[ $# -gt 0 ]] && shift
+      case "$tverb" in
+        -h|--help)
+          cat <<EOF
+subctl memory tier1 [pending | approve <id> [note] | reject <id> [note]]
+
+  Operator surface for the Tier 1 candidate queue. When the memory
+  consciousness cycle's reviewer flags a fact for promotion, it lands
+  here for human review before it's durably committed to Tier 1
+  (~/.config/subctl/master/memory.md).
+
+  Verbs:
+    pending             List candidates awaiting review (default)
+    approve <id> [note] Approve a candidate by id; routes through
+                        memory_remember so Tier 1 char-budget guardrails
+                        apply (may fail and leave the candidate pending).
+    reject <id> [note]  Reject without touching memory.md.
+EOF
+          return 0 ;;
+        pending|"")     subctl_memory_tier1_pending ;;
+        approve)        subctl_memory_tier1_approve "$@" ;;
+        reject)         subctl_memory_tier1_reject "$@" ;;
+        *)
+          subctl_err "unknown memory tier1 verb: $tverb (try: pending | approve <id> | reject <id>)"
+          return 1 ;;
+      esac
+      ;;
+    backfill)
+      # Operator-invoked memory substrate backfill. Sourced lazily — same
+      # reasoning as `kernel` above. Nothing here auto-runs at boot.
+      . "$SUBCTL_REPO_ROOT/lib/backfill.sh"
+      local bverb="${1:-}"
+      [[ $# -gt 0 ]] && shift
+      case "$bverb" in
+        ""|-h|--help)
+          cat <<EOF
+subctl memory backfill <verb> [flags]
+
+  Operator-invoked ingest from existing storage into the new memory
+  substrates. Nothing auto-runs at boot — fire only when the operator
+  asks. Idempotent: re-runs skip rows that carry the backfill marker.
+
+  Verbs:
+    evy-to-memori [--dry-run] [--limit N]
+        Ingest every entry from ~/.local/state/subctl/memory/evy.db into
+        the Memori sidecar at 127.0.0.1:8746.
+
+    claude-mem-to-cognee [--dry-run] [--limit N]
+        Pull observations from claude-mem (localhost:37701/api/observations)
+        into Cognee. Cognee unreachable → ok:false (clean error, no throws).
+
+    obsidian-to-cognee [--dry-run] [--vault-path PATH]
+        Walk an Obsidian vault and ingest each *.md file into Cognee.
+        Defaults to ~/Documents/Obsidian Vault/Subctl.
+EOF
+          return 0 ;;
+        evy-to-memori)
+          subctl_backfill_evy_to_memori "$@"
+          ;;
+        claude-mem-to-cognee)
+          subctl_backfill_claude_mem_to_cognee "$@"
+          ;;
+        obsidian-to-cognee)
+          subctl_backfill_obsidian_to_cognee "$@"
+          ;;
+        *)
+          subctl_err "unknown backfill verb: $bverb (try: evy-to-memori | claude-mem-to-cognee | obsidian-to-cognee)"
+          return 1 ;;
+      esac
+      ;;
     *)
-      subctl_err "unknown memory verb: $sub (try: recent | search | remember)"
+      subctl_err "unknown memory verb: $sub (try: recent | search | remember | kernel | tier1 | backfill)"
       return 1
       ;;
   esac
@@ -453,10 +570,11 @@ subctl_cli_voice() {
   case "$sub" in
     -h|--help)
       cat <<EOF
-subctl voice [status | test | render <text> | on | off]
+subctl voice [status | test | render <text> | on | off | install [backend] | uninstall]
 
   Quick sanity surface for the v2.8.0 voice layer. Routes through the
-  dashboard's /api/voice/* proxy.
+  dashboard's /api/voice/* proxy for read/render verbs; install/uninstall
+  manage the local com.subctl.tts launchd service directly.
 
   Verbs:
     status              voice.json + TTS server reachability (default)
@@ -464,6 +582,9 @@ subctl voice [status | test | render <text> | on | off]
     render <text>       render <text> and print the audio URL + duration
     on                  enable voice (voice.json#enabled=true, hot-reload)
     off                 disable voice
+    install [backend]   install + load the TTS launchd service. backend ∈
+                        {mock, voxcpm, kokoro, system}. Defaults to mock.
+    uninstall           unload + remove the TTS launchd service.
 EOF
       return 0 ;;
     status|"")
@@ -529,8 +650,66 @@ EOF
         fi
       fi
       ;;
+    install)
+      # v2.8.10 — restore install dispatch lost in the monolith→modules
+      # refactor (subctl_voice_install lives in lib/voice.sh; the
+      # dispatcher in lib/cli.sh just wasn't wiring it). Installs the
+      # com.subctl.tts launchd service that masters expects at :8789.
+      . "$SUBCTL_REPO_ROOT/lib/voice.sh"
+      subctl_voice_install "${1:-mock}"
+      ;;
+    uninstall)
+      . "$SUBCTL_REPO_ROOT/lib/voice.sh"
+      subctl_voice_disable
+      ;;
     *)
-      subctl_err "unknown voice verb: $sub (try: status | test | render | on | off)"
+      subctl_err "unknown voice verb: $sub (try: status | test | render | on | off | install | uninstall)"
+      return 1
+      ;;
+  esac
+}
+
+# ── memori (v2.8.10, Memory Init #3 Phase 3b) ─────────────────────────────
+# Operator-facing wrapper around lib/memori.sh. Verbs: status (default),
+# install [on|off], uninstall.
+subctl_cli_memori() {
+  local sub="${1:-status}"
+  [[ $# -gt 0 ]] && shift
+  case "$sub" in
+    -h|--help)
+      cat <<EOF
+subctl memori [status | install [on|off] | uninstall]
+
+  Local Memori sidecar (Memory Init #3 Phase 3b). Stores Tier 3 turns
+  in SQLite at ~/.config/subctl/master/memori.db. Master daemon talks
+  to it over HTTP at 127.0.0.1:8746.
+
+  Verbs:
+    status                 health probe + db path + total_memories (default)
+    install [on|off]       install + load the launchd service.
+                           Augmentation flag: 'on' uses memorilabs.Memori
+                           SDK with cloud augmentation (requires
+                           \`pip install memori\` + MEMORI_API_KEY,
+                           conversation content flows to memorilabs.ai
+                           for fact extraction). 'off' (default) is raw
+                           sqlite-only — no content leaves this box.
+    uninstall              unload + remove the plist. DB is preserved.
+EOF
+      return 0 ;;
+    status|"")
+      . "$SUBCTL_REPO_ROOT/lib/memori.sh"
+      subctl_memori_status
+      ;;
+    install)
+      . "$SUBCTL_REPO_ROOT/lib/memori.sh"
+      subctl_memori_install "${1:-off}"
+      ;;
+    uninstall)
+      . "$SUBCTL_REPO_ROOT/lib/memori.sh"
+      subctl_memori_disable
+      ;;
+    *)
+      subctl_err "unknown memori verb: $sub (try: status | install [on|off] | uninstall)"
       return 1
       ;;
   esac

@@ -94,7 +94,9 @@ ensure_install_tree() {
   run mkdir -p "$(dirname "$install_tree")" || return 1
   if $DRY_RUN; then
     echo "[dry-run] git -C $SUBCTL_REPO_ROOT worktree add $install_tree main"
-    echo "[dry-run] (cd $install_tree/dashboard && bun install)"
+    for sub in dashboard components/master components/mcp; do
+      echo "[dry-run] (cd $install_tree/$sub && bun install)"
+    done
     return 0
   fi
 
@@ -103,13 +105,23 @@ ensure_install_tree() {
     return 1
   fi
 
-  if [[ -f "$install_tree/dashboard/package.json" ]] && command -v bun >/dev/null 2>&1; then
-    subctl_info "vendoring dashboard deps in install tree"
-    if ! (cd "$install_tree/dashboard" && bun install >/dev/null 2>&1); then
-      subctl_warn "bun install in $install_tree/dashboard failed — web terminal may be unavailable on install-tree dashboard until fixed"
-    else
-      subctl_ok "install-tree dashboard deps installed"
-    fi
+  # Vendor deps for every workspace that has a package.json. The master
+  # daemon's policy snapshot bridge resolves smol-toml etc. relative to
+  # components/master/, so a missing node_modules there blocks every
+  # team spawn with an opaque HTTP 500 ("policy snapshot bridge failed:
+  # Cannot find package 'smol-toml'") — diagnosed 2026-05-18 when Evy
+  # could not spawn subctl-proxy-team.
+  if command -v bun >/dev/null 2>&1; then
+    for sub in dashboard components/master components/mcp; do
+      if [[ -f "$install_tree/$sub/package.json" ]]; then
+        subctl_info "vendoring $sub deps in install tree"
+        if ! (cd "$install_tree/$sub" && bun install >/dev/null 2>&1); then
+          subctl_warn "bun install in $install_tree/$sub failed — runtime may be missing deps"
+        else
+          subctl_ok "install-tree $sub deps installed"
+        fi
+      fi
+    done
   fi
 
   subctl_ok "install tree ready: $install_tree"
@@ -410,6 +422,10 @@ install_dep() {
   if _dep_detect "$id"; then
     subctl_ok "$name installed"
     [[ -n "$hint" ]] && printf "    %s\n" "$hint"
+    # Per-dep post-install patches for known upstream bugs.
+    if [[ "$id" == "claude-mem" ]]; then
+      _patch_claude_mem_plugin_deps
+    fi
     return 0
   fi
 
@@ -419,6 +435,45 @@ install_dep() {
   fi
   subctl_warn "$name install completed but not yet detected (may need PATH refresh)"
   return 0
+}
+
+# claude-mem (thedotmack) ships marketplace install bundles without bundled
+# node_modules — known upstream bug across v13.x: github.com/thedotmack/
+# claude-mem/issues/2407 (root), /2437 (still broken 13.x), /2520 (current
+# v13.2.0). The SessionStart / UserPromptSubmit / Stop hooks load
+# scripts/worker-service.cjs which require('zod/v3'), and the import fails
+# with "Cannot find module 'zod/v3'" because node_modules was never installed.
+#
+# We patch each per-account plugin install location after `npx claude-mem
+# install` lands. --ignore-scripts is mandatory because the plugin's
+# tree-sitter@0.25.0 native build fails on Node 26 (the C++20 '<=>' token
+# issue) — but the hook scripts only actually need zod + shell-quote (pure
+# JS), which install fine. Tree-sitter native bindings stay broken; that
+# only affects smart_outline/smart_search code paths the hooks don't hit.
+#
+# Will need to re-run on each claude-mem auto-update; we re-run this on
+# every subctl install pass so a 'bash install.sh' after a claude-mem
+# upgrade restores the patch.
+_patch_claude_mem_plugin_deps() {
+  local patched=0 skipped=0
+  for accountdir in "$HOME"/.claude "$HOME"/.claude-*; do
+    [[ -d "$accountdir" ]] || continue
+    local plugindir="$accountdir/plugins/marketplaces/thedotmack/plugin"
+    [[ -d "$plugindir" ]] || continue
+    if [[ -f "$plugindir/node_modules/zod/v3/package.json" ]]; then
+      skipped=$((skipped + 1))
+      continue
+    fi
+    subctl_info "    patching claude-mem plugin deps in $accountdir"
+    if (cd "$plugindir" && npm install --ignore-scripts --no-audit --no-fund >/dev/null 2>&1); then
+      patched=$((patched + 1))
+    else
+      subctl_warn "    npm install --ignore-scripts failed in $plugindir (hooks will keep emitting zod/v3 errors)"
+    fi
+  done
+  if (( patched > 0 || skipped > 0 )); then
+    subctl_ok "    claude-mem plugin deps: $patched patched, $skipped already ok"
+  fi
 }
 
 # ── install order: topological — homebrew → runtimes → CLIs → GUIs ──────────
@@ -441,6 +496,7 @@ INSTALL_ORDER=(
   lm-studio
   lms
   claude-mem
+  cloakbrowser
   telegram-bot
   context7-key
 )

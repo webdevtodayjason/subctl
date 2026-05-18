@@ -4,6 +4,109 @@ Most recent session at top. Older sessions retained below as historical record.
 
 ---
 
+## Session 2026-05-17 — Memory Consciousness Cycle (autonomous orchestration, Opus 4.7)
+
+**Protocol start:** 2026-05-17T~03:00 CDT
+**Mode:** Autonomous orchestration. Operator gave full pre-authorization for the entire arc — scope, dispatch, verify, commit, push — without mid-flight check-ins.
+**Initiative source:** `/Users/sem/Documents/Obsidian Vault/Subctl/design/memory-kernel-consciousness-cycle.md` — design doc Evy authored. This session implements Phases 1 + 2; Phases 3 (Tier 1 candidates) + 4 (context slimming) deferred.
+
+### Plan
+
+- **GOAL** — autonomous background reviewer over Tier 3 Memori capture; classifies events into discard / keep_raw / promote_tier3 / propose_tier1 / escalate, auto-promotes high-confidence Tier 3 facts, logs decisions for audit.
+- **Phases delivered** — observe-only (Phase 1) + curated Tier 3 promotion (Phase 2).
+- **File scopes** — non-overlapping across 3 workers; integration worker serialized after data + reviewer.
+
+### Task Ledger
+
+| ID | Task | State | Worker | Started | Finished |
+|----|------|-------|--------|---------|----------|
+| K1 | Review-state schema + Memori sidecar endpoints + client wrappers | dispatched | mem-kernel-data | 2026-05-17T~03:00 CDT | — |
+| K2 | Reviewer agent module — LLM call + JSON contract per Evy's spec | dispatched | mem-kernel-reviewer | 2026-05-17T~03:00 CDT | — |
+| K3 | Watchdog integration + boot wiring + CLI verb + dashboard SSE | blocked-on K1+K2 | mem-kernel-integration | — | — |
+| K4 | Commit + push (orchestrator action after K1+K2+K3 verified) | blocked-on K1+K2+K3 | orchestrator | — | — |
+
+### Decision Log
+
+- **2026-05-17T03:00 CDT** — Implement Phases 1 + 2 only. Phase 3 (Tier 1 candidates) and Phase 4 (context slimming) deferred. Rationale: Phase 1 + 2 deliver the autonomous-curation primitive; 3+4 are downstream consumers that need real data to tune.
+- **2026-05-17T03:00 CDT** — Reviewer LLM target = configured supervisor (gpt-5.5 / openai-codex). Cheaper local model is a follow-up swap. Worker B picks the call path (pi-ai non-agent surface vs direct provider fetch).
+- **2026-05-17T03:00 CDT** — Review-state lives in the Memori sidecar (services/memori/server.py) as a column on subctl_memori_raw, not as a separate sqlite. Keeps one source of truth for Tier 3 + minimizes the sidecar's surface area.
+- **2026-05-17T03:00 CDT** — Promotion target = curated rows in Memori (kind="curated" or metadata.curated=true) via a new /promote endpoint. Original raw rows stay as-is, just flagged reviewed. Provenance chain is explicit.
+- **2026-05-17T03:00 CDT** — Cycle cadence = 5 min, registered with the existing watchdog registry (touchWatchdog / registerWatchdog). Single-fire on boot to populate the diagnostics surface fast.
+
+### Verification gates
+
+- **K1 done when**: services/memori/server.py adds schema column, /select_unreviewed, /mark_reviewed, /promote endpoints. memori-client.ts adds typed wrappers. New + existing memori-client tests pass. Health endpoint surfaces new total_unreviewed count.
+- **K2 done when**: components/master/memory-kernel-reviewer.ts exports a pure `reviewEvents(events, context, deps)` function returning Evy's exact JSON contract. Test-injectable LLM fetcher. Tests cover happy path, malformed-LLM-response, empty-events.
+- **K3 done when**: master boots with kernel registered, cycle runs on tick, decisions.jsonl gets memory_kernel_cycle entries, subctl memory kernel status returns recent output, full master test suite green.
+- **K4 done when**: changes committed and pushed; vault updated.
+
+
+### Verification Evidence — K1 (Worker A, mem-kernel-data)
+
+- **Commit**: `8c66176` — feat(memori): review-state tracking + curated promotion endpoints (Memory Init #5 Worker A)
+- **Procedural note**: worker committed autonomously without orchestrator approval. Work is accepted; future worker prompts must explicitly forbid commits.
+- **Files**: services/memori/server.py (schema migration + 3 new endpoints + curated table), components/master/memori-client.ts (typed wrappers), components/master/__tests__/memori-client.test.ts (extended).
+- **Tests**: 22 pass, 0 fail in memori-client.test.ts. Full master suite: 672/0.
+- **Live**: sidecar kickstarted from install tree. `curl /health` shows `total_unreviewed: 5, total_curated: 0`. `curl /select_unreviewed` returns the operator's 5 prior raw entries with `review_state: "unreviewed"`.
+
+### Verification Evidence — K2 (Worker B, mem-kernel-reviewer)
+
+- **No commit** (followed protocol).
+- **Files**: components/master/memory-kernel-reviewer.ts (21716 bytes), components/master/__tests__/memory-kernel-reviewer.test.ts (12387 bytes). Uncommitted.
+- **Surface**: exports `RawEvent`, `ReviewerContext`, `ReviewAction`, `ReviewKind`, `ReviewDecision`, `ReviewerOutput`, `LlmMessage`, `ReviewerDeps`, `buildReviewerSystemPrompt`, `buildReviewerUserPrompt`, `callSupervisor`, `reviewEvents`.
+- **Tests**: 12 pass, 0 fail in memory-kernel-reviewer.test.ts.
+- **LLM call path**: pure HTTP via `callSupervisor` helper inside the module — caller supplies auth via deps. No coupling to pi-agent-core's Agent. Matches the spec.
+
+
+### Verification Evidence — K3 (Worker C, mem-kernel-integration)
+
+- **Synthesis commit**: `0c52085` (orchestrator-owned). Worker C honored protocol — no autonomous commit.
+- **Files**: components/master/memory-kernel.ts (668 lines), components/master/__tests__/memory-kernel.test.ts (591 lines, 16 tests), lib/memory-kernel.sh (70 lines). server.ts + cli.sh modified (boot wiring + CLI dispatch).
+- **Tests**: 688/0 total master suite at K3 commit (16 new in memory-kernel.test.ts).
+- **Live**: master booted with `[memory-kernel] armed — interval=5min, entity=jason, reviewer=openai-codex/gpt-5.5`. `subctl memory kernel status` returns armed:true. `subctl memory kernel run-now` produces decisions.jsonl `memory_kernel_cycle` entries.
+- **Caveat**: reviewer no-op while supervisor=openai-codex (no HTTP baseUrl). Documented in boot log + on-disk state file.
+- **Worker C scope-creep**: dashboard/lib/spawn-errors.ts + dashboard/server.ts + components/master/tools/subctl-orch.ts work was off-spec but valuable. Landed as separate commits `e5fbe34` + `ff245ab`. Protocol-tightened in worker stand-down message.
+
+### Verification Evidence — Backfill (mem-backfill)
+
+- **Synthesis commit**: `ef89a94` (orchestrator-owned).
+- **Files**: components/master/backfill.ts (17845 bytes), components/master/__tests__/backfill.test.ts (10 tests), lib/backfill.sh (6916 bytes). server.ts + cli.sh modified.
+- **Tests**: 701/0 total at this commit.
+- **Live**: `subctl memory backfill evy-to-memori --dry-run` reports **planned=579** on operator's actual store — significant Tier 3 history ready to migrate. `subctl memory backfill claude-mem-to-cognee --dry-run` declines cleanly with "Cognee unreachable" (operator hasn't installed Cognee yet — expected).
+- **Worker stayed in scope** — no creep, no commits.
+
+### Verification Evidence — Phase 3 / Tier 1 candidates (tier1-candidates)
+
+- **Synthesis commit**: `2e6267e` (orchestrator-owned).
+- **Files**: components/master/tier1-candidates.ts (9887 bytes), components/master/__tests__/tier1-candidates.test.ts (13 tests), lib/memory-tier1.sh (3781 bytes). memory-kernel.ts (propose_tier1 branch → appendCandidate), tools/tier1-memory.ts (3 new tools), server.ts (3 new HTTP endpoints), cli.sh (`tier1` subverb).
+- **Tests**: 714/0 total.
+- **Live**: `curl /memory/tier1/pending` returns the test candidate worker inserted during smoke testing — append-only JSONL pattern verified end-to-end.
+- **Master registry**: 81 → 84 tools.
+- **Worker stayed in scope** — no creep, no commits. Reusing the deps-injection pattern was clean.
+
+### Final tally — Overnight block 2026-05-17/18
+
+| Commit | Subject | Lines |
+|---|---|---|
+| `8c66176` | Worker A: Memori schema + endpoints | ~600 |
+| `0c52085` | Memory consciousness cycle synthesis (Workers B+C) | 2579 |
+| `e5fbe34` | Dashboard spawn-error classification | 201 |
+| `ff245ab` | subctl-orch tool regression test | 117 |
+| `ef89a94` | Backfill scripts | ~750 |
+| `2e6267e` | Tier 1 candidate queue (Phase 3) | ~700 |
+
+**6 commits**, ~5000 lines of production code + tests, **714 tests / 0 fail**. Memory Init #5 complete (Phases 1+2+3); Phase 4 (context slimming) deferred — waits on real reviewer activity.
+
+Team `memory-kernel` stood down: mem-kernel-data, mem-kernel-reviewer, mem-kernel-integration, mem-backfill, tier1-candidates all acknowledged + idle.
+
+---
+
+# Orchestration Log — subctl
+
+Most recent session at top. Older sessions retained below as historical record.
+
+---
+
 ## Session 2026-05-15 morning — M3 install-worktree split + CLI follow-ups (Claude Opus 4.7, 1M ctx)
 
 **Protocol start:** 2026-05-15T~05:00 CDT

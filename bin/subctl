@@ -740,6 +740,12 @@ case "$cmd" in
     subctl_cli_voice "$@"
     ;;
 
+  memori)
+    # v2.8.10 — Memori sidecar lifecycle (Memory Init #3, Phase 3b).
+    . "$SUBCTL_REPO_ROOT/lib/cli.sh"
+    subctl_cli_memori "$@"
+    ;;
+
   prefs|preferences)
     # v2.8.1 — operator preferences (bilateral maintenance).
     . "$SUBCTL_REPO_ROOT/lib/cli.sh"

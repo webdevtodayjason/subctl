@@ -410,7 +410,7 @@ export async function mount({ root: _root }) {
     body.innerHTML = `<div class="dim small">error: ${escapeText(msg)}</div>`;
   }
 
-  function renderModelsList(wrap, providerId, catalog, notice) {
+  async function renderModelsList(wrap, providerId, catalog, notice) {
     // Update the summary label with model count + freshness.
     const label = wrap.querySelector(".models-summary-label");
     if (label) {

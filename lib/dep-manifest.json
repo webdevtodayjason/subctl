@@ -296,6 +296,23 @@
       "depends_on": ["claude", "node"]
     },
     {
+      "id": "cloakbrowser",
+      "name": "cloakbrowser",
+      "type": "package",
+      "tier": "hard",
+      "why": "Stealth Chromium backend for browser-driven verification flows (agent-qa, future browser-use tooling). Source-patched Chromium with humanize mode and CDP sidecar (cloakserve) — used as the trusted browser substrate where stock Playwright gets detected/blocked.",
+      "detect": ["sh", "-c", "npm ls -g --depth=0 --json cloakbrowser 2>/dev/null | jq -e '.dependencies.cloakbrowser' >/dev/null"],
+      "fallback_paths": [],
+      "version_min": null,
+      "install_method": "npm",
+      "install_cmd": "npm i -g cloakbrowser playwright-core",
+      "auto_install": true,
+      "do_not_auto_install": false,
+      "manual_url": "https://cloakbrowser.dev",
+      "post_install_hint": "First launch downloads a ~200MB custom Chromium binary into the cloakbrowser cache (one-time cold-start lag). Library-only — no global CLI shipped; consumers import { launch } from 'cloakbrowser' programmatically. To run the CDP sidecar in Docker: docker run -p 127.0.0.1:9222:9222 cloakhq/cloakbrowser cloakserve",
+      "depends_on": ["npm", "node"]
+    },
+    {
       "id": "lm-studio",
       "name": "LM Studio",
       "type": "GUI",

@@ -25,6 +25,14 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 
+import {
+  approveCandidate as tier1CandidatesApprove,
+  configureWriteTier1 as configureTier1CandidatesWrite,
+  listPending as tier1CandidatesListPending,
+  rejectCandidate as tier1CandidatesReject,
+  type Tier1WriteResult,
+} from "../tier1-candidates";
+
 const MASTER_DIR = join(homedir(), ".config", "subctl", "master");
 const MEMORY_PATH = join(MASTER_DIR, "memory.md");
 const USER_PATH = join(MASTER_DIR, "user.md");
@@ -285,4 +293,109 @@ export const tier1MemoryTools = {
       };
     },
   },
+
+  // ─── Memory Init #5 Phase 3 — Tier 1 candidate queue ─────────────────
+  // When the memory kernel's reviewer returns `action: "propose_tier1"`,
+  // the candidate lands in ~/.config/subctl/master/tier1-candidates.jsonl
+  // for operator (or Evy) review. The three tools below are Evy's surface
+  // for listing, approving, and rejecting candidates. Approval routes the
+  // proposed fact through memory_remember above so the same char-budget
+  // guardrails apply.
+
+  memory_tier1_pending: {
+    description:
+      "**Use this when** you (Evy) need to see Tier 1 candidates queued for review — facts the memory consciousness cycle has flagged for promotion but is waiting on operator/Evy approval before durably committing. Returns pending candidates only; resolved ones are hidden.",
+    schema: {
+      type: "object",
+      properties: {
+        limit: {
+          type: "number",
+          description: "Max records to return (default 20, max 100).",
+        },
+      },
+      required: [],
+    },
+    invoke: async ({ limit }: { limit?: number } = {}) => {
+      const raw = typeof limit === "number" && limit > 0 ? Math.floor(limit) : 20;
+      const cap = Math.min(Math.max(raw, 1), 100);
+      const pending = tier1CandidatesListPending();
+      return {
+        ok: true,
+        count: pending.length,
+        returned: Math.min(pending.length, cap),
+        candidates: pending.slice(0, cap),
+      };
+    },
+  },
+
+  memory_tier1_approve: {
+    description:
+      "**Use this when** the operator (or you, on the operator's standing instruction) has decided a Tier 1 candidate is worth durably committing. Promotes the candidate's `memory` text through memory_remember — same char-budget guardrails apply, so this may fail and leave the candidate pending for re-try.",
+    schema: {
+      type: "object",
+      properties: {
+        candidate_id: {
+          type: "string",
+          description: "Candidate id from memory_tier1_pending (e.g. 'c_mpan96um_234214ca').",
+        },
+        note: {
+          type: "string",
+          description: "Optional resolution note recorded with the approval.",
+        },
+      },
+      required: ["candidate_id"],
+    },
+    invoke: async ({ candidate_id, note }: { candidate_id: string; note?: string }) => {
+      const trimmed = (candidate_id ?? "").trim();
+      if (!trimmed) return { ok: false, error: "candidate_id required" };
+      return await tier1CandidatesApprove(trimmed, {
+        resolved_by: "evy",
+        note,
+      });
+    },
+  },
+
+  memory_tier1_reject: {
+    description:
+      "**Use this when** a Tier 1 candidate isn't worth durable promotion (duplicate, stale, low signal). Resolves the candidate without touching memory.md — does NOT call memory_remember.",
+    schema: {
+      type: "object",
+      properties: {
+        candidate_id: {
+          type: "string",
+          description: "Candidate id from memory_tier1_pending.",
+        },
+        note: {
+          type: "string",
+          description: "Optional resolution note recorded with the rejection.",
+        },
+      },
+      required: ["candidate_id"],
+    },
+    invoke: async ({ candidate_id, note }: { candidate_id: string; note?: string }) => {
+      const trimmed = (candidate_id ?? "").trim();
+      if (!trimmed) return { ok: false, error: "candidate_id required" };
+      return tier1CandidatesReject(trimmed, {
+        resolved_by: "evy",
+        note,
+      });
+    },
+  },
 };
+
+// ─── tier1-candidates writeTier1 wiring ──────────────────────────────────
+//
+// The tier1-candidates module defers the actual Tier 1 write to an injected
+// callback so it doesn't pull this module back (no circular import). We
+// wire it once at module load — by the time approveCandidate fires, the
+// closure below resolves to the memory_remember tool defined above.
+//
+// source_type is fixed to "operator-asserted": approving a kernel-proposed
+// candidate is an explicit human decision (or Evy acting on the operator's
+// standing approval), so provenance is operator-asserted, not self-inferred.
+configureTier1CandidatesWrite(async (text: string, _kind: string): Promise<Tier1WriteResult> => {
+  return (await tier1MemoryTools.memory_remember.invoke({
+    text,
+    source_type: "operator-asserted",
+  })) as Tier1WriteResult;
+});

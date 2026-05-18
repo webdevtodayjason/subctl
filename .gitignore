@@ -55,3 +55,14 @@ services/tts/voices/**/transcript.txt
 # TTS cache (rendered audio for prior chat turns)
 services/tts/cache/
 .local/state/subctl/voice/
+
+# Python bytecode (memori sidecar etc.)
+__pycache__/
+*.pyc
+*.pyo
+
+# claude-mem auto-injected per-directory context dumps.
+# The root CLAUDE.md is the real project instructions and stays tracked;
+# claude-mem regenerates these subdir copies on session start.
+**/CLAUDE.md
+!/CLAUDE.md
