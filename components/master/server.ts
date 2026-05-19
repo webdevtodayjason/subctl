@@ -125,6 +125,8 @@ import {
 } from "./secrets-backends";
 // ── v2.8.7 openai-codex OAuth (ChatGPT Pro subscription) ──
 import { getCodexAccessToken } from "./openai-codex-auth";
+// ── xAI Grok OAuth (SuperGrok Subscription) ──
+import { getXaiOauthAccessToken, getXaiOauthBaseUrl } from "./xai-oauth-auth";
 import {
   loadProfiles,
   setActiveProfile,
@@ -168,7 +170,12 @@ import {
 import {
   health as memoriHealth,
   resolveMemoriUrl,
+  recall as memoriRecall,
+  type MemoriHit,
+  type MemoriRecallInput,
+  type MemoriResult,
 } from "./memori-client";
+import { probeWithRetry } from "./probe-with-retry";
 import {
   runOneCycle as runMemoryKernelCycle,
   getState as getMemoryKernelState,
@@ -512,12 +519,29 @@ const TOOL_GATES = {
   linear: hasSecretOrEnv("LINEAR_API_KEY", "linear_api_key"),
   tinyfish: hasSecretOrEnv("TINYFISH_API_KEY", "tinyfish_api_key"),
   // v2.8.10 — memory substrate migration. Cognee gates on configuration
-  // presence (URL override OR auth token); actual reachability is probed
-  // async post-boot and logged. Phase 1 scaffold — no tools wired yet,
-  // so the gate just flags whether configuration exists.
+  // presence (URL override OR auth token) OR the launchd plist existing
+  // (operator ran `subctl cognee install`). Actual reachability is
+  // probed async post-boot and logged. Plist-presence matches the
+  // memori gate below: the operator-installed-it signal is enough for
+  // the gate to flip, even before a token is wired.
   cognee:
     hasSecretOrEnv("COGNEE_AUTH_TOKEN", "cognee_auth_token") ||
-    (process.env.COGNEE_SERVICE_URL ?? "").trim().length > 0,
+    (process.env.COGNEE_SERVICE_URL ?? "").trim().length > 0 ||
+    (() => {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const fs = require("node:fs") as typeof import("node:fs");
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const path = require("node:path") as typeof import("node:path");
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const os = require("node:os") as typeof import("node:os");
+        return fs.existsSync(
+          path.join(os.homedir(), "Library", "LaunchAgents", "com.subctl.cognee.plist"),
+        );
+      } catch {
+        return false;
+      }
+    })(),
   // Memori gates on api key OR a configured sidecar URL OR the launchd
   // plist existing (operator ran `subctl memori install`). The
   // operator's chosen "augmentation=off, pure local SQLite" path needs
@@ -856,6 +880,14 @@ export const PROVIDER_API: Record<string, string> = {
   // OpenRouter leaderboard. If we ever want attribution that's a separate
   // change in pi-ai's openai-completions header pipeline.
   openrouter: "openai-completions",
+  // xAI Grok via SuperGrok OAuth — api.x.ai/v1 is OpenAI-compatible, so the
+  // openai-completions transport reaches it cleanly. The OAuth-issued JWT is
+  // supplied per-turn by getApiKeyForProvider's "xai-oauth" branch (which
+  // routes through xai-oauth-auth.ts's sync resolver). pi-ai's `KnownProvider`
+  // union doesn't include "xai-oauth" today, so callers that need the
+  // unioned type at compile time cast at the call site — runtime dispatch
+  // is purely string-keyed off this table.
+  "xai-oauth": "openai-completions",
 };
 
 // Module-level dedup so the anthropic guard's loud alert (notification +
@@ -981,6 +1013,7 @@ export function buildModel(cfg: {
     baseUrl: cfg.host ?? (
       LOCAL_PROVIDERS.has(cfg.provider) ? "http://localhost:1234/v1" :
       cfg.provider === "openrouter" ? "https://openrouter.ai/api/v1" :
+      cfg.provider === "xai-oauth" ? getXaiOauthBaseUrl() :
       ""
     ),
     reasoning: false,
@@ -1069,6 +1102,14 @@ export function getApiKeyForProvider(provider: string): string | undefined {
     // Refresh-on-near-expiry / refresh-on-401 is a tracked follow-up.
     return getCodexAccessToken();
   }
+  if (provider === "xai-oauth") {
+    // xAI Grok via SuperGrok OAuth. The resolver in xai-oauth-auth.ts is
+    // sync (pi-ai's getApiKey hook is sync) and kicks a background refresh
+    // when the JWT is within 120s of expiry — the deduped in-flight map
+    // means N concurrent chat turns share ONE refresh fetch. The base URL
+    // is wired into buildModel above via getXaiOauthBaseUrl().
+    return getXaiOauthAccessToken();
+  }
   // Fall through — pi-ai handles real providers via env vars / OAuth
   return undefined;
 }
@@ -1152,6 +1193,113 @@ export async function ensureModelLoaded(cfg: { provider: string; model: string; 
 }
 
 // ─── agent transcript persistence ──────────────────────────────────────────
+
+// ── v2.8.11 — Phase 4: curated Tier 3 hydration helpers ──────────────────
+//
+// composeSystemPrompt prepends curated facts (consciousness-cycle output)
+// ahead of Tier 1 so a fresh chat or post-compact transcript still sees
+// what the reviewer promoted. Recall is async + the sidecar may be down;
+// we factor the format / filter / fetch logic as pure helpers so:
+//   - tests inject a stub `recall` to exercise success / unreachable / budget paths
+//   - composeSystemPrompt (sync hot path) reads a TTL-cached text
+//     populated by an async refresh
+//
+// Curated rows from services/memori/server.py /promote land with id
+// prefix "curated_" (raw rows are "mem_*"). The /recall sidecar contract
+// returns both kinds mixed; the prefix filter is the bright line.
+
+export const CURATED_PROMPT_BUDGET_CHARS = 2000;
+export const CURATED_PROMPT_TOP_K = 15;
+export const CURATED_PROMPT_HEADER =
+  "## Curated Tier 3 memory (consciousness-cycle output)\n\n";
+
+/** Keep only rows promoted by the memory-kernel reviewer. */
+export function filterCuratedHits(hits: MemoriHit[]): MemoriHit[] {
+  return hits.filter(
+    (h) => typeof h.id === "string" && h.id.startsWith("curated_"),
+  );
+}
+
+/**
+ * Render curated hits as a prompt-prepended section, never exceeding
+ * `budgetChars`. When over budget, drop the LONGEST lines first so
+ * concise facts survive. Returns "" for empty input (caller handles the
+ * no-curated case by prepending nothing).
+ */
+export function formatCuratedSection(
+  hits: MemoriHit[],
+  budgetChars: number,
+): string {
+  if (hits.length === 0) return "";
+  const lines = hits.map((h) => {
+    const tag = h.kind ? `[${h.kind}] ` : "";
+    const ts = typeof h.ts === "string" && h.ts.length >= 10
+      ? `${h.ts.slice(0, 10)} `
+      : "";
+    return `- ${ts}${tag}${h.text}`;
+  });
+  const render = (kept: string[]) =>
+    kept.length === 0 ? "" : CURATED_PROMPT_HEADER + kept.join("\n") + "\n\n";
+
+  let text = render(lines);
+  if (text.length <= budgetChars) return text;
+
+  // Drop longest lines first. Track by original index so we can
+  // reconstruct ordering on the survivors.
+  const indexed = lines.map((line, i) => ({ line, i }));
+  const sorted = [...indexed].sort((a, b) => b.line.length - a.line.length);
+  const dropped = new Set<number>();
+  for (const { i } of sorted) {
+    dropped.add(i);
+    const remaining = lines.filter((_, idx) => !dropped.has(idx));
+    text = render(remaining);
+    if (text.length <= budgetChars) return text;
+  }
+  // Even the empty set would have returned via render(""); defensive
+  // fallback: return the header alone if every line was dropped.
+  return text.length <= budgetChars ? text : "";
+}
+
+/**
+ * Pure helper: pull curated hits from Memori, filter, sort newest-first,
+ * keep top-K, and format under the prompt budget. Returns "" on any
+ * recall failure (sidecar unreachable, transport error, etc.) — the
+ * caller never throws and never sees a partial section.
+ */
+export async function buildCuratedPromptSection(deps: {
+  recall: (
+    input: MemoriRecallInput,
+  ) => Promise<MemoriResult<{ hits: MemoriHit[] }>>;
+  entityId: string;
+  budgetChars?: number;
+  topK?: number;
+}): Promise<string> {
+  const budget = deps.budgetChars ?? CURATED_PROMPT_BUDGET_CHARS;
+  const topK = deps.topK ?? CURATED_PROMPT_TOP_K;
+  // top_k=50 widens the candidate window so the prefix-filter has
+  // material to pick from; topK then trims down for the prompt budget.
+  let result: MemoriResult<{ hits: MemoriHit[] }>;
+  try {
+    result = await deps.recall({
+      entity_id: deps.entityId,
+      query: "",
+      top_k: Math.max(topK * 4, 50),
+    });
+  } catch (err) {
+    console.error(
+      `[curated] recall threw: ${(err as Error).message ?? String(err)}`,
+    );
+    return "";
+  }
+  if (!result.ok) {
+    console.error(`[curated] recall failed: ${result.error}`);
+    return "";
+  }
+  const curated = filterCuratedHits(result.data.hits);
+  // Newest first — ts is ISO-8601 so lexicographic compare works.
+  curated.sort((a, b) => (b.ts ?? "").localeCompare(a.ts ?? ""));
+  return formatCuratedSection(curated.slice(0, topK), budget);
+}
 
 function loadAgentTranscript(): AgentMessage[] {
   if (!existsSync(AGENT_STATE_PATH)) return [];
@@ -1392,7 +1540,59 @@ async function main() {
   // without re-running scoring. Re-set on every compose call.
   let lastRouterDecision: RouterDecision | null = null;
 
+  // ── v2.8.11 — Phase 4: curated Tier 3 cache ─────────────────────────────
+  // composeSystemPrompt is sync (the agent pulls `state.systemPrompt`
+  // every turn and the caller can't await mid-build). The /recall sidecar
+  // call is async + may be slow + could fail. Bridge: keep a TTL-cached
+  // curated text and fire a fire-and-forget refresh from inside compose.
+  // First turn after boot may see an empty cache — we kick a refresh
+  // right after [memori] reachable logs so by the time the operator
+  // types their first message, the cache is usually warm. On stale or
+  // unreachable sidecar, compose prepends nothing — Tier 1 + skill +
+  // persona ride alone, behavior matches pre-Phase-4.
+  const CURATED_TTL_MS = 60_000;
+  let curatedCache: { text: string; ts: number } = { text: "", ts: 0 };
+  let curatedRefreshInFlight = false;
+
+  function refreshCuratedAsync(reason: string): void {
+    if (curatedRefreshInFlight) return;
+    curatedRefreshInFlight = true;
+    const entityId = (policy.operator.name ?? "operator").toLowerCase();
+    buildCuratedPromptSection({
+      recall: memoriRecall,
+      entityId,
+      budgetChars: CURATED_PROMPT_BUDGET_CHARS,
+      topK: CURATED_PROMPT_TOP_K,
+    })
+      .then((text) => {
+        curatedCache = { text, ts: Date.now() };
+        if (text.length > 0) {
+          console.error(
+            `[curated] refreshed (${reason}) — ${text.length} chars prepended next turn`,
+          );
+        }
+      })
+      .catch((err) => {
+        // Never throw — keep last good cache, log once.
+        console.error(
+          `[curated] refresh threw: ${(err as Error).message ?? String(err)}`,
+        );
+      })
+      .finally(() => {
+        curatedRefreshInFlight = false;
+      });
+  }
+
   function composeSystemPrompt(userMessage?: string): string {
+    // Curated Tier 3 goes FIRST so the supervisor sees the consciousness-
+    // cycle output ahead of tier-1 + skill + persona. Stale or empty
+    // cache → empty string → prepending is a no-op. Hot path is sync;
+    // refreshCuratedAsync runs the actual /recall in the background.
+    if (Date.now() - curatedCache.ts > CURATED_TTL_MS) {
+      refreshCuratedAsync("ttl-expired");
+    }
+    const curatedBlock = curatedCache.text;
+
     const memBlock = buildMemoryBlock();
     const personality = buildPersonalityFragment();
     // ── v2.8.1: skill router (Hermes-style preloading) ──
@@ -1423,7 +1623,7 @@ async function main() {
     // fragment cannot relax them, and every preset's content explicitly
     // says so. Hot-swappable: composeSystemPrompt() runs before every
     // turn, so writes to personality.json take effect on the next prompt.
-    return memBlock + routerBlock + skill + personality;
+    return curatedBlock + memBlock + routerBlock + skill + personality;
   }
 
   // v2.8.9 — LM Studio cache_prompt: true via pi-ai's onPayload hook.
@@ -1813,14 +2013,25 @@ async function main() {
   if (TOOL_GATES.cognee) {
     void (async () => {
       try {
-        const probe = await cogneeHealth();
+        // Retry-with-backoff: Python sidecar takes 5–15s to start
+        // (interpreter + SDK load). One-shot probe at boot used to log
+        // a loud false UNREACHABLE; the retry helper logs quiet
+        // intermediate lines and only escalates after exhaustion.
+        const probe = await probeWithRetry({
+          name: "cognee",
+          probe: cogneeHealth,
+          budgetMs: 30_000,
+          baseDelayMs: 1500,
+          maxAttempts: 6,
+          log: (line) => console.error(line),
+        });
         if (probe.reachable) {
           console.error(
             `[cognee] reachable at ${probe.url}${probe.version ? ` (v${probe.version})` : ""} — ${probe.latency_ms}ms — auth=${probe.auth_status}`,
           );
         } else {
           console.error(
-            `[cognee] UNREACHABLE at ${probe.url} — ${probe.error ?? "unknown"} (auth=${probe.auth_status}). Tier 4 tools fall back to claude-mem until the service is up.`,
+            `[cognee] Tier 4 tools fall back to claude-mem until the service is up (last error: ${probe.error ?? "unknown"}, auth=${probe.auth_status}).`,
           );
         }
         broadcast("cognee_health", probe);
@@ -1844,14 +2055,27 @@ async function main() {
   if (TOOL_GATES.memori) {
     void (async () => {
       try {
-        const probe = await memoriHealth();
+        // Retry-with-backoff (see cognee block above for rationale).
+        const probe = await probeWithRetry({
+          name: "memori",
+          probe: memoriHealth,
+          budgetMs: 30_000,
+          baseDelayMs: 1500,
+          maxAttempts: 6,
+          log: (line) => console.error(line),
+        });
         if (probe.reachable) {
           console.error(
             `[memori] reachable at ${probe.url}${probe.version ? ` (v${probe.version})` : ""} — ${probe.latency_ms}ms — db=${probe.database ?? "?"} — auth=${probe.auth_status}`,
           );
+          // v2.8.11 Phase 4: warm the curated cache now so the first
+          // operator turn after boot sees Tier 3 facts. The function is
+          // fire-and-forget; subsequent refreshes are driven by the
+          // TTL check inside composeSystemPrompt.
+          refreshCuratedAsync("boot");
         } else {
           console.error(
-            `[memori] UNREACHABLE at ${probe.url} — ${probe.error ?? "unknown"} (auth=${probe.auth_status}). Tier 3 falls back to evy-memory until the sidecar is up.`,
+            `[memori] Tier 3 falls back to evy-memory until the sidecar is up (last error: ${probe.error ?? "unknown"}, auth=${probe.auth_status}).`,
           );
         }
         broadcast("memori_health", probe);
