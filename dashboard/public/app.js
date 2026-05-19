@@ -2363,4 +2363,89 @@
   // on the WS handshake.
   startPolling();
   connectWS();
+
+  // ── v2.8.8: update-flow chip wiring ───────────────────────────────────
+  // The brand-version chip is now a <button id="version-chip">. The inner
+  // <span id="version"> still gets text-content-updated by render(state),
+  // and a CSS pseudo-element on the button renders the dot keyed off
+  // data-update-state. We:
+  //   1. Poll /api/update/check every 5min — flips data-update-state to
+  //      "available" if the running version is behind origin/main.
+  //   2. Subscribe to /api/update/events for a real-time `update_available`
+  //      push, so the wiggle fires without waiting for the next poll.
+  //   3. Lazy-load /update-modal.js on first click — keeps initial JS lean.
+  function initUpdateChip() {
+    const chip = document.getElementById("version-chip");
+    if (!chip) return;
+
+    let modalModule = null;
+    async function openModal() {
+      if (!modalModule) {
+        try {
+          modalModule = await import("/update-modal.js");
+        } catch (err) {
+          console.error("[update] failed to load update-modal.js", err);
+          return;
+        }
+      }
+      const api = modalModule.openUpdateModal ?? window.__subctlUpdateModal?.open;
+      if (typeof api === "function") api();
+    }
+    chip.addEventListener("click", openModal);
+
+    async function pollCheck() {
+      try {
+        const r = await fetch("/api/update/check");
+        if (!r.ok) return;
+        const j = await r.json();
+        if (j && j.has_update === true) {
+          // Don't clobber updating/done while a run is in flight.
+          const current = chip.dataset.updateState;
+          if (current !== "updating") chip.dataset.updateState = "available";
+        } else if (chip.dataset.updateState === "available") {
+          // Cleared upstream — drop back to idle.
+          chip.dataset.updateState = "idle";
+        }
+      } catch { /* network blip — try again next cycle */ }
+    }
+    pollCheck();
+    setInterval(pollCheck, 5 * 60 * 1000);
+
+    // Real-time push: master/dashboard can broadcast update_available on
+    // its own (e.g., from the upstreams watcher). EventSource auto-reconnects
+    // on drop so we don't need explicit retry logic.
+    try {
+      const es = new EventSource("/api/update/events");
+      es.addEventListener("update_available", () => {
+        if (chip.dataset.updateState !== "updating") {
+          chip.dataset.updateState = "available";
+        }
+      });
+      es.addEventListener("update_started", () => {
+        chip.dataset.updateState = "updating";
+      });
+      es.addEventListener("update_finished", (ev) => {
+        try {
+          const data = JSON.parse(ev.data);
+          chip.dataset.updateState = data.ok ? "done" : "available";
+          // After a short cool-off, revert to idle so the chip doesn't stay
+          // green forever; the next /api/update/check tick will re-paint
+          // "available" if a newer tag exists post-update.
+          if (data.ok) {
+            setTimeout(() => {
+              if (chip.dataset.updateState === "done") chip.dataset.updateState = "idle";
+              pollCheck();
+            }, 5000);
+          }
+        } catch { /* swallow malformed events */ }
+      });
+    } catch (err) {
+      console.warn("[update] EventSource unavailable", err);
+    }
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initUpdateChip, { once: true });
+  } else {
+    initUpdateChip();
+  }
 })();

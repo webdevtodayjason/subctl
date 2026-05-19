@@ -95,7 +95,16 @@
   <header class="topbar">
     <div class="brand">
       <span class="brand-name">subctl</span>
-      <span class="brand-version" id="version">v0.0.0</span>
+      <!-- v2.8.8 — version chip is now a button. Click opens the update
+           modal (lazy-loaded from /update-modal.js). data-update-state
+           drives the CSS wiggle + colored dot when origin/main has a
+           newer tag than the running daemon (see app.js poll loop). -->
+      <button type="button" class="brand-version" id="version-chip"
+              data-update-state="idle"
+              aria-label="subctl version — click to check for updates"
+              title="Click to check for updates">
+        <span id="version">v0.0.0</span>
+      </button>
     </div>
     <div class="topbar-right">
       <span class="pulse-dot" id="pulse-dot" aria-hidden="true"></span>
@@ -766,78 +775,39 @@
 
     <section class="memory-screen" data-tab="memory">
       <header class="screen-header">
-        <h2>Memory <span class="screen-sub">tier 1 MEMORY.md · tier 2 Obsidian · tier 3 Evy Memory (sqlite) · tier 4 claude-mem · tier 5 project artifacts</span></h2>
+        <h2>Memory <span class="screen-sub">tier 1 MEMORY.md · tier 2 Obsidian · tier 3 Memori/Evy · tier 4 Cognee graph · tier 5 project artifacts</span></h2>
       </header>
 
-      <div class="memory-grid">
-        <section class="memory-card">
-          <div class="memory-card-head">
-            <h3>Operator profile <span class="dim small">user.md</span></h3>
-            <span class="memory-card-meta" id="user-md-meta">— / 1375 chars</span>
-          </div>
-          <div class="memory-card-body">
-            <p class="memory-card-doc">Stable description of Jason — role, infrastructure, work style, preferences. Master sees this every turn so it doesn't have to re-discover the basics. Edit conservatively; this is durable context.</p>
-            <textarea id="user-md-textarea" rows="10" placeholder="Jason — MSP owner, AI application developer. Runs subctl on this Mac (256GB RAM, 400Gbps backbone). Deeply technical (30+ yrs IT). Prefers FREE/open-source first..."></textarea>
-            <div class="memory-card-actions">
-              <button type="button" class="primary-btn" data-mem-save="user">save</button>
-              <span class="memory-card-result" id="user-md-result"></span>
-            </div>
-          </div>
-        </section>
+      <!-- v2.8.7 — Memory tab rebuild. Six panels rendered by
+           tabs/memory.js into the containers below:
+             a. Tier health strip   → #mem-tier-health
+             b. Consciousness cycle → #mem-cycle
+             c. Tier 1 candidates   → #mem-candidates
+             d. Curated Tier 3      → #mem-curated
+             e. Backfill            → #mem-backfill
+             f. Cognify             → #mem-cognify
+           The JS recreates the existing Tier-1 editor IDs
+           (#user-md-textarea, #memory-md-textarea, #user-md-meta,
+           #memory-md-meta, #user-md-result, #memory-md-result,
+           [data-mem-save]) inside #mem-tier-health for back-compat with
+           existing handlers + tests. Same for the Obsidian + Evy IDs
+           (#memory-status, #memory-content, #evy-memory-card,
+           #evy-mem-list, #evy-mem-meta, #evy-mem-search, #evy-mem-kind,
+           #evy-mem-search-btn, #evy-mem-refresh-btn) — those still
+           render inside the curated/obsidian panels JS-side. -->
+      <div class="mem-panels">
+        <div id="mem-tier-health" class="mem-panel mem-panel-strip"></div>
+        <div id="mem-cycle" class="mem-panel"></div>
+        <div id="mem-candidates" class="mem-panel"></div>
+        <div id="mem-curated" class="mem-panel"></div>
+        <div id="mem-backfill" class="mem-panel"></div>
+        <div id="mem-cognify" class="mem-panel"></div>
+      </div>
 
-        <section class="memory-card">
-          <div class="memory-card-head">
-            <h3>Learned facts <span class="dim small">memory.md</span></h3>
-            <span class="memory-card-meta" id="memory-md-meta">— / 2200 chars</span>
-          </div>
-          <div class="memory-card-body">
-            <p class="memory-card-doc">Things master has remembered as durable across sessions — recurring decisions, project facts, gotchas. Master can edit this itself via memory_remember / memory_forget tools; you can edit here directly. Use the § character (Option-6 on Mac) between entries.</p>
-            <textarea id="memory-md-textarea" rows="14" placeholder="Down-Time-Arena's primary branch is `main`; Speartip is the prospective sponsor.&#10;§&#10;LM Studio's loaded_context_length resets to 4K on JIT — auto-pin via /api/v1/models/load handles this; if drift happens, hit /reload-supervisor."></textarea>
-            <div class="memory-card-actions">
-              <button type="button" class="primary-btn" data-mem-save="memory">save</button>
-              <span class="memory-card-result" id="memory-md-result"></span>
-            </div>
-          </div>
-        </section>
-
-        <section class="memory-card memory-card-wide">
-          <div class="memory-card-head">
-            <h3>Obsidian vault <span class="dim small">tier 2 — long-form operator notes</span></h3>
-            <span class="memory-status" id="memory-status">checking…</span>
-          </div>
-          <div class="memory-card-body" id="memory-content">loading…</div>
-        </section>
-
-        <!-- v2.7.23 — Tier 3 Evy Memory panel.
-             Conversational memory: operator-Evy chat + decisions + shipped
-             events + captured notifications. Distinct from Tier 4 claude-mem.
-             Sources: GET /api/memory/search, /api/memory/recent, /api/memory/stats. -->
-        <section class="memory-card memory-card-wide" id="evy-memory-card">
-          <div class="memory-card-head">
-            <h3>Evy Memory <span class="dim small">tier 3 — operator-Evy conversational memory (sqlite)</span></h3>
-            <span class="memory-card-meta" id="evy-mem-meta">— entries</span>
-          </div>
-          <div class="memory-card-body">
-            <p class="memory-card-doc">Persistent record of what was said, decided, and shipped between you and Evy. Captured automatically at every turn boundary; queryable here, via <code>/memory</code> on Telegram, or via <code>evy_recall</code> from Evy herself. The file lives at <code>~/.local/state/subctl/memory/evy.db</code> (chmod 600).</p>
-            <div class="evy-mem-controls">
-              <input type="search" id="evy-mem-search" placeholder="search memory (FTS5)…" />
-              <select id="evy-mem-kind">
-                <option value="">all kinds</option>
-                <option value="message">message</option>
-                <option value="tool-call">tool-call</option>
-                <option value="notification">notification</option>
-                <option value="shipped">shipped</option>
-                <option value="evy-note">evy-note</option>
-                <option value="operator-note">operator-note</option>
-                <option value="synthetic-prompt">synthetic-prompt</option>
-              </select>
-              <button type="button" class="primary-btn" id="evy-mem-search-btn">search</button>
-              <button type="button" class="secondary-btn" id="evy-mem-refresh-btn">recent</button>
-            </div>
-            <div class="evy-mem-list" id="evy-mem-list">loading…</div>
-          </div>
-        </section>
-
+      <!-- Upstreams card — wired by initUpstreamsCard() in app.js. Kept
+           verbatim outside the new panel set so its independent lifecycle
+           (boot wiring, polling) is untouched by this rewrite. -->
+      <div class="memory-grid memory-grid-upstreams">
         <!-- v2.7.25 — Upstream-check (ADR 0015 always-latest policy).
              Small card showing current pinned versions of pi-ai +
              pi-agent-core, with a "Check now" button that pokes the

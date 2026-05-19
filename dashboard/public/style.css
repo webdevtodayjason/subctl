@@ -2092,6 +2092,397 @@ body.terminal-disabled #terminal-modal { display: none !important; }
   word-break: break-word;
 }
 
+/* ── v2.8.7 Memory tab rebuild ──────────────────────────────────────────
+   Six-panel layout: tier health strip + five collapsible sections.
+   Tokens (--bg, --border, --accent, --fg, --fg-dim) come from :root.
+*/
+.mem-panels {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+.mem-panel-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+@media (max-width: 1100px) {
+  .mem-panel-strip { grid-template-columns: 1fr; }
+}
+.memory-grid-upstreams { margin-top: 0; }
+
+.mem-card {
+  background: var(--bg-1, #0e1116);
+  border: 1px solid var(--border, #22272f);
+  border-radius: 4px;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.mem-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border, #22272f);
+  gap: 10px;
+}
+.mem-card-head h3 {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #aaa;
+}
+.mem-card-sub {
+  color: #555;
+  font-size: 10px;
+  margin-left: 6px;
+  text-transform: lowercase;
+  letter-spacing: 0;
+}
+.mem-card-meta {
+  color: #888;
+  font-size: 11px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.mem-card-meta.warn { color: #d6c46c; }
+.mem-card-meta.crit { color: #d66c6c; }
+.mem-card-body { padding: 12px 14px; flex: 1; display: flex; flex-direction: column; gap: 10px; }
+
+.mem-tier1-row {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+.mem-tier1-col {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.mem-tier1-col label {
+  font-size: 11px;
+  color: #888;
+  letter-spacing: 0.04em;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.mem-tier1-col label code { color: #888; }
+.mem-tier1-col textarea {
+  background: #0a0a0a;
+  border: 1px solid var(--border, #22272f);
+  color: #c4c4c4;
+  padding: 8px 10px;
+  border-radius: 3px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+  min-height: 110px;
+}
+.mem-tier1-col textarea:focus { outline: none; border-color: var(--accent, #c08bff); }
+
+.mem-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.mem-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.mem-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  background: var(--bg, #0b0d10);
+  border: 1px solid var(--border, #22272f);
+  border-radius: 3px;
+}
+.mem-stat-label {
+  font-size: 10px;
+  color: #777;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.mem-stat-value {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 13px;
+  color: #c4c4c4;
+}
+.mem-stat-meta {
+  font-size: 10.5px;
+  color: #666;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  word-break: break-all;
+}
+
+.mem-pill {
+  display: inline-block;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  padding: 2px 8px;
+  border-radius: 10px;
+  text-transform: uppercase;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.mem-pill-ok    { background: #0e2a16; color: #6cd697; }
+.mem-pill-warn  { background: #2a230e; color: #d6c46c; }
+.mem-pill-err   { background: #2a1010; color: #d66c6c; }
+.mem-pill-muted { background: #181b21; color: #888; }
+
+/* Collapsible sections (Consciousness, Candidates, Curated, Backfill, Cognify) */
+.mem-section {
+  background: var(--bg-1, #0e1116);
+  border: 1px solid var(--border, #22272f);
+  border-radius: 4px;
+}
+.mem-section > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid transparent;
+}
+.mem-section[open] > summary { border-bottom-color: var(--border, #22272f); }
+.mem-section > summary::-webkit-details-marker { display: none; }
+.mem-section > summary::before {
+  content: "▸";
+  color: #555;
+  font-size: 10px;
+  transition: transform 0.15s;
+  display: inline-block;
+}
+.mem-section[open] > summary::before { transform: rotate(90deg); }
+.mem-section-title {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #aaa;
+  flex: 1;
+}
+.mem-section-meta {
+  color: #888;
+  font-size: 11px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.mem-section-body { padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; }
+.mem-section-doc {
+  color: #999;
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.mem-subsection {
+  background: var(--bg, #0b0d10);
+  border: 1px solid var(--border, #22272f);
+  border-radius: 3px;
+  margin-top: 6px;
+}
+.mem-subsection > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 8px 12px;
+  font-size: 11px;
+  color: #aaa;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mem-subsection > summary::-webkit-details-marker { display: none; }
+.mem-subsection[open] { padding-bottom: 10px; }
+.mem-subsection > .evy-mem-controls,
+.mem-subsection > .evy-mem-list,
+.mem-subsection > .mem-obsidian-body {
+  padding: 0 12px;
+}
+
+/* Cycle */
+.mem-cycle-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+@media (max-width: 900px) { .mem-cycle-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.mem-cycle-actions { margin-top: 4px; }
+.mem-cycle-decisions h4 {
+  margin: 8px 0 6px;
+  font-size: 11px;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: normal;
+}
+.mem-decisions-table { font-size: 12px; }
+.mem-decisions-table td { vertical-align: top; }
+
+/* Candidates */
+.mem-candidates-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.mem-candidate {
+  background: var(--bg, #0b0d10);
+  border: 1px solid var(--border, #22272f);
+  border-radius: 3px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mem-candidate-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 11px;
+}
+.mem-candidate-kind {
+  background: #181b21;
+  color: #c08bff;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.mem-candidate-conf {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  color: #6cd697;
+}
+.mem-candidate-when { color: #888; }
+.mem-candidate-model { color: #555; margin-left: auto; }
+.mem-candidate-text {
+  color: #c4c4c4;
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.mem-candidate-reason {
+  font-style: italic;
+}
+.mem-candidate-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.mem-candidate-note {
+  flex: 1;
+  min-width: 200px;
+  background: #0a0a0a;
+  border: 1px solid var(--border, #22272f);
+  color: #c4c4c4;
+  padding: 5px 9px;
+  border-radius: 3px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11.5px;
+}
+.mem-candidate-note:focus { outline: none; border-color: var(--accent, #c08bff); }
+
+/* Curated browser */
+.mem-curated-controls {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.mem-curated-controls input[type="search"] {
+  flex: 1;
+  min-width: 200px;
+  background: #0a0a0a;
+  border: 1px solid var(--border, #22272f);
+  color: #c4c4c4;
+  padding: 6px 10px;
+  border-radius: 3px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+}
+.mem-curated-controls input[type="search"]:focus { outline: none; border-color: var(--accent, #c08bff); }
+.mem-curated-list { font-size: 12px; }
+.mem-curated-table td { vertical-align: top; padding: 5px 8px; }
+.mem-curated-text {
+  color: #c4c4c4;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-width: 100%;
+}
+
+/* Backfill */
+.mem-backfill-row {
+  background: var(--bg, #0b0d10);
+  border: 1px solid var(--border, #22272f);
+  border-radius: 3px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mem-backfill-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.mem-backfill-head h4 {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #aaa;
+  font-weight: normal;
+}
+.mem-backfill-controls {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.mem-backfill-dryrun, .mem-backfill-limit {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: #aaa;
+}
+.mem-backfill-limit input {
+  width: 80px;
+  background: #0a0a0a;
+  border: 1px solid var(--border, #22272f);
+  color: #c4c4c4;
+  padding: 4px 8px;
+  border-radius: 3px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11.5px;
+}
+.mem-backfill-output {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  color: #888;
+}
+.mem-backfill-output strong { color: #c4c4c4; font-weight: normal; }
+.mem-backfill-row-disabled { opacity: 0.55; }
+.mem-backfill-row-disabled .mem-backfill-head h4::after {
+  content: " · sidecar unreachable";
+  color: #d66c6c;
+  font-size: 10px;
+  letter-spacing: 0;
+  text-transform: lowercase;
+}
+
 /* Per-team card actions in the orchestration cockpit */
 .orch-team-card .actions {
   display: flex;
@@ -4924,3 +5315,199 @@ tr.team-stale-red td           { background: rgba(214, 108, 108, 0.06); }
 .skills-imported-h3 .small { font-weight: 400; }
 .skills-section-evy-authored summary { background: rgba(255, 215, 0, 0.03); }
 /* ── end v2.8.1 skills clarity ── */
+
+/* ── v2.8.8 — update-flow UI (version chip + modal) ────────────────────────
+ * The brand-version chip was a <span>; v2.8.8 promotes it to a <button>
+ * because clicking it opens the update modal. Reset the button so it
+ * still LOOKS like the span did, but acquires a hover/focus affordance
+ * and a CSS-driven dot indicator that appears when origin/main is ahead
+ * of the running daemon.
+ */
+button.brand-version {
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+  position: relative;
+  /* the <span class="brand-version" id="version"> selector still applies
+   * (margin/padding/border/font/color) — button just gets cursor + reset
+   * defaults. inherit the chip text styles so the span->button swap is
+   * visually identical in the idle state. */
+}
+button.brand-version:hover {
+  border-color: var(--border-strong, #2c333d);
+  color: var(--fg, #e8e8e3);
+}
+button.brand-version:focus-visible {
+  outline: 2px solid var(--blue, #6aa9ff);
+  outline-offset: 2px;
+}
+/* Status dot via pseudo-element so app.js's setText() on the inner
+ * <span id="version"> doesn't blow away markup on each render. */
+button.brand-version::after {
+  content: "";
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: transparent;
+  border: 1px solid transparent;
+  transition: background-color 120ms ease, border-color 120ms ease;
+  pointer-events: none;
+}
+button.brand-version[data-update-state="available"] {
+  border-color: #f5a623;
+  color: #f5a623;
+  animation: chip-wiggle 1.4s ease-in-out infinite;
+}
+button.brand-version[data-update-state="available"]::after {
+  background: #f5a623;
+  border-color: rgba(245, 166, 35, 0.4);
+  box-shadow: 0 0 6px rgba(245, 166, 35, 0.6);
+}
+button.brand-version[data-update-state="updating"] {
+  border-color: #6aa9ff;
+  color: #6aa9ff;
+}
+button.brand-version[data-update-state="updating"]::after {
+  background: #6aa9ff;
+  border-color: rgba(106, 169, 255, 0.4);
+  animation: chip-pulse 1.2s ease-in-out infinite;
+}
+button.brand-version[data-update-state="done"] {
+  border-color: #00e08a;
+  color: #00e08a;
+}
+button.brand-version[data-update-state="done"]::after {
+  background: #00e08a;
+  border-color: rgba(0, 224, 138, 0.4);
+}
+@keyframes chip-wiggle {
+  0%, 100% { transform: rotate(0deg); }
+  20% { transform: rotate(-1.5deg); }
+  40% { transform: rotate(1.5deg); }
+  60% { transform: rotate(-1deg); }
+  80% { transform: rotate(1deg); }
+}
+@keyframes chip-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* Update modal — reuses .modal-backdrop / .modal / .modal-header /
+ * .modal-close from the existing project-wizard modal. Local selectors
+ * cover the bits unique to this flow: three option cards + the progress
+ * log pane. */
+.update-modal { max-width: 640px; }
+.update-modal-options {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.update-option-card {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: #0a0a0a;
+  border: 1px solid var(--line, #22272f);
+  border-radius: 5px;
+  padding: 14px 16px;
+  color: var(--fg, #e8e8e3);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.update-option-card:hover:not([disabled]),
+.update-option-card:focus-visible:not([disabled]) {
+  border-color: var(--blue, #6aa9ff);
+  background: #0d1218;
+  outline: none;
+}
+.update-option-card[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.update-option-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+.update-option-card-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--ink, #e8e8e3);
+}
+.update-option-card-eta {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-mute, #6b7280);
+  letter-spacing: 0.04em;
+}
+.update-option-card-desc {
+  color: var(--fg-dim, #a8aea3);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.update-progress-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.update-progress-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--fg-dim, #a8aea3);
+}
+.update-progress-header strong { color: var(--ink, #e8e8e3); }
+.update-progress-status-running { color: #6aa9ff; }
+.update-progress-status-ok      { color: #00e08a; }
+.update-progress-status-err     { color: #e5484d; }
+.update-progress-log {
+  background: #050608;
+  border: 1px solid var(--line, #22272f);
+  border-radius: 4px;
+  padding: 10px 12px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: #c8d0d4;
+  height: 280px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+}
+.update-progress-log .line-err { color: #f5a623; }
+.update-progress-meta {
+  font-size: 11px;
+  color: var(--ink-mute, #6b7280);
+  font-family: var(--mono);
+}
+.update-modal-versions {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--fg-dim, #a8aea3);
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.update-modal-versions code {
+  color: var(--ink, #e8e8e3);
+  background: #14181f;
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+.update-modal-versions .available { color: #f5a623; }
+.update-modal-hint {
+  font-size: 11px;
+  color: var(--ink-mute, #6b7280);
+  margin: 0;
+}
+/* ── end v2.8.8 update-flow ── */
