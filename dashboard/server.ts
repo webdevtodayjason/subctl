@@ -6162,9 +6162,18 @@ const server = Bun.serve({
     // this proxy lets the dashboard's Memory tab "Upstreams" card read it
     // without knowing the master's port. Routes:
     //
-    //   GET  /api/upstreams        → master /upstreams
-    //   POST /api/upstreams/check  → master /upstreams/check (manual tick)
-    if (url.pathname === "/api/upstreams" || url.pathname === "/api/upstreams/check") {
+    //   GET  /api/upstreams                      → master /upstreams
+    //   POST /api/upstreams/check                → master /upstreams/check (manual tick)
+    //   GET  /api/upstreams/history?limit=N      → master /upstreams/history (v2.7.37)
+    //   POST /api/upstreams/update               → master /upstreams/update (v2.7.37 manual)
+    //   POST /api/upstreams/auto-update/toggle   → master /upstreams/auto-update/toggle (v2.7.37)
+    if (
+      url.pathname === "/api/upstreams" ||
+      url.pathname === "/api/upstreams/check" ||
+      url.pathname === "/api/upstreams/history" ||
+      url.pathname === "/api/upstreams/update" ||
+      url.pathname === "/api/upstreams/auto-update/toggle"
+    ) {
       const masterPort = process.env.SUBCTL_MASTER_PORT ?? "8788";
       const masterUrl = `http://127.0.0.1:${masterPort}${url.pathname.replace(/^\/api\/upstreams/, "/upstreams")}${url.search}`;
       try {

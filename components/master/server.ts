@@ -233,7 +233,12 @@ import {
 import {
   startUpstreamWatchdog,
   describeUpstreamState,
+  readUpdateHistory,
+  runManualUpdate,
+  setAutoUpdateEnabled,
+  isAutoUpdateEnabled,
   type UpstreamWatchdogHandle,
+  type AuditEntry,
 } from "./upstream-check";
 // ── v2.8.0 voice layer ──
 import {
@@ -3046,6 +3051,138 @@ async function main() {
         }
         const state = describeUpstreamState();
         return Response.json({ ok: true, ...state });
+      }
+
+      // ── /upstreams/history — v2.7.37 dashboard manual-update history ────
+      // Reads the upstream-update audit log (JSONL written by the watchdog
+      // + every manual trigger). Newest-first, capped at 500 entries. The
+      // event field is normalized: the audit log writes "failure" but the
+      // dashboard payload uses "error" per the v2.7.37 spec.
+      if (url.pathname === "/upstreams/history" && req.method === "GET") {
+        const limitRaw = url.searchParams.get("limit");
+        const limit = limitRaw
+          ? Math.max(1, Math.min(500, Number(limitRaw) || 50))
+          : 50;
+        try {
+          const raw: AuditEntry[] = readUpdateHistory({ limit });
+          const entries = raw.map((e) => ({
+            ts: e.ts,
+            event: e.event === "failure" ? "error" : e.event,
+            package: e.package,
+            from: e.from,
+            to: e.to,
+            branch: e.branch,
+            trigger: e.trigger,
+            detail: e.detail,
+          }));
+          return Response.json({ ok: true, entries });
+        } catch (err) {
+          return Response.json(
+            { ok: false, error: (err as Error).message },
+            { status: 500 },
+          );
+        }
+      }
+
+      // ── /upstreams/update — v2.7.37 manual upstream-update trigger ──────
+      // Bypasses the 24h throttle. Runs the full worktree → bun install →
+      // bun test → bun build → typecheck → commit → push pipeline. Never
+      // merges to main. Returns the first updated branch name on success.
+      // Long-running: dashboards should treat this as fire-and-poll —
+      // history endpoint reflects the outcome once the runner completes.
+      if (url.pathname === "/upstreams/update" && req.method === "POST") {
+        try {
+          // Body is optional. If provided, accept { package?: string } to
+          // narrow the trigger to one package; otherwise run every tracked
+          // upstream that has a newer version.
+          let body: { package?: string } = {};
+          try {
+            const text = await req.text();
+            if (text.trim()) body = JSON.parse(text) as typeof body;
+          } catch {
+            // malformed JSON → treat as empty body, run every package
+          }
+          const summary = await runManualUpdate({
+            packageJsonPath: join(COMPONENT_DIR, "package.json"),
+            package: body.package,
+          });
+          // Find the first ok outcome with a branch (the operator wants
+          // the URL/branch to inspect). If none succeeded, surface the
+          // first failure detail.
+          const updates = summary.auto_update ?? [];
+          const succeeded = updates.find((u) => u.outcome.ok && u.outcome.branch);
+          if (succeeded) {
+            return Response.json({
+              ok: true,
+              branch: succeeded.outcome.branch,
+              package: succeeded.package,
+              from: succeeded.from,
+              to: succeeded.to,
+              detail: succeeded.outcome.detail,
+            });
+          }
+          const noOp = updates.length === 0;
+          if (noOp) {
+            // Nothing to do — no newer versions on the registry.
+            return Response.json({
+              ok: true,
+              branch: null,
+              detail: "no upstream updates available",
+            });
+          }
+          const firstFail = updates[0]!;
+          return Response.json(
+            {
+              ok: false,
+              error: firstFail.outcome.detail,
+              package: firstFail.package,
+              from: firstFail.from,
+              to: firstFail.to,
+              stderr_excerpt: firstFail.outcome.stderr_excerpt,
+            },
+            { status: 500 },
+          );
+        } catch (err) {
+          return Response.json(
+            { ok: false, error: (err as Error).message },
+            { status: 500 },
+          );
+        }
+      }
+
+      // ── /upstreams/auto-update/toggle — v2.7.37 auto-update gate ────────
+      // Flips the ~/.config/subctl/auto-update-upstreams.enabled flag.
+      // Body shape: { enabled?: boolean } — if provided sets explicitly,
+      // otherwise toggles the current state. Returns the resulting state.
+      if (
+        url.pathname === "/upstreams/auto-update/toggle" &&
+        req.method === "POST"
+      ) {
+        try {
+          let body: { enabled?: boolean } = {};
+          try {
+            const text = await req.text();
+            if (text.trim()) body = JSON.parse(text) as typeof body;
+          } catch {
+            // malformed JSON → treat as empty body and toggle
+          }
+          const current = isAutoUpdateEnabled();
+          const next =
+            typeof body.enabled === "boolean" ? body.enabled : !current;
+          const ok = setAutoUpdateEnabled(next);
+          if (!ok) {
+            return Response.json(
+              { ok: false, error: "failed to write auto-update flag" },
+              { status: 500 },
+            );
+          }
+          return Response.json({ ok: true, enabled: isAutoUpdateEnabled() });
+        } catch (err) {
+          return Response.json(
+            { ok: false, error: (err as Error).message },
+            { status: 500 },
+          );
+        }
       }
 
       // ── /memory/* — Evy Memory (Tier 3) operator surface (v2.7.23) ──────
