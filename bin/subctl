@@ -134,6 +134,9 @@ Usage:
   subctl team spawn --template <name> --project <path> [--account <alias>]
                                       v2.8.0 — spawn a multi-developer team
                                       from a TOML template
+  subctl team baseline <verb> [path]  Memory Init #6 — install / inspect the
+                                      claude-layers baseline (CLAUDE.md +
+                                      .claude/). Verbs: init | ensure | status.
 
   subctl profile show                 Show active profile + supervisor
   subctl profile switch <name>        Switch active profile (chat | heavy | ...)
