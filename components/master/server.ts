@@ -80,6 +80,12 @@ import {
   WATCHDOG_ID as COGNITION_LOOP_WATCHDOG_ID,
   type StartResult as CognitionLoopStartResult,
 } from "./consciousness-loop";
+import {
+  startIdlePaneWatchdog,
+  defaultPaneProviders as defaultIdlePaneProviders,
+  IDLE_PANE_WATCHDOG_ID,
+  type IdlePaneStartResult,
+} from "./idle-pane-watchdog";
 import { attachmentsTools } from "./tools/attachments";
 import { vaultLinkTools } from "./tools/vault-link";
 import { policyTools } from "./tools/policy";
@@ -4725,6 +4731,34 @@ async function main() {
     console.error("[master] cognition-loop disabled by config (enable via ~/.config/subctl/master/consciousness-loop.json)");
   }
 
+  // ── idle-pane watchdog (2026-05-19 transport reliability fix) ──────────
+  // Detects worker tmux panes where a directive sits typed at the
+  // prompt but unsubmitted. Notify-only by default. Auto-retry path
+  // (sending Enter) is gated behind both (a) config.auto_retry_enabled
+  // AND (b) buffered text exactly matching a recently-sent directive.
+  // Disabled-by-default config gate at
+  // ~/.config/subctl/master/idle-pane-watchdog.json.
+  const idlePaneWatchdog: IdlePaneStartResult = startIdlePaneWatchdog({
+    registry: {
+      register: (entry) => registerWatchdog({ id: entry.id, kind: entry.kind, kill: entry.kill }),
+      touch: (id) => touchWatchdog(id),
+    },
+    providers: defaultIdlePaneProviders((n) => emitNotification({
+      kind: n.kind,
+      severity: n.severity,
+      title: n.title,
+      body: n.body,
+      metadata: n.metadata,
+    })),
+  });
+  if (idlePaneWatchdog.armed) {
+    console.error(
+      `[master] idle-pane watchdog armed — interval=${idlePaneWatchdog.config.interval_ms}ms, threshold=${idlePaneWatchdog.config.idle_threshold_ticks} ticks, auto_retry=${idlePaneWatchdog.config.auto_retry_enabled}, id=${IDLE_PANE_WATCHDOG_ID}`,
+    );
+  } else {
+    console.error("[master] idle-pane watchdog disabled by config (enable via ~/.config/subctl/master/idle-pane-watchdog.json)");
+  }
+
   // ── graceful shutdown ───────────────────────────────────────────────────
   const shutdown = (signal: string) => {
     if (stopped) return;
@@ -4737,6 +4771,7 @@ async function main() {
     clusterTicker.stop();
     try { upstreamWatchdog?.stop(); } catch { /* ignore */ }
     try { cognitionLoop.kill(); } catch { /* ignore */ }
+    try { idlePaneWatchdog.kill(); } catch { /* ignore */ }
     try { profilesWatcher.close(); } catch { /* ignore */ }
     try { voiceWatcher.close(); } catch { /* ignore */ }
     if (inboxWatcher) try { inboxWatcher.close(); } catch { /* ignore */ }
