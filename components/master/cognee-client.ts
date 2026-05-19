@@ -371,6 +371,49 @@ export async function graphQuery(input: {
   });
 }
 
+// ─── cognify (build the graph from ingested text) ──────────────────────────
+
+export interface CogneeCognifyInput {
+  /** Dataset to cognify. Omit for sidecar's default ("subctl_main"). */
+  dataset?: string | string[];
+  /** Override the SDK timeout — default is the sidecar's SUBCTL_COGNEE_SDK_COGNIFY_TIMEOUT (600s). */
+  timeout_s?: number;
+}
+
+export interface CogneeCognifyOutput {
+  ok: boolean;
+  dataset: string[];
+  duration_ms: number;
+  node_count_before: number;
+  node_count_after: number;
+  edge_count_before: number;
+  edge_count_after: number;
+  error: string | null;
+}
+
+/**
+ * Build / refresh the Cognee graph layer by running the structured-output
+ * extraction pipeline over the configured dataset(s). This is the heavy
+ * LLM-driven step — expect minutes-per-dataset runtime.
+ *
+ * Operator action only. Master never auto-invokes this (would blow the
+ * request budget); it's invoked explicitly via `subctl cognee cognify`
+ * after a backfill or major ingestion event.
+ */
+export async function cognify(
+  input: CogneeCognifyInput = {},
+): Promise<CogneeResult<CogneeCognifyOutput>> {
+  // Use the request-level timeout if caller bounded it; default the
+  // transport-level timeout generously so a 10-min cognify doesn't get
+  // killed by the default 15s.
+  const timeoutMs = ((input.timeout_s ?? 600) + 30) * 1000;
+  return request<CogneeCognifyOutput>("/cognify", {
+    method: "POST",
+    body: input,
+    timeoutMs,
+  });
+}
+
 // ─── module-level convenience export ───────────────────────────────────────
 
 export const cogneeClient = {
@@ -381,6 +424,7 @@ export const cogneeClient = {
   neighbors,
   graphPath,
   graphQuery,
+  cognify,
   resolveCogneeUrl,
   resolveCogneeAuthToken,
 };

@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  subctl Cognee sidecar launchd template — v2.8.x.
+
+  Template — placeholders substituted at install time by
+  lib/cognee.sh:
+    __OWNER__        reverse-DNS prefix (e.g. com.subctl)
+    __PYTHON__       absolute path to the python3 binary (>=3.10) —
+                     usually the venv at ~/.local/share/subctl/cognee-venv
+    __SERVER_PY__    absolute path to services/cognee/server.py
+    __HOME__         absolute path to user's $HOME
+    __DATA_DIR__     SUBCTL_COGNEE_DATA_DIR value (default ~/.config/subctl/cognee-data)
+    __LLM_BASE__     OpenAI-compatible LLM endpoint (default LM Studio at http://localhost:1234/v1)
+    __LLM_MODEL__    Model name advertised at that endpoint
+    __LLM_KEY__      API key (LM Studio ignores it; we pass "lm-studio" by default)
+
+  Stays on 127.0.0.1 — ADR 0009 self-hosted-only floor.
+  Logs to ~/Library/Logs/subctl/cognee.log (merged stdout+stderr).
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>__OWNER__.cognee</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PYTHON__</string>
+        <string>__SERVER_PY__</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>SUBCTL_COGNEE_HOST</key>
+        <string>127.0.0.1</string>
+        <key>SUBCTL_COGNEE_PORT</key>
+        <string>8745</string>
+        <key>SUBCTL_COGNEE_DATA_DIR</key>
+        <string>__DATA_DIR__</string>
+        <key>SUBCTL_COGNEE_LLM_BASE</key>
+        <string>__LLM_BASE__</string>
+        <key>SUBCTL_COGNEE_LLM_MODEL</key>
+        <string>__LLM_MODEL__</string>
+        <key>SUBCTL_COGNEE_LLM_KEY</key>
+        <string>__LLM_KEY__</string>
+        <!--
+          Embedding via cognee's `openai_compatible` provider — fits
+          LM Studio's /v1/embeddings endpoint, doesn't need a tiktoken
+          tokenizer mapping (which fails for non-OpenAI model ids like
+          nomic-embed-text-v1.5). Operator can override these by editing
+          the rendered plist if running a different embedding model.
+        -->
+        <key>SUBCTL_COGNEE_EMBED_PROVIDER</key>
+        <string>openai_compatible</string>
+        <key>SUBCTL_COGNEE_EMBED_MODEL</key>
+        <string>text-embedding-nomic-embed-text-v1.5</string>
+        <!-- nomic-embed-text-v1.5 emits 768-dim vectors; without this
+             cognee defaults to 3072 (text-embedding-3-large) and the
+             lance vector store rejects the shorter vectors. -->
+        <key>EMBEDDING_DIMENSIONS</key>
+        <string>768</string>
+        <!--
+          Skip cognee's blocking LLM connection-test during operation.
+          We've already gated TOOL_GATES.cognee on the HTTP /health
+          probe in master; we don't need cognee's own 30s probe in the
+          request hot path.
+        -->
+        <key>COGNEE_SKIP_CONNECTION_TEST</key>
+        <string>true</string>
+    </dict>
+
+    <key>WorkingDirectory</key>
+    <string>__HOME__</string>
+
+    <!--
+      Cognee's import touches a LOT of files (lance, litellm, transformers,
+      pyarrow, sqlite, structlog). launchd's default fd limit is 256/proc,
+      which is too low — cognee silently retries on EMFILE and never
+      finishes the import. Bump to 16384 (well under the system max of
+      245760) so the import completes promptly.
+    -->
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>16384</integer>
+    </dict>
+    <key>HardResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>16384</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/Library/Logs/subctl/cognee.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Library/Logs/subctl/cognee.log</string>
+</dict>
+</plist>
