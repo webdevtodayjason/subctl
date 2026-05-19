@@ -6,6 +6,12 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { existsSync, mkdirSync, appendFileSync } from "node:fs";
 
+import {
+  getTemplate,
+  renderBootPrompt,
+  listTemplates,
+} from "../templates-loader";
+
 const API = process.env.SUBCTL_API ?? "http://127.0.0.1:8787";
 
 // Format a non-OK response so the supervisor sees the actual cause and
@@ -221,13 +227,40 @@ export const subctlOrchTools = {
       project: string;
       prompt?: string;
     }) => {
+      // Resolve the template against the in-tree registry
+      // (components/templates/<name>/). Surfacing the loader's clear
+      // template_not_found / parse error here means the supervisor sees the
+      // actual cause instead of a generic HTTP 500 from the bash flow.
+      let rendered: string;
+      try {
+        // getTemplate throws if missing/invalid; render fills in vars.
+        getTemplate(args.template);
+        rendered = renderBootPrompt(args.template, {
+          project_path: args.project,
+          account: args.account,
+          additional_scope: args.prompt ?? "",
+        });
+      } catch (err) {
+        const { templates } = listTemplates();
+        const available = templates.map((t) => t.metadata.name).join(", ");
+        return {
+          ok: false,
+          error: `${(err as Error).message}${available ? ` — available: ${available}` : ""}`,
+          error_kind: "template_not_found",
+        };
+      }
+      // Post the rendered prompt directly. We deliberately do NOT forward
+      // `template: args.template` to the spawn endpoint — that would invoke
+      // the legacy `~/.config/subctl/master/team-templates/<name>.json` path
+      // in providers/claude/teams.sh, which is a different registry and is
+      // empty on fresh installs. The in-tree registry is the source of
+      // truth from this point.
       const result = await apiPost("/api/orchestration/spawn", {
-        template: args.template,
         account: args.account,
         project: args.project,
-        prompt: args.prompt ?? "",
-        orchestrator: false, // template's persona owns the role definition
-        skip_perms: true,    // template's default_autonomy gets enforced server-side
+        prompt: rendered,
+        orchestrator: false,
+        skip_perms: true,
       });
       seedInboxOnSpawn(result);
       return result;

@@ -1,0 +1,6 @@
+{
+  "name": "bug-investigation",
+  "role": "scout",
+  "description": "Investigate an unknown system or reproduce a reported bug. Scout role: map the territory, deliver a written investigation, do not fix.",
+  "default_account_hint": "claude-jason"
+}
