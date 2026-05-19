@@ -4749,6 +4749,19 @@ tr.team-stale-red td           { background: rgba(214, 108, 108, 0.06); }
 .chat-tool-pill--ok::after  { content: "✓"; color: #6cd697; font-size: 11px; margin-left: 4px; }
 .chat-tool-pill--err::after { content: "✗"; color: #d66c6c; font-size: 11px; margin-left: 4px; }
 
+/* 2026-05-19 — ×N badge for collapsed consecutive same-name pills.
+   Sits before the ok/err ::after glyph (DOM child wins over pseudo).
+   Operator saw 7 identical subctl_orch_status pills flooding the
+   chat sidecar — collapse renders them as one pill with ×7 instead. */
+.chat-tool-pill__count {
+  font-size: 10.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.9;
+  color: var(--pill-color);
+  margin-left: 2px;
+}
+
 /* Live "thinking" indicator — shown after the operator sends a chat
    message, hidden when the master starts streaming (first text_delta or
    toolcall_start), on agent_end, or on error/timeout. Operator is
