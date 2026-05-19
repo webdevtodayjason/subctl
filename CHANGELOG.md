@@ -1,3 +1,107 @@
+## [2.8.7] — 2026-05-19
+
+### `feat: The Memory Release — Evy used to forget, now she remembers`
+
+**123 commits since v2.8.5.** The headline is the memory layer: an autonomous consciousness cycle that watches Evy's conversations, promotes durable signal into a curated layer, and feeds her system prompt at turn time. Add to that: Cognee for graph reasoning over your operator history, Memori for execution audit, a tokenizer adapter so embeddings stay local, a background-task runtime so long-running tools don't block her turn, and ~100 supporting commits in OAuth, install hardening, dashboard UX, and reliability. Master 2.8.6 → 2.8.7.
+
+This was operator-asked verbatim back when we kept hitting "51st date syndrome" — Evy waking up cold every restart, the operator re-pasting context, the same questions twice. v2.8.7 closes that loop:
+
+> "Memori remembers what happened. Cognee understands how it connects."  
+> "Replace ad-hoc vector-only recall where it exists. Replace scattered 'memory search but maybe it's in docs' ambiguity. Do not replace Tier 1 profile facts, Obsidian, .subctl/docs/, or raw append-only decision logs."
+
+That framing locked the architecture. Tier 1 (always-injected `memory.md`) stays as-is — it's already operator-curated. Tier 5 source-of-truth surfaces (Obsidian, `.subctl/docs/decisions.jsonl`) stay untouched — they're canonical. Tier 3 gets a Memori-backed substrate with auto-capture. Tier 4/5 semantic recall gets a Cognee-backed substrate with graph traversal. And a new memory-kernel runs the consciousness cycle between them.
+
+**Memori sidecar — Tier 3 substrate.** `services/memori/server.py` is a Python HTTP service that fronts `memorilabs.Memori` with BYODB SQLite at `~/.config/subctl/master/memori.db`. Lives at `127.0.0.1:8746`. Why a sidecar: the npm `@memorilabs/memori` package is cloud-only and the BYODB path is Python-only, so we put Python in a launchd-managed service and have master talk to it via fetch — same pattern as `services/tts/server.py`. The sidecar runs in two modes: `augmentation=off` (default — pure SQLite, lexical recall, **no content leaves the box**) or `augmentation=on` (requires `pip install memori` + `MEMORI_API_KEY`, conversation content flows to memorilabs.ai for LoCoMo-style structured fact extraction; raw records still local). New CLI: `subctl memori [status | install on/off | uninstall]`. New `evy_remember` / `evy_recall` route through Memori with the local evy-memory store as a safety-net fallback so operator data is never lost on sidecar failure.
+
+**Cognee sidecar — Tier 4/5 semantic substrate.** `services/cognee/server.py` is the Python HTTP wrapper around Cognee 1.1. Lives at `127.0.0.1:8745`. Per operator's standalone-first requirement: subctl ships its own Cognee install — not shared with ArgentOS by default. Operator can point at ArgentOS's instance via `COGNEE_SERVICE_URL` if they want the shared-brain pattern. Endpoints: `/health`, `/remember`, `/recall`, `/forget`, `/cognify`, `/graph/neighbors`, `/graph/path`, `/graph/query`. New CLI: `subctl cognee [status | install | uninstall | ping | cognify]`. `memory_search`, `memory_timeline`, `memory_observations` route through Cognee when reachable and fall back to claude-mem otherwise — output gains a `source: "cognee" | "claude-mem" | "both-empty"` field so callers see which substrate answered.
+
+**Tokenizer adapter — the local-embeddings unblock.** `services/cognee/tokenizer_adapter.py` solves a specific Cognee 1.1 compatibility wall: cognify's chunking pipeline calls `tiktoken.encoding_for_model(model_name)` to count tokens before sending to the embedder. tiktoken's registry only knows OpenAI model names, so `text-embedding-nomic-embed-text-v1.5` throws `KeyError`. Our adapter is a registry-based resolver that intercepts the tokenizer lookup at sidecar import time (BEFORE `import cognee`), wraps `transformers.AutoTokenizer.from_pretrained("nomic-ai/nomic-embed-text-v1.5")` to expose tiktoken's `encode/decode/n_vocab` shape, and is idempotent. OpenAI tokenizer behavior is preserved. Adding a new local embedding model (BGE, GTE, E5, whatever) takes a one-line registry entry — no Cognee fork, no monkey-patch sprawl. Vanilla Cognee remains upgradeable. Fails loud on unknown non-OpenAI model with a clear pointer back to the registry; no silent cl100k fallback.
+
+**Memory consciousness cycle — `components/master/memory-kernel.ts` + `memory-kernel-reviewer.ts`.** Watchdog tick every 5 minutes. Each cycle:
+
+1. Pull up to N unreviewed raw events from Memori (`/select_unreviewed`).
+2. Hand them to the reviewer along with operator context (Tier 1 profile, recent curated facts, active project).
+3. The reviewer calls the configured supervisor LLM with Evy's exact JSON contract:
+
+```json
+{
+  "decisions": [{
+    "source_event_ids": ["..."],
+    "action": "discard|keep_raw|promote_tier3|propose_tier1|escalate",
+    "memory": "one concise durable sentence, if promoted",
+    "kind": "decision|preference|finding|project-state|operator-note|design-note",
+    "reason": "short rationale",
+    "confidence": 0.0
+  }]
+}
+```
+
+4. Decisions are dispatched per the promotion policy:
+   - `discard` → mark_reviewed=discarded.
+   - `keep_raw` → mark_reviewed=reviewed.
+   - `promote_tier3` AND confidence ≥ 0.7 → call /promote (writes a curated row to `subctl_memori_curated`) then mark source rows as promoted. Confidence < 0.7 → mark reviewed but skip the write (logged as "low-confidence promotion candidate").
+   - `propose_tier1` → append to the Tier 1 candidate queue (`~/.config/subctl/master/tier1-candidates.jsonl`) for explicit operator review via `subctl memory tier1 [pending|approve|reject]`.
+   - `escalate` → mark_reviewed=escalated, emit a `severity: "warn"` notification so the operator sees the contradiction immediately.
+
+5. Each cycle appends a `memory_kernel_cycle` row to `decisions.jsonl` with N reviewed, P promoted, T tier1-candidates, E escalated.
+
+State persists at `~/.config/subctl/master/memory-kernel-state.json` — pause/resume survives restart. New CLI: `subctl memory kernel [status | run-now | pause | resume]` and HTTP endpoints under `/memory/kernel/*`. Reviewer model is configurable via `providers.json#models.reviewer` — point it at LM Studio gemma, an oMLX endpoint, Ollama, anywhere OpenAI-API-compatible. Reviewer cycles are reentrant-safe (one in flight at a time) and gracefully no-op when the sidecar isn't reachable.
+
+**Phase 4 — prompt hydration.** Worker B1's specific deliverable. `composeSystemPrompt` now prepends the most-recent curated Tier 3 facts to Evy's system prompt header at turn start, budgeted at ~2000 chars with longest-first truncation. Curated recall is cached for 60s so we don't hit the sidecar every turn. This is what closes the loop: instead of carrying a 16k-char compaction summary that gets thinner each cycle, Evy walks into every turn with the operator's durable preferences and recent decisions already in her prompt. Survives `+ new chat` resets. After Phase 4 Evy answers "what did we decide about X?" from curated memory without searching — the difference between "every restart is cold" and "she actually knows you."
+
+**Tier 1 candidate queue — `components/master/tier1-candidates.ts`.** The `propose_tier1` decision branch used to log "tier1-proposal-deferred" and drop the candidate. Now it appends to a JSONL queue file and surfaces three tools: `memory_tier1_pending`, `memory_tier1_approve`, `memory_tier1_reject`. Operator-facing CLI: `subctl memory tier1 pending`. Approval routes through the existing `memory_remember` path so the Tier 1 char-budget guardrails apply. Append-only — approve/reject = new line with `resolution` set, never mutates prior lines. Active when this release ships: 4 candidates queued during boot smoke tests including operator preferences ("more frequent check-ins to prevent agents from sitting idle") and infra facts.
+
+**Backfill scripts.** `subctl memory backfill [evy-to-memori | claude-mem-to-cognee | obsidian-to-cognee]` with `--dry-run` and `--limit`. NOTHING auto-runs at boot. Idempotent via deterministic source-id markers — re-runs skip already-ingested rows. Dry-run on the operator's actual store reported planned=579 evy-memory entries ready to migrate to Memori, claude-mem-to-cognee skipped cleanly when Cognee was unreachable (`{ok:false, error:"Cognee unreachable"}`), obsidian-to-cognee walked the vault and surfaced the entry count.
+
+**`knowledge_graph_*` tool family.** New `knowledge_graph_neighbors`, `knowledge_graph_path`, `knowledge_graph_query` tools wrap Cognee's graph endpoints. Gated on Cognee reachability — they don't show up in Evy's registry until the sidecar is alive, and surface clean errors when graph extraction hasn't run yet. After `subctl cognee cognify` completes against the backfilled obsidian corpus, queries return real structured paths: `subctl` node → "AI subscription orchestrator" → neighbors with `DECIDED_BY`, `TOUCHED_FILE`, etc. relations. This is the multi-hop reasoning layer Evy's research called out as the missing piece.
+
+**Boot-probe retry-with-backoff — the false-UNREACHABLE fix.** `components/master/probe-with-retry.ts` wraps the cognee + memori boot probes in exponential backoff (1.5s → 3 → 6 → 12 → 24, capped 30s total, 6 attempts). Quiet intermediate logs (`[cognee] not yet reachable (attempt 1/6, will retry in 1.5s)`); loud `UNREACHABLE` only on final exhaustion. The Python sidecars take 5–15s to import their SDKs, and master used to log a false UNREACHABLE on every cold boot before the retry pattern. Operator-asked, operator-shipped.
+
+**Background-task runtime — `components/master/background-runs.ts`.** Generic fire-and-forget for tools that take >15s and shouldn't block Evy's turn. State persists at `~/.config/subctl/master/background-runs.json`; orphaned in-flight runs get marked failed on master restart (with the reason `"lost on master restart"`). Three new tools: `background_run` (generic dispatcher — takes a tool name and args), `background_status`, `background_cancel`. Plus `tinyfish_agent_async` as the discoverable named variant. Completion results don't get injected into the transcript (that pattern hits provider-pairing rejects, learned the hard way) — instead they're prepended to the operator's next chat/telegram message. Tray notifications fire alongside. Phase A scope landed in the overnight orchestration block.
+
+**OAuth + provider work.** OpenAI Codex device-code OAuth lands first-class: `subctl auth openai-codex <alias>` mints fresh tokens via in-process device-code flow, dashboard Providers tab has a re-auth modal, master auto-refreshes 5 min before exp. Per-model `enabled` toggle in the dashboard Models panel — chat dropdown honors `models[].enabled`. Operator-selectable default model per provider via `~/.config/subctl/provider-defaults.json`. Live catalog refresh for openai, google, mistral, openrouter. Anthropic-provider hard-fail guard (ADR 0019) — `buildModel(provider="anthropic", ...)` refuses without explicit opt-in to prevent accidental Anthropic API usage when the operator intended a different provider. LM Studio `cache_prompt: true` injected via pi-ai `onPayload` hook for ~55% expected warm-turn speedup on identical system-prompt prefixes. Tier-2 lazy tool registration gates 7 tool families (gh, coderabbit, context7, linear, tinyfish, voice, skillRouter) on env/config presence — registry sized to what's actually configured.
+
+**Workers + MCP propagation.** New `account-pool-rotation` skill teaches Evy to rotate accounts when spawning hits auth failures. HMAC recipe in worker boot prompt is now unambiguous with a self-test vector eliminating a class of worker auth confusion. TinyFish + Ghost MCPs now propagate to spawned Claude Code worker `CLAUDE_CONFIG_DIR`s via `providers/claude/teams.sh _provider_claude_drop_mcp_config()` — workers inherit the same MCP surface their parent runs with.
+
+**Dashboard + UX.** New `↻ restart master` button in the chat toolbar — operator can kickstart the daemon from the UI, polls `/api/master/health` for the new `uptime_s` to confirm. New `🔇/🔊 voice` toggle in the chat toolbar — flips `voice.json#enabled` via `/api/voice/config`; state mirrors the existing `voice_config` SSE event. Catalog dashboard endpoints (`/api/catalogs`, `/api/catalogs/<provider>`, `/api/catalogs/<p>/refresh`, `/api/catalogs/<p>/models/<id>/enabled`). Template-spawn errors now surface structured `{error, error_kind}` so the supervisor can route around user errors instead of treating every 4xx as 500 (`dashboard/lib/spawn-errors.ts`).
+
+**Reliability fixes.** 23 pre-existing test failures cleared in one sweep — `bin/subctl` v2.7.36 verb dispatch restored after a monolith→modules refactor lost it, hardcoded version string replaced with `CURRENT_VERSION`, LM Studio Bearer-header tests rewritten to invariant assertions, `\$EDITOR` here-doc escape bug. Orphan `toolResult` drop on compaction — fixes the Codex `HTTP 400: "No tool call found for function call output with call_id …"` that interrupted operator chat. Two-layer defense: compactor sweeps before save, loader sweeps on every boot. Voice install + uninstall verbs restored in `lib/cli.sh` (lost in monolith refactor). Specforge intake-notes auto-advance (Evy's loop-failure bug — operator caught her getting stuck re-asking for the same dimension). Reasoning-channel markers stripped on Telegram outgoing path. Stale team-staleness watchdog unregisters dead teams. Providers tab `loading…` stuck state fixed (`renderModelsList` was using `await` without being declared `async`). `subctl dashboard deploy` smoke-check added — verifies the redeployed dashboard answers `/api/version` before claiming success.
+
+**Architecture decisions locked in this release.**
+
+- *Knot #1* — Cognee runs as a standalone subctl-owned sidecar. Shared-with-ArgentOS is available via `COGNEE_SERVICE_URL` override but the default install is standalone. Imagined-with-ArgentOS-elsewhere principle.
+- *Knot #2* — Memori BYODB starts on SQLite at `~/.config/subctl/master/memori.db`. BYODB interface kept abstract enough to migrate to Postgres later when M3+MacBook+R750 sharing becomes real.
+- *Sidecar pattern* — both Cognee and Memori run as local Python HTTP services because their Python SDKs don't fit subctl-master's Bun runtime. Mirrors `services/tts/server.py` and reuses the launchd-plist install path.
+- *Tool surface stability across substrate swaps* — `memory_search`, `evy_recall`, etc. keep their names + schemas across the Tier 3/4 substrate migration. Output gains a `source` field so callers see which substrate answered. Evy's persona + SKILL.md don't need rewrites.
+- *No conversation content leaves the box* in default install. Cloud augmentation is opt-in.
+- *`knowledge_graph_*` is a separate tool family*, not an extension of `memory_*`. Graph traversal is structurally different from relevance recall.
+
+**Test counts.** 127 / 0 in the memory subsuite (10 test files). 808 / 5 overall master suite. The 5 failures are LM Studio Bearer-header back-compat tests that broke when `lmstudio_api_token` got populated with the oMLX key (operator's thermal-preservation swap). Not memory regressions; tracked separately.
+
+**Operator activation paths.**
+
+```bash
+# Install the sidecars (one-time per box)
+subctl memori install off       # local-only mode, no cloud egress
+subctl cognee install           # standalone Cognee sidecar
+
+# Configure the reviewer model (operator decides where the cycle's LLM lives)
+$EDITOR ~/.config/subctl/master/providers.json
+# set models.reviewer to e.g. {provider:"lmstudio", model:"gemma-4-26b-a4b-it-mlx", host:"http://localhost:1234/v1"}
+
+# Migrate existing memory into the new substrates
+subctl memory backfill evy-to-memori --dry-run        # see plan
+subctl memory backfill evy-to-memori                  # for real
+subctl memory backfill obsidian-to-cognee             # index your vault
+subctl cognee cognify                                  # build the graph
+
+# Watch the consciousness cycle work
+subctl memory kernel status
+subctl memory tier1 pending           # review candidate Tier 1 facts
+```
+
+After all that: open a new chat, ask Evy "what did we decide about X?" without telling her where to look. She'll answer from curated memory. That's the release.
+
 ## [2.8.3] — 2026-05-13
 
 ### `feat(dashboard,master): v2.8.3 Skills tab clarity + Evy-authored skills (evy_author_skill tool)`
