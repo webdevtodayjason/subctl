@@ -74,6 +74,12 @@ import {
 import { notifyTools, bindNotifyBroadcast } from "./tools/notify";
 import { specforgeTools } from "./tools/specforge";
 import { schedulerTools, popDueFollowups } from "./tools/scheduler";
+import { listPendingFollowups } from "./tools/scheduler";
+import {
+  start as startCognitionLoop,
+  WATCHDOG_ID as COGNITION_LOOP_WATCHDOG_ID,
+  type StartResult as CognitionLoopStartResult,
+} from "./consciousness-loop";
 import { attachmentsTools } from "./tools/attachments";
 import { vaultLinkTools } from "./tools/vault-link";
 import { policyTools } from "./tools/policy";
@@ -4640,6 +4646,85 @@ async function main() {
   });
   console.error("[master] upstream-check watchdog armed — interval=6h, packages=pi-ai + pi-agent-core");
 
+  // ── Evy cognition loop (Memory Init #7, v0.1) ──────────────────────────
+  // Disabled-by-default bounded cognition loop. Config gate lives at
+  // ~/.config/subctl/master/consciousness-loop.json — if the file is
+  // missing or { enabled: false }, start() registers NO watchdog and
+  // arms NO interval. When enabled it ticks on its own interval,
+  // gathers compact signals, runs a rule-based planner, and routes
+  // safe actions through the existing notification + scheduler
+  // surfaces. NO LLM, NO push/merge/deploy, NO recursive spawn.
+  const cognitionLoop: CognitionLoopStartResult = startCognitionLoop({
+    registry: {
+      register: (entry) => registerWatchdog({
+        id: entry.id,
+        kind: entry.kind,
+        kill: entry.kill,
+      }),
+      touch: (id) => touchWatchdog(id),
+    },
+    signals: {
+      watchdogs: () => listWatchdogs().map((w) => ({
+        id: w.id,
+        kind: w.kind,
+        age_seconds: w.age_seconds,
+        last_tick_at: w.last_tick_at,
+      })),
+      notifications: () => {
+        const ring = listNotifications({ limit: 200 });
+        const by_severity: Record<string, number> = {};
+        let unread = 0;
+        for (const n of ring) {
+          by_severity[n.severity] = (by_severity[n.severity] ?? 0) + 1;
+          if (!n.read_at) unread++;
+        }
+        return { total: ring.length, unread, by_severity };
+      },
+      followups: () => {
+        let pending: ReturnType<typeof listPendingFollowups> = [];
+        try { pending = listPendingFollowups(); } catch { pending = []; }
+        let next_due_at: string | null = null;
+        for (const f of pending) {
+          if (!next_due_at || Date.parse(f.fire_at) < Date.parse(next_due_at)) {
+            next_due_at = f.fire_at;
+          }
+        }
+        return { pending: pending.length, next_due_at };
+      },
+    },
+    executor: {
+      notify: (n) => emitNotification({
+        kind: "cognition-loop",
+        severity: n.severity,
+        title: n.title,
+        body: n.body,
+        metadata: n.suppression_key ? { suppression_key: n.suppression_key } : undefined,
+      }),
+      scheduleFollowup: (f) => {
+        // Route through the existing scheduler tool so cognition-loop
+        // followups land in the same followups.jsonl as everything else.
+        void schedulerTools.schedule_followup.invoke({
+          summary: f.summary,
+          prompt: f.prompt,
+          fire_at_iso: f.fire_at,
+        });
+      },
+      // v0.1 deliberately omits rememberCandidate / askOperator /
+      // recordRecommendation providers — the planner is allowed to
+      // emit those decision kinds but the executor will refuse with
+      // "no <name> provider", and the audit records the refusal.
+      // Wiring them is a Memory Init #7.1 step once the bounded
+      // surface has proven itself.
+    },
+  });
+  if (cognitionLoop.armed) {
+    console.error(
+      `[master] cognition-loop armed — interval=${cognitionLoop.config.tick_interval_ms}ms, id=${COGNITION_LOOP_WATCHDOG_ID}`,
+    );
+  } else {
+    console.error("[master] cognition-loop disabled by config (enable via ~/.config/subctl/master/consciousness-loop.json)");
+  }
+
   // ── graceful shutdown ───────────────────────────────────────────────────
   const shutdown = (signal: string) => {
     if (stopped) return;
@@ -4651,6 +4736,7 @@ async function main() {
     clearInterval(inboxPoll);
     clusterTicker.stop();
     try { upstreamWatchdog?.stop(); } catch { /* ignore */ }
+    try { cognitionLoop.kill(); } catch { /* ignore */ }
     try { profilesWatcher.close(); } catch { /* ignore */ }
     try { voiceWatcher.close(); } catch { /* ignore */ }
     if (inboxWatcher) try { inboxWatcher.close(); } catch { /* ignore */ }
