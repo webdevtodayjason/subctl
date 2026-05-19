@@ -1792,6 +1792,28 @@
     return s.slice(0, max - 1) + "…";
   }
 
+  // v2.8.8 — per-card "Copy" button. Distinct from the existing
+  // "Copy prompt" (which builds an LLM-triage prompt for warn/alert
+  // entries). This one is the operator's relay path: copy the raw
+  // notification so they can paste it into a chat with devs / Evy /
+  // an external tool without retyping. Field order matches the spec
+  // (title + body + ts + kind); kind is last because it's the least
+  // human-relevant in a paste, more of a footer breadcrumb.
+  function buildCardCopyText(n) {
+    const title = n.title || "(no title)";
+    const body  = n.body || "(no body)";
+    const ts    = n.ts || "(unknown time)";
+    const kind  = n.kind || "(unknown kind)";
+    return [
+      title,
+      "",
+      body,
+      "",
+      "ts: " + ts,
+      "kind: " + kind,
+    ].join("\n");
+  }
+
   function buildCopyPrompt(n) {
     // Spec-fixed format. Keeping the field order stable so operators
     // can pattern-match it in chat history if they paste this into the
@@ -1899,6 +1921,15 @@
             getIcon("clipboard", { size: 12 }) +
             ' <span class="notif-item-copy-label">Copy prompt</span></button>'
           : "";
+        // v2.8.8 — per-card Copy button (always shown). Lives next to
+        // the existing copyBtn so errorish cards get both. Wired in
+        // the click delegate below via data-notif-copy-card.
+        const copyCardBtn =
+          '<button type="button" class="notif-item-copy" data-notif-copy-card="' +
+          escapeHtml(n.id) +
+          '" title="Copy notification (title + body + time + kind)">' +
+          getIcon("copy", { size: 12 }) +
+          ' <span class="notif-item-copy-label">Copy</span></button>';
         return [
           '<div class="' + cls + '" data-notif-id="' + escapeHtml(n.id) + '">',
           '  <div class="notif-item-glyph">' + sevIcon + '</div>',
@@ -1907,6 +1938,7 @@
               detail,
           '    <div class="notif-item-meta">',
           '      <span class="notif-item-when" title="' + escapeHtml(n.ts || "") + '">' + escapeHtml(fmtRelative(n.ts)) + '</span>',
+                copyCardBtn,
                 copyBtn,
           '    </div>',
           '  </div>',
@@ -2057,6 +2089,22 @@
         const n = _notifItems.get(id);
         if (n && !n.read_at) n.read_at = new Date().toISOString();
         render();
+        return;
+      }
+      // v2.8.8 Copy (per-card relay) → copy the raw notification so
+      // the operator can paste it into chat with devs/Evy/external
+      // tools. Distinct from the LLM-triage "Copy prompt" below.
+      // The two attributes (`data-notif-copy-card` vs `data-notif-copy`)
+      // are disjoint CSS attribute selectors, so handler order is
+      // safe — each button only carries one of them.
+      const copyCardBtn = ev.target.closest("button[data-notif-copy-card]");
+      if (copyCardBtn) {
+        ev.stopPropagation();
+        const id = copyCardBtn.getAttribute("data-notif-copy-card");
+        const n = id ? _notifItems.get(id) : null;
+        if (!n) return;
+        const ok = await copyTextToClipboard(buildCardCopyText(n));
+        spawnConfirmToast(ok ? "Copied ✓" : "Copy failed");
         return;
       }
       // Copy prompt → build prompt string + clipboard + confirm toast.

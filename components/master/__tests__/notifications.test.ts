@@ -162,6 +162,119 @@ describe("severity routing", () => {
   });
 });
 
+describe("dedup of identical upstream alerts (v2.8.8)", () => {
+  // The upstream-check watchdog fires every interval. Before this fix,
+  // operator screenshot (2026-05-19) showed 6 identical "pi-ai 0.74.0 →
+  // 0.75.3 available" entries in the tray. Dedup keys on
+  // kind + metadata.package + metadata.from + metadata.to; unread
+  // matches refresh the existing entry's ts instead of pushing a new
+  // row. Read matches still get a new entry — the operator already saw
+  // the old one.
+  const upstreamInput = (overrides: Record<string, unknown> = {}) => ({
+    kind: "upstream-available",
+    severity: "info" as const,
+    title: "pi-ai 0.74.0 → 0.75.3 available",
+    body: "A newer version is available",
+    metadata: {
+      package: "pi-ai",
+      from: "0.74.0",
+      to: "0.75.3",
+      ...overrides,
+    },
+  });
+
+  test("two unread emits with same fingerprint collapse to one entry", () => {
+    const first = emitNotification(upstreamInput());
+    // Force a measurable ts gap so we can verify the touch.
+    const before = first.ts;
+    // tiny sync-friendly wait via a busy-loop on Date.now() — we just
+    // need the ISO string to differ
+    const target = Date.now() + 2;
+    while (Date.now() < target) { /* spin */ }
+    const second = emitNotification(upstreamInput());
+    // Same record returned, ts has been advanced.
+    expect(second.id).toBe(first.id);
+    expect(Date.parse(second.ts)).toBeGreaterThan(Date.parse(before));
+    const all = listNotifications();
+    expect(all.length).toBe(1);
+  });
+
+  test("dedup-touch does NOT re-notify subscribers", () => {
+    // Critical: the Telegram pusher subscribes here. If we re-fanned
+    // out on every watchdog tick, the operator would get re-pinged
+    // every interval — worse than the visible-tray spam this fix
+    // exists to solve.
+    let count = 0;
+    subscribeNotifications(() => { count++; });
+    emitNotification(upstreamInput());
+    emitNotification(upstreamInput());
+    emitNotification(upstreamInput());
+    expect(count).toBe(1);
+  });
+
+  test("a previously-read entry no longer dedupes — new emit gets a new row", () => {
+    const a = emitNotification(upstreamInput());
+    expect(markRead(a.id)).toBe(true);
+    const b = emitNotification(upstreamInput());
+    expect(b.id).not.toBe(a.id);
+    const all = listNotifications();
+    expect(all.length).toBe(2);
+  });
+
+  test("emits with no metadata are never deduped", () => {
+    emitNotification({ kind: "team-nudge-sent", severity: "info", title: "x", body: "" });
+    emitNotification({ kind: "team-nudge-sent", severity: "info", title: "x", body: "" });
+    expect(listNotifications().length).toBe(2);
+  });
+
+  test("emits with partial metadata (missing fields) are never deduped", () => {
+    // upstream-available is the canonical fully-fingerprintable kind;
+    // omit "to" and the fingerprint should be null → no dedup.
+    emitNotification({
+      kind: "upstream-available",
+      severity: "info",
+      title: "x",
+      body: "",
+      metadata: { package: "pi-ai", from: "0.74.0" },
+    });
+    emitNotification({
+      kind: "upstream-available",
+      severity: "info",
+      title: "x",
+      body: "",
+      metadata: { package: "pi-ai", from: "0.74.0" },
+    });
+    expect(listNotifications().length).toBe(2);
+  });
+
+  test("non-string metadata values do NOT collapse via String() coercion", () => {
+    // If we naively String()-coerced an object/number `to`, two unrelated
+    // emits could collide on "[object Object]". The typeof check guards
+    // against that — these should NOT dedup.
+    emitNotification({
+      kind: "upstream-available",
+      severity: "info",
+      title: "x",
+      body: "",
+      metadata: { package: "pi-ai", from: "0.74.0", to: { foo: "bar" } },
+    });
+    emitNotification({
+      kind: "upstream-available",
+      severity: "info",
+      title: "x",
+      body: "",
+      metadata: { package: "pi-ai", from: "0.74.0", to: { baz: "qux" } },
+    });
+    expect(listNotifications().length).toBe(2);
+  });
+
+  test("different packages with the same kind do NOT collapse", () => {
+    emitNotification(upstreamInput({ package: "pi-ai" }));
+    emitNotification(upstreamInput({ package: "pi-agent-core" }));
+    expect(listNotifications().length).toBe(2);
+  });
+});
+
 describe("listNotifications filters", () => {
   test("since filters to entries strictly newer than the cutoff", async () => {
     const a = emitNotification({ kind: "k", severity: "info", title: "a", body: "" });

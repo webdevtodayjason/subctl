@@ -4939,7 +4939,11 @@ tr.team-stale-red td           { background: rgba(214, 108, 108, 0.06); }
 .notif-item-meta {
   display: flex;
   align-items: center;
-  gap: 8px;
+  /* v2.8.8: per-card "Copy" + conditional "Copy prompt" can both sit
+     here on errorish rows. Wrap rather than overflow if the tray
+     narrows or a future column is added. */
+  flex-wrap: wrap;
+  gap: 6px 8px;
   margin-top: 4px;
 }
 .notif-item-when {
