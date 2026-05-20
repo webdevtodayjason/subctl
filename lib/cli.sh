@@ -715,6 +715,86 @@ EOF
   esac
 }
 
+# ── cognee (v2.8.x, Memory Init #1 first-class install) ───────────────────
+# Operator-facing wrapper around lib/cognee.sh. Verbs: status (default),
+# install, uninstall. Mirrors the memori CLI shape exactly so the
+# memory-substrate UX is consistent across tiers.
+subctl_cli_cognee() {
+  local sub="${1:-status}"
+  [[ $# -gt 0 ]] && shift
+  case "$sub" in
+    -h|--help)
+      cat <<EOF
+subctl cognee [status | install | uninstall | ping | cognify [--dataset NAME] [--timeout S]]
+
+  Local Cognee sidecar (Memory Init #1, Tier 4 primary). Stores graph
+  + vector data at ~/.config/subctl/cognee-data/. Master daemon talks
+  to it over HTTP at 127.0.0.1:8745.
+
+  The sidecar runs as a thin HTTP shim around the cognee Python SDK.
+  When the SDK isn't installed, the shim runs in fallback mode (gate-only:
+  endpoints return empty results but TOOL_GATES.cognee still flips ON so
+  the dashboard surfaces knowledge_graph_* tools). To activate the full
+  graph engine, run \`pip install cognee\` and kickstart the sidecar.
+
+  Verbs:
+    status                 health probe + SDK state + data path (default)
+    install                install + load the launchd service
+    uninstall              unload + remove the plist. Data preserved.
+    ping                   alias for status — quick reachability check.
+    cognify [opts]         run the heavy LLM-driven extraction pipeline
+                           to mint nodes + edges from ingested text.
+                           Operator-invoked only (minutes-per-dataset).
+                           Options:
+                             --dataset NAME     dataset to cognify (default: subctl_main)
+                             --timeout S        timeout in seconds (default: 600)
+EOF
+      return 0 ;;
+    status|"")
+      . "$SUBCTL_REPO_ROOT/lib/cognee.sh"
+      subctl_cognee_status
+      ;;
+    install)
+      . "$SUBCTL_REPO_ROOT/lib/cognee.sh"
+      subctl_cognee_install
+      ;;
+    uninstall)
+      . "$SUBCTL_REPO_ROOT/lib/cognee.sh"
+      subctl_cognee_disable
+      ;;
+    ping)
+      . "$SUBCTL_REPO_ROOT/lib/cognee.sh"
+      subctl_cognee_ping
+      ;;
+    cognify)
+      . "$SUBCTL_REPO_ROOT/lib/cognee.sh"
+      local _ds="subctl_main" _to="600"
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --dataset) _ds="$2"; shift 2 ;;
+          --timeout) _to="$2"; shift 2 ;;
+          -h|--help)
+            cat <<COG_EOF
+subctl cognee cognify [--dataset NAME] [--timeout S]
+  Run cognee.cognify() to extract nodes + edges from the ingested
+  text corpus and populate the graph layer. Operator action — this
+  is slow (minutes via LM Studio) and only useful after a backfill.
+COG_EOF
+            return 0 ;;
+          *)
+            subctl_err "unknown cognify flag: $1"
+            return 1 ;;
+        esac
+      done
+      subctl_cognee_cognify "$_ds" "$_to"
+      ;;
+    *)
+      subctl_err "unknown cognee verb: $sub (try: status | install | uninstall | ping | cognify)"
+      return 1
+      ;;
+  esac
+}
+
 _subctl_cli_memory_render() {
   _subctl_cli_require_jq || return 1
   local url="$1" body

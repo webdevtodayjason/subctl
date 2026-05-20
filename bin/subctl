@@ -749,6 +749,12 @@ case "$cmd" in
     subctl_cli_memori "$@"
     ;;
 
+  cognee)
+    # v2.8.x — Cognee sidecar lifecycle (Memory Init #1 first-class).
+    . "$SUBCTL_REPO_ROOT/lib/cli.sh"
+    subctl_cli_cognee "$@"
+    ;;
+
   prefs|preferences)
     # v2.8.1 — operator preferences (bilateral maintenance).
     . "$SUBCTL_REPO_ROOT/lib/cli.sh"

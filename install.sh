@@ -410,6 +410,13 @@ install_dep() {
     npx)
       run "$cmd"
       ;;
+    service-launchd)
+      # Cognee + future first-class launchd sidecars. The install command
+      # is a subctl verb that loads the plist via lib/<name>.sh — driven
+      # through the operator-facing CLI surface so a one-off
+      # `subctl <name> install` works the same way the installer does.
+      run "$cmd"
+      ;;
     builtin|preinstalled)
       subctl_warn "$name is supposed to be present from a parent dep — install ${cmd}"
       ;;
@@ -496,6 +503,7 @@ INSTALL_ORDER=(
   lm-studio
   lms
   claude-mem
+  cognee
   cloakbrowser
   telegram-bot
   context7-key
