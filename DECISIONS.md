@@ -27,6 +27,68 @@ Sorted newest-first within each section.
 
 ## Architectural calls
 
+### 2026-05-14 — No Anthropic provider in master (hard guard, four alert channels)
+
+**Decision:** The master daemon hard-fails at `buildModel()` if any role
+resolves to `provider: "anthropic"` unless the operator has explicitly set
+`SUBCTL_ALLOW_ANTHROPIC_PROVIDER=1` in the launchd plist EnvironmentVariables.
+Even when the env var is set, the first model construction per boot fires a
+loud alert across four independent channels (`console.error` with
+`[ANTHROPIC-API-GUARD]` prefix, `emitNotification` to the dashboard tray,
+`sendTelegramOutbound` to the operator's phone, and `logDecision` to
+`decisions.jsonl`).
+
+**Why:** Anthropic's 2026-05-13 operator email confirmed that starting
+2026-06-15, "Agent SDK and other programmatic usage" — explicitly including
+third-party tools built on the Agent SDK — will bill against the new
+$200/mo Agent SDK credit, NOT against the operator's Max 20× subscription.
+`@earendil-works/pi-agent-core` (master's agent runtime, ADR 0015) is an
+Agent-SDK-shaped harness: an agent loop POSTing structured messages with
+tool definitions to a chat completions endpoint. By traffic shape alone,
+Anthropic will route master's calls to the credit bucket regardless of any
+`auth: "max-subscription"` hint. Under master's tick cadence (60s watchdog
++ 60s followup ticker + auto-compact + inbox poll + chat) a day under
+moderate load can plausibly burn the entire $200/mo credit, after which
+extra-usage charges flow to the operator's payment method without any
+further opt-in.
+
+**What landed:**
+1. `components/master/providers.json.example` — `fallback: { provider:
+   "anthropic", ... }` block stripped. Replaced with a
+   `_fallback_removed_2026_05_14` comment that names the policy and points
+   at ADR 0019.
+2. `components/master/server.ts:buildModel()` — guard throws before pi-ai
+   ever sees a Model<anthropic>. Module-level dedup Set so the loud alert
+   fires once per provider:model:verdict per boot, not on every role.
+3. `Providers` interface in `server.ts` — `escalate` and `fallback`
+   marked optional (they were declared required but never read; verified
+   in the audit). Existing operator configs that still have these blocks
+   continue to parse.
+4. `docs/adr/0019-no-anthropic-provider-in-master.md` — full ADR /
+   post-mortem covering the discovery, reasoning, alternatives, and open
+   questions (auto-nudge / verifier-cluster traffic still on the
+   subscription bucket today, OpenRouter example unchanged).
+5. `CLAUDE_INVOCATION_AUDIT.md` — branch-level audit of every Claude
+   call site in subctl. The audit is what surfaced the landmine.
+
+**Operator-visible behavior change:** if any future config or code path
+sets `provider: "anthropic"` on a master role, the daemon now refuses to
+boot the agent for that role until `SUBCTL_ALLOW_ANTHROPIC_PROVIDER=1` is
+deliberately set. Existing operator configs that don't use the anthropic
+provider are unaffected.
+
+**Open follow-ups (not blocking this decision):**
+- The OpenRouter alternate-supervisor example still shows
+  `"model": "anthropic/claude-sonnet-4"` with `"provider": "openrouter"` —
+  bills OpenRouter's marketplace, not Anthropic directly; doesn't trip the
+  guard. Worth tightening the example comment in a follow-up.
+- Master's auto-nudge / verifier-cluster / `/api/orchestration/:name/msg`
+  push HMAC-marked text into running `claude` tmux panes on scheduler
+  ticks. Counts against the subscription bucket today. If Anthropic
+  reclassifies "scheduler driving an interactive TUI" as Agent SDK use,
+  that vector flips overnight. Tracked as Risk Flag F1 in
+  `CLAUDE_INVOCATION_AUDIT.md`.
+
 ### 2026-05-13 night — dashboard decomposition wave 1 (Logs extracted; loader pattern established)
 
 **Decision:** Begin splitting `dashboard/public/app.js` (8,955 LOC) into per-tab plain-JS ES modules served verbatim by Bun's existing static handler. No framework, no build step, no new deps, no `shared/` directory. Wave 1 extracts the Logs tab as the pattern-setter. App.js shrinks to 8,646 LOC; the rest of the monolith is unchanged.
