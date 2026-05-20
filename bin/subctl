@@ -25,6 +25,8 @@ Usage:
   subctl accounts edit                Open accounts.conf in \$EDITOR
 
   subctl auth <provider> <alias>      OAuth into the right config dir
+                                      Providers: claude, openai, openai-codex,
+                                      xai-oauth, pi-coding-agent, gemini.
   subctl auth all                     Walk every account that needs auth
 
   subctl teams <provider> [opts]      tmux launcher (claude, pi-coding-agent)
@@ -243,6 +245,8 @@ case "$cmd" in
         provider_openai_auth_all
         . "$SUBCTL_REPO_ROOT/providers/openai-codex/auth.sh"
         provider_openai_codex_auth_all
+        . "$SUBCTL_REPO_ROOT/providers/xai-oauth/auth.sh"
+        provider_xai_oauth_auth_all
         . "$SUBCTL_REPO_ROOT/providers/pi-coding-agent/auth.sh"
         provider_pi_coding_agent_auth_all
         ;;
@@ -275,6 +279,18 @@ case "$cmd" in
         [[ -z "$cfg_dir" ]] && subctl_die "unknown alias: $alias (add it first: subctl accounts add openai-codex $alias <email>)"
         provider_openai_codex_auth "$alias" "$cfg_dir" "$email"
         ;;
+      xai-oauth)
+        # First-class xAI Grok OAuth (SuperGrok Subscription). PKCE-loopback
+        # flow in TS, no external `grok` CLI dependency. See
+        # providers/xai-oauth/auth.sh.
+        alias="${2:-}"
+        [[ -z "$alias" ]] && subctl_die "usage: subctl auth xai-oauth <alias>"
+        . "$SUBCTL_REPO_ROOT/providers/xai-oauth/auth.sh"
+        cfg_dir=$(subctl_account_field "$alias" 4)
+        email=$(subctl_account_field "$alias" 3)
+        [[ -z "$cfg_dir" ]] && subctl_die "unknown alias: $alias (add it first: subctl accounts add xai-oauth $alias <email>)"
+        provider_xai_oauth_auth "$alias" "$cfg_dir" "$email"
+        ;;
       pi-coding-agent)
         alias="${2:-}"
         [[ -z "$alias" ]] && subctl_die "usage: subctl auth pi-coding-agent <alias>"
@@ -288,7 +304,7 @@ case "$cmd" in
         subctl_warn "gemini provider not yet implemented (planned for v1.2 — see ROADMAP.md)"
         exit 1
         ;;
-      *) subctl_die "usage: subctl auth <claude|openai|openai-codex|pi-coding-agent|gemini|all> [alias]" ;;
+      *) subctl_die "usage: subctl auth <claude|openai|openai-codex|xai-oauth|pi-coding-agent|gemini|all> [alias]" ;;
     esac
     ;;
 
