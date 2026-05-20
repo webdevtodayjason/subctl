@@ -71,6 +71,100 @@ run() { $DRY_RUN && echo "[dry-run] $*" || eval "$@"; }
 # first on the local Mac) is to pin a separate worktree to `main` at
 # $SUBCTL_INSTALL_TREE and target the plist there.
 #
+# v2.8.9 — seed operator configs with sane defaults on fresh install.
+#
+# Three config artifacts that the master daemon checks at boot time. Prior
+# to v2.8.9 these were operator-owned-only — meaning a fresh subctl
+# install came up with cognition loop disabled, idle-pane watchdog
+# disabled, and MCP server unconfigured (no token in secrets.json). The
+# operator had to manually touch each file to opt in.
+#
+# Side effect on M3-style deploys: a fresh box that pulled v2.8.8 from
+# main had zero memory automation by default, and MCP integration was
+# non-functional without explicit secret-minting. That defeated the
+# "first 10 minutes magical" goal.
+#
+# This function writes sane defaults IF (and only if) the target file
+# doesn't already exist. Existing files are NEVER overwritten — the
+# operator-override contract is preserved exactly as before. Re-running
+# is idempotent.
+subctl_install_seed_operator_configs() {
+  local master_cfg="${SUBCTL_CONFIG_DIR:-$HOME/.config/subctl}/master"
+  local secrets_file="${SUBCTL_CONFIG_DIR:-$HOME/.config/subctl}/secrets.json"
+  mkdir -p "$master_cfg" 2>/dev/null || true
+
+  # 1) Cognition loop — Memory Init #7. Enabled-by-default so Evy starts
+  # observing immediately. Operator can disable by editing this file or
+  # setting "enabled": false.
+  local cl_cfg="$master_cfg/consciousness-loop.json"
+  if [[ ! -f "$cl_cfg" ]]; then
+    cat > "$cl_cfg" <<'CL_EOF'
+{
+  "enabled": true
+}
+CL_EOF
+    subctl_ok "seeded $cl_cfg (cognition loop enabled)"
+  else
+    subctl_info "$cl_cfg exists — leaving operator's config untouched"
+  fi
+
+  # 2) Idle-pane watchdog — notify-only by default (auto_retry off). Catches
+  # worker panes where typed-but-unsubmitted directives sit at the prompt
+  # without triggering tmux paste-buffer mutation safeguards.
+  local ip_cfg="$master_cfg/idle-pane-watchdog.json"
+  if [[ ! -f "$ip_cfg" ]]; then
+    cat > "$ip_cfg" <<'IP_EOF'
+{
+  "enabled": true,
+  "auto_retry_enabled": false
+}
+IP_EOF
+    subctl_ok "seeded $ip_cfg (idle-pane watchdog enabled, notify-only)"
+  else
+    subctl_info "$ip_cfg exists — leaving operator's config untouched"
+  fi
+
+  # 3) MCP token — mint a fresh 32-byte hex token if secrets.json lacks
+  # one. Without this, the master's MCP server boots disabled (`[mcp]
+  # disabled — no subctl_mcp_token secret`) and Claude Desktop / external
+  # MCP clients can't connect.
+  local need_mint="no"
+  if [[ ! -f "$secrets_file" ]]; then
+    need_mint="yes"
+    echo '{}' > "$secrets_file"
+    chmod 600 "$secrets_file" 2>/dev/null || true
+  elif ! grep -q '"subctl_mcp_token"' "$secrets_file" 2>/dev/null; then
+    need_mint="yes"
+  fi
+  if [[ "$need_mint" == "yes" ]]; then
+    if command -v openssl >/dev/null 2>&1; then
+      local mcp_tok
+      mcp_tok=$(openssl rand -hex 32)
+      # Use a tmpfile + mv for atomic write. Use jq if available, else
+      # fall back to sed-style merge (safe because secrets.json is JSON
+      # and we control the key shape).
+      if command -v jq >/dev/null 2>&1; then
+        local tmp
+        tmp=$(mktemp)
+        jq --arg t "$mcp_tok" '. + {subctl_mcp_token: $t}' "$secrets_file" > "$tmp" \
+          && mv "$tmp" "$secrets_file" \
+          && chmod 600 "$secrets_file" 2>/dev/null || true
+      else
+        # No jq fallback — rewrite the file. Loses formatting; acceptable
+        # because the operator can install jq for future-pretty writes.
+        printf '{"subctl_mcp_token":"%s"}\n' "$mcp_tok" > "$secrets_file"
+        chmod 600 "$secrets_file" 2>/dev/null || true
+      fi
+      subctl_ok "minted subctl_mcp_token into $secrets_file (32 hex bytes)"
+    else
+      subctl_warn "openssl not available — skipping MCP token mint. Generate manually:"
+      subctl_warn "  openssl rand -hex 32 | jq -R '{subctl_mcp_token: .}' >> $secrets_file"
+    fi
+  else
+    subctl_info "subctl_mcp_token already set — leaving untouched"
+  fi
+}
+
 # Idempotent: re-running on a system that already has the install tree is a
 # no-op early-return. Override the path via $SUBCTL_INSTALL_TREE.
 ensure_install_tree() {
@@ -646,6 +740,17 @@ component_install() {
 
   subctl_info "installing master daemon (components/master/)"
   $DRY_RUN || subctl_settings_install_master
+
+  # v2.8.9 — seed operator configs with sane defaults on fresh installs.
+  # These three config artifacts WERE operator-owned-only in v2.8.7-v2.8.8,
+  # which meant a fresh subctl install came up with cognition loop +
+  # idle-pane watchdog disabled and MCP server with no token — making
+  # M3-style deploys non-functional out of the box without operator
+  # intervention. Seeding here keeps the operator-override contract
+  # (existing configs are NEVER overwritten) while giving fresh installs
+  # a working default. See [[Daily Updates/2026-05-20]] §"Deploy gaps".
+  subctl_info "seeding operator configs (cognition loop + idle-pane + MCP token)"
+  $DRY_RUN || subctl_install_seed_operator_configs
 
   # v2.7.21 (ADR 0011 L2): dashboard now ships its own package.json
   # (xterm.js + node-pty for the web-terminal escape hatch). The helper
