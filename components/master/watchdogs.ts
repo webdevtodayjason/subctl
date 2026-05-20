@@ -48,6 +48,13 @@ export interface WatchdogEntry {
   started_at: string;       // ISO 8601
   last_tick_at: string | null; // ISO 8601 or null if never ticked
   /**
+   * Expected tick interval, in seconds. Used by downstream surfaces
+   * (cognition loop, dashboard staleness colouring) to judge "is this
+   * watchdog actually behind?" against its natural cadence rather than
+   * a one-size global threshold. Optional — null means "no expectation."
+   */
+  expected_interval_s: number | null;
+  /**
    * Caller-supplied teardown. Should be idempotent — killWatchdog() guards
    * against double-invocation, but graceful shutdown paths might also call
    * the underlying clearInterval()/abort() independently.
@@ -61,6 +68,7 @@ export interface WatchdogSnapshot {
   started_at: string;
   last_tick_at: string | null;
   age_seconds: number;
+  expected_interval_s: number | null;
 }
 
 const _registry: Map<string, WatchdogEntry> = new Map();
@@ -74,6 +82,8 @@ export function registerWatchdog(entry: {
   id: string;
   kind: WatchdogKind;
   kill: () => void;
+  /** Expected tick interval, in seconds. Optional. */
+  expected_interval_s?: number | null;
 }): WatchdogEntry {
   if (_registry.has(entry.id)) {
     throw new Error(`watchdog already registered: ${entry.id}`);
@@ -83,6 +93,7 @@ export function registerWatchdog(entry: {
     kind: entry.kind,
     started_at: new Date().toISOString(),
     last_tick_at: null,
+    expected_interval_s: entry.expected_interval_s ?? null,
     kill: entry.kill,
   };
   _registry.set(entry.id, record);
@@ -113,6 +124,7 @@ export function listWatchdogs(): WatchdogSnapshot[] {
     kind: w.kind,
     started_at: w.started_at,
     last_tick_at: w.last_tick_at,
+    expected_interval_s: w.expected_interval_s,
     age_seconds: Math.max(0, Math.floor((now - Date.parse(w.started_at)) / 1000)),
   }));
 }

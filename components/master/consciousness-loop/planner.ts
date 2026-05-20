@@ -47,7 +47,14 @@ import {
   type SignalBundle,
 } from "./types";
 
-/** Watchdog is considered stale after this many seconds without a tick. */
+/**
+ * Default staleness threshold in seconds — used when a watchdog declares
+ * no expected_interval_s. When a watchdog DOES declare one, the threshold
+ * scales to 2.5× its cadence (so a 6h watchdog only flags after 15h, not
+ * 10min). This fix resolves bug #32/#33 where the global 10-min threshold
+ * spuriously flagged the long-cadence team-staleness (30min) and
+ * upstream-check (6h) watchdogs as broken.
+ */
 const STALE_WATCHDOG_THRESHOLD_S = 10 * 60; // 10 min
 
 export interface PlannerInput {
@@ -198,6 +205,15 @@ function findStaleWatchdog(
   now: Date,
 ): { id: string; kind: string; age_seconds: number } | null {
   for (const w of bundle.watchdogs) {
+    // Per-watchdog threshold: 2.5× declared cadence, falling back to the
+    // global default when no expected_interval_s is declared. Scaling at
+    // 2.5× lets a watchdog miss one tick without alarming, but catches a
+    // legitimately-stuck timer within ~one expected interval.
+    const declared = w.expected_interval_s;
+    const threshold = declared && declared > 0
+      ? Math.floor(declared * 2.5)
+      : STALE_WATCHDOG_THRESHOLD_S;
+
     let last: number | null = null;
     if (w.last_tick_at) {
       const t = Date.parse(w.last_tick_at);
@@ -205,13 +221,13 @@ function findStaleWatchdog(
     }
     if (last === null) {
       // Never ticked. Use age_seconds as the staleness proxy.
-      if (w.age_seconds >= STALE_WATCHDOG_THRESHOLD_S) {
+      if (w.age_seconds >= threshold) {
         return { id: w.id, kind: w.kind, age_seconds: w.age_seconds };
       }
       continue;
     }
     const sinceLast = Math.floor((now.getTime() - last) / 1000);
-    if (sinceLast >= STALE_WATCHDOG_THRESHOLD_S) {
+    if (sinceLast >= threshold) {
       return { id: w.id, kind: w.kind, age_seconds: sinceLast };
     }
   }

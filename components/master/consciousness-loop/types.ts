@@ -77,6 +77,8 @@ export interface SignalBundle {
     kind: string;
     age_seconds: number;
     last_tick_at: string | null;
+    /** Expected tick cadence in seconds. null = unknown. */
+    expected_interval_s?: number | null;
   }>;
   /** Compact notification rollup — counts only, no body. */
   notifications: {

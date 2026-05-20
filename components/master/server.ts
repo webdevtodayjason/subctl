@@ -4616,6 +4616,7 @@ async function main() {
   registerWatchdog({
     id: "team-staleness",
     kind: "team-staleness",
+    expected_interval_s: Math.floor(watchdogIntervalMs / 1000),
     kill: () => clearInterval(watchdog),
   });
   console.error(
@@ -4812,6 +4813,7 @@ async function main() {
         kind: w.kind,
         age_seconds: w.age_seconds,
         last_tick_at: w.last_tick_at,
+        expected_interval_s: w.expected_interval_s,
       })),
       notifications: () => {
         const ring = listNotifications({ limit: 200 });

@@ -30,6 +30,7 @@ export interface SignalProviders {
     kind: string;
     age_seconds: number;
     last_tick_at: string | null;
+    expected_interval_s?: number | null;
   }>;
   /** Notification rollup. */
   notifications: () => {

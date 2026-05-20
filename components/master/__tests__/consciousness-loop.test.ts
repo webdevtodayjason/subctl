@@ -367,6 +367,101 @@ describe("notification suppression", () => {
   });
 });
 
+// ─── regression: bug #32/#33 — per-watchdog staleness threshold ──────────
+//
+// The global 10-min STALE_WATCHDOG_THRESHOLD_S was wrong for watchdogs
+// with legitimately long cadences (team-staleness ticks every 30min,
+// upstream-check every 6h). The planner now scales staleness at 2.5× a
+// watchdog's declared expected_interval_s before flagging.
+
+describe("bug-32-33 per-watchdog staleness", () => {
+  test("long-cadence watchdog within 2.5× its interval is NOT stale", () => {
+    // upstream-check declares 6h cadence. Last tick 2h ago — well inside
+    // the 2.5× = 15h window. Must NOT trip notify_dashboard.
+    const now = new Date("2026-05-19T22:00:00Z");
+    const lastTickAt = new Date(now.getTime() - 2 * 60 * 60 * 1000).toISOString();
+    const signals: SignalProviders = {
+      watchdogs: () => [
+        {
+          id: "upstream-check",
+          kind: "upstream-check",
+          age_seconds: 8 * 60 * 60,
+          last_tick_at: lastTickAt,
+          expected_interval_s: 6 * 60 * 60,
+        },
+      ],
+      notifications: () => ({ total: 0, unread: 0, by_severity: {} }),
+      followups: () => ({ pending: 0, next_due_at: null }),
+    };
+    const bundle = gatherSignals(signals);
+    const decision = plan({
+      bundle,
+      signal_hash: hashSignalBundle(bundle),
+      state: { ...INITIAL_STATE },
+      config: makeConfig(),
+      now,
+    });
+    // Must NOT flag — anything other than notify_dashboard is fine.
+    expect(decision.kind).not.toBe("notify_dashboard");
+  });
+
+  test("long-cadence watchdog past 2.5× its interval IS stale", () => {
+    // Same watchdog, but last tick 16h ago — past the 15h threshold.
+    const now = new Date("2026-05-19T22:00:00Z");
+    const lastTickAt = new Date(now.getTime() - 16 * 60 * 60 * 1000).toISOString();
+    const signals: SignalProviders = {
+      watchdogs: () => [
+        {
+          id: "upstream-check",
+          kind: "upstream-check",
+          age_seconds: 20 * 60 * 60,
+          last_tick_at: lastTickAt,
+          expected_interval_s: 6 * 60 * 60,
+        },
+      ],
+      notifications: () => ({ total: 0, unread: 0, by_severity: {} }),
+      followups: () => ({ pending: 0, next_due_at: null }),
+    };
+    const bundle = gatherSignals(signals);
+    const decision = plan({
+      bundle,
+      signal_hash: hashSignalBundle(bundle),
+      state: { ...INITIAL_STATE },
+      config: makeConfig(),
+      now,
+    });
+    expect(decision.kind).toBe("notify_dashboard");
+  });
+
+  test("watchdog with no expected_interval_s falls back to 10-min global", () => {
+    // No declared cadence → behaves like before. Last tick 12 min ago
+    // → stale (> 10min default).
+    const now = new Date("2026-05-19T22:00:00Z");
+    const lastTickAt = new Date(now.getTime() - 12 * 60 * 1000).toISOString();
+    const signals: SignalProviders = {
+      watchdogs: () => [
+        {
+          id: "legacy-thing",
+          kind: "legacy-thing",
+          age_seconds: 12 * 60,
+          last_tick_at: lastTickAt,
+        },
+      ],
+      notifications: () => ({ total: 0, unread: 0, by_severity: {} }),
+      followups: () => ({ pending: 0, next_due_at: null }),
+    };
+    const bundle = gatherSignals(signals);
+    const decision = plan({
+      bundle,
+      signal_hash: hashSignalBundle(bundle),
+      state: { ...INITIAL_STATE },
+      config: makeConfig(),
+      now,
+    });
+    expect(decision.kind).toBe("notify_dashboard");
+  });
+});
+
 // ─── required test 7: status surface returns last tick + decisions ────────
 
 describe("status surface", () => {
