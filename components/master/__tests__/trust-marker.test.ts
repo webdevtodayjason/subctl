@@ -45,6 +45,7 @@ import { join } from "node:path";
 import {
   _setStateDirForTesting,
   buildDirectiveMarker,
+  buildSignedDirective,
   computeHmac,
   ensureSecret,
   generateSecret,
@@ -554,5 +555,57 @@ describe("worker prompt self-test vector parity", () => {
     expect(marker).toContain(`hmac:${workerHmac}`);
     // And the canonical verifier round-trips clean.
     expect(verifyDirectiveMarker({ teamId, marker, body })).toBe(true);
+  });
+});
+
+describe("buildSignedDirective — SPEC-wrapped wire format", () => {
+  test("wire format wraps body with SPEC block + two-space indent", () => {
+    const teamId = "spec-wrap-team";
+    ensureSecret(teamId);
+    const body = "do the thing\nwith two lines";
+    const { wireFormat, signedBody, marker } = buildSignedDirective({
+      teamId,
+      phase: "p",
+      body,
+      ts: "2026-05-20T00:00:00.000Z",
+    });
+    expect(signedBody).toBe("SPEC:\n  do the thing\n  with two lines");
+    expect(wireFormat).toBe(`${marker}\nSPEC:\n  do the thing\n  with two lines`);
+  });
+
+  test("HMAC verifies against the SPEC-wrapped body", () => {
+    const teamId = "spec-verify-team";
+    ensureSecret(teamId);
+    const body = "single-line task";
+    const { marker, signedBody } = buildSignedDirective({
+      teamId,
+      phase: "p",
+      body,
+      ts: "2026-05-20T00:00:00.000Z",
+    });
+    // The verifier MUST see the signed (wrapped) body, not the raw body.
+    expect(verifyDirectiveMarker({ teamId, marker, body: signedBody })).toBe(true);
+    // Raw unwrapped body must NOT verify (proves SPEC wrap is part of HMAC).
+    expect(verifyDirectiveMarker({ teamId, marker, body })).toBe(false);
+  });
+
+  test("worker recipe matches: phase + \\n + ts + \\n + signedBody", () => {
+    const teamId = "spec-recipe-team";
+    const secret = ensureSecret(teamId);
+    const phase = "phase-x";
+    const ts = "2026-05-20T01:00:00.000Z";
+    const body = "multi\nline\nbody";
+    const { hmac, signedBody } = buildSignedDirective({
+      teamId,
+      phase,
+      body,
+      ts,
+    });
+    const workerHmac = require("node:crypto")
+      .createHmac("sha256", secret)
+      .update(phase + "\n" + ts + "\n" + signedBody)
+      .digest("hex")
+      .slice(0, 16);
+    expect(workerHmac).toBe(hmac);
   });
 });

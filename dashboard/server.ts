@@ -102,7 +102,7 @@ import {
 // first 16 hex chars into the marker as `hmac:<16hex>`. Missing secret
 // fails LOUD (refuses to send) — falling back to an unauthenticated
 // marker would teach workers to ignore the auth field.
-import { buildDirectiveMarker } from "../components/master/trust-marker.ts";
+import { buildSignedDirective } from "../components/master/trust-marker.ts";
 // v2.7.24: pi-ai provider catalog — replaces the hand-curated dropdown
 // at /api/providers with the full pi-ai enumeration so new providers
 // (groq, cerebras, openrouter, bedrock, xai, ...) light up automatically.
@@ -6788,22 +6788,28 @@ const server = Bun.serve({
         // convention (providers/claude/teams.sh sets SESSION_NAME and
         // passes it as team_id to the snapshot writer).
         //
-        // Marker format (consumed by the worker-contract preamble in
-        // providers/claude/teams.sh):
-        //   [subctl-master directive · phase=<phase> · ts:<iso> · hmac:<hmac16>]\n<text>
-        //   [subctl-master directive · ts:<iso> · hmac:<hmac16>]\n<text>     (no phase)
+        // v2.8.8+ wire format (SPEC-wrapped, consumed by the worker-
+        // contract preamble in providers/claude/teams.sh):
+        //   [subctl-master directive · phase=<phase> · ts:<iso> · hmac:<hmac16>]
+        //   SPEC:
+        //     <body indented>
+        //
+        // The SPEC block is required — a directive with no SPEC body is
+        // a contract violation and the worker will refuse it. The HMAC
+        // is computed over the wrapped body so the worker can verify
+        // both the sender (HMAC) and that a real task was sent (SPEC).
         //
         // Secret missing on disk = REFUSE TO SEND (fail loud, do NOT
         // fall back to unauthenticated marker — that would train
         // workers to ignore the auth field).
         let wrapped: string;
         try {
-          const { marker } = buildDirectiveMarker({
+          const { wireFormat } = buildSignedDirective({
             teamId: name,
             phase,
             body: text,
           });
-          wrapped = `${marker}\n${text}`;
+          wrapped = wireFormat;
         } catch (err) {
           const msg = (err as Error).message;
           return new Response(JSON.stringify({ ok: false, error: msg }), {
