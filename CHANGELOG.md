@@ -1,3 +1,46 @@
+## [2.8.9] — 2026-05-20
+
+### `fix: subctl deploy and install no longer leave new boxes half-deployed`
+
+The credibility-killer hotfix on the back of v2.8.8. v2.8.8 surfaced the bug, this release closes it.
+
+**The bug.** Local Mac had been the development environment for months; every other Mac (M3 Ultra, future fresh installs) was a guinea pig waiting to crash-loop. v2.8.6 → v2.8.8 added `@modelcontextprotocol/sdk` as a master dep, but `subctl deploy` (the fast-path verb that operators run after `git pull`) only ran `git pull` + `launchctl kickstart -k` — it never reran `bun install`. M3 Ultra pulled the new TS files, kickstarted master, and got `Cannot find module '@modelcontextprotocol/sdk/server/mcp.js'` because `components/master/node_modules/` was still at v2.8.6 state. The same gap would bite any pre-existing install at any future update where master's deps changed.
+
+Separately, three operator-owned config artifacts — cognition loop, idle-pane watchdog, MCP token — were never written by the installer. A fresh `subctl install` on a new box came up with cognition loop disabled, idle-pane watchdog disabled, and MCP server unconfigured. The operator had to manually touch each file to opt in. "First 10 minutes magical" was not magical.
+
+### Fix A — `subctl deploy` runs `bun install` in changed subtrees
+
+`lib/cli.sh subctl_cli_deploy` now captures BEFORE sha, runs git pull, captures AFTER sha, then scans `git diff --name-only BEFORE..AFTER` for any `*/package.json`. For each affected subtree (master, dashboard, future), runs `bun install` BEFORE the launchctl kickstart loop. If bun install fails, deploy aborts with a clear "fix bun install before kickstart — daemon would crash-loop" error rather than restarting into a guaranteed-broken state.
+
+This mirrors the existing `subctl update` ceremony (lines 837–862 in `lib/update.sh`, which already had this logic). The asymmetry between the two verbs was the bug. They now behave identically for deps.
+
+### Fix B — `subctl install` seeds sane defaults
+
+New `subctl_install_seed_operator_configs()` in `install.sh`, invoked from `component_install` right after the master daemon install. Three idempotent seed steps:
+
+1. **Cognition loop config** — writes `~/.config/subctl/master/consciousness-loop.json` with `{"enabled": true}` if missing. Existing configs are NEVER overwritten.
+2. **Idle-pane watchdog config** — writes `~/.config/subctl/master/idle-pane-watchdog.json` with `{"enabled": true, "auto_retry_enabled": false}` if missing. Notify-only — the operator opts into auto-retry when matched-directive detection has audit evidence.
+3. **MCP token mint** — if `secrets.json` lacks `subctl_mcp_token`, mint a fresh `openssl rand -hex 32` value and merge it in via `jq` (falls back to direct write if jq isn't available). Without this the MCP server stays disabled at boot, which silently breaks Claude Desktop and external MCP-client integrations.
+
+The operator-override contract is preserved exactly: existing configs are left untouched. Re-running the installer is idempotent. The seed only fires for files that don't already exist.
+
+### Why this matters
+
+Without this fix the project's update story was broken in a way that defeated the "supervised, memory-backed local dev team" positioning Hermes flagged in [[design/2026-05-20-hermes-strategic-feedback]]. Any new operator standing up subctl on a fresh box would have to manually mint a token, write two config files, and run `bun install --force` to get the system into the state the docs describe. That was incompatible with "first 10 minutes magical."
+
+### Commit ledger
+
+| SHA | Title |
+|---|---|
+| _TBD_ | fix(deploy): bun install in changed subtrees + seed sane operator configs |
+| _TBD_ | chore(release): VERSION → 2.8.9 + CHANGELOG entry |
+
+### Validation
+
+Before v2.8.9: `ssh m3 && subctl deploy` on a v2.8.6 → v2.8.8 update crashed master with `Cannot find module '@modelcontextprotocol/sdk'`. After v2.8.9: the same flow detects the changed `components/master/package.json`, runs `bun install`, and kickstarts cleanly.
+
+---
+
 ## [2.8.8] — 2026-05-20
 
 ### `feat: SPEC contract + WEB-216 watchdog fix + cognee CLI + xai-oauth provider`

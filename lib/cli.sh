@@ -269,12 +269,60 @@ EOF
 
   cd "$SUBCTL_REPO_ROOT" || subctl_die "cannot cd $SUBCTL_REPO_ROOT"
 
+  # v2.8.9 — capture BEFORE sha so we can detect package.json drift after
+  # the pull. Without this, a `subctl deploy` that brings down new master
+  # imports (e.g. @modelcontextprotocol/sdk @ v2.8.6→v2.8.8) would
+  # kickstart a daemon whose node_modules/ predates the new deps and
+  # crash-loops with "Cannot find module" — exactly the bug that bit
+  # M3 Ultra on 2026-05-20.
+  local before_sha=""
   if ! $no_pull; then
+    before_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
     subctl_info "git pull (repo: $SUBCTL_REPO_ROOT)"
     if $dry_run; then
       echo "[dry-run] git pull --ff-only"
     else
       git pull --ff-only || subctl_die "git pull failed (resolve manually, or use 'subctl update' for stash-aware path)"
+    fi
+  fi
+
+  # v2.8.9 — bun-install gate. If ANY subtree's package.json changed
+  # between BEFORE and AFTER the pull, run `bun install` in that subtree
+  # before kickstart. Generalizes the dashboard-only detection in
+  # lib/dashboard.sh so master + dashboard + future subtrees all stay
+  # in sync. No-op when before_sha is empty (--no-pull) or unchanged.
+  if [[ -n "$before_sha" ]]; then
+    local after_sha changed_pkg_jsons
+    after_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
+    if [[ "$before_sha" != "$after_sha" && -n "$after_sha" ]]; then
+      # Match top-level OR one-level-deep package.json files. Skip
+      # node_modules/ paths by design — those are vendored deps.
+      changed_pkg_jsons=$(git diff --name-only "$before_sha" "$after_sha" \
+        | grep -E '(^|/)package\.json$' \
+        | grep -v '/node_modules/' \
+        || true)
+      if [[ -n "$changed_pkg_jsons" ]]; then
+        if ! subctl_require bun "install: curl -fsSL https://bun.sh/install | bash" ; then
+          subctl_die "bun required for deploy when package.json changed — fix bun install before retrying"
+        fi
+        local pkg_json subtree
+        while IFS= read -r pkg_json; do
+          [[ -z "$pkg_json" ]] && continue
+          subtree=$(dirname "$pkg_json")
+          [[ "$subtree" == "." ]] && subtree="$SUBCTL_REPO_ROOT" \
+            || subtree="$SUBCTL_REPO_ROOT/$subtree"
+          subctl_info "$pkg_json changed — running bun install in $subtree"
+          if $dry_run; then
+            echo "[dry-run] (cd $subtree && bun install)"
+          else
+            if ! ( cd "$subtree" && bun install ) ; then
+              subctl_err "bun install failed in $subtree"
+              subctl_err "  fix the install before kickstarting — daemon would crash-loop."
+              return 1
+            fi
+          fi
+        done <<< "$changed_pkg_jsons"
+      fi
     fi
   fi
 
