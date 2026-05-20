@@ -13,6 +13,7 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+  classifyWorkerReply,
   decideTeamAction,
   runStaleTeamSweep,
   type TeamNudgeState,
@@ -492,8 +493,8 @@ describe("runStaleTeamSweep — server.ts integration pattern (v2.8.1)", () => {
   });
 });
 
-describe("runStaleTeamSweep — send failure recorded but state advances", () => {
-  test("failed delivery still sets last_nudge_at and emits an info notification", async () => {
+describe("runStaleTeamSweep — failed delivery does NOT advance state (WEB-216)", () => {
+  test("send failure → info notification BUT last_nudge_at_ms stays absent (retry naturally)", async () => {
     const now = 100 * T_MIN;
     const state = new Map<string, TeamNudgeState>();
     const infos: Array<{ team_id: string; title: string; body: string }> = [];
@@ -514,6 +515,210 @@ describe("runStaleTeamSweep — send failure recorded but state advances", () =>
     expect(infos.length).toBe(1);
     expect(infos[0]?.body).toContain("delivery failed: dashboard unreachable");
     expect(alerts.length).toBe(0);
-    expect(state.get("claude-down")?.last_nudge_at_ms).toBe(now);
+    // WEB-216 fix: state remains empty so the next sweep retries as
+    // first-nudge instead of advancing to "unresponsive" 30 min later
+    // on a worker that never received the nudge.
+    expect(state.has("claude-down")).toBe(false);
+  });
+
+  test("two consecutive 529-failed first-nudges → both classified as first-nudge, never escalate", async () => {
+    const state = new Map<string, TeamNudgeState>();
+    const alerts: Array<{ team_id: string; title: string; body: string }> = [];
+    const infos: Array<{ team_id: string; title: string; body: string }> = [];
+    const sendNudge = async () => ({ ok: false, error: "Claude API 529 Overloaded" });
+
+    // First sweep: stale team, send fails.
+    let now = 100 * T_MIN;
+    const r1 = await runStaleTeamSweep({
+      teams: [{ team_id: "claude-richard-dash", last_activity_ms: now - 20 * T_MIN }],
+      state,
+      cfg: { staleness_threshold_ms: STALENESS, nudge_retry_ms: RETRY, now_ms: now },
+      staleness_threshold_min: 15,
+      callbacks: {
+        sendNudge,
+        emitInfo: (team_id, title, body) => infos.push({ team_id, title, body }),
+        emitAlert: (team_id, title, body) => alerts.push({ team_id, title, body }),
+      },
+    });
+    expect(r1[0]?.action).toBe("first-nudge");
+
+    // Second sweep, 31 min later: send fails again. Without the WEB-216
+    // fix this would escalate; with the fix, state.has(team) is still
+    // false so it counts as first-nudge again.
+    now = 131 * T_MIN;
+    const r2 = await runStaleTeamSweep({
+      teams: [{ team_id: "claude-richard-dash", last_activity_ms: 80 * T_MIN }],
+      state,
+      cfg: { staleness_threshold_ms: STALENESS, nudge_retry_ms: RETRY, now_ms: now },
+      staleness_threshold_min: 15,
+      callbacks: {
+        sendNudge,
+        emitInfo: (team_id, title, body) => infos.push({ team_id, title, body }),
+        emitAlert: (team_id, title, body) => alerts.push({ team_id, title, body }),
+      },
+    });
+    expect(r2[0]?.action).toBe("first-nudge");
+    expect(alerts.length).toBe(0);
+  });
+});
+
+describe("classifyWorkerReply — text → WorkerReplyKind (WEB-216)", () => {
+  test("'Not stuck, not working. Idle by design.' → completed_idle", () => {
+    const r = classifyWorkerReply("Not stuck, not working. Idle by design.");
+    expect(r.kind).toBe("completed_idle");
+    expect(r.snippet).toContain("Idle by design");
+  });
+
+  test("'redeploy-prep checklist complete, awaiting next directive' → completed_idle", () => {
+    const r = classifyWorkerReply(
+      "I've finished the redeploy-prep checklist complete, awaiting next directive or shutdown.",
+    );
+    expect(r.kind).toBe("completed_idle");
+  });
+
+  test("'awaiting shutdown' → completed_idle", () => {
+    const r = classifyWorkerReply("All items complete. Awaiting shutdown.");
+    expect(r.kind).toBe("completed_idle");
+  });
+
+  test("'I'm stuck on X waiting for Y' → blocked", () => {
+    const r = classifyWorkerReply("I'm stuck on the migration step; waiting for Y.");
+    expect(r.kind).toBe("blocked");
+  });
+
+  test("'What should I do next?' → awaiting_input", () => {
+    const r = classifyWorkerReply("Almost done with the form. What should I do next?");
+    expect(r.kind).toBe("awaiting_input");
+  });
+
+  test("regular working text → working", () => {
+    const r = classifyWorkerReply("Implemented the parser. Running tests.");
+    expect(r.kind).toBe("working");
+  });
+
+  test("empty/null/undefined → working with empty snippet", () => {
+    expect(classifyWorkerReply("").kind).toBe("working");
+    expect(classifyWorkerReply(null).kind).toBe("working");
+    expect(classifyWorkerReply(undefined).kind).toBe("working");
+  });
+});
+
+describe("runStaleTeamSweep — classification suppresses escalation (WEB-216)", () => {
+  test("completed_idle classification on stale team → no nudge, no alert, state cleared", async () => {
+    const now = 200 * T_MIN;
+    const state = new Map<string, TeamNudgeState>([
+      // Team was previously nudged.
+      ["claude-richard-dash", { last_nudge_at_ms: now - 35 * T_MIN }],
+    ]);
+    const { callbacks, alerts, nudges, decisions } = makeCallbacks();
+    const actions = await runStaleTeamSweep({
+      teams: [
+        {
+          team_id: "claude-richard-dash",
+          last_activity_ms: now - 90 * T_MIN, // very stale
+          last_event_type: "report",
+          classification: {
+            kind: "completed_idle",
+            snippet: "Not stuck, not working. Idle by design.",
+          },
+        },
+      ],
+      state,
+      cfg: { staleness_threshold_ms: STALENESS, nudge_retry_ms: RETRY, now_ms: now },
+      staleness_threshold_min: 15,
+      callbacks,
+    });
+    expect(actions[0]?.action).toBe("completed_idle");
+    expect(alerts.length).toBe(0);
+    expect(nudges.length).toBe(0);
+    expect(state.has("claude-richard-dash")).toBe(false);
+    expect(decisions[0]?.action).toBe("team_completed_idle");
+    expect(decisions[0]?.rationale).toContain("Idle by design");
+  });
+
+  test("WEB-216 acceptance: 529 first nudge → later HMAC-valid reply 'idle by design' → never escalates", async () => {
+    const state = new Map<string, TeamNudgeState>();
+
+    // Sweep 1: stale, first nudge attempted, API returns 529.
+    let now = 100 * T_MIN;
+    const r1 = await runStaleTeamSweep({
+      teams: [
+        {
+          team_id: "claude-richard-dash",
+          last_activity_ms: now - 20 * T_MIN,
+        },
+      ],
+      state,
+      cfg: { staleness_threshold_ms: STALENESS, nudge_retry_ms: RETRY, now_ms: now },
+      staleness_threshold_min: 15,
+      callbacks: {
+        sendNudge: async () => ({ ok: false, error: "Claude API 529 Overloaded" }),
+        emitInfo: () => {},
+        emitAlert: () => {},
+      },
+    });
+    expect(r1[0]?.action).toBe("first-nudge");
+    expect(state.has("claude-richard-dash")).toBe(false); // 529 → state NOT advanced
+
+    // Sweep 2 (30 min later): worker has since replied "idle by design"
+    // via the inbox — classifier ran and set classification on the team.
+    now = 130 * T_MIN;
+    const alerts: Array<{ title: string; body: string }> = [];
+    const nudges: Array<{ team_id: string; body: string }> = [];
+    const r2 = await runStaleTeamSweep({
+      teams: [
+        {
+          team_id: "claude-richard-dash",
+          last_activity_ms: 80 * T_MIN, // still well past threshold
+          last_event_type: "report",
+          classification: {
+            kind: "completed_idle",
+            snippet: "Not stuck, not working. Idle by design.",
+          },
+        },
+      ],
+      state,
+      cfg: { staleness_threshold_ms: STALENESS, nudge_retry_ms: RETRY, now_ms: now },
+      staleness_threshold_min: 15,
+      callbacks: {
+        sendNudge: async (team_id, body) => {
+          nudges.push({ team_id, body });
+          return { ok: true };
+        },
+        emitInfo: () => {},
+        emitAlert: (_id, title, body) => alerts.push({ title, body }),
+      },
+    });
+    expect(r2[0]?.action).toBe("completed_idle");
+    // No 🚨 unresponsive alert. No additional nudge.
+    expect(alerts.length).toBe(0);
+    expect(nudges.length).toBe(0);
+  });
+
+  test("classification surfaces in escalate alert body (not 'Last event: unknown')", async () => {
+    const now = 200 * T_MIN;
+    const state = new Map<string, TeamNudgeState>([
+      ["claude-busy", { last_nudge_at_ms: now - 35 * T_MIN }],
+    ]);
+    const { callbacks, alerts } = makeCallbacks();
+    await runStaleTeamSweep({
+      teams: [
+        {
+          team_id: "claude-busy",
+          last_activity_ms: now - 90 * T_MIN,
+          classification: {
+            kind: "working",
+            snippet: "Running migrations…",
+          },
+        },
+      ],
+      state,
+      cfg: { staleness_threshold_ms: STALENESS, nudge_retry_ms: RETRY, now_ms: now },
+      staleness_threshold_min: 15,
+      callbacks,
+    });
+    expect(alerts[0]?.body).toContain("Reply classification: working");
+    expect(alerts[0]?.body).toContain("Last reply snippet: Running migrations…");
+    expect(alerts[0]?.body).not.toContain("Last event: unknown");
   });
 });

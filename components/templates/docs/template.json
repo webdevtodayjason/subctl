@@ -1,0 +1,6 @@
+{
+  "name": "docs",
+  "role": "quill",
+  "description": "Write specs, ADRs, and docs from a known state. Quill role: spec-writer, not implementer.",
+  "default_account_hint": "claude-jason"
+}

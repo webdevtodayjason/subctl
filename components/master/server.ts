@@ -74,6 +74,18 @@ import {
 import { notifyTools, bindNotifyBroadcast } from "./tools/notify";
 import { specforgeTools } from "./tools/specforge";
 import { schedulerTools, popDueFollowups } from "./tools/scheduler";
+import { listPendingFollowups } from "./tools/scheduler";
+import {
+  start as startCognitionLoop,
+  WATCHDOG_ID as COGNITION_LOOP_WATCHDOG_ID,
+  type StartResult as CognitionLoopStartResult,
+} from "./consciousness-loop";
+import {
+  startIdlePaneWatchdog,
+  defaultPaneProviders as defaultIdlePaneProviders,
+  IDLE_PANE_WATCHDOG_ID,
+  type IdlePaneStartResult,
+} from "./idle-pane-watchdog";
 import { attachmentsTools } from "./tools/attachments";
 import { vaultLinkTools } from "./tools/vault-link";
 import { policyTools } from "./tools/policy";
@@ -116,7 +128,8 @@ import {
   type CompactConfig,
   type CompactDecision,
 } from "./compact-policy";
-import { resolveSecret } from "./secrets";
+import { loadSecret, resolveSecret } from "./secrets";
+import { registerMcpTools, startMcpServer } from "./mcp";
 // ── v2.7.31 secret backends ──
 import {
   describeBackendChain,
@@ -195,7 +208,9 @@ import {
   reviewEvents as memoryKernelReviewEvents,
 } from "./memory-kernel-reviewer";
 import {
+  classifyWorkerReply,
   runStaleTeamSweep,
+  type ClassifiedReply,
   type TeamNudgeState,
   type TeamSnapshot,
 } from "./auto-nudge";
@@ -221,7 +236,12 @@ import {
 import {
   startUpstreamWatchdog,
   describeUpstreamState,
+  readUpdateHistory,
+  runManualUpdate,
+  setAutoUpdateEnabled,
+  isAutoUpdateEnabled,
   type UpstreamWatchdogHandle,
+  type AuditEntry,
 } from "./upstream-check";
 // ── v2.8.0 voice layer ──
 import {
@@ -1810,7 +1830,10 @@ async function main() {
     text?: string;
     [k: string]: unknown;
   };
-  const teamLastActivity = new Map<string, { ts: number; lastEvent?: TeamEvent }>();
+  const teamLastActivity = new Map<
+    string,
+    { ts: number; lastEvent?: TeamEvent; classification?: ClassifiedReply }
+  >();
   const teamReadOffsets = new Map<string, number>(); // file path → last byte read
   // v2.8.2 — Hoisted up here (was declared near the watchdog ticker
   // further down) so the inbox first-scan reconciliation and the
@@ -1900,7 +1923,16 @@ async function main() {
           if (lines.length) {
             try {
               const lastEv = JSON.parse(lines[lines.length - 1]) as TeamEvent;
-              teamLastActivity.set(team, { ts: stat.mtimeMs, lastEvent: lastEv });
+              // WEB-216: classify on boot-scan too so a team that
+              // shipped completed_idle text right before master
+              // restarted starts the next session classified, not
+              // mistakenly marked as silent-and-stale.
+              const classification = classifyWorkerReply(lastEv.text);
+              teamLastActivity.set(team, {
+                ts: stat.mtimeMs,
+                lastEvent: lastEv,
+                classification,
+              });
             } catch { /* ignore parse errors */ }
           }
         } catch { /* ignore */ }
@@ -1933,7 +1965,12 @@ async function main() {
       } catch {
         continue;
       }
-      teamLastActivity.set(team, { ts: Date.now(), lastEvent: ev });
+      // WEB-216: classify worker reply text so the staleness sweep can
+      // distinguish completed_idle / awaiting_input from genuine silence.
+      // The classifier accepts undefined/empty text and degrades to
+      // {kind:"working"} so non-text events keep the prior behavior.
+      const classification = classifyWorkerReply(ev.text);
+      teamLastActivity.set(team, { ts: Date.now(), lastEvent: ev, classification });
       broadcast("team_event", { team, ...ev });
       // Auto-prompt the agent on important event types so it can react.
       if (ev.type === "blocked" || ev.type === "error") {
@@ -2873,6 +2910,10 @@ async function main() {
   // between Bun.serve() returning and the watchdog being armed.
   let upstreamWatchdog: UpstreamWatchdogHandle | null = null;
 
+  // Forward-declared so the Bun.serve fetch handler can reference the
+  // MCP handle. Assigned later in the boot block after startMcpServer().
+  let mcpHandle: Awaited<ReturnType<typeof startMcpServer>> | null = null;
+
   const httpServer = Bun.serve({
     port: masterPort,
     hostname: masterHost,
@@ -2882,6 +2923,14 @@ async function main() {
     idleTimeout: 0,
     async fetch(req) {
       const url = new URL(req.url);
+
+      // ── MCP routes ──────────────────────────────────────────────────────
+      // Forward /.well-known/mcp + /mcp/* to the MCP handle when the
+      // server is armed. The handle itself enforces auth + discovery
+      // exposure rules; we just route by pathname.
+      if (mcpHandle && (url.pathname === "/.well-known/mcp" || url.pathname.startsWith("/mcp"))) {
+        return mcpHandle.handle(req);
+      }
 
       if (url.pathname === "/health") {
         return Response.json({
@@ -3137,6 +3186,138 @@ async function main() {
         }
         const state = describeUpstreamState();
         return Response.json({ ok: true, ...state });
+      }
+
+      // ── /upstreams/history — v2.7.37 dashboard manual-update history ────
+      // Reads the upstream-update audit log (JSONL written by the watchdog
+      // + every manual trigger). Newest-first, capped at 500 entries. The
+      // event field is normalized: the audit log writes "failure" but the
+      // dashboard payload uses "error" per the v2.7.37 spec.
+      if (url.pathname === "/upstreams/history" && req.method === "GET") {
+        const limitRaw = url.searchParams.get("limit");
+        const limit = limitRaw
+          ? Math.max(1, Math.min(500, Number(limitRaw) || 50))
+          : 50;
+        try {
+          const raw: AuditEntry[] = readUpdateHistory({ limit });
+          const entries = raw.map((e) => ({
+            ts: e.ts,
+            event: e.event === "failure" ? "error" : e.event,
+            package: e.package,
+            from: e.from,
+            to: e.to,
+            branch: e.branch,
+            trigger: e.trigger,
+            detail: e.detail,
+          }));
+          return Response.json({ ok: true, entries });
+        } catch (err) {
+          return Response.json(
+            { ok: false, error: (err as Error).message },
+            { status: 500 },
+          );
+        }
+      }
+
+      // ── /upstreams/update — v2.7.37 manual upstream-update trigger ──────
+      // Bypasses the 24h throttle. Runs the full worktree → bun install →
+      // bun test → bun build → typecheck → commit → push pipeline. Never
+      // merges to main. Returns the first updated branch name on success.
+      // Long-running: dashboards should treat this as fire-and-poll —
+      // history endpoint reflects the outcome once the runner completes.
+      if (url.pathname === "/upstreams/update" && req.method === "POST") {
+        try {
+          // Body is optional. If provided, accept { package?: string } to
+          // narrow the trigger to one package; otherwise run every tracked
+          // upstream that has a newer version.
+          let body: { package?: string } = {};
+          try {
+            const text = await req.text();
+            if (text.trim()) body = JSON.parse(text) as typeof body;
+          } catch {
+            // malformed JSON → treat as empty body, run every package
+          }
+          const summary = await runManualUpdate({
+            packageJsonPath: join(COMPONENT_DIR, "package.json"),
+            package: body.package,
+          });
+          // Find the first ok outcome with a branch (the operator wants
+          // the URL/branch to inspect). If none succeeded, surface the
+          // first failure detail.
+          const updates = summary.auto_update ?? [];
+          const succeeded = updates.find((u) => u.outcome.ok && u.outcome.branch);
+          if (succeeded) {
+            return Response.json({
+              ok: true,
+              branch: succeeded.outcome.branch,
+              package: succeeded.package,
+              from: succeeded.from,
+              to: succeeded.to,
+              detail: succeeded.outcome.detail,
+            });
+          }
+          const noOp = updates.length === 0;
+          if (noOp) {
+            // Nothing to do — no newer versions on the registry.
+            return Response.json({
+              ok: true,
+              branch: null,
+              detail: "no upstream updates available",
+            });
+          }
+          const firstFail = updates[0]!;
+          return Response.json(
+            {
+              ok: false,
+              error: firstFail.outcome.detail,
+              package: firstFail.package,
+              from: firstFail.from,
+              to: firstFail.to,
+              stderr_excerpt: firstFail.outcome.stderr_excerpt,
+            },
+            { status: 500 },
+          );
+        } catch (err) {
+          return Response.json(
+            { ok: false, error: (err as Error).message },
+            { status: 500 },
+          );
+        }
+      }
+
+      // ── /upstreams/auto-update/toggle — v2.7.37 auto-update gate ────────
+      // Flips the ~/.config/subctl/auto-update-upstreams.enabled flag.
+      // Body shape: { enabled?: boolean } — if provided sets explicitly,
+      // otherwise toggles the current state. Returns the resulting state.
+      if (
+        url.pathname === "/upstreams/auto-update/toggle" &&
+        req.method === "POST"
+      ) {
+        try {
+          let body: { enabled?: boolean } = {};
+          try {
+            const text = await req.text();
+            if (text.trim()) body = JSON.parse(text) as typeof body;
+          } catch {
+            // malformed JSON → treat as empty body and toggle
+          }
+          const current = isAutoUpdateEnabled();
+          const next =
+            typeof body.enabled === "boolean" ? body.enabled : !current;
+          const ok = setAutoUpdateEnabled(next);
+          if (!ok) {
+            return Response.json(
+              { ok: false, error: "failed to write auto-update flag" },
+              { status: 500 },
+            );
+          }
+          return Response.json({ ok: true, enabled: isAutoUpdateEnabled() });
+        } catch (err) {
+          return Response.json(
+            { ok: false, error: (err as Error).message },
+            { status: 500 },
+          );
+        }
       }
 
       // ── /memory/* — Evy Memory (Tier 3) operator surface (v2.7.23) ──────
@@ -4337,7 +4518,15 @@ async function main() {
             // Bump only if our new "now" is later than existing — it
             // always is in practice, but defensively ordered.
             if (now > existing.ts) {
-              teamLastActivity.set(session, { ts: now, lastEvent: existing.lastEvent });
+              // WEB-216: preserve classification across pane-hash bumps
+              // so a completed_idle worker stays classified between
+              // sweep ticks (pane content updates don't carry text to
+              // re-classify; the original classification still applies).
+              teamLastActivity.set(session, {
+                ts: now,
+                lastEvent: existing.lastEvent,
+                classification: existing.classification,
+              });
             }
           }
         }
@@ -4498,6 +4687,9 @@ async function main() {
         team_id: team,
         last_activity_ms: v.ts,
         last_event_type: v.lastEvent?.type,
+        // WEB-216: propagate the classifier output so decideTeamAction
+        // can short-circuit escalation on completed_idle/awaiting_input.
+        classification: v.classification,
       });
     }
 
@@ -4570,6 +4762,7 @@ async function main() {
   registerWatchdog({
     id: "team-staleness",
     kind: "team-staleness",
+    expected_interval_s: Math.floor(watchdogIntervalMs / 1000),
     kill: () => clearInterval(watchdog),
   });
   console.error(
@@ -4743,6 +4936,167 @@ async function main() {
   });
   console.error("[master] upstream-check watchdog armed — interval=6h, packages=pi-ai + pi-agent-core");
 
+  // ── Evy cognition loop (Memory Init #7, v0.1) ──────────────────────────
+  // Disabled-by-default bounded cognition loop. Config gate lives at
+  // ~/.config/subctl/master/consciousness-loop.json — if the file is
+  // missing or { enabled: false }, start() registers NO watchdog and
+  // arms NO interval. When enabled it ticks on its own interval,
+  // gathers compact signals, runs a rule-based planner, and routes
+  // safe actions through the existing notification + scheduler
+  // surfaces. NO LLM, NO push/merge/deploy, NO recursive spawn.
+  const cognitionLoop: CognitionLoopStartResult = startCognitionLoop({
+    registry: {
+      register: (entry) => registerWatchdog({
+        id: entry.id,
+        kind: entry.kind,
+        kill: entry.kill,
+      }),
+      touch: (id) => touchWatchdog(id),
+    },
+    signals: {
+      watchdogs: () => listWatchdogs().map((w) => ({
+        id: w.id,
+        kind: w.kind,
+        age_seconds: w.age_seconds,
+        last_tick_at: w.last_tick_at,
+        expected_interval_s: w.expected_interval_s,
+      })),
+      notifications: () => {
+        const ring = listNotifications({ limit: 200 });
+        const by_severity: Record<string, number> = {};
+        let unread = 0;
+        for (const n of ring) {
+          by_severity[n.severity] = (by_severity[n.severity] ?? 0) + 1;
+          if (!n.read_at) unread++;
+        }
+        return { total: ring.length, unread, by_severity };
+      },
+      followups: () => {
+        let pending: ReturnType<typeof listPendingFollowups> = [];
+        try { pending = listPendingFollowups(); } catch { pending = []; }
+        let next_due_at: string | null = null;
+        for (const f of pending) {
+          if (!next_due_at || Date.parse(f.fire_at) < Date.parse(next_due_at)) {
+            next_due_at = f.fire_at;
+          }
+        }
+        return { pending: pending.length, next_due_at };
+      },
+    },
+    executor: {
+      notify: (n) => emitNotification({
+        kind: "cognition-loop",
+        severity: n.severity,
+        title: n.title,
+        body: n.body,
+        metadata: n.suppression_key ? { suppression_key: n.suppression_key } : undefined,
+      }),
+      scheduleFollowup: (f) => {
+        // Route through the existing scheduler tool so cognition-loop
+        // followups land in the same followups.jsonl as everything else.
+        void schedulerTools.schedule_followup.invoke({
+          summary: f.summary,
+          prompt: f.prompt,
+          fire_at_iso: f.fire_at,
+        });
+      },
+      // v0.1 deliberately omits rememberCandidate / askOperator /
+      // recordRecommendation providers — the planner is allowed to
+      // emit those decision kinds but the executor will refuse with
+      // "no <name> provider", and the audit records the refusal.
+      // Wiring them is a Memory Init #7.1 step once the bounded
+      // surface has proven itself.
+    },
+  });
+  if (cognitionLoop.armed) {
+    console.error(
+      `[master] cognition-loop armed — interval=${cognitionLoop.config.tick_interval_ms}ms, id=${COGNITION_LOOP_WATCHDOG_ID}`,
+    );
+  } else {
+    console.error("[master] cognition-loop disabled by config (enable via ~/.config/subctl/master/consciousness-loop.json)");
+  }
+
+  // ── idle-pane watchdog (2026-05-19 transport reliability fix) ──────────
+  // Detects worker tmux panes where a directive sits typed at the
+  // prompt but unsubmitted. Notify-only by default. Auto-retry path
+  // (sending Enter) is gated behind both (a) config.auto_retry_enabled
+  // AND (b) buffered text exactly matching a recently-sent directive.
+  // Disabled-by-default config gate at
+  // ~/.config/subctl/master/idle-pane-watchdog.json.
+  const idlePaneWatchdog: IdlePaneStartResult = startIdlePaneWatchdog({
+    registry: {
+      register: (entry) => registerWatchdog({ id: entry.id, kind: entry.kind, kill: entry.kill }),
+      touch: (id) => touchWatchdog(id),
+    },
+    providers: defaultIdlePaneProviders((n) => emitNotification({
+      kind: n.kind,
+      severity: n.severity,
+      title: n.title,
+      body: n.body,
+      metadata: n.metadata,
+    })),
+  });
+  if (idlePaneWatchdog.armed) {
+    console.error(
+      `[master] idle-pane watchdog armed — interval=${idlePaneWatchdog.config.interval_ms}ms, threshold=${idlePaneWatchdog.config.idle_threshold_ticks} ticks, auto_retry=${idlePaneWatchdog.config.auto_retry_enabled}, id=${IDLE_PANE_WATCHDOG_ID}`,
+    );
+  } else {
+    console.error("[master] idle-pane watchdog disabled by config (enable via ~/.config/subctl/master/idle-pane-watchdog.json)");
+  }
+
+  // ── MCP server (MCP-Expose #1 mount, follow-up to f3a8e7a) ─────────────
+  // Mount the in-process MCP server under /mcp/* plus the unauthenticated
+  // /.well-known/mcp discovery endpoint. Boots disabled if
+  // secrets.json#subctl_mcp_token is missing — no auto-generation, the
+  // operator manages this credential. See components/master/mcp/README.md
+  // for the design summary and wave-2 tool-surface plan.
+  // (The mcpHandle binding itself is forward-declared above Bun.serve so
+  //  the fetch handler can route /mcp/* without TDZ trouble.)
+  mcpHandle = await startMcpServer({
+    expectedToken: loadSecret("subctl_mcp_token"),
+    serverInfo: { name: "subctl-master", version: SUBCTL_VERSION },
+    log: (line) => console.error(`[mcp] ${line}`),
+    // Wave-2 (#25) tool surface: ping / state_snapshot / notify.
+    // Tools must register before mcp.connect(transport) — see the
+    // registerCapabilities contract in components/master/mcp/server.ts.
+    registerCapabilities: (mcp) => {
+      registerMcpTools(mcp, {
+        serverVersion: SUBCTL_VERSION,
+        getStateSnapshot: () => ({
+          version: SUBCTL_VERSION,
+          uptime_s: Math.floor(process.uptime()),
+          transcript_msgs: agent.state.messages.length,
+          teams_tracked: teamLastActivity.size,
+          active_profile: activeProfile,
+          watchdogs: listWatchdogs().map((w) => ({
+            id: w.id,
+            kind: w.kind,
+            last_tick_at: w.last_tick_at,
+            expected_interval_s: w.expected_interval_s,
+          })),
+          notifications: (() => {
+            const ring = listNotifications({ limit: 200 });
+            let unread = 0;
+            for (const n of ring) if (!n.read_at) unread++;
+            return { total: ring.length, unread };
+          })(),
+        }),
+        emitNotification: (n, provenance) => {
+          emitNotification({
+            kind: n.kind,
+            severity: n.severity,
+            title: n.title,
+            body: n.body,
+            metadata: { mcp_provenance: provenance },
+          });
+        },
+      });
+    },
+  });
+  if (mcpHandle) {
+    console.error(`[master] mcp server armed — base=/mcp, discovery=/.well-known/mcp, version=${SUBCTL_VERSION}, tools=ping+state_snapshot+notify`);
+  }
+
   // ── graceful shutdown ───────────────────────────────────────────────────
   const shutdown = (signal: string) => {
     if (stopped) return;
@@ -4752,8 +5106,11 @@ async function main() {
     clearInterval(followupTicker);
     clearInterval(autoCompactInterval);
     clearInterval(inboxPoll);
+    if (mcpHandle) void mcpHandle.stop();
     clusterTicker.stop();
     try { upstreamWatchdog?.stop(); } catch { /* ignore */ }
+    try { cognitionLoop.kill(); } catch { /* ignore */ }
+    try { idlePaneWatchdog.kill(); } catch { /* ignore */ }
     try { profilesWatcher.close(); } catch { /* ignore */ }
     try { voiceWatcher.close(); } catch { /* ignore */ }
     if (inboxWatcher) try { inboxWatcher.close(); } catch { /* ignore */ }

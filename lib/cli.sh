@@ -715,6 +715,86 @@ EOF
   esac
 }
 
+# ── cognee (v2.8.x, Memory Init #1 first-class install) ───────────────────
+# Operator-facing wrapper around lib/cognee.sh. Verbs: status (default),
+# install, uninstall. Mirrors the memori CLI shape exactly so the
+# memory-substrate UX is consistent across tiers.
+subctl_cli_cognee() {
+  local sub="${1:-status}"
+  [[ $# -gt 0 ]] && shift
+  case "$sub" in
+    -h|--help)
+      cat <<EOF
+subctl cognee [status | install | uninstall | ping | cognify [--dataset NAME] [--timeout S]]
+
+  Local Cognee sidecar (Memory Init #1, Tier 4 primary). Stores graph
+  + vector data at ~/.config/subctl/cognee-data/. Master daemon talks
+  to it over HTTP at 127.0.0.1:8745.
+
+  The sidecar runs as a thin HTTP shim around the cognee Python SDK.
+  When the SDK isn't installed, the shim runs in fallback mode (gate-only:
+  endpoints return empty results but TOOL_GATES.cognee still flips ON so
+  the dashboard surfaces knowledge_graph_* tools). To activate the full
+  graph engine, run \`pip install cognee\` and kickstart the sidecar.
+
+  Verbs:
+    status                 health probe + SDK state + data path (default)
+    install                install + load the launchd service
+    uninstall              unload + remove the plist. Data preserved.
+    ping                   alias for status — quick reachability check.
+    cognify [opts]         run the heavy LLM-driven extraction pipeline
+                           to mint nodes + edges from ingested text.
+                           Operator-invoked only (minutes-per-dataset).
+                           Options:
+                             --dataset NAME     dataset to cognify (default: subctl_main)
+                             --timeout S        timeout in seconds (default: 600)
+EOF
+      return 0 ;;
+    status|"")
+      . "$SUBCTL_REPO_ROOT/lib/cognee.sh"
+      subctl_cognee_status
+      ;;
+    install)
+      . "$SUBCTL_REPO_ROOT/lib/cognee.sh"
+      subctl_cognee_install
+      ;;
+    uninstall)
+      . "$SUBCTL_REPO_ROOT/lib/cognee.sh"
+      subctl_cognee_disable
+      ;;
+    ping)
+      . "$SUBCTL_REPO_ROOT/lib/cognee.sh"
+      subctl_cognee_ping
+      ;;
+    cognify)
+      . "$SUBCTL_REPO_ROOT/lib/cognee.sh"
+      local _ds="subctl_main" _to="600"
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --dataset) _ds="$2"; shift 2 ;;
+          --timeout) _to="$2"; shift 2 ;;
+          -h|--help)
+            cat <<COG_EOF
+subctl cognee cognify [--dataset NAME] [--timeout S]
+  Run cognee.cognify() to extract nodes + edges from the ingested
+  text corpus and populate the graph layer. Operator action — this
+  is slow (minutes via LM Studio) and only useful after a backfill.
+COG_EOF
+            return 0 ;;
+          *)
+            subctl_err "unknown cognify flag: $1"
+            return 1 ;;
+        esac
+      done
+      subctl_cognee_cognify "$_ds" "$_to"
+      ;;
+    *)
+      subctl_err "unknown cognee verb: $sub (try: status | install | uninstall | ping | cognify)"
+      return 1
+      ;;
+  esac
+}
+
 _subctl_cli_memory_render() {
   _subctl_cli_require_jq || return 1
   local url="$1" body
@@ -792,25 +872,31 @@ Verbs:
   logs <name> [--tail N]     Tail the team's inbox JSONL (default 20 lines)
   report  ...                Append a status event   (see 'subctl team report --help')
   inbox <name> [--tail N]    Show recent events       (alias of 'logs')
+  baseline <verb> [path]     Install / inspect the claude-layers baseline
+                             (CLAUDE.md + .claude/) — see 'subctl team
+                             baseline --help'. Verbs: init | ensure | status.
 
 Examples:
   subctl team list
   subctl team kill v2.7.36-cli-expansion
   subctl team exec v2.7.36-cli-expansion "report progress"
   subctl team logs v2.7.36-cli-expansion --tail 50
+  subctl team baseline init /tmp/myproject
+  subctl team baseline status
 EOF
       return 0 ;;
     list)           subctl_cli_team_list "$@" ;;
     kill)           subctl_cli_team_kill "$@" ;;
     exec)           subctl_cli_team_exec "$@" ;;
     logs)           subctl_cli_team_logs "$@" ;;
+    baseline)       subctl_cli_team_baseline "$@" ;;
     # Back-compat: hand the existing dev-team-lead verbs off to components/team/team.sh.
     report|inbox)
       . "$SUBCTL_REPO_ROOT/components/team/team.sh"
       subctl_team "$sub" "$@"
       ;;
     *)
-      subctl_err "unknown team verb: $sub (try: list | kill | exec | logs | report | inbox)"
+      subctl_err "unknown team verb: $sub (try: list | kill | exec | logs | baseline | report | inbox)"
       return 1
       ;;
   esac
@@ -999,6 +1085,184 @@ EOF
   tail -n "$tail_n" "$inbox" | jq -r '
     "\(.ts // "?")  \(.type // "?" | ascii_upcase | .[0:8])  \(.text // "")"
   '
+}
+
+# ── subctl team baseline {init, ensure, status} ───────────────────────────
+# Memory Init #6: CLI wrapper around the claude-layers submodule installer.
+# claude-layers ships at components/agents/claude-layers/ with its own
+# install.sh that materializes CLAUDE.md + .claude/{agents,projects,
+# orchestrator,docs,commands} into a target project. This verb is the
+# operator-facing way to drive that installer (and inspect the result)
+# without remembering the submodule path.
+#
+# Verbs:
+#   init [path]    Run the submodule's install.sh against <path> (default: cwd).
+#                  Idempotent — install.sh is invoked with --yes so existing
+#                  files are overwritten in place. Safe to re-run.
+#   ensure [path]  Cheap check: if CLAUDE.md AND .claude/agents/ both exist,
+#                  print "ok". Otherwise call init.
+#   status [path]  Print which baseline files are present + the layer version
+#                  declared at the top of CLAUDE.md.
+#
+# Default path is the current directory. The path is resolved to an absolute
+# path before handing to the installer — install.sh refuses to write into
+# its own SCRIPT_DIR (the submodule itself), so callers that invoke with
+# "." inside the submodule still get a clean error from the installer.
+_subctl_cli_team_baseline_dir() {
+  echo "$SUBCTL_REPO_ROOT/components/agents/claude-layers"
+}
+
+# Required files for a "complete" claude-layers install. The installer
+# also drops project examples and orchestrator/docs files, but these are
+# the ones we treat as the floor — if all three are present, ensure is a
+# no-op. Keep this list short on purpose: it's a fast pre-flight, not a
+# full integrity audit.
+_subctl_cli_team_baseline_floor_files() {
+  cat <<EOF
+CLAUDE.md
+.claude/agents/FORGE.md
+.claude/agents/QUILL.md
+.claude/agents/SCOUT.md
+.claude/agents/WARDEN.md
+.claude/projects/PROJECT_TEMPLATE.md
+.claude/orchestrator/ARGENT.md
+EOF
+}
+
+# Read the "Version: X.Y.Z" line from a CLAUDE.md and print just the version.
+# Empty string if not parseable. Matches the layer 1 header convention used
+# by claude-layers (see components/agents/claude-layers/CLAUDE.md).
+_subctl_cli_team_baseline_version() {
+  local claude_md="$1"
+  [[ ! -f "$claude_md" ]] && return 0
+  grep -m1 -E '^\*\*Version:\*\*' "$claude_md" 2>/dev/null \
+    | sed -E 's/^\*\*Version:\*\*[[:space:]]+//; s/[[:space:]]+$//'
+}
+
+subctl_cli_team_baseline() {
+  local sub="${1:-}"
+  [[ $# -gt 0 ]] && shift
+  case "$sub" in
+    -h|--help|"")
+      cat <<EOF
+subctl team baseline <verb> [path]
+
+  Install or inspect the claude-layers baseline (Memory Init #6) — CLAUDE.md
+  + .claude/{agents,projects,orchestrator,docs,commands} — in a target
+  project. Wraps the submodule installer at
+  components/agents/claude-layers/install.sh.
+
+Verbs:
+  init [path]      Run install.sh against <path> (default: cwd). Idempotent;
+                   --yes is passed so existing files are overwritten.
+  ensure [path]    No-op if CLAUDE.md + .claude/agents/ + .claude/projects/
+                   already exist; otherwise calls init.
+  status [path]    Print which baseline files are present + layer version.
+
+Examples:
+  subctl team baseline init /tmp/my-project
+  subctl team baseline ensure ~/code/some-repo
+  subctl team baseline status
+EOF
+      return 0 ;;
+    init)           subctl_cli_team_baseline_init "$@" ;;
+    ensure)         subctl_cli_team_baseline_ensure "$@" ;;
+    status)         subctl_cli_team_baseline_status "$@" ;;
+    *)
+      subctl_err "unknown team baseline verb: $sub (try: init | ensure | status)"
+      return 1
+      ;;
+  esac
+}
+
+# Resolve and validate the target path for a baseline subcommand. Echoes
+# the absolute path to stdout, returns non-zero (and prints to stderr) on
+# missing/invalid input. Centralized here so init/ensure/status all
+# behave the same way around path defaulting + missing-dir errors.
+_subctl_cli_team_baseline_resolve_path() {
+  local raw="${1:-.}"
+  local resolved
+  if [[ ! -d "$raw" ]]; then
+    subctl_err "target directory not found: $raw"
+    return 1
+  fi
+  # cd into the dir + pwd is the portable way to absolutize without GNU realpath.
+  resolved=$(cd "$raw" 2>/dev/null && pwd) || {
+    subctl_err "cannot resolve absolute path for: $raw"
+    return 1
+  }
+  echo "$resolved"
+}
+
+subctl_cli_team_baseline_init() {
+  local path
+  path=$(_subctl_cli_team_baseline_resolve_path "${1:-.}") || return 1
+  local installer
+  installer="$(_subctl_cli_team_baseline_dir)/install.sh"
+  if [[ ! -x "$installer" ]]; then
+    subctl_err "claude-layers installer missing: $installer"
+    subctl_err "submodule may not be initialized — run: git submodule update --init --recursive"
+    return 1
+  fi
+  subctl_info "baseline init → $path"
+  # Run installer with --yes for non-interactive operation. Submodule's
+  # install.sh refuses if SCRIPT_DIR == TARGET_DIR; we re-surface that
+  # error verbatim so the operator knows the constraint.
+  "$installer" "$path" --yes
+}
+
+subctl_cli_team_baseline_ensure() {
+  local path
+  path=$(_subctl_cli_team_baseline_resolve_path "${1:-.}") || return 1
+  if [[ -f "$path/CLAUDE.md" \
+        && -d "$path/.claude/agents" \
+        && -d "$path/.claude/projects" ]]; then
+    subctl_ok "baseline ok at $path (CLAUDE.md + .claude/agents/ + .claude/projects/ present)"
+    return 0
+  fi
+  subctl_info "baseline incomplete at $path — running init"
+  subctl_cli_team_baseline_init "$path"
+}
+
+subctl_cli_team_baseline_status() {
+  local path
+  path=$(_subctl_cli_team_baseline_resolve_path "${1:-.}") || return 1
+  echo "baseline status: $path"
+  local source_dir
+  source_dir=$(_subctl_cli_team_baseline_dir)
+  local source_version=""
+  if [[ -f "$source_dir/CLAUDE.md" ]]; then
+    source_version=$(_subctl_cli_team_baseline_version "$source_dir/CLAUDE.md")
+  fi
+  if [[ -n "$source_version" ]]; then
+    echo "  source overlay:  v${source_version} (${source_dir})"
+  else
+    echo "  source overlay:  (unknown — submodule may not be initialized)"
+  fi
+  local installed_version=""
+  if [[ -f "$path/CLAUDE.md" ]]; then
+    installed_version=$(_subctl_cli_team_baseline_version "$path/CLAUDE.md")
+  fi
+  if [[ -n "$installed_version" ]]; then
+    echo "  installed:       v${installed_version}"
+  else
+    echo "  installed:       (no CLAUDE.md or no version header)"
+  fi
+  echo ""
+  echo "  files:"
+  local missing=0 present=0
+  while IFS= read -r rel; do
+    [[ -z "$rel" ]] && continue
+    if [[ -e "$path/$rel" ]]; then
+      printf "    ${C_GRN}✓${C_RST} %s\n" "$rel"
+      present=$((present + 1))
+    else
+      printf "    ${C_DIM}✗${C_RST} %s\n" "$rel"
+      missing=$((missing + 1))
+    fi
+  done < <(_subctl_cli_team_baseline_floor_files)
+  echo ""
+  echo "  summary: $present present, $missing missing"
 }
 
 # URL-encode the path segment via jq's @uri. Falls back to raw if jq absent.

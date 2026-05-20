@@ -330,6 +330,80 @@ export async function mount({ root: _root }) {
     return row;
   }
 
+  // Append a tool-call pill into `row`, collapsing into the previous pill
+  // when it has the same `name`. Returns the resulting pill — either the
+  // existing same-name pill (with count bumped) or a freshly created one.
+  //
+  // Why collapse: master sometimes hammers the same tool repeatedly
+  // (e.g. polling `subctl_orch_status` to wait for a job — operator saw
+  // 7 identical pills flooding the chat 2026-05-19 13:46 CDT). Collapsing
+  // consecutive same-name pills into ONE pill with an `×N` badge keeps
+  // the sidecar readable.
+  //
+  // Punt on the "break run when ok state changes" rule: we always collapse
+  // by name regardless of state, and let the LATEST result win (latest
+  // args, latest ok/err glyph). This matches the operator's "click on
+  // collapsed pill: show LATEST call's args/result — pick what's cleanest"
+  // instruction. Mixed-result runs show as a single pill with the most
+  // recent state; click for details.
+  function appendOrCollapseToolPill(row, opts) {
+    if (!row) return null;
+    const { name, args } = opts || {};
+    const safeName = String(name || "");
+    const lastPill = row.lastElementChild;
+    if (
+      lastPill &&
+      lastPill.classList &&
+      lastPill.classList.contains("chat-tool-pill") &&
+      lastPill.dataset.toolName === safeName
+    ) {
+      // Same name as the immediately-prior pill — collapse into it.
+      const count = (Number(lastPill.dataset.count) || 1) + 1;
+      lastPill.dataset.count = String(count);
+
+      // Update args preview + dataset to the LATEST call.
+      if (args != null) {
+        const serial = (typeof args === "string") ? args : JSON.stringify(args);
+        lastPill.dataset.args = serial;
+        const preview = formatToolArgsPreview(args);
+        let argsEl = lastPill.querySelector(".chat-tool-pill__args");
+        if (preview) {
+          if (argsEl) {
+            argsEl.textContent = preview;
+          } else {
+            argsEl = document.createElement("span");
+            argsEl.className = "chat-tool-pill__args";
+            argsEl.textContent = preview;
+            // Insert before the count badge if one exists, so the badge
+            // stays at the tail (right next to the ok/err ::after glyph).
+            const existingBadge = lastPill.querySelector(".chat-tool-pill__count");
+            if (existingBadge) lastPill.insertBefore(argsEl, existingBadge);
+            else lastPill.appendChild(argsEl);
+          }
+        } else if (argsEl) {
+          argsEl.remove();
+        }
+      }
+
+      // Refresh (or create) the ×N count badge — always tail-positioned
+      // so the ok/err ::after glyph follows naturally.
+      let badge = lastPill.querySelector(".chat-tool-pill__count");
+      if (!badge) {
+        badge = document.createElement("span");
+        badge.className = "chat-tool-pill__count";
+        lastPill.appendChild(badge);
+      }
+      badge.textContent = "×" + count;
+
+      return lastPill;
+    }
+
+    // Different name (or empty row) — render a fresh pill.
+    const pill = renderToolPill(opts);
+    row.appendChild(pill);
+    return pill;
+  }
+
   // ----- Thinking indicator (v2.7.12, fix v2.8.1) -----
   // Append a transient "Evy · thinking…" pill while master is processing
   // a chat turn. v2.8.1 fix: the indicator now persists through
@@ -676,9 +750,9 @@ export async function mount({ root: _root }) {
             // v2.7.12: render as a neon pill in the same row as sibling
             // pills from this turn (wraps naturally). No more full-width
             // tool-card eating 60% of the panel.
+            // 2026-05-19: consecutive same-name pills collapse into ×N.
             const row = ensureChatToolPillsRow(logEl);
-            const pill = renderToolPill({ name: tc.name, args: tc.arguments });
-            row.appendChild(pill);
+            const pill = appendOrCollapseToolPill(row, { name: tc.name, args: tc.arguments });
             toolBubbles.set(tc.id, pill);
             logEl.scrollTop = logEl.scrollHeight;
           }
@@ -687,12 +761,16 @@ export async function mount({ root: _root }) {
     });
     es.addEventListener("tool_result", (e) => {
       // Attach result + ok/err marker to the pill spawned by toolcall_start.
+      // When same-name pills have been collapsed into one, multiple tcids
+      // resolve onto the same pill — strip any prior ok/err class first so
+      // we don't end up with both glyphs rendering via ::after.
       if (!active) return;
       try {
         const d = JSON.parse(e.data);
         const pill = toolBubbles.get(d.toolCallId);
         if (!pill) return;
         const ok = !d.error;
+        pill.classList.remove("chat-tool-pill--ok", "chat-tool-pill--err");
         pill.classList.add(ok ? "chat-tool-pill--ok" : "chat-tool-pill--err");
         const result = d.error || (d.content && d.content[0] && d.content[0].text) || d.content;
         if (result != null) {
@@ -729,6 +807,12 @@ export async function mount({ root: _root }) {
         if (!j.ok || !Array.isArray(j.messages) || j.messages.length === 0) return;
         const empty = log.querySelector(".master-log-empty");
         if (empty) empty.remove();
+        // 2026-05-19: with consecutive same-name pill collapse, multiple
+        // tcids share a single pill element. A querySelector lookup by
+        // data-tcid would only find the LAST tcid stored on the pill, so
+        // we build a tcid → pill map as the assistant branch renders and
+        // use it from the toolResult branch instead.
+        const tcidToPill = new Map();
         for (const m of j.messages) {
           if (m.role === "user") {
             // Don't replay synthetic watchdog/team-report prompts — those
@@ -761,27 +845,29 @@ export async function mount({ root: _root }) {
             // assistant turn (one .chat-tool-pills row per turn). Multiple
             // tool calls in the same turn share the row. The toolResult
             // role (next branch) patches in the ✓/✗ marker.
+            // 2026-05-19: consecutive same-name pills collapse into ×N.
             const toolCalls = (m.content || []).filter((b) => b.type === "toolCall");
             if (toolCalls.length > 0) {
               const row = document.createElement("div");
               row.className = "chat-tool-pills";
-              for (const tc of toolCalls) {
-                const pill = renderToolPill({ name: tc.name || "tool", args: tc.arguments });
-                pill.dataset.tcid = tc.id || "";
-                row.appendChild(pill);
-              }
               log.appendChild(row);
+              for (const tc of toolCalls) {
+                const pill = appendOrCollapseToolPill(row, { name: tc.name || "tool", args: tc.arguments });
+                if (tc.id) tcidToPill.set(String(tc.id), pill);
+              }
             }
           } else if (m.role === "toolResult") {
-            // Walk back through the log to find the pill with matching id
-            // and attach the result marker. Best-effort — old transcripts
-            // may have results without a matching pill if the assistant
-            // turn was clipped.
+            // Find the pill whose tcid matches via the rehydrate map.
+            // Best-effort — old transcripts may have results without a
+            // matching pill if the assistant turn was clipped.
             const tcid = m.toolCallId || (m.content && m.content[0] && m.content[0].toolCallId);
             if (tcid) {
-              const pill = log.querySelector(`.chat-tool-pill[data-tcid="${cssEscape(String(tcid))}"]`);
+              const pill = tcidToPill.get(String(tcid));
               if (pill) {
                 const ok = !m.error;
+                // Clear opposite class so multiple tcids landing on the
+                // same collapsed pill don't render both ✓ and ✗.
+                pill.classList.remove("chat-tool-pill--ok", "chat-tool-pill--err");
                 pill.classList.add(ok ? "chat-tool-pill--ok" : "chat-tool-pill--err");
                 const resultText = (m.content || []).map((b) => b.text).filter(Boolean).join("\n");
                 if (resultText) pill.dataset.result = resultText;
@@ -1173,9 +1259,10 @@ export async function mount({ root: _root }) {
         row.dataset.turnOpen = "1";
         log.appendChild(row);
       }
-      const pill = renderToolPill({ name, args });
+      // 2026-05-19: consecutive same-name pills collapse into ×N. Multiple
+      // tcids can resolve onto the same collapsed pill via toolCallEls.
+      const pill = appendOrCollapseToolPill(row, { name, args });
       pill.dataset.tcid = toolCallId;
-      row.appendChild(pill);
       log.scrollTop = log.scrollHeight;
       toolCallEls.set(toolCallId, pill);
     }
@@ -1183,6 +1270,9 @@ export async function mount({ root: _root }) {
     function markToolDone(toolCallId, ok, summary) {
       const pill = toolCallEls.get(toolCallId);
       if (!pill) return;
+      // Clear opposite class so multiple tcids landing on the same
+      // collapsed pill don't render both ✓ and ✗ via ::after.
+      pill.classList.remove("chat-tool-pill--ok", "chat-tool-pill--err");
       pill.classList.add(ok ? "chat-tool-pill--ok" : "chat-tool-pill--err");
       if (summary != null) {
         pill.dataset.result = (typeof summary === "string") ? summary : JSON.stringify(summary);

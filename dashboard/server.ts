@@ -102,7 +102,7 @@ import {
 // first 16 hex chars into the marker as `hmac:<16hex>`. Missing secret
 // fails LOUD (refuses to send) — falling back to an unauthenticated
 // marker would teach workers to ignore the auth field.
-import { buildDirectiveMarker } from "../components/master/trust-marker.ts";
+import { buildSignedDirective } from "../components/master/trust-marker.ts";
 // v2.7.24: pi-ai provider catalog — replaces the hand-curated dropdown
 // at /api/providers with the full pi-ai enumeration so new providers
 // (groq, cerebras, openrouter, bedrock, xai, ...) light up automatically.
@@ -337,6 +337,65 @@ function publishCodexAuthEvent(
     try { s.write(wire); } catch { /* subscriber dropped */ }
   }
 }
+
+// ─── update-flow event bus (v2.8.8) ──────────────────────────────────────────
+//
+// Surfaces upstream releases + streams progress from /api/update/run to any
+// EventSource subscriber listening on /api/update/events. Mirrors the codex
+// auth pattern: module-level subscriber Set, publish helper, no per-session
+// state because the operator only runs one update at a time. Buffer keeps the
+// last N events so a freshly-opened modal replays the run-in-progress without
+// missing the first few lines.
+interface UpdateEventSubscriber {
+  write: (chunk: string) => void;
+  close: () => void;
+}
+const updateEventSubscribers: Set<UpdateEventSubscriber> = new Set();
+const updateEventBuffer: Array<{ type: string; payload: Record<string, unknown> }> = [];
+const UPDATE_EVENT_BUFFER_MAX = 200;
+
+function publishUpdateEvent(type: string, payload: Record<string, unknown>): void {
+  const event = { type, payload };
+  updateEventBuffer.push(event);
+  if (updateEventBuffer.length > UPDATE_EVENT_BUFFER_MAX) {
+    updateEventBuffer.shift();
+  }
+  const wire = `event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`;
+  for (const s of updateEventSubscribers) {
+    try { s.write(wire); } catch { /* dropped */ }
+  }
+}
+
+// /api/update/check cache. Stores the latest_tag and the timestamp; on
+// network failure the prior tag is served (and `stale: true` is set) so a
+// flaky remote doesn't flip `has_update` to false mid-session.
+interface UpdateCheckCache {
+  latest_tag: string;
+  fetched_at: number;
+  stale: boolean;
+}
+let _updateCheckCache: UpdateCheckCache | null = null;
+const UPDATE_CHECK_TTL_MS = 5 * 60 * 1000;
+
+function cmpSemver(a: string, b: string): number {
+  // Strip leading 'v'. Compare triplets numerically. Non-numeric suffixes
+  // (e.g. "-rc1") are stripped — operator is on stable channel today.
+  const norm = (s: string) => s.replace(/^v/i, "").split(/[-+]/)[0]!;
+  const parts = (s: string) => norm(s).split(".").map((p) => parseInt(p, 10) || 0);
+  const ap = parts(a);
+  const bp = parts(b);
+  const len = Math.max(ap.length, bp.length);
+  for (let i = 0; i < len; i++) {
+    const av = ap[i] ?? 0;
+    const bv = bp[i] ?? 0;
+    if (av !== bv) return av < bv ? -1 : 1;
+  }
+  return 0;
+}
+
+// In-flight guard so a second POST while an update is mid-run rejects with
+// 409 rather than spawning two parallel CLI invocations.
+let _updateRunInFlight: { mode: string; started_at: number } | null = null;
 
 async function getLmstudioModels(
   host: string,
@@ -1753,6 +1812,10 @@ const STATIC_FILES: Record<string, { path: string; type: string }> = {
   "/style.css":   { path: join(PUBLIC_DIR, "style.css"),  type: "text/css; charset=utf-8" },
   "/app.js":      { path: join(PUBLIC_DIR, "app.js"),     type: "application/javascript; charset=utf-8" },
   "/terminal.js": { path: join(PUBLIC_DIR, "terminal.js"), type: "application/javascript; charset=utf-8" },
+  // v2.8.8 — update modal, lazy-loaded by app.js on first #version-chip
+  // click. Not added to the index.html <script> manifest so the initial
+  // page payload stays lean.
+  "/update-modal.js": { path: join(PUBLIC_DIR, "update-modal.js"), type: "application/javascript; charset=utf-8" },
   // v2.7.25 (Scope A): Lucide-backed SVG icon helper. Module-shape file
   // so future code can `import { icon } from "/icons.js"`; today it also
   // exposes window.subctlIcon for the classic-script app.js call sites.
@@ -4727,6 +4790,264 @@ const server = Bun.serve({
         headers: { "Content-Type": "application/json; charset=utf-8" },
       });
     }
+    // ── /api/update/check — is origin/main ahead of the running daemon? ───
+    //
+    // GET → { running_version, latest_tag, has_update, channel, stale?, error? }
+    //
+    // Runs `git ls-remote --tags origin` with a 5s timeout. Caches the
+    // latest_tag for 5min so the periodic poll (every 5min from app.js) doesn't
+    // hammer github. On network failure, serves the stale cached value so a
+    // flaky remote doesn't flip has_update to false mid-session. Broadcasts
+    // an `update_available` SSE event the first time has_update becomes true
+    // (de-duped via cache state).
+    if (url.pathname === "/api/update/check" && req.method === "GET") {
+      const running = readSubctlVersion();
+      const now = Date.now();
+      const forceRefresh = url.searchParams.get("force") === "1";
+      // Operator override hatch for live testing — env var or query param
+      // pins a synthetic latest_tag so we can verify the wiggle/modal path
+      // without waiting for a real release.
+      const stub = url.searchParams.get("stub_latest") ?? process.env.SUBCTL_UPDATE_STUB_LATEST;
+
+      let cache = _updateCheckCache;
+      let usedStub = false;
+      let stale = false;
+
+      if (stub && stub.length > 0) {
+        cache = { latest_tag: stub, fetched_at: now, stale: false };
+        usedStub = true;
+      } else if (!cache || forceRefresh || now - cache.fetched_at > UPDATE_CHECK_TTL_MS) {
+        // Probe the remote. spawnSync with explicit args, 5s budget.
+        try {
+          const r = spawnSync(
+            GIT_BIN,
+            ["-C", REPO_ROOT, "ls-remote", "--tags", "--refs", "origin"],
+            { encoding: "utf8", timeout: 5000 },
+          );
+          if (r.status === 0 && r.stdout) {
+            // Lines like: <sha>\trefs/tags/v2.8.7
+            const tags: string[] = [];
+            for (const line of r.stdout.split("\n")) {
+              const m = line.match(/refs\/tags\/(\S+)/);
+              if (m && m[1] && /^v?\d+\.\d+\.\d+/.test(m[1])) tags.push(m[1]);
+            }
+            if (tags.length > 0) {
+              tags.sort(cmpSemver);
+              const latest = tags[tags.length - 1]!;
+              cache = { latest_tag: latest, fetched_at: now, stale: false };
+              _updateCheckCache = cache;
+            } else if (cache) {
+              cache.stale = true;
+              stale = true;
+            }
+          } else if (cache) {
+            cache.stale = true;
+            stale = true;
+          }
+        } catch {
+          if (cache) {
+            cache.stale = true;
+            stale = true;
+          }
+        }
+      }
+
+      const latest_tag = cache?.latest_tag ?? null;
+      const has_update = latest_tag !== null && cmpSemver(latest_tag, running) > 0;
+
+      // First-rising-edge broadcast: emit `update_available` when an open
+      // SSE client should be notified that an update just appeared. We
+      // de-dupe by stashing the last-broadcast tag on the cache so the same
+      // tag doesn't fire repeatedly across the 5-min poll cycle.
+      if (has_update && latest_tag && !usedStub) {
+        const sentinel = (_updateCheckCache as any)?.__broadcastedTag;
+        if (sentinel !== latest_tag) {
+          publishUpdateEvent("update_available", {
+            running_version: running,
+            latest_tag,
+            channel: "stable",
+          });
+          if (_updateCheckCache) (_updateCheckCache as any).__broadcastedTag = latest_tag;
+        }
+      }
+
+      return Response.json({
+        running_version: running,
+        latest_tag,
+        has_update,
+        channel: "stable",
+        stale: stale || (cache?.stale ?? false),
+        ...(usedStub ? { stub: true } : {}),
+      });
+    }
+
+    // ── /api/update/events — SSE stream for update_progress + update_available
+    if (url.pathname === "/api/update/events" && req.method === "GET") {
+      const stream = new ReadableStream({
+        start(controller) {
+          const enc = new TextEncoder();
+          const subscriber: UpdateEventSubscriber = {
+            write(chunk) {
+              try { controller.enqueue(enc.encode(chunk)); } catch { /* closed */ }
+            },
+            close() {
+              try { controller.close(); } catch { /* closed */ }
+            },
+          };
+          updateEventSubscribers.add(subscriber);
+
+          // Replay buffered events so a late-joining modal sees what the
+          // run produced before its EventSource handshake completed.
+          for (const ev of updateEventBuffer) {
+            subscriber.write(`event: ${ev.type}\ndata: ${JSON.stringify(ev.payload)}\n\n`);
+          }
+          // If a run is in flight, send a synthetic update_running event
+          // so the modal can paint the right state on open.
+          if (_updateRunInFlight) {
+            subscriber.write(
+              `event: update_running\ndata: ${JSON.stringify(_updateRunInFlight)}\n\n`,
+            );
+          }
+          // Keep-alive every 15s for proxies / Bun's internal idle reaper.
+          const keepAlive = setInterval(() => { subscriber.write(": ka\n\n"); }, 15_000);
+          req.signal.addEventListener("abort", () => {
+            clearInterval(keepAlive);
+            updateEventSubscribers.delete(subscriber);
+            subscriber.close();
+          });
+        },
+      });
+      return new Response(stream, {
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          "Connection": "keep-alive",
+        },
+      });
+    }
+
+    // ── /api/update/run — execute one of the three subctl update verbs ────
+    //
+    // POST body: { mode: "dashboard-deploy" | "fast-deploy" | "full-update" }
+    //
+    // Spawns the corresponding `bin/subctl` CLI invocation. stdout/stderr
+    // lines are streamed to /api/update/events as `update_progress` events
+    // (one event per line). Per-mode timeouts surface as a `timeout` event +
+    // a 408 response. Returns { ok, exitCode, mode, started_at, finished_at }.
+    if (url.pathname === "/api/update/run" && req.method === "POST") {
+      if (_updateRunInFlight) {
+        return Response.json(
+          {
+            ok: false,
+            error: `update already running: ${_updateRunInFlight.mode} (started ${new Date(_updateRunInFlight.started_at).toISOString()})`,
+          },
+          { status: 409 },
+        );
+      }
+      let body: { mode?: string } = {};
+      try { body = (await req.json()) as { mode?: string }; } catch { /* body optional */ }
+      const mode = String(body.mode ?? "");
+      const MODES: Record<string, { args: string[]; timeoutMs: number }> = {
+        "dashboard-deploy": { args: ["dashboard", "deploy"], timeoutMs: 60_000 },
+        "fast-deploy":      { args: ["deploy"],              timeoutMs: 120_000 },
+        "full-update":      { args: ["update"],              timeoutMs: 600_000 },
+      };
+      const spec = MODES[mode];
+      if (!spec) {
+        return Response.json(
+          { ok: false, error: `unknown mode: ${mode || "(missing)"}; expected dashboard-deploy|fast-deploy|full-update` },
+          { status: 400 },
+        );
+      }
+      const started_at = Date.now();
+      _updateRunInFlight = { mode, started_at };
+      publishUpdateEvent("update_started", { mode, args: spec.args, started_at });
+
+      // Bun.spawn streams stdout + stderr line-by-line via web-stream readers.
+      // Stay off shell strings — explicit argv prevents injection.
+      let proc: ReturnType<typeof Bun.spawn> | null = null;
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        try { proc?.kill(15); } catch { /* already exited */ }
+        // Escalate if the child doesn't exit after a grace window.
+        setTimeout(() => { try { proc?.kill(9); } catch { /* ignore */ } }, 3000);
+      }, spec.timeoutMs);
+
+      try {
+        proc = Bun.spawn([SUBCTL_BIN, ...spec.args], {
+          cwd: REPO_ROOT,
+          stdout: "pipe",
+          stderr: "pipe",
+          env: { ...process.env },
+        });
+
+        const pumpLines = async (
+          reader: ReadableStreamDefaultReader<Uint8Array>,
+          stream: "stdout" | "stderr",
+        ) => {
+          const dec = new TextDecoder();
+          let buf = "";
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) {
+              if (buf.length > 0) {
+                publishUpdateEvent("update_progress", { mode, stream, line: buf });
+              }
+              break;
+            }
+            buf += dec.decode(value, { stream: true });
+            let idx;
+            while ((idx = buf.indexOf("\n")) >= 0) {
+              const line = buf.slice(0, idx).replace(/\r$/, "");
+              buf = buf.slice(idx + 1);
+              publishUpdateEvent("update_progress", { mode, stream, line });
+            }
+          }
+        };
+
+        const outReader = proc.stdout.getReader();
+        const errReader = proc.stderr.getReader();
+        const pumps = Promise.all([
+          pumpLines(outReader, "stdout"),
+          pumpLines(errReader, "stderr"),
+        ]);
+
+        const exitCode = await proc.exited;
+        await pumps;
+        clearTimeout(timer);
+
+        const finished_at = Date.now();
+        if (timedOut) {
+          publishUpdateEvent("update_finished", {
+            mode, exitCode, ok: false, timeout: true, started_at, finished_at,
+          });
+          return Response.json(
+            { ok: false, mode, exitCode, started_at, finished_at, error: `timeout after ${spec.timeoutMs}ms` },
+            { status: 408 },
+          );
+        }
+        const ok = exitCode === 0;
+        publishUpdateEvent("update_finished", { mode, exitCode, ok, started_at, finished_at });
+        // Invalidate the version-check cache so the next poll reflects the
+        // post-update VERSION immediately.
+        _updateCheckCache = null;
+        return Response.json({ ok, mode, exitCode, started_at, finished_at });
+      } catch (err) {
+        clearTimeout(timer);
+        const finished_at = Date.now();
+        const message = (err as Error).message ?? String(err);
+        publishUpdateEvent("update_finished", {
+          mode, exitCode: -1, ok: false, error: message, started_at, finished_at,
+        });
+        return Response.json(
+          { ok: false, mode, exitCode: -1, started_at, finished_at, error: message },
+          { status: 500 },
+        );
+      } finally {
+        _updateRunInFlight = null;
+      }
+    }
     // ── /api/providers — list available providers + their profiles + which
     //    are usable as supervisor right now (auth status + load state) ─────
     if (url.pathname === "/api/providers" && req.method === "GET") {
@@ -5841,9 +6162,18 @@ const server = Bun.serve({
     // this proxy lets the dashboard's Memory tab "Upstreams" card read it
     // without knowing the master's port. Routes:
     //
-    //   GET  /api/upstreams        → master /upstreams
-    //   POST /api/upstreams/check  → master /upstreams/check (manual tick)
-    if (url.pathname === "/api/upstreams" || url.pathname === "/api/upstreams/check") {
+    //   GET  /api/upstreams                      → master /upstreams
+    //   POST /api/upstreams/check                → master /upstreams/check (manual tick)
+    //   GET  /api/upstreams/history?limit=N      → master /upstreams/history (v2.7.37)
+    //   POST /api/upstreams/update               → master /upstreams/update (v2.7.37 manual)
+    //   POST /api/upstreams/auto-update/toggle   → master /upstreams/auto-update/toggle (v2.7.37)
+    if (
+      url.pathname === "/api/upstreams" ||
+      url.pathname === "/api/upstreams/check" ||
+      url.pathname === "/api/upstreams/history" ||
+      url.pathname === "/api/upstreams/update" ||
+      url.pathname === "/api/upstreams/auto-update/toggle"
+    ) {
       const masterPort = process.env.SUBCTL_MASTER_PORT ?? "8788";
       const masterUrl = `http://127.0.0.1:${masterPort}${url.pathname.replace(/^\/api\/upstreams/, "/upstreams")}${url.search}`;
       try {
@@ -5863,6 +6193,67 @@ const server = Bun.serve({
       } catch (err) {
         return Response.json(
           { ok: false, error: `master daemon unreachable: ${(err as Error).message}` },
+          { status: 502 },
+        );
+      }
+    }
+
+    // ── /api/cognee/* — proxy to local Cognee sidecar (v2.8.7 memory tab) ─
+    // Mirrors the master-side proxy idiom below, but talks directly to the
+    // Cognee HTTP daemon on 127.0.0.1:8745 (default). Used by the Memory
+    // tab's Tier-health strip + Graph Extraction panel to call /health and
+    // /cognify without going through the master. Ports follow the defaults
+    // in components/master/cognee-client.ts:100.
+    if (url.pathname.startsWith("/api/cognee/")) {
+      const port = process.env.SUBCTL_COGNEE_PORT ?? "8745";
+      const upstreamUrl = `http://127.0.0.1:${port}${url.pathname.replace(/^\/api\/cognee/, "")}${url.search}`;
+      try {
+        const init: RequestInit = {
+          method: req.method,
+          headers: { "Content-Type": "application/json" },
+        };
+        if (req.method !== "GET" && req.method !== "HEAD") {
+          init.body = await req.text();
+        }
+        const upstream = await fetch(upstreamUrl, init);
+        const body = await upstream.text();
+        return new Response(body, {
+          status: upstream.status,
+          headers: { "Content-Type": upstream.headers.get("Content-Type") ?? "application/json" },
+        });
+      } catch (err) {
+        return Response.json(
+          { ok: false, error: `cognee sidecar unreachable: ${(err as Error).message}` },
+          { status: 502 },
+        );
+      }
+    }
+
+    // ── /api/memori/* — proxy to local Memori sidecar (v2.8.7 memory tab) ─
+    // Mirrors the cognee block above. Hits 127.0.0.1:8746 by default; used
+    // by the Memory tab's Tier-health strip + Curated Tier 3 browser to
+    // call /health and /recall directly. Port follows the default in
+    // components/master/memori-client.ts:185.
+    if (url.pathname.startsWith("/api/memori/")) {
+      const port = process.env.SUBCTL_MEMORI_PORT ?? "8746";
+      const upstreamUrl = `http://127.0.0.1:${port}${url.pathname.replace(/^\/api\/memori/, "")}${url.search}`;
+      try {
+        const init: RequestInit = {
+          method: req.method,
+          headers: { "Content-Type": "application/json" },
+        };
+        if (req.method !== "GET" && req.method !== "HEAD") {
+          init.body = await req.text();
+        }
+        const upstream = await fetch(upstreamUrl, init);
+        const body = await upstream.text();
+        return new Response(body, {
+          status: upstream.status,
+          headers: { "Content-Type": upstream.headers.get("Content-Type") ?? "application/json" },
+        });
+      } catch (err) {
+        return Response.json(
+          { ok: false, error: `memori sidecar unreachable: ${(err as Error).message}` },
           { status: 502 },
         );
       }
@@ -6397,22 +6788,28 @@ const server = Bun.serve({
         // convention (providers/claude/teams.sh sets SESSION_NAME and
         // passes it as team_id to the snapshot writer).
         //
-        // Marker format (consumed by the worker-contract preamble in
-        // providers/claude/teams.sh):
-        //   [subctl-master directive · phase=<phase> · ts:<iso> · hmac:<hmac16>]\n<text>
-        //   [subctl-master directive · ts:<iso> · hmac:<hmac16>]\n<text>     (no phase)
+        // v2.8.8+ wire format (SPEC-wrapped, consumed by the worker-
+        // contract preamble in providers/claude/teams.sh):
+        //   [subctl-master directive · phase=<phase> · ts:<iso> · hmac:<hmac16>]
+        //   SPEC:
+        //     <body indented>
+        //
+        // The SPEC block is required — a directive with no SPEC body is
+        // a contract violation and the worker will refuse it. The HMAC
+        // is computed over the wrapped body so the worker can verify
+        // both the sender (HMAC) and that a real task was sent (SPEC).
         //
         // Secret missing on disk = REFUSE TO SEND (fail loud, do NOT
         // fall back to unauthenticated marker — that would train
         // workers to ignore the auth field).
         let wrapped: string;
         try {
-          const { marker } = buildDirectiveMarker({
+          const { wireFormat } = buildSignedDirective({
             teamId: name,
             phase,
             body: text,
           });
-          wrapped = `${marker}\n${text}`;
+          wrapped = wireFormat;
         } catch (err) {
           const msg = (err as Error).message;
           return new Response(JSON.stringify({ ok: false, error: msg }), {

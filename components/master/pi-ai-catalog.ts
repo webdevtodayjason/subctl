@@ -174,6 +174,17 @@ const PROVIDER_META: Record<
   groq: { display: "Groq", auth: "api-key", notes: "GROQ_API_KEY" },
   cerebras: { display: "Cerebras", auth: "api-key", notes: "CEREBRAS_API_KEY" },
   xai: { display: "xAI (Grok)", auth: "api-key", notes: "XAI_API_KEY" },
+  // Phase C — SuperGrok OAuth (subctl-only synthetic provider, see
+  // SUBCTL_ONLY_PROVIDERS below). Metadata here is consumed by
+  // listCatalogProviders() via the same lookup that runs for pi-ai-native
+  // providers, so subctl-only and pi-ai-native rows render identically in
+  // the dashboard dropdown.
+  "xai-oauth": {
+    display: "xAI Grok OAuth (SuperGrok)",
+    auth: "oauth",
+    notes: "subctl auth xai-oauth <alias> — uses the SuperGrok subscription",
+    default: "grok-4.3",
+  },
   openrouter: {
     display: "OpenRouter",
     auth: "api-key",
@@ -252,6 +263,20 @@ const PROVIDER_META: Record<
   },
 };
 
+/**
+ * Subctl-only synthetic providers that are NOT in pi-ai's `getProviders()`
+ * list but that subctl plumbs end-to-end (catalog → resolver → server.ts
+ * branch). New entries land here, NOT in PROVIDER_META alone — adding to
+ * PROVIDER_META without listing here means the row never reaches
+ * listCatalogProviders() because that function iterates pi-ai's catalog.
+ *
+ * Each id MUST also be wired into:
+ *   - components/master/server.ts PROVIDER_API (transport mapping)
+ *   - components/master/server.ts getApiKeyForProvider (credential branch)
+ *   - components/master/server.ts buildModel baseUrl (if not OpenAI-compat default)
+ */
+export const SUBCTL_ONLY_PROVIDERS: ReadonlyArray<string> = ["xai-oauth"];
+
 /** Convert kebab-case to a presentable name when we have no override. */
 function titleCase(id: string): string {
   return id
@@ -267,7 +292,17 @@ function titleCase(id: string): string {
  */
 export function listCatalogProviders(): CatalogProvider[] {
   const piProviders = getProviders();
-  const out: CatalogProvider[] = piProviders.map((id) => {
+  // pi-ai-native rows come first; subctl-only synthetics are appended
+  // before the final sort so the merge result is order-deterministic.
+  const seen = new Set<string>(piProviders);
+  const ids: string[] = [...piProviders];
+  for (const synth of SUBCTL_ONLY_PROVIDERS) {
+    if (!seen.has(synth)) {
+      ids.push(synth);
+      seen.add(synth);
+    }
+  }
+  const out: CatalogProvider[] = ids.map((id) => {
     const meta = PROVIDER_META[id];
     let modelCount = 0;
     try {

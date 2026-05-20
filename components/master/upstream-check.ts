@@ -1278,6 +1278,7 @@ export function startUpstreamWatchdog(
   registerWatchdog({
     id: "upstream-check",
     kind: "upstream-check",
+    expected_interval_s: Math.floor(intervalMs / 1000),
     kill: () => {
       stopped = true;
       clearInterval(interval);

@@ -1,0 +1,3 @@
+[submodule "components/agents/claude-layers"]
+	path = components/agents/claude-layers
+	url = https://github.com/webdevtodayjason/claude-layers-subctl.git

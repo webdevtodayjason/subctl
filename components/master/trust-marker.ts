@@ -248,6 +248,59 @@ export function buildDirectiveMarker(
   return { marker, phase, ts, hmac };
 }
 
+// ─── signed-directive helper (SPEC-wrapped wire format) ─────────────────
+//
+// Adds a required SPEC block to the body BEFORE the HMAC is computed.
+// The wire format becomes:
+//
+//     [subctl-master directive · phase=<phase> · ts:<iso> · hmac:<hmac16>]
+//     SPEC:
+//       <body, every line indented by two spaces>
+//
+// The HMAC is computed over `phase + "\n" + ts + "\n" + signedBody` where
+// `signedBody = "SPEC:\n  " + body.split("\n").join("\n  ")`. Workers see
+// the SPEC: prefix immediately after the marker and refuse directives
+// that arrive without it (contract enforced in providers/claude/teams.sh).
+//
+// Centralizing the SPEC wrap here means every emitter that goes through
+// the dashboard's /api/orchestration/:name/msg route inherits the
+// requirement for free — no caller has to remember to prepend "SPEC:".
+// The HMAC mechanism proves WHO; the SPEC block proves WHAT. A signed
+// marker with an empty/missing SPEC is a contract violation, not a hint
+// to look elsewhere for the task body.
+
+export interface SignedDirective extends DirectiveMarker {
+  /** The wrapped body (SPEC: + indented), which is what gets signed. */
+  signedBody: string;
+  /** The full wire format: marker + "\n" + signedBody. */
+  wireFormat: string;
+}
+
+/**
+ * Build a signed directive in the SPEC-wrapped wire format. This is the
+ * canonical emit path for v2.8.8+ — supersedes raw buildDirectiveMarker
+ * calls for new code. Existing callers that need only the marker line
+ * (without the wire-format wrap) can keep using buildDirectiveMarker
+ * directly; the SPEC requirement is enforced where the wire bytes are
+ * assembled, not in the marker line itself.
+ */
+export function buildSignedDirective(
+  args: BuildDirectiveMarkerArgs,
+): SignedDirective {
+  // Indent every line of the operator's body by two spaces so the SPEC
+  // block reads as a block-scalar under the marker. Indentation is part
+  // of the signed bytes — the worker MUST receive the same bytes master
+  // signed, including indentation.
+  const indentedBody = args.body.split("\n").join("\n  ");
+  const signedBody = `SPEC:\n  ${indentedBody}`;
+  const marker = buildDirectiveMarker({ ...args, body: signedBody });
+  return {
+    ...marker,
+    signedBody,
+    wireFormat: `${marker.marker}\n${signedBody}`,
+  };
+}
+
 // ─── verification (used by tests; reserved for future worker-side checks) ─
 
 /**

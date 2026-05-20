@@ -1,0 +1,6 @@
+{
+  "name": "code-review",
+  "role": "sentry",
+  "description": "Adversarial review of a diff or PR. Sentry role: find what's wrong, say so plainly, do not capitulate without new evidence.",
+  "default_account_hint": "claude-jason"
+}

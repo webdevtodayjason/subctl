@@ -1,0 +1,6 @@
+{
+  "name": "feature-dev",
+  "role": "forge",
+  "description": "Build approved work — translate a spec into working code + tests. Forge role: implements, does not redesign.",
+  "default_account_hint": "claude-jason"
+}

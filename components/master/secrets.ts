@@ -68,6 +68,11 @@ export const SECRET_KEYS = [
   // here so the operator can rotate via the dashboard secrets panel.
   "cognee_auth_token",
   "memori_api_key",
+  // MCP-Expose (#24, wave 1) — bearer token for the in-process MCP server
+  // exposed at /mcp/* on the master daemon. When absent, the MCP server
+  // boots DISABLED (no auto-generation — secrets are operator-managed).
+  // Threaded through to decisions.jsonl provenance as `mcp:<caller_id>`.
+  "subctl_mcp_token",
 ] as const;
 export type SecretKey = (typeof SECRET_KEYS)[number];
 

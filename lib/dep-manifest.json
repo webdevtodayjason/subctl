@@ -296,6 +296,23 @@
       "depends_on": ["claude", "node"]
     },
     {
+      "id": "cognee",
+      "name": "cognee",
+      "type": "service",
+      "tier": "hard",
+      "why": "Tier 4 primary memory substrate (Memory Init #1). Knowledge graph engine — components/master/cognee-client.ts speaks to it at http://127.0.0.1:8745; without it knowledge_graph_* tools are not registered and Tier 4 falls back to claude-mem on :37701.",
+      "detect": ["sh", "-c", "test -f \"$HOME/Library/LaunchAgents/com.subctl.cognee.plist\" && curl -fsS --max-time 2 http://127.0.0.1:8745/health >/dev/null"],
+      "fallback_paths": [],
+      "version_min": null,
+      "install_method": "service-launchd",
+      "install_cmd": "subctl cognee install",
+      "auto_install": true,
+      "do_not_auto_install": false,
+      "manual_url": "https://github.com/topoteretes/cognee",
+      "post_install_hint": "Sidecar runs in fallback mode without the cognee Python SDK. For the full graph engine: pip install cognee && launchctl kickstart -k gui/$(id -u)/com.subctl.cognee",
+      "depends_on": []
+    },
+    {
       "id": "cloakbrowser",
       "name": "cloakbrowser",
       "type": "package",
