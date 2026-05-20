@@ -48,6 +48,15 @@ export interface StartMcpServerOptions {
    * prefix so logs interleave cleanly with the master daemon's output.
    */
   log?: (line: string) => void;
+  /**
+   * Optional pre-connect hook. The SDK rejects capability changes
+   * (which include tool registrations) after `mcp.connect(transport)`.
+   * If provided, this callback runs synchronously between McpServer
+   * construction and the transport connect, so wave-2 callers can
+   * registerMcpTools(mcp, ...) without hitting the registerCapabilities
+   * runtime error.
+   */
+  registerCapabilities?: (mcp: McpServer) => void;
 }
 
 export interface McpServerHandle {
@@ -131,6 +140,13 @@ export async function startMcpServer(
     { capabilities: {} },
   );
 
+  // Capability registration MUST happen before connect — the SDK
+  // throws on any later mutation. Wave-2 (#25) routes tool registration
+  // through here.
+  if (opts.registerCapabilities) {
+    opts.registerCapabilities(mcp);
+  }
+
   // Stateless mode keeps the skeleton simple: each request stands
   // alone (no in-memory session table). The wave-2 tool surface can
   // switch to `sessionIdGenerator: () => crypto.randomUUID()` if a
@@ -141,8 +157,15 @@ export async function startMcpServer(
   // parse a single JSON object back. The transport still upgrades to
   // SSE for server-initiated notifications when the client opens a
   // GET stream.
+  // Wave-2 (#25) switched from stateless (sessionIdGenerator: undefined)
+  // to session-aware. Stateless mode rejects the SECOND request to the
+  // same transport with "Stateless transport cannot be reused across
+  // requests", which broke any client that wanted to call initialize
+  // and then list/use tools. With a sessionIdGenerator the transport
+  // tracks per-client session state and serves a long-lived connection
+  // — exactly what an MCP-Expose client needs.
   const transport = new WebStandardStreamableHTTPServerTransport({
-    sessionIdGenerator: undefined,
+    sessionIdGenerator: () => crypto.randomUUID(),
     enableJsonResponse: true,
   });
 

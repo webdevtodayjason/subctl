@@ -129,7 +129,7 @@ import {
   type CompactDecision,
 } from "./compact-policy";
 import { loadSecret, resolveSecret } from "./secrets";
-import { startMcpServer } from "./mcp";
+import { registerMcpTools, startMcpServer } from "./mcp";
 // ── v2.7.31 secret backends ──
 import {
   describeBackendChain,
@@ -4923,9 +4923,45 @@ async function main() {
     expectedToken: loadSecret("subctl_mcp_token"),
     serverInfo: { name: "subctl-master", version: SUBCTL_VERSION },
     log: (line) => console.error(`[mcp] ${line}`),
+    // Wave-2 (#25) tool surface: ping / state_snapshot / notify.
+    // Tools must register before mcp.connect(transport) — see the
+    // registerCapabilities contract in components/master/mcp/server.ts.
+    registerCapabilities: (mcp) => {
+      registerMcpTools(mcp, {
+        serverVersion: SUBCTL_VERSION,
+        getStateSnapshot: () => ({
+          version: SUBCTL_VERSION,
+          uptime_s: Math.floor(process.uptime()),
+          transcript_msgs: agent.state.messages.length,
+          teams_tracked: teamLastActivity.size,
+          active_profile: activeProfile,
+          watchdogs: listWatchdogs().map((w) => ({
+            id: w.id,
+            kind: w.kind,
+            last_tick_at: w.last_tick_at,
+            expected_interval_s: w.expected_interval_s,
+          })),
+          notifications: (() => {
+            const ring = listNotifications({ limit: 200 });
+            let unread = 0;
+            for (const n of ring) if (!n.read_at) unread++;
+            return { total: ring.length, unread };
+          })(),
+        }),
+        emitNotification: (n, provenance) => {
+          emitNotification({
+            kind: n.kind,
+            severity: n.severity,
+            title: n.title,
+            body: n.body,
+            metadata: { mcp_provenance: provenance },
+          });
+        },
+      });
+    },
   });
   if (mcpHandle) {
-    console.error(`[master] mcp server armed — base=/mcp, discovery=/.well-known/mcp, version=${SUBCTL_VERSION}`);
+    console.error(`[master] mcp server armed — base=/mcp, discovery=/.well-known/mcp, version=${SUBCTL_VERSION}, tools=ping+state_snapshot+notify`);
   }
 
   // ── graceful shutdown ───────────────────────────────────────────────────

@@ -37,3 +37,10 @@ export {
   buildMcpProvenance,
 } from "./identity.js";
 export type { McpProvenance } from "./identity.js";
+
+export { registerMcpTools } from "./tools.js";
+export type {
+  McpToolProviders,
+  StateSnapshot,
+  ToolNotification,
+} from "./tools.js";
