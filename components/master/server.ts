@@ -128,7 +128,8 @@ import {
   type CompactConfig,
   type CompactDecision,
 } from "./compact-policy";
-import { resolveSecret } from "./secrets";
+import { loadSecret, resolveSecret } from "./secrets";
+import { startMcpServer } from "./mcp";
 // ── v2.7.31 secret backends ──
 import {
   describeBackendChain,
@@ -2787,6 +2788,10 @@ async function main() {
   // between Bun.serve() returning and the watchdog being armed.
   let upstreamWatchdog: UpstreamWatchdogHandle | null = null;
 
+  // Forward-declared so the Bun.serve fetch handler can reference the
+  // MCP handle. Assigned later in the boot block after startMcpServer().
+  let mcpHandle: Awaited<ReturnType<typeof startMcpServer>> | null = null;
+
   const httpServer = Bun.serve({
     port: masterPort,
     hostname: masterHost,
@@ -2796,6 +2801,14 @@ async function main() {
     idleTimeout: 0,
     async fetch(req) {
       const url = new URL(req.url);
+
+      // ── MCP routes ──────────────────────────────────────────────────────
+      // Forward /.well-known/mcp + /mcp/* to the MCP handle when the
+      // server is armed. The handle itself enforces auth + discovery
+      // exposure rules; we just route by pathname.
+      if (mcpHandle && (url.pathname === "/.well-known/mcp" || url.pathname.startsWith("/mcp"))) {
+        return mcpHandle.handle(req);
+      }
 
       if (url.pathname === "/health") {
         return Response.json({
@@ -4898,6 +4911,23 @@ async function main() {
     console.error("[master] idle-pane watchdog disabled by config (enable via ~/.config/subctl/master/idle-pane-watchdog.json)");
   }
 
+  // ── MCP server (MCP-Expose #1 mount, follow-up to f3a8e7a) ─────────────
+  // Mount the in-process MCP server under /mcp/* plus the unauthenticated
+  // /.well-known/mcp discovery endpoint. Boots disabled if
+  // secrets.json#subctl_mcp_token is missing — no auto-generation, the
+  // operator manages this credential. See components/master/mcp/README.md
+  // for the design summary and wave-2 tool-surface plan.
+  // (The mcpHandle binding itself is forward-declared above Bun.serve so
+  //  the fetch handler can route /mcp/* without TDZ trouble.)
+  mcpHandle = await startMcpServer({
+    expectedToken: loadSecret("subctl_mcp_token"),
+    serverInfo: { name: "subctl-master", version: SUBCTL_VERSION },
+    log: (line) => console.error(`[mcp] ${line}`),
+  });
+  if (mcpHandle) {
+    console.error(`[master] mcp server armed — base=/mcp, discovery=/.well-known/mcp, version=${SUBCTL_VERSION}`);
+  }
+
   // ── graceful shutdown ───────────────────────────────────────────────────
   const shutdown = (signal: string) => {
     if (stopped) return;
@@ -4907,6 +4937,7 @@ async function main() {
     clearInterval(followupTicker);
     clearInterval(autoCompactInterval);
     clearInterval(inboxPoll);
+    if (mcpHandle) void mcpHandle.stop();
     clusterTicker.stop();
     try { upstreamWatchdog?.stop(); } catch { /* ignore */ }
     try { cognitionLoop.kill(); } catch { /* ignore */ }
