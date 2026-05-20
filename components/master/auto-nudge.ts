@@ -28,12 +28,108 @@ export interface TeamNudgeState {
   last_nudge_at_ms: number;
 }
 
+/**
+ * v2.8.8 — WEB-216 reply classification. The team-staleness watchdog
+ * uses staleness as a *necessary* condition for escalation, but it is
+ * not *sufficient*: a worker that explicitly says "I'm done, awaiting
+ * shutdown" is idle by design, not unresponsive. The classifier maps
+ * the most-recent worker reply text to a discrete state so the sweep
+ * can short-circuit escalation on terminal states.
+ */
+export type WorkerReplyKind =
+  | "working" // default — no terminal/blocking signal in the reply
+  | "completed_idle" // worker explicitly said the task is done
+  | "awaiting_input" // worker is waiting on the operator to answer
+  | "blocked"; // worker is blocked on an external constraint
+
+export interface ClassifiedReply {
+  kind: WorkerReplyKind;
+  /** Short text snippet around the matched phrase for alert bodies. */
+  snippet: string;
+}
+
+/**
+ * Classify a worker reply text into a WorkerReplyKind. The classifier is
+ * intentionally permissive — phrases are matched case-insensitively and
+ * surrounded by word-boundary tolerances rather than exact equality, so
+ * paraphrases ("I'm idle by design", "task complete") match. False
+ * positives degrade gracefully (a "working" team still escalates after
+ * the staleness threshold); false negatives are the dangerous case
+ * because they cause the WEB-216 alert spam, so we err toward matching.
+ */
+export function classifyWorkerReply(text: string | null | undefined): ClassifiedReply {
+  if (!text || !text.trim()) {
+    return { kind: "working", snippet: "" };
+  }
+  const lower = text.toLowerCase();
+
+  const completedPatterns: RegExp[] = [
+    /idle by design/,
+    /awaiting (?:next directive|shutdown|further instructions|further direction)/,
+    /(?:task|work|checklist|redeploy-prep) (?:is )?complete[d]?\b/,
+    /(?:all items|all tasks) complete[d]?/,
+    /\bdone with (?:the |my )?(?:task|work|checklist|prep|redeploy-prep)\b/,
+    /not stuck,? not working\.?\s*idle/,
+    /nothing (?:more )?to do/,
+  ];
+  for (const p of completedPatterns) {
+    const idx = lower.search(p);
+    if (idx >= 0) {
+      return { kind: "completed_idle", snippet: snippetAround(text, idx) };
+    }
+  }
+
+  const blockedPatterns: RegExp[] = [
+    /(?:i'?m |currently )?(?:stuck on|blocked on|blocked by)/,
+    /can'?t proceed/,
+    /\bneed .{0,40} before (?:i can|continuing|proceeding)/,
+  ];
+  for (const p of blockedPatterns) {
+    const idx = lower.search(p);
+    if (idx >= 0) {
+      return { kind: "blocked", snippet: snippetAround(text, idx) };
+    }
+  }
+
+  const awaitingPatterns: RegExp[] = [
+    /(?:i'?m )?(?:asking|waiting) for (?:your |operator)/,
+    /need clarification/,
+    /awaiting your /,
+    /\bwhat should i\b/,
+    /\bhow should i\b/,
+  ];
+  for (const p of awaitingPatterns) {
+    const idx = lower.search(p);
+    if (idx >= 0) {
+      return { kind: "awaiting_input", snippet: snippetAround(text, idx) };
+    }
+  }
+
+  return { kind: "working", snippet: text.slice(0, 200) };
+}
+
+function snippetAround(text: string, idx: number): string {
+  const start = Math.max(0, idx - 40);
+  const end = Math.min(text.length, idx + 120);
+  let s = text.slice(start, end);
+  if (start > 0) s = "…" + s;
+  if (end < text.length) s = s + "…";
+  return s;
+}
+
 export interface TeamSnapshot {
   team_id: string;
   /** Date.now()-style ms of the team's most recent observed activity. */
   last_activity_ms: number;
   /** Optional event type label for the notification body ("blocked", "report", …). */
   last_event_type?: string;
+  /**
+   * v2.8.8 — classification of the most recent worker reply. When set to
+   * "completed_idle" or "awaiting_input", the sweep skips escalation
+   * even if the team's last_activity_ms is past the staleness threshold:
+   * those teams are idle by design, not unresponsive. (WEB-216)
+   */
+  classification?: ClassifiedReply;
 }
 
 export interface SweepConfig {
@@ -44,11 +140,13 @@ export interface SweepConfig {
 }
 
 export type SweepActionKind =
-  | "fresh"      // team is not stale; clear any prior nudge state
-  | "first-nudge"// stale, never nudged: send nudge + info notification
-  | "hold"       // stale + nudged within retry window: do nothing
-  | "escalate"   // stale + nudged > retry window ago: alert + renudge
-  | "vanished";  // team registry dir is gone — one-time alert + caller removes from tracker
+  | "fresh"           // team is not stale; clear any prior nudge state
+  | "first-nudge"     // stale, never nudged: send nudge + info notification
+  | "hold"            // stale + nudged within retry window: do nothing
+  | "escalate"        // stale + nudged > retry window ago: alert + renudge
+  | "vanished"        // team registry dir is gone — one-time alert + caller removes from tracker
+  | "completed_idle"  // v2.8.8 — worker explicitly said done/idle; suppress escalation (WEB-216)
+  | "awaiting_input"; // v2.8.8 — worker explicitly waiting on operator; suppress escalation (WEB-216)
 
 export interface SweepAction {
   team_id: string;
@@ -59,6 +157,8 @@ export interface SweepAction {
   next_nudge_at_ms?: number;
   /** Set on escalate, age of the previous nudge in minutes. */
   prior_nudge_age_min?: number;
+  /** v2.8.8 — classification carried through for alert-body context. */
+  classification?: ClassifiedReply;
 }
 
 /**
@@ -80,6 +180,32 @@ export function decideTeamAction(
       action: "fresh",
       age_min,
       last_event_type: team.last_event_type,
+      classification: team.classification,
+    };
+  }
+
+  // v2.8.8 — WEB-216: a stale team that has explicitly self-classified
+  // as completed_idle or awaiting_input is idle by design, not
+  // unresponsive. Short-circuit BEFORE the nudge/escalate logic so we
+  // never page the operator on a team that already told us it's done.
+  // The classifier (classifyWorkerReply) runs over the worker's most
+  // recent reply text in server.ts when the inbox event arrives.
+  if (team.classification?.kind === "completed_idle") {
+    return {
+      team_id: team.team_id,
+      action: "completed_idle",
+      age_min,
+      last_event_type: team.last_event_type,
+      classification: team.classification,
+    };
+  }
+  if (team.classification?.kind === "awaiting_input") {
+    return {
+      team_id: team.team_id,
+      action: "awaiting_input",
+      age_min,
+      last_event_type: team.last_event_type,
+      classification: team.classification,
     };
   }
 
@@ -90,6 +216,7 @@ export function decideTeamAction(
       action: "first-nudge",
       age_min,
       last_event_type: team.last_event_type,
+      classification: team.classification,
       next_nudge_at_ms: cfg.now_ms,
     };
   }
@@ -101,6 +228,7 @@ export function decideTeamAction(
       action: "hold",
       age_min,
       last_event_type: team.last_event_type,
+      classification: team.classification,
     };
   }
 
@@ -109,6 +237,7 @@ export function decideTeamAction(
     action: "escalate",
     age_min,
     last_event_type: team.last_event_type,
+    classification: team.classification,
     next_nudge_at_ms: cfg.now_ms,
     prior_nudge_age_min: nudge_age_ms / 60_000,
   };
@@ -210,6 +339,26 @@ export async function runStaleTeamSweep(opts: {
       continue;
     }
 
+    // v2.8.8 — WEB-216: completed/awaiting teams are NOT unresponsive.
+    // Clear any prior nudge state (so a future genuine staleness signal
+    // starts fresh) and log a low-severity decision instead of paging.
+    if (
+      decision.action === "completed_idle" ||
+      decision.action === "awaiting_input"
+    ) {
+      if (prior) opts.state.delete(team.team_id);
+      if (opts.callbacks.logDecision) {
+        const snippet = decision.classification?.snippet ?? "";
+        opts.callbacks.logDecision(
+          team.team_id,
+          `team_${decision.action}`,
+          `team idle ${Math.round(decision.age_min)}min but classified as ` +
+            `${decision.action} from reply text${snippet ? `: "${snippet}"` : ""}`,
+        );
+      }
+      continue;
+    }
+
     if (decision.action === "first-nudge") {
       const idle = Math.round(decision.age_min);
       const nudgeBody =
@@ -217,9 +366,17 @@ export async function runStaleTeamSweep(opts: {
         `Last visible action: ${decision.last_event_type ?? "unknown"}. ` +
         `Reply with current status, or if you're stuck on something operator-facing, say so.`;
       const sendResult = await opts.callbacks.sendNudge(team.team_id, nudgeBody);
-      opts.state.set(team.team_id, {
-        last_nudge_at_ms: decision.next_nudge_at_ms!,
-      });
+      // WEB-216 fix: only advance last_nudge_at_ms when the nudge actually
+      // landed. If sendNudge returned a delivery failure (e.g. Claude API
+      // 529, dashboard 5xx), the worker never received the nudge — the
+      // sweep cadence IS the backoff, so the next tick will retry as
+      // another first-nudge instead of escalating to "unresponsive" on a
+      // worker that wasn't given the chance to respond.
+      if (sendResult.ok) {
+        opts.state.set(team.team_id, {
+          last_nudge_at_ms: decision.next_nudge_at_ms!,
+        });
+      }
       const note = sendResult.ok
         ? "auto-nudge dispatched via subctl_orch_msg"
         : `auto-nudge attempted (delivery failed: ${sendResult.error})`;
@@ -248,6 +405,16 @@ export async function runStaleTeamSweep(opts: {
       const idle = Math.round(decision.age_min);
       const nudgeAgo = Math.round(decision.prior_nudge_age_min ?? 0);
       const retryMin = Math.round(opts.cfg.nudge_retry_ms / 60_000);
+      // v2.8.8 — WEB-216: include classification + reply snippet so the
+      // Telegram body shows what we DID see, instead of the stale
+      // "Last event: unknown". If the classifier returned "working" or
+      // had no text to classify we fall back to the prior shape.
+      const classificationLine = decision.classification
+        ? `Reply classification: ${decision.classification.kind}` +
+          (decision.classification.snippet
+            ? `\nLast reply snippet: ${decision.classification.snippet}`
+            : "")
+        : `Last event: ${decision.last_event_type ?? "unknown"}`;
       opts.callbacks.emitAlert(
         team.team_id,
         `${team.team_id} unresponsive (${nudgeAgo}min since nudge)`,
@@ -255,16 +422,23 @@ export async function runStaleTeamSweep(opts: {
           `Team: ${team.team_id}\n` +
           `Total idle: ${idle} min\n` +
           `Time since last nudge: ${nudgeAgo} min\n` +
-          `Last event: ${decision.last_event_type ?? "unknown"}\n\n` +
+          `${classificationLine}\n\n` +
           `Re-nudging now; will alert again if still stale in ${retryMin} min.`,
       );
       const retryBody =
         `[auto-nudge · escalated] No response for ${nudgeAgo} min. ` +
         `Total idle ${idle} min. Status?`;
       const sendResult = await opts.callbacks.sendNudge(team.team_id, retryBody);
-      opts.state.set(team.team_id, {
-        last_nudge_at_ms: decision.next_nudge_at_ms!,
-      });
+      // WEB-216 fix: only advance last_nudge_at_ms when the escalation
+      // nudge actually landed. If delivery fails, leave the prior
+      // last_nudge_at_ms so the next sweep recognizes the team is still
+      // in "escalation pending" mode rather than starting a fresh retry
+      // window on a nudge the worker never saw.
+      if (sendResult.ok) {
+        opts.state.set(team.team_id, {
+          last_nudge_at_ms: decision.next_nudge_at_ms!,
+        });
+      }
       if (opts.callbacks.logDecision) {
         opts.callbacks.logDecision(
           team.team_id,

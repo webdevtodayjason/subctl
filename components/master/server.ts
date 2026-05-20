@@ -208,7 +208,9 @@ import {
   reviewEvents as memoryKernelReviewEvents,
 } from "./memory-kernel-reviewer";
 import {
+  classifyWorkerReply,
   runStaleTeamSweep,
+  type ClassifiedReply,
   type TeamNudgeState,
   type TeamSnapshot,
 } from "./auto-nudge";
@@ -1725,7 +1727,10 @@ async function main() {
     text?: string;
     [k: string]: unknown;
   };
-  const teamLastActivity = new Map<string, { ts: number; lastEvent?: TeamEvent }>();
+  const teamLastActivity = new Map<
+    string,
+    { ts: number; lastEvent?: TeamEvent; classification?: ClassifiedReply }
+  >();
   const teamReadOffsets = new Map<string, number>(); // file path → last byte read
   // v2.8.2 — Hoisted up here (was declared near the watchdog ticker
   // further down) so the inbox first-scan reconciliation and the
@@ -1815,7 +1820,16 @@ async function main() {
           if (lines.length) {
             try {
               const lastEv = JSON.parse(lines[lines.length - 1]) as TeamEvent;
-              teamLastActivity.set(team, { ts: stat.mtimeMs, lastEvent: lastEv });
+              // WEB-216: classify on boot-scan too so a team that
+              // shipped completed_idle text right before master
+              // restarted starts the next session classified, not
+              // mistakenly marked as silent-and-stale.
+              const classification = classifyWorkerReply(lastEv.text);
+              teamLastActivity.set(team, {
+                ts: stat.mtimeMs,
+                lastEvent: lastEv,
+                classification,
+              });
             } catch { /* ignore parse errors */ }
           }
         } catch { /* ignore */ }
@@ -1848,7 +1862,12 @@ async function main() {
       } catch {
         continue;
       }
-      teamLastActivity.set(team, { ts: Date.now(), lastEvent: ev });
+      // WEB-216: classify worker reply text so the staleness sweep can
+      // distinguish completed_idle / awaiting_input from genuine silence.
+      // The classifier accepts undefined/empty text and degrades to
+      // {kind:"working"} so non-text events keep the prior behavior.
+      const classification = classifyWorkerReply(ev.text);
+      teamLastActivity.set(team, { ts: Date.now(), lastEvent: ev, classification });
       broadcast("team_event", { team, ...ev });
       // Auto-prompt the agent on important event types so it can react.
       if (ev.type === "blocked" || ev.type === "error") {
@@ -4396,7 +4415,15 @@ async function main() {
             // Bump only if our new "now" is later than existing — it
             // always is in practice, but defensively ordered.
             if (now > existing.ts) {
-              teamLastActivity.set(session, { ts: now, lastEvent: existing.lastEvent });
+              // WEB-216: preserve classification across pane-hash bumps
+              // so a completed_idle worker stays classified between
+              // sweep ticks (pane content updates don't carry text to
+              // re-classify; the original classification still applies).
+              teamLastActivity.set(session, {
+                ts: now,
+                lastEvent: existing.lastEvent,
+                classification: existing.classification,
+              });
             }
           }
         }
@@ -4557,6 +4584,9 @@ async function main() {
         team_id: team,
         last_activity_ms: v.ts,
         last_event_type: v.lastEvent?.type,
+        // WEB-216: propagate the classifier output so decideTeamAction
+        // can short-circuit escalation on completed_idle/awaiting_input.
+        classification: v.classification,
       });
     }
 
