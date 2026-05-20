@@ -1,3 +1,43 @@
+## [2.8.8] — 2026-05-20
+
+### `feat: SPEC contract + WEB-216 watchdog fix + cognee CLI + xai-oauth provider`
+
+**~22 commits since v2.8.7.** Two surgical fixes operator-driven this session, plus uncommitted-feature backlog finally landed. Highlights:
+
+**SPEC directive contract.** HMAC-signed worker directives now require an embedded `SPEC:` block in the body. New `buildSignedDirective()` in `components/master/trust-marker.ts` wraps `body` with `"SPEC:\n  <indented>"` BEFORE computing the HMAC; dashboard `/api/orchestration/<name>/msg` is the single emitter. Workers refuse markers without SPEC with the exact reply `"directive missing SPEC block; re-send with embedded spec"`. HMAC proves WHO; SPEC proves WHAT. Triggered by an in-flight observation: a worker correctly refused a "submit the pasted prompt and start" directive because the paste-then-start delivery dropped the body. The friction was the brittle two-step delivery, not over-cautious workers. Closes that false-refusal class permanently.
+
+**WEB-216 — false unresponsive alerts.** Three bugs collapsed to one symptom: failed-nudge advancing `last_nudge_at_ms` on Claude API 529 (worker never received the nudge); worker reply text never classified into states; alert body showing `Last event: unknown` even when pane data was available. Fix: don't advance state on failed delivery (sweep cadence IS the backoff); new `classifyWorkerReply()` returns `working` / `completed_idle` / `awaiting_input` / `blocked` with permissive phrase matching (`idle by design`, `awaiting next directive`, `awaiting shutdown`, etc.); `decideTeamAction` short-circuits stale-but-completed teams BEFORE the escalate branch; alert body surfaces classification + reply snippet. Live-validated 2026-05-20T22:14:23Z — first `team_completed_idle` decision in production on `claude-richard-dash` (same team had been firing `team_unresponsive` every ~30 min for 4 hours before the fix).
+
+**Cognee operator-facing CLI.** New `subctl cognee {status|install|uninstall|ping|cognify}` mirrors the memori CLI shape exactly. The sidecar itself (services/cognee/, lib/cognee.sh) shipped in v2.8.7; this CLI plus the install.sh `service-launchd` install_method + dep-manifest entry close Memory Init #1 to "first-class, self-installing." Operator can `subctl cognee install` on a fresh box and the Tier 4 substrate comes up.
+
+**xAI Grok OAuth (SuperGrok Subscription).** First-class subctl provider — end-to-end port of Hermes Agent's xAI PKCE-loopback flow into self-contained TypeScript owned by the master daemon. OIDC discovery with HARD HOST-PIN validation. PKCE-S256 loopback login. Refresh-on-near-expiry. Public client / no client_secret. pi-ai resolver shim is sync (returns valid token immediately, kicks background refresh inside the 120s skew window with in-flight dedup). New `SUBCTL_ONLY_PROVIDERS` registry in `pi-ai-catalog.ts` for synthetic providers subctl plumbs that pi-ai's `getProviders()` doesn't know about. New CLI: `subctl auth xai-oauth <alias>`.
+
+**Dashboard update modal.** Closes task #17 properly — `be323fe` (v2.8.7) wired the lazy-import on the version chip but never staged the modal file. Modal was silently broken on every chip-click since v2.8.7. This release ships the actual `dashboard/public/update-modal.js` with three modes (dashboard-deploy / fast-deploy / full-update) + live `update_progress` SSE stream.
+
+**Hermes/GPT-5.5 positioning input** captured at `Documents/Obsidian Vault/Subctl/design/2026-05-20-hermes-strategic-feedback.md` — subctl is "product-shaped" now; next move is polish (docs/version drift fix, sharpened landing, magic first 10 min, canonical "3 agents overnight" hero demo, name the primitives publicly, hide Memori/Cognee internals behind advanced docs). Captured as a separate work track from the feature backlog.
+
+### Commit ledger
+
+| SHA | Title |
+|---|---|
+| `a6cb6e6` | feat(directives): require SPEC block in worker directives |
+| `71d6766` | fix(watchdog): WEB-216 — false unresponsive alerts after worker completes |
+| `57e6017` | feat(cognee): operator-facing CLI + auto-install for Cognee sidecar |
+| `b11d783` | feat(xai-oauth): SuperGrok subscription OAuth as first-class subctl provider |
+| `ae55cfd` | feat(dashboard): ship update-modal.js — close task #17 properly |
+| `+ docs` | backfill 7 untracked .subctl/docs artifacts from 2026-05-18..-19 |
+| `+ chore` | VERSION → 2.8.8 + CHANGELOG entry + HANDOFF refresh + .gitignore |
+
+### Tests
+
+14 new test cases this release (3 trust-marker, 11 auto-nudge) plus 1,334 LOC of xai-oauth coverage across 4 test files. Master suite delta: +68 passing tests.
+
+### Linear
+
+- [WEB-216](https://linear.app/webdevtoday/issue/WEB-216) — fix landed, live-validated, awaiting Evy review for close.
+
+---
+
 ## [2.8.7] — 2026-05-19
 
 ### `feat: The Memory Release — Evy used to forget, now she remembers`

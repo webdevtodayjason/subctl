@@ -43,7 +43,9 @@ credentials.json
 # ~/.config/subctl/secrets.json (outside the repo) but block any
 # accidental in-tree copy by name too.
 secrets.json
+secrets/
 .claude/worktrees/
+.claude/scheduled_tasks.lock
 
 # v2.8.0 — voice/TTS reference audio. Operator-sourced, often licensed/
 # personal, never enters the repo. Server reads from disk at runtime.
