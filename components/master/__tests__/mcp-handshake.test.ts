@@ -198,15 +198,90 @@ describe("POST /mcp — initialize handshake", () => {
   });
 });
 
-describe("McpServer handle exposes the underlying SDK server", () => {
-  test("`mcp` property is the McpServer instance — needed for wave-2 tool registration", async () => {
+describe("multi-client coexistence — v2.8.10 per-session refactor (regression)", () => {
+  test("two independent clients can both initialize without 'Server already initialized'", async () => {
     await withMcp(async (h) => {
       if (!h) throw new Error("expected handle");
-      // Duck-type check: McpServer exposes `.server` (low-level Server)
-      // and `.connect()`. We don't rely on a class identity check
-      // because of ESM/CJS shenanigans.
-      expect(typeof h.mcp).toBe("object");
-      expect(typeof (h.mcp as { connect?: unknown }).connect).toBe("function");
+      const initBody = (name: string) => ({
+        jsonrpc: "2.0",
+        id: "init",
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          clientInfo: { name, version: "0" },
+        },
+      });
+      const mkReq = (callerId: string, body: unknown) =>
+        new Request("http://127.0.0.1:8788/mcp", {
+          method: "POST",
+          headers: {
+            [HEADERS.bearer]: `Bearer ${TOKEN}`,
+            [HEADERS.callerId]: callerId,
+            "content-type": "application/json",
+            accept: "application/json, text/event-stream",
+          },
+          body: JSON.stringify(body),
+        });
+
+      // Client A — first init creates a session, returns session-id.
+      const resA = await h.handle(mkReq("client-A", initBody("A")));
+      expect(resA.status).toBe(200);
+      const sidA =
+        resA.headers.get("mcp-session-id") ?? resA.headers.get("Mcp-Session-Id");
+      expect(sidA).toBeTruthy();
+
+      // Client B — fresh init from a DIFFERENT caller. Before v2.8.10
+      // this returned 400 "Server already initialized" because the
+      // global McpServer instance was already initialized by A. With
+      // per-session McpServer + transport pairs, B gets its OWN
+      // session-id and its own initialized state.
+      const resB = await h.handle(mkReq("client-B", initBody("B")));
+      expect(resB.status).toBe(200);
+      const sidB =
+        resB.headers.get("mcp-session-id") ?? resB.headers.get("Mcp-Session-Id");
+      expect(sidB).toBeTruthy();
+      expect(sidB).not.toBe(sidA);
+
+      // Both sessions are independently usable — call tools/list on
+      // each and confirm each returns a valid result. (We don't have
+      // tools registered in this handshake test, but tools/list itself
+      // should succeed against the live session.)
+      const toolsReq = (sid: string, callerId: string) =>
+        new Request("http://127.0.0.1:8788/mcp", {
+          method: "POST",
+          headers: {
+            [HEADERS.bearer]: `Bearer ${TOKEN}`,
+            [HEADERS.callerId]: callerId,
+            "content-type": "application/json",
+            accept: "application/json, text/event-stream",
+            "mcp-session-id": sid,
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: "list",
+            method: "tools/list",
+            params: {},
+          }),
+        });
+      const listA = await h.handle(toolsReq(sidA!, "client-A"));
+      const listB = await h.handle(toolsReq(sidB!, "client-B"));
+      expect(listA.status).toBe(200);
+      expect(listB.status).toBe(200);
+    });
+  });
+});
+
+describe("McpServer handle shape — v2.8.10 per-session refactor", () => {
+  test("returns handle + stop; no global mcp (each session owns its own server)", async () => {
+    await withMcp(async (h) => {
+      if (!h) throw new Error("expected handle");
+      expect(typeof h.handle).toBe("function");
+      expect(typeof h.stop).toBe("function");
+      // v2.8.10 removed h.mcp — there's no single global McpServer
+      // anymore; each session creates its own pair. Tool registration
+      // happens via the `registerCapabilities` callback per session.
+      expect((h as unknown as { mcp?: unknown }).mcp).toBeUndefined();
     });
   });
 });
