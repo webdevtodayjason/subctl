@@ -4040,8 +4040,15 @@ async function main() {
         }
         const adapter = getLocalBackendAdapter(mappedKind);
         const host = body.host?.trim() || adapter.defaultHost;
+        const apiKey =
+          body.api_key ??
+          (mappedKind === "lmstudio"
+            ? resolveSecret("lmstudio_api_token")
+            : mappedKind === "omlx"
+              ? resolveSecret("omlx_api_token")
+              : null);
         const probe = await adapter.healthProbe(host, {
-          api_key: body.api_key ?? null,
+          api_key: apiKey,
         });
         return Response.json({
           ok: probe.ok,
