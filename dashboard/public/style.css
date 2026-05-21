@@ -2758,6 +2758,23 @@ body.terminal-disabled #terminal-modal { display: none !important; }
 }
 .settings-card .form-row input:focus { outline: none; border-color: #5fd7ff; }
 
+/* Local Inference Backend (Phase 4) — radio picker + host+test row +
+   inline status banner. Stays within the .settings-card visual idiom;
+   no new colors introduced beyond the existing red/green/amber palette. */
+.lb-radio-row { display: flex; gap: 18px; margin: 4px 0 14px; flex-wrap: wrap; }
+.lb-radio { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: #c4c4c4; cursor: pointer; }
+.lb-radio input[type="radio"] { accent-color: #5fd7ff; margin: 0; }
+.lb-host-row { display: flex; gap: 8px; align-items: stretch; }
+.lb-host-row input[type="text"] { flex: 1; }
+.lb-host-row .secondary-btn { flex-shrink: 0; }
+.lb-banner {
+  margin: 6px 0 12px; padding: 8px 10px; font-size: 12px; border-radius: 3px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace; white-space: pre-wrap;
+}
+.lb-banner.ok   { background: #102a18; color: #6cd697; border: 1px solid #1f4226; }
+.lb-banner.err  { background: #2a1010; color: #d66c6c; border: 1px solid #4a1f1f; }
+.lb-banner.warn { background: #2a2210; color: #d6c46c; border: 1px solid #4a3f1f; }
+
 .health-row, .key-row, .oauth-row {
   display: flex;
   align-items: center;
