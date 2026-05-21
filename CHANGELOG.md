@@ -1,3 +1,36 @@
+## [2.8.12] — 2026-05-21
+
+### `fix(mcp): send_message actually triggers Evy's drain loop`
+
+v2.8.11 shipped 10 new MCP tools including `send_message`. The wiring in `server.ts` pushed to `promptQueue` and broadcast a `queued` event, but **didn't call `dispatchToAgent`** — the function that owns the drain loop. Net effect: MCP-queued prompts sat in the queue forever; Evy never picked them up. Operator surfaced this minutes after deploy when Claude Desktop's `send_message` → `recent_messages` round-trip returned no Evy reply.
+
+**Fix:** `enqueuePrompt` now calls `dispatchToAgent(text, "mcp")` (fire-and-forget). The dispatch function handles the drain loop, the broadcast, the in-flight guard, and the agent turn. The MCP tool returns the queue depth synchronously; the caller polls `recent_messages` for Evy's reply (rather than blocking through a potentially minutes-long agent turn).
+
+Also:
+- `PendingPrompt.source` union extended to include `"mcp"` (was `"chat" | "telegram" | "watchdog"`).
+- `dispatchToAgent` signature extended to accept `"mcp"`.
+- `processOnePrompt`'s "treat as operator intent" gate (which resets the circuit breaker + drains background completions) now includes `mcp` source alongside `chat` and `telegram`. MCP prompts ARE operator intent — they just arrive via Claude Desktop / ArgentOS / any external MCP client instead of the dashboard or Telegram.
+
+### Repro pre-fix
+
+```
+Claude Desktop → send_message("hi Evy") → ok, queue_depth=1
+Claude Desktop → recent_messages → no new turn  ← stuck
+master /health → uptime growing, no queue progress
+master.log → no [agent] turn started entry
+```
+
+### Repro post-fix
+
+```
+Claude Desktop → send_message("hi Evy") → ok, queue_depth=1
+master.log → [agent] turn started — source=mcp
+                ← Evy processes through dispatchToAgent
+Claude Desktop → recent_messages (a few seconds later) → Evy's reply present
+```
+
+---
+
 ## [2.8.11] — 2026-05-21
 
 ### `feat(mcp): wave-3 tool surface — usable control plane (was a demo)`

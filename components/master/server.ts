@@ -2267,7 +2267,12 @@ async function main() {
   // first was still processing — Telegram bursts vanished silently.
   type PendingPrompt = {
     text: string;
-    source: "chat" | "telegram" | "watchdog";
+    // v2.8.12 — "mcp" added so the MCP send_message tool can flow through
+    // dispatchToAgent's normal drain loop (the prior wave-3 wiring just
+    // pushed to promptQueue without triggering the loop, so prompts queued
+    // but Evy never picked them up). The literal source string used at
+    // runtime is `mcp:<caller_id>` for provenance — typed as "mcp" here.
+    source: "chat" | "telegram" | "watchdog" | "mcp";
     // Used by the verifier to cap correction loop iterations. Caller does
     // not set this; the verifier bumps it on re-entry.
     verifier_iteration?: number;
@@ -2575,7 +2580,9 @@ async function main() {
       // covers [verifier]/[watchdog]/[scheduled]/[team-report]) DON'T
       // reset — they're tail continuations of the prior turn's reasoning,
       // not new operator intent.
-      if (p.source === "chat" || p.source === "telegram") {
+      // v2.8.12 — "mcp" source treated like chat (operator intent from
+      // an external MCP client — Claude Desktop, ArgentOS, etc.).
+      if (p.source === "chat" || p.source === "telegram" || p.source === "mcp") {
         resetCircuitBreakerOnNewTurn();
         // v2.8.10 — drain any background-run completions that landed
         // while the operator was away and prepend them to the prompt
@@ -2877,7 +2884,7 @@ async function main() {
 
   async function dispatchToAgent(
     text: string,
-    source: "chat" | "telegram" | "watchdog",
+    source: "chat" | "telegram" | "watchdog" | "mcp",
   ): Promise<{ ok: boolean; error?: string }> {
     if (stopped) return { ok: false, error: "daemon shutting down" };
     promptQueue.push({ text, source });
@@ -5096,13 +5103,19 @@ async function main() {
         // already-existing master function. The MCP layer cares about
         // schema + auth; the actual behavior lives in master internals.
 
-        enqueuePrompt: (text, source) => {
-          promptQueue.push({ text, source });
-          broadcast("queued", {
-            source,
-            queue_depth: promptQueue.length,
-            ts: new Date().toISOString(),
-          });
+        enqueuePrompt: (text, _source) => {
+          // v2.8.12 — Route through dispatchToAgent so the drain loop
+          // actually fires. The prior wave-3 wiring just pushed to
+          // promptQueue + broadcast; nothing triggered the agent turn,
+          // so prompts queued but Evy never processed them.
+          //
+          // Source is typed "mcp" at the queue level (provenance lives
+          // in the prompt text itself / agent transcript / decisions
+          // log). Fire-and-forget — MCP send_message returns the queue
+          // depth synchronously; the caller polls recent_messages for
+          // Evy's reply rather than blocking here for what could be a
+          // minutes-long agent turn.
+          void dispatchToAgent(text, "mcp");
           return { queue_depth: promptQueue.length };
         },
 
