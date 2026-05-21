@@ -1,3 +1,41 @@
+## [2.8.10] — 2026-05-21
+
+### `fix(mcp): per-session McpServer + transport — multi-client coexistence`
+
+The MCP server couldn't host two clients at once. First client to initialize "owned" the global `McpServer` instance; second client (e.g. Claude Desktop's mcp-remote bridge connecting after our smoke-test curl) hit `Invalid Request: Server already initialized` (`-32600`) at the SDK's protocol-layer guard and crashed.
+
+**Root cause:** `components/master/mcp/server.ts` had ONE `McpServer` + ONE `WebStandardStreamableHTTPServerTransport` bound globally. The SDK's transport tracks `_initialized` state per transport instance — and rejects subsequent initialize requests on an already-initialized transport. The single-transport pattern only works for single-client scenarios (Cloudflare Workers, Hono one-shot). Multi-client streamable HTTP requires per-session transport + server pairs.
+
+**Fix:** session map keyed by `mcp-session-id`. Each new session spawns its own transport + McpServer + tool registration. The SDK's `onsessioninitialized` callback registers the pair as soon as the session-id is minted; `onsessionclosed` reaps it. Subsequent requests carrying `mcp-session-id` route to the existing session.
+
+Side effect: `McpServerHandle.mcp` removed (there's no longer a single global McpServer to expose). Tool registration happens via the `registerCapabilities` callback per session, which was already the integration contract — no caller used `handle.mcp` directly except a duck-type sanity test that's been updated.
+
+### Tests
+
+- New regression test in `mcp-handshake.test.ts`: two callers (`client-A`, `client-B`) both init successfully, both get distinct session-ids, both can call `tools/list` independently.
+- `mcp-handshake.test.ts` and `mcp-tools.test.ts` continue to pass — the public surface is unchanged for the single-client happy path.
+- Updated `McpServer handle exposes the underlying SDK server` test to assert the new shape (no `.mcp` field).
+
+### Repro pre-fix
+
+```
+$ curl -i /mcp -d '{"method":"initialize",...}'  # → 200, session-id=A
+$ curl -i /mcp -d '{"method":"initialize",...}'  # → 400 "Server already initialized"
+```
+
+### Repro post-fix
+
+```
+$ curl -i /mcp -d '{"method":"initialize",...}'  # → 200, session-id=A
+$ curl -i /mcp -d '{"method":"initialize",...}'  # → 200, session-id=B (independent)
+```
+
+### Why this matters tonight
+
+Claude Desktop's `mcp-remote` HTTP bridge initialized fine when alone but failed once a second client (test curl, another Desktop session, ArgentOS) shared the master. Without this fix the MCP integration is single-tenant at runtime — defeating the operator-setup use case where multiple Claude Desktop / Claude Code / dev session clients should all be able to connect simultaneously.
+
+---
+
 ## [2.8.9] — 2026-05-20
 
 ### `fix: subctl deploy and install no longer leave new boxes half-deployed`

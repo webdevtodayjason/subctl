@@ -67,10 +67,11 @@ export interface McpServerHandle {
    * path `/.well-known/mcp`.
    */
   handle: (req: Request) => Promise<Response>;
-  /** Tear down the underlying MCP server + transport. Idempotent. */
+  /**
+   * Tear down all live sessions (each session has its own McpServer +
+   * transport pair). Idempotent.
+   */
   stop: () => Promise<void>;
-  /** The McpServer — exposed for the wave-2 tool-surface registration. */
-  mcp: McpServer;
 }
 
 const DISCOVERY_PATH = "/.well-known/mcp";
@@ -135,41 +136,59 @@ export async function startMcpServer(
     throw new Error("startMcpServer: serverInfo.name/version required");
   }
 
-  const mcp = new McpServer(
-    { name: opts.serverInfo.name, version: opts.serverInfo.version },
-    { capabilities: {} },
-  );
-
-  // Capability registration MUST happen before connect — the SDK
-  // throws on any later mutation. Wave-2 (#25) routes tool registration
-  // through here.
-  if (opts.registerCapabilities) {
-    opts.registerCapabilities(mcp);
-  }
-
-  // Stateless mode keeps the skeleton simple: each request stands
-  // alone (no in-memory session table). The wave-2 tool surface can
-  // switch to `sessionIdGenerator: () => crypto.randomUUID()` if a
-  // long-lived per-client session becomes useful.
+  // v2.8.10 — per-session McpServer + transport routing.
   //
-  // `enableJsonResponse: true` short-circuits SSE framing on
-  // request/response style RPCs so the skeleton's handshake test can
-  // parse a single JSON object back. The transport still upgrades to
-  // SSE for server-initiated notifications when the client opens a
-  // GET stream.
-  // Wave-2 (#25) switched from stateless (sessionIdGenerator: undefined)
-  // to session-aware. Stateless mode rejects the SECOND request to the
-  // same transport with "Stateless transport cannot be reused across
-  // requests", which broke any client that wanted to call initialize
-  // and then list/use tools. With a sessionIdGenerator the transport
-  // tracks per-client session state and serves a long-lived connection
-  // — exactly what an MCP-Expose client needs.
-  const transport = new WebStandardStreamableHTTPServerTransport({
-    sessionIdGenerator: () => crypto.randomUUID(),
-    enableJsonResponse: true,
-  });
+  // BUG that v2.8.9 had: one global McpServer + one transport. The SDK
+  // protocol layer's `_initialized` guard fires on the SECOND initialize
+  // request and returns `Invalid Request: Server already initialized`
+  // (webStandardStreamableHttp.js line 425). Two MCP clients (e.g. our
+  // smoke-test curl AND Claude Desktop's mcp-remote) cannot coexist —
+  // whichever connected first owns the session forever; the second
+  // client's initialize is refused.
+  //
+  // FIX: a session map keyed by mcp-session-id. Each new session spawns
+  // its OWN transport + McpServer pair. The SDK's `onsessioninitialized`
+  // callback registers the pair as soon as the session-id is minted;
+  // `onsessionclosed` reaps it. Subsequent requests carrying
+  // mcp-session-id route to the existing session; first requests
+  // (no header) get a fresh pair.
+  //
+  // This matches the SDK's documented multi-session pattern (the
+  // single-server example in the transport's JSDoc is for
+  // single-client scenarios like Cloudflare Workers / Hono).
+  interface Session {
+    transport: WebStandardStreamableHTTPServerTransport;
+    mcp: McpServer;
+  }
+  const sessions = new Map<string, Session>();
 
-  await mcp.connect(transport);
+  /** Build a fresh per-session pair with tools registered. */
+  const newSession = async (): Promise<Session> => {
+    const sessionMcp = new McpServer(
+      { name: opts.serverInfo.name, version: opts.serverInfo.version },
+      { capabilities: {} },
+    );
+    // Tool registration MUST happen before connect — SDK rejects
+    // capability mutation post-connect.
+    if (opts.registerCapabilities) {
+      opts.registerCapabilities(sessionMcp);
+    }
+    let sessionTransport!: WebStandardStreamableHTTPServerTransport;
+    sessionTransport = new WebStandardStreamableHTTPServerTransport({
+      sessionIdGenerator: () => crypto.randomUUID(),
+      enableJsonResponse: true,
+      onsessioninitialized: (sid) => {
+        sessions.set(sid, { transport: sessionTransport, mcp: sessionMcp });
+        log(`session opened — id=${sid}, active=${sessions.size}`);
+      },
+      onsessionclosed: (sid) => {
+        sessions.delete(sid);
+        log(`session closed — id=${sid}, active=${sessions.size}`);
+      },
+    });
+    await sessionMcp.connect(sessionTransport);
+    return { transport: sessionTransport, mcp: sessionMcp };
+  };
 
   const handle = async (req: Request): Promise<Response> => {
     const url = new URL(req.url);
@@ -198,13 +217,19 @@ export async function startMcpServer(
       return jsonResponse(authErrorResponseBody(auth), { status: auth.status });
     }
 
-    // Forward to the MCP SDK transport. We pass authInfo through so
-    // wave-2 tool handlers can recover the caller_id via
-    // `RequestHandlerExtra.authInfo`. The transport's authInfo type
-    // requires `token` + `clientId` + `scopes`; we synthesize a
-    // minimal shape — there's no OAuth flow here, just opaque bearer.
+    // v2.8.10 — session routing. Look up existing session by
+    // mcp-session-id header (set by SDK on initialize response); fall
+    // back to spawning a fresh session for first-time requests.
+    // Header lookup must be case-insensitive — fetch's Headers does
+    // that automatically.
+    const sessionHeader = req.headers.get("mcp-session-id");
+    let session = sessionHeader ? sessions.get(sessionHeader) : undefined;
+    if (!session) {
+      session = await newSession();
+    }
+
     try {
-      return await transport.handleRequest(req, {
+      return await session.transport.handleRequest(req, {
         authInfo: {
           token,
           clientId: auth.caller_id,
@@ -222,19 +247,23 @@ export async function startMcpServer(
   };
 
   const stop = async () => {
-    try {
-      await mcp.close();
-    } catch {
-      /* idempotent */
+    // Iterate a snapshot — close() mutates the map via onsessionclosed.
+    for (const [, sess] of [...sessions]) {
+      try {
+        await sess.mcp.close();
+      } catch {
+        /* idempotent */
+      }
+      try {
+        await sess.transport.close();
+      } catch {
+        /* idempotent */
+      }
     }
-    try {
-      await transport.close();
-    } catch {
-      /* idempotent */
-    }
+    sessions.clear();
   };
 
   log(`enabled — server="${opts.serverInfo.name}@${opts.serverInfo.version}"`);
 
-  return { handle, stop, mcp };
+  return { handle, stop };
 }
