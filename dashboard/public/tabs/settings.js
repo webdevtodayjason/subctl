@@ -707,10 +707,18 @@ export async function mount({ root: _root }) {
           "</div>" +
         "</div>" +
         "<div class=\"lb-banner\" id=\"settings-lb-banner\" hidden></div>" +
-        LB_ROLES.map((r) =>
-          `<div class="form-row"><label>${r[0].toUpperCase() + r.slice(1)}</label>` +
-          `<select id="settings-lb-${r}" class="form-input"></select></div>`
-        ).join("") +
+        LB_ROLES.map((r) => {
+          // CodeRabbit pass-7 (3a): per-role warning slot rendered below
+          // the embeddings dropdown only. Filled in by lbRenderDropdowns
+          // when the catalog has no `type === "embeddings"` models and
+          // lbModelOptionsFor falls back to non-embeddings models.
+          const warnSlot = r === "embeddings"
+            ? `<div class="lb-banner warn" id="settings-lb-embeddings-warn" hidden></div>`
+            : "";
+          return `<div class="form-row"><label>${r[0].toUpperCase() + r.slice(1)}</label>` +
+            `<select id="settings-lb-${r}" class="form-input"></select></div>` +
+            warnSlot;
+        }).join("") +
         "<div class=\"settings-actions\">" +
           "<button type=\"button\" class=\"primary-btn\" id=\"settings-lb-save\">Save changes</button>" +
           "<button type=\"button\" class=\"secondary-btn\" id=\"settings-lb-reset\">Reset to defaults</button>" +
@@ -757,6 +765,30 @@ export async function mount({ root: _root }) {
     return all.filter((m) => !m || m.type !== "embeddings");
   }
 
+  function lbEmbeddingsFallbackActive() {
+    // CodeRabbit pass-7 (3a): true when the catalog is populated but no
+    // models carry `type === "embeddings"`, so lbModelOptionsFor falls
+    // back to the chat-model catalog for the embeddings role. Operator
+    // needs to know the picked model may not work for embeddings.
+    const all = Array.isArray(lb.available) ? lb.available : [];
+    if (!all.length) return false;
+    return !all.some((m) => m && m.type === "embeddings");
+  }
+
+  function lbRenderEmbeddingsWarn() {
+    const el = $("settings-lb-embeddings-warn");
+    if (!el) return;
+    if (lb.available && lb.available.length && lbEmbeddingsFallbackActive()) {
+      el.hidden = false;
+      el.textContent =
+        "⚠ No embeddings-only models detected on this backend. " +
+        "Other models are shown as fallbacks but may not work for the embeddings role.";
+    } else {
+      el.hidden = true;
+      el.textContent = "";
+    }
+  }
+
   function lbRenderDropdowns() {
     for (const role of LB_ROLES) {
       const sel = $("settings-lb-" + role);
@@ -793,6 +825,11 @@ export async function mount({ root: _root }) {
       // Default routers to "— disabled —" when no explicit value set.
       if (!current) sel.value = "";
     }
+    // CodeRabbit pass-7 (3a): refresh embeddings-fallback warning every
+    // time the dropdowns are re-rendered (mount, Test, Save, backend
+    // switch). Banner sits below the embeddings dropdown and clears
+    // itself when the catalog gains an embeddings-tagged model.
+    lbRenderEmbeddingsWarn();
   }
 
   function lbReadFormModels() {

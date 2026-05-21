@@ -4140,6 +4140,20 @@ async function main() {
               ? resolveSecret("omlx_api_token")
               : null;
         const health = await adapter.healthProbe(host, { api_key: apiKey });
+        // CodeRabbit pass-7 (1): refuse to mutate providers.local_backend or
+        // persist when the probe failed. Previously the handler would assign
+        // providers.local_backend and call persistProviders regardless of
+        // health.ok, leaving the operator with a persisted-but-unreachable
+        // config and (more importantly) clobbering whatever previously
+        // working backend was already there. Guard placed BEFORE any mutation
+        // so prevModels and the prior providers.local_backend stay untouched.
+        if (!health.ok) {
+          return Response.json({
+            ok: false,
+            error: `local_backend health probe failed: ${health.detail ?? "unknown error"} — previous configuration preserved`,
+            health,
+          }, { status: 400 });
+        }
         const prevModels = providers.local_backend?.models ?? {};
         const incoming = body.models ?? {};
         const normalizeModel = (value: unknown): string | null => {
@@ -4171,7 +4185,7 @@ async function main() {
           kind: mappedKind,
           host,
           models: mergedModels,
-          last_verified: health.ok ? new Date().toISOString() : null,
+          last_verified: new Date().toISOString(),
         };
         // Re-rewrite any role still on a legacy local-provider id to
         // provider="local" so the new backend is actually used.
@@ -4179,8 +4193,16 @@ async function main() {
           if (!cfg || typeof cfg !== "object") continue;
           const p = (cfg as { provider?: string }).provider;
           if (p && LEGACY_LOCAL_PROVIDER_IDS.has(p)) {
-            const m = (cfg as { model?: string }).model;
-            if (m && !mergedModels[role]) mergedModels[role] = m;
+            // CodeRabbit pass-7 (2): explicit `undefined` checks replace the
+            // old truthy guards (`m && !mergedModels[role]`). The truthy form
+            // treated operator-set `null` (an explicit "disabled") as missing
+            // and overwrote it with the stale legacy `raw.model`, defeating
+            // the pass-4 (b) presence-check semantics in mergedModels above.
+            // Same null-vs-missing thread as pass-4 (b) and pass-6 (a).
+            const m = (cfg as { model?: string | null }).model;
+            if (m !== undefined && mergedModels[role] === undefined) {
+              mergedModels[role] = m;
+            }
             (cfg as { provider: string }).provider = "local";
           }
         }
