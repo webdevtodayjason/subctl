@@ -1,3 +1,65 @@
+## [2.8.11] — 2026-05-21
+
+### `feat(mcp): wave-3 tool surface — usable control plane (was a demo)`
+
+v2.8.7 shipped MCP with 3 tools (ping / state_snapshot / notify). Live-testing from Claude Desktop tonight made the gap obvious: you could see basic state and emit a notification, but you couldn't talk to Evy, read what she'd been doing, supervise workers, or recall memory. Per the operator: *"That's a very light, non-usable MCP connection."*
+
+This release adds 10 tools across four tiers, turning MCP into an actual control plane.
+
+### Tier 1 — talk to Evy (write + read)
+
+- **`send_message`** — Posts a prompt into master's `/chat` queue. Evy processes on her next turn just like a dashboard chat message. Returns queue depth so the caller can correlate.
+- **`recent_messages`** — Tails master's transcript (last N turns including user prompts, Evy's replies, tool calls). Use after `send_message` to read Evy's response.
+
+### Tier 2 — read state with content
+
+- **`recent_decisions`** — Tails master's append-only `decisions.jsonl`. Last N entries — watchdog actions, memory promotions, sweep classifier outcomes. The audit trail.
+- **`list_notifications`** — Actual notification content (not just counts that `state_snapshot` returns). `unread_only` filter + `limit`.
+- **`watchdog_state`** — Currently-watched teams + last fire reason + tick/fire timestamps. MCP equivalent of `system_watchdog_self`.
+
+### Tier 3 — supervise worker teams
+
+- **`list_teams`** — Active orch/team tmux sessions (mirrors `subctl team list`).
+- **`team_inbox`** — Read a team's `inbox.jsonl` — last N events the team has reported.
+- **`team_msg`** — Send an HMAC-signed directive to a team. Body is wrapped in SPEC block per v2.8.8 contract, signed with team's secret, routed via dashboard `/api/orchestration/:name/msg`.
+- **`team_kill`** — Archive inbox + tear down tmux session. Mirrors `subctl team kill`.
+
+### Tier 4 — memory recall
+
+- **`memory_search`** — Semantic + lexical recall across cognee (graph) + memori (Tier 3 SQLite). Returns scored hits with `source` attribution per substrate.
+- **`memory_timeline`** — Recent observations newest-first.
+
+### Concrete use cases now unlocked
+
+| From Claude Desktop, you can | Tools used |
+|---|---|
+| "What's Evy been deciding the last hour?" | `recent_decisions(limit=20)` |
+| "What teams are running and what's their last event?" | `list_teams` → `team_inbox` for each |
+| "Tell Evy to check on the claude-richard-dash team" | `send_message(...)` → wait → `recent_messages` |
+| "Search memory for what we decided about the SPEC contract" | `memory_search("SPEC directive contract")` |
+| "Send claude-richard-dash a follow-up directive" | `team_msg("claude-richard-dash", "<spec>", phase="follow-up")` |
+
+### Architecture notes
+
+Each provider is a thin shim over an existing master internal: `enqueuePrompt` → `promptQueue.push`; `getRecentMessages` → `agent.state.messages.slice(-limit)`; `getRecentDecisions` → tails `decisions.jsonl` from disk; `getWatchdogState` → reuses the in-process state vars that the diag tool already binds; `listTeams` → shells to `tmux list-sessions`; `sendTeamMsg` / `killTeam` → fetch through the dashboard's existing `/api/orchestration/:name/{msg,kill}` endpoints (which already handle HMAC + SPEC wrap from v2.8.8); memory tools → existing `cognee-client` + `memori-client` recall functions.
+
+All wave-3 providers are optional in the `McpToolProviders` interface. If a provider isn't wired, the corresponding tool isn't registered. Older clients calling tools that aren't there get a clean SDK-level "tool not found" instead of a runtime error.
+
+### Tests
+
+- All 12 prior MCP tests continue to pass (wave-1 + wave-2 + multi-client regression).
+- The wave-3 tools were live-validated against the running master:
+  - `recent_decisions` returned the 22:14:23Z `team_completed_idle` decision (WEB-216 evidence preserved).
+  - `list_teams` correctly enumerated `claude-richard-dash`.
+
+### What's intentionally NOT included
+
+- **MCP resources** (the "right" pattern for read-side state per task #26). Tools work fine for the operator's use case tonight; resources are nicer but a bigger refactor. Deferred to a proper #26 wave.
+- **MCP subscriptions** (live state push) — same reasoning.
+- **memory_remember / memory_forget** — write-side memory ops. Skipped because Evy already curates memory via the consciousness loop; an external MCP client writing directly would compete with that pipeline. Add later if a real use case appears.
+
+---
+
 ## [2.8.10] — 2026-05-21
 
 ### `fix(mcp): per-session McpServer + transport — multi-client coexistence`
