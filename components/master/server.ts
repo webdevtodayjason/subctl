@@ -1213,7 +1213,20 @@ export function resolveRoleCfg(
       `role ${role} has provider="local" but providers.local_backend is missing`,
     );
   }
-  const model = lb.models?.[role] ?? raw.model;
+  // CodeRabbit pass-6 (a): presence-check semantics so an explicit `null`
+  // in `lb.models[role]` is honored as "operator cleared this role" rather
+  // than treated as missing and silently falling back to `raw.model`. The
+  // legacy `lb.models?.[role] ?? raw.model` defeated the pass-4 (b) fix that
+  // taught the POST /local-backend handler to persist null when the
+  // operator clears a model in Settings — resolveRoleCfg would then ignore
+  // the cleared state and keep using the stale providers.models.<role>.model
+  // from before the local_backend migration. Now:
+  //   - key present in lb.models (even when null) → honor that value
+  //   - key absent → fall back to raw.model (legacy migration safety net)
+  const model =
+    lb.models && Object.prototype.hasOwnProperty.call(lb.models, role)
+      ? lb.models[role]
+      : raw.model;
   if (!model) {
     throw new Error(
       `role ${role}: providers.local_backend.models.${role} is null and role.model is empty — pick a model in Settings → Local Inference Backend`,
