@@ -233,6 +233,64 @@ describe("POST /local-backend — merged-models composition", () => {
   });
 });
 
+describe("POST /local-backend — supervisor:null guard (CodeRabbit pass-10 (1))", () => {
+  // CRITICAL contract: supervisor is mandatory. The pass-4 (b) presence-
+  // check semantics in mergeModels let an operator clear ANY role by
+  // sending an explicit `null` — fine for embeddings / reviewer / router
+  // (all optional), but supervisor is load-bearing. resolveRoleCfg
+  // ("supervisor", ...) throws when supervisor is null, so the daemon
+  // can't boot a turn without one. The POST /local-backend handler MUST
+  // reject before mutating providers.local_backend.
+  //
+  // We can't invoke the handler directly without the daemon (same caveat
+  // documented at the top of this file). Pin the rejection trigger
+  // condition: when mergeModels yields supervisor === null, the handler
+  // must 400.
+  test("merge yielding supervisor:null is the rejection trigger", () => {
+    // Operator clears supervisor explicitly (dashboard "— disabled —").
+    const prev = { supervisor: "qwen3.6-27b" };
+    const out = mergeModels(prev, { supervisor: null });
+    expect(out.supervisor).toBeNull();
+    // Handler check `mergedModels.supervisor === null` MUST trigger → 400.
+  });
+
+  test("merge with no prior supervisor and incoming omitting it → supervisor:null", () => {
+    // Fresh provider config + body missing the supervisor key → still
+    // ends up null (mergeModels fills all four standard slots).
+    const out = mergeModels({}, { reviewer: "x" });
+    expect(out.supervisor).toBeNull();
+  });
+
+  test("merge preserves prior supervisor when incoming omits it (no false positive)", () => {
+    // Sanity: a save that only updates reviewer must NOT trip the guard.
+    const prev = { supervisor: "qwen3.6-27b", reviewer: "qwen3.6-27b" };
+    const out = mergeModels(prev, { reviewer: "qwen3.6-72b" });
+    expect(out.supervisor).toBe("qwen3.6-27b");
+  });
+
+  test("merge with whitespace-only supervisor → null (sanitized → triggers guard)", () => {
+    // normalizeModel turns "   " into null; the guard catches it the
+    // same as an explicit null. Operators can't smuggle a bad supervisor
+    // value past the rejection by sending whitespace.
+    const out = mergeModels({ supervisor: "qwen3.6-27b" }, { supervisor: "   " });
+    expect(out.supervisor).toBeNull();
+  });
+
+  test("optional roles (embeddings/reviewer/router) MAY be null without tripping guard", () => {
+    // The guard is supervisor-specific by design. embeddings is optional
+    // (many operators don't use embeddings), reviewer and router too.
+    // Confirm those slots can be cleared while supervisor stays set.
+    const out = mergeModels(
+      { supervisor: "qwen3.6-27b", embeddings: "nomic", reviewer: "r1", router: "rtr" },
+      { embeddings: null, reviewer: null, router: null },
+    );
+    expect(out.supervisor).toBe("qwen3.6-27b");
+    expect(out.embeddings).toBeNull();
+    expect(out.reviewer).toBeNull();
+    expect(out.router).toBeNull();
+  });
+});
+
 describe("normalizeModel (CodeRabbit pass-9 (2) — exported helper)", () => {
   // The merge composition tests above exercise normalizeModel transitively;
   // pin the invariants directly so future contributors don't need to

@@ -4236,6 +4236,23 @@ async function main() {
         // pass-4 (b) and the pass-1 normalizeModel invariant moved with it).
         // Tests import the same helpers so the contract has one home.
         const mergedModels = mergeModels(prevModels, incoming);
+        // CodeRabbit pass-10 (1) — CRITICAL: supervisor is mandatory.
+        // The pass-4 (b) presence-check semantics let operators clear a
+        // role by sending an explicit `null` (— disabled — in the
+        // dashboard). That's the right contract for `embeddings`,
+        // `reviewer`, and `router` — all optional — but supervisor is
+        // load-bearing: the daemon can't boot a turn without one, and
+        // resolveRoleCfg("supervisor", ...) throws when it's null. Reject
+        // BEFORE mutating providers.local_backend so the prior config
+        // stays intact when the operator tried to clear supervisor.
+        if (mergedModels.supervisor === null) {
+          return Response.json({
+            ok: false,
+            error:
+              "supervisor role cannot be cleared — pick a supervisor model before saving",
+            health,
+          }, { status: 400 });
+        }
         providers.local_backend = {
           kind: mappedKind,
           host,
