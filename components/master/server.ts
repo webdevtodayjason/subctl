@@ -1689,7 +1689,7 @@ async function main() {
       if (!providers.models[role]) return false;
       if (
         role === "reviewer"
-        && sameLocalRoute(providers.models.reviewer, providers.models.supervisor)
+        && sameLocalRoute(providers.models.reviewer, supervisorCfg)
       ) {
         console.error(
           `[master] ctx-pin reviewer: SKIPPED — same model+host as supervisor (avoids LM Studio :2 instance)`,
@@ -4127,11 +4127,25 @@ async function main() {
           const trimmed = value.trim();
           return trimmed.length > 0 ? trimmed : null;
         };
+        // CodeRabbit pass-4 (b): use presence-check semantics so an explicit
+        // `null` in `incoming` clears the role. Old `incoming ?? prev` treated
+        // null as "missing" and silently retained the prior assignment, so
+        // the operator couldn't unset a model from the Settings UI. Now:
+        //   - key present in incoming (even when null) → honor incoming
+        //   - key absent → fall back to prev
+        // `normalizeModel` still applies in both branches for type / empty-
+        // string sanitization (pass-1 invariant).
+        const pickRole = (role: "supervisor" | "reviewer" | "embeddings" | "router"): string | null => {
+          if (Object.prototype.hasOwnProperty.call(incoming, role)) {
+            return normalizeModel((incoming as Record<string, unknown>)[role]);
+          }
+          return normalizeModel(prevModels[role]);
+        };
         const mergedModels: Record<string, string | null> = {
-          supervisor: normalizeModel(incoming.supervisor) ?? normalizeModel(prevModels.supervisor) ?? null,
-          reviewer: normalizeModel(incoming.reviewer) ?? normalizeModel(prevModels.reviewer) ?? null,
-          embeddings: normalizeModel(incoming.embeddings) ?? normalizeModel(prevModels.embeddings) ?? null,
-          router: normalizeModel(incoming.router) ?? normalizeModel(prevModels.router) ?? null,
+          supervisor: pickRole("supervisor"),
+          reviewer: pickRole("reviewer"),
+          embeddings: pickRole("embeddings"),
+          router: pickRole("router"),
         };
         providers.local_backend = {
           kind: mappedKind,
@@ -4157,6 +4171,75 @@ async function main() {
             ok: false,
             error: `persist failed: ${(err as Error).message}`,
           }, { status: 500 });
+        }
+        // CodeRabbit pass-4 (c): rebind in-memory supervisor state so chat /
+        // diag / context routes pick up the new local backend on the NEXT
+        // prompt without a daemon restart. The original Phase 4 commit
+        // message promised "no restart needed" but didn't actually reapply
+        // supervisorCfg / supervisorModel / agent.state.model — the running
+        // daemon kept dispatching to the old backend until manual restart.
+        //
+        // Mirrors applyProfileSwap (~L1872). We're outside processOnePrompt
+        // here so we lack the promptInFlight guarantee — but readers either
+        // grab supervisorCfg or supervisorModel independently (no caller
+        // pairs them in a torn-read window), pi-agent-core reads
+        // agent.state.model at the START of each prompt (not mid-turn), and
+        // single JS field assignment is atomic. In-flight prompts keep
+        // their captured model reference; the new value lands next prompt.
+        // TODO: factor with profile-swap path.
+        try {
+          let entrySupervisor: string | undefined;
+          let entryHost: string | undefined;
+          try {
+            const pf = loadProfiles();
+            const entry = pf.profiles[pf.active];
+            entrySupervisor = entry?.supervisor;
+            entryHost = entry?.host;
+          } catch (err) {
+            console.error(
+              `[local-backend] profiles reload during rebind failed (continuing without profile override): ${(err as Error).message}`,
+            );
+          }
+          const newSupCfg = resolveRoleCfg(
+            "supervisor",
+            {
+              ...supervisorCfgFromProviders,
+              ...(entrySupervisor ? { model: entrySupervisor } : {}),
+              ...(entryHost ? { host: entryHost } : {}),
+            },
+            providers,
+          );
+          supervisorCfg = newSupCfg;
+          supervisorModel = buildModel(supervisorCfg);
+          (agent.state as { model?: unknown }).model = supervisorModel;
+          console.error(
+            `[local-backend] supervisor rebound — ${supervisorCfg.provider}/${supervisorCfg.model} @ ${supervisorCfg.host ?? "(default)"}`,
+          );
+          broadcast("supervisor_swap", {
+            ts: new Date().toISOString(),
+            reason: "local-backend-change",
+            supervisor: `${supervisorCfg.provider}/${supervisorCfg.model}`,
+            backend: `${mappedKind}@${host}`,
+          });
+          // Re-pin context length on the new backend. Fire-and-forget;
+          // first prompt after the swap will JIT-load if the pin is still
+          // in flight (same pattern as applyProfileSwap).
+          void ensureModelLoaded(supervisorCfg, "supervisor", providers)
+            .then((r) =>
+              console.error(
+                `[local-backend] ${r.ok ? "ctx-pin" : "ctx-pin FAILED"} supervisor: ${r.detail}`,
+              ),
+            )
+            .catch((err) =>
+              console.error(`[local-backend] ctx-pin error: ${(err as Error).message}`),
+            );
+        } catch (err) {
+          // Rebind failure is non-fatal: providers.json is already
+          // persisted, the daemon will pick up the change on next restart.
+          // Surface it loudly so the operator knows to restart.
+          console.error(
+            `[local-backend] supervisor rebind failed (daemon restart required to pick up change): ${(err as Error).message}`,
+          );
         }
         logDecision({
           project: "_master",

@@ -172,16 +172,32 @@ describe("POST /local-backend — merged-models composition", () => {
   // The route walks this shape: take existing local_backend.models,
   // overlay body.models, fill the four standard role slots with null
   // when neither side provided them. Test the recipe directly.
+  //
+  // CodeRabbit pass-4 (b): merge uses presence-check semantics so an
+  // explicit `null` in `incoming` CLEARS the role. Key absent → fall
+  // back to prev. `normalizeModel` still applies in both branches for
+  // type / empty-string sanitization (pass-1 invariant).
 
+  function normalizeModel(value: unknown): string | null {
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
   function mergeModels(
     prev: Partial<Record<string, string | null>>,
-    incoming: Record<string, string | null>,
+    incoming: Record<string, unknown>,
   ): Record<string, string | null> {
+    const pick = (role: "supervisor" | "reviewer" | "embeddings" | "router"): string | null => {
+      if (Object.prototype.hasOwnProperty.call(incoming, role)) {
+        return normalizeModel(incoming[role]);
+      }
+      return normalizeModel(prev[role]);
+    };
     return {
-      supervisor: incoming.supervisor ?? prev.supervisor ?? null,
-      reviewer: incoming.reviewer ?? prev.reviewer ?? null,
-      embeddings: incoming.embeddings ?? prev.embeddings ?? null,
-      router: incoming.router ?? prev.router ?? null,
+      supervisor: pick("supervisor"),
+      reviewer: pick("reviewer"),
+      embeddings: pick("embeddings"),
+      router: pick("router"),
     };
   }
 
@@ -201,14 +217,28 @@ describe("POST /local-backend — merged-models composition", () => {
     expect(out.reviewer).toBe("qwen3.6-27b");
   });
 
-  test("null in incoming falls back to prev (?? semantics)", () => {
-    // The route uses `?? prev.x ?? null` — null treats as "no override".
-    // Operators clear a role by sending an explicit empty assignment via
-    // the dashboard, which is encoded as the field being absent. Test pins
-    // the actual server.ts behavior so future refactors don't drift.
+  test("explicit null in incoming clears the role (CodeRabbit pass-4 (b))", () => {
+    // Operators clear a role by sending an explicit null via the dashboard
+    // (Settings → Local Inference Backend → "— disabled —" → Save). The
+    // Save payload always includes all four role keys; "— disabled —"
+    // encodes as null. The merge MUST distinguish "key present + null"
+    // (clear) from "key absent" (fall back to prev).
     const prev = { router: "qwen-router" };
     const out = mergeModels(prev, { router: null });
+    expect(out.router).toBeNull();
+  });
+
+  test("absent key falls back to prev (presence-check semantics)", () => {
+    const prev = { router: "qwen-router", supervisor: "qwen-sup" };
+    const out = mergeModels(prev, { supervisor: "qwen-sup-new" });
     expect(out.router).toBe("qwen-router");
+    expect(out.supervisor).toBe("qwen-sup-new");
+  });
+
+  test("incoming empty-string sanitizes to null (normalizeModel invariant)", () => {
+    const prev = { router: "qwen-router" };
+    const out = mergeModels(prev, { router: "   " });
+    expect(out.router).toBeNull();
   });
 
   test("all four standard role slots are always present in the output", () => {

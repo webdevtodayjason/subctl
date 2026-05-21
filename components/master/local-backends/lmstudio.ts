@@ -136,23 +136,27 @@ export const lmstudio: LocalBackendAdapter = {
         headers: { ...authHeader(opts?.api_key ?? null) },
         signal: AbortSignal.timeout(2000),
       });
-      if (r.ok) {
-        reachable = true;
-        const j = (await r.json()) as LmStudioModelsResponse;
-        const current = (j.data ?? []).find((m) => m.id === id);
-        // If model is already loaded at ANY context, leave it alone. The
-        // operator's manual config (and LM Studio's own state) wins. The
-        // previous "upgrade ctx if loaded < desired" path tried to
-        // unload+reload, but unload-by-model-name silently fails in current
-        // LM Studio (it requires instance_id), so the load step created a
-        // duplicate :2 instance. Master only enforces ctx on cold start
-        // (model not yet loaded).
-        if (current?.state === "loaded") {
-          return {
-            ok: true,
-            detail: `${id} already loaded at ctx ${(current.loaded_context_length ?? 0).toLocaleString()} — respecting existing load (operator/LM Studio config wins)`,
-          };
-        }
+      if (!r.ok) {
+        return {
+          ok: false,
+          detail: `LM Studio probe failed: /api/v0/models HTTP ${r.status}`,
+        };
+      }
+      reachable = true;
+      const j = (await r.json()) as LmStudioModelsResponse;
+      const current = (j.data ?? []).find((m) => m.id === id);
+      // If model is already loaded at ANY context, leave it alone. The
+      // operator's manual config (and LM Studio's own state) wins. The
+      // previous "upgrade ctx if loaded < desired" path tried to
+      // unload+reload, but unload-by-model-name silently fails in current
+      // LM Studio (it requires instance_id), so the load step created a
+      // duplicate :2 instance. Master only enforces ctx on cold start
+      // (model not yet loaded).
+      if (current?.state === "loaded") {
+        return {
+          ok: true,
+          detail: `${id} already loaded at ctx ${(current.loaded_context_length ?? 0).toLocaleString()} — respecting existing load (operator/LM Studio config wins)`,
+        };
       }
     } catch {
       /* fall through */

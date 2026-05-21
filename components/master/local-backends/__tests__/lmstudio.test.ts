@@ -174,6 +174,19 @@ describe("lmstudio adapter", () => {
     expect(r.detail).toContain("did not respond");
   });
 
+  test("pinModel distinguishes non-2xx probe from timeout (CodeRabbit pass-4 (a))", async () => {
+    // LM Studio reachable but returning 503 (e.g. internal error) used to be
+    // reported as "did not respond within 2s" — misleading. Now surfaces the
+    // actual HTTP status so the operator knows the daemon is up but unhappy.
+    mockFetch(
+      () => new Response("upstream timeout", { status: 503 }),
+    );
+    const r = await lmstudio.pinModel!("http://localhost:1234", "qwen/qwen3.6-27b", 65536);
+    expect(r.ok).toBe(false);
+    expect(r.detail).toContain("HTTP 503");
+    expect(r.detail).not.toContain("did not respond");
+  });
+
   test("ctx_size=0 short-circuits before any fetch", async () => {
     let called = 0;
     mockFetch(() => {

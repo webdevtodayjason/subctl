@@ -648,12 +648,15 @@ export async function mount({ root: _root }) {
   // card is inserted near the top of `.settings-grid` so the operator
   // sees it next to System health.
   //
-  // KNOWN LIMITATION (flagged to team-lead): the master's POST
-  // /local-backend merge uses `incoming ?? prev` (server.ts:4092-4097),
-  // which treats null as "missing" — so selecting "— disabled —" and
-  // saving silently retains the prior assignment. The UI lets the
-  // operator do it (per spec) but unsetting won't take effect until
-  // backend-adapters lands a follow-up patch.
+  // Save payload always includes all four role keys (supervisor /
+  // reviewer / embeddings / router) — `lbReadFormModels` below maps
+  // "" → null so a "— disabled —" selection sends an explicit null.
+  // CodeRabbit pass-4 (b) lifted the matching server-side fix so the
+  // POST /local-backend merge now uses presence-check semantics: an
+  // explicit null in the payload clears the role; key omission falls
+  // back to the prior assignment. Selecting "— disabled —" + Save
+  // now actually unsets the role (no daemon restart required —
+  // CodeRabbit pass-4 (c) also rebinds the in-memory supervisor).
   //
   // No setInterval poll: status refreshes on mount / radio change /
   // Test / Save only. Operator-driven, same cadence as the rest of
