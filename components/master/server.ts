@@ -1665,8 +1665,8 @@ async function main() {
     // provider="local" both fold to the same backend.kind, model, host. The
     // dedup is about avoiding LM Studio's `:2` shadow instance when the
     // actual dispatch target is identical.
-    const ra = resolveRoleCfg("supervisor", a, providers);
-    const rb = resolveRoleCfg("reviewer", b, providers);
+    const ra = resolveRoleCfg("reviewer", a, providers);
+    const rb = resolveRoleCfg("supervisor", b, providers);
     return ra.provider === rb.provider
       && ra.model === rb.model
       && (ra.host ?? "") === (rb.host ?? "");
