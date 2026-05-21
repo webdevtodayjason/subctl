@@ -44,8 +44,8 @@ A persistent conversational orchestrator that runs on your hardware, talks to yo
 - **Tiered memory substrate:**
   - **Tier 1 — profile:** `user.md` + `memory.md` always injected into the master's system prompt (~3500 char budget — fast, durable, operator-editable)
   - **Tier 2 — observation:** [claude-mem](https://github.com/thedotmack/claude-mem) semantic search over every dev-team observation
-  - **Tier 3 — curated:** auto-curated durable facts promoted from raw conversation by a background consciousness loop; surfaced into the master's turn context on demand
-  - **Tier 4 — graph + lexical store:** local-first SQLite + embedded graph for cross-session semantic recall; `memory_search` / `memory_timeline` route here with claude-mem as fallback
+  - **Tier 3 — curated:** auto-curated durable facts (bun:sqlite + FTS5 / Evy Memory) promoted from raw conversation by a background consciousness loop; surfaced into the master's turn context on demand
+  - **Tier 4 — graph + lexical store:** [Cognee](https://github.com/topoteretes/cognee) (primary, v2.8.7+) for cross-session semantic recall with graph context; `memory_search` / `memory_timeline` route here with claude-mem as fallback
   - **Tier 5 — vault:** Obsidian vault for long-form decisions, specs, RESUME files — browse in-page via the built-in viewer with `[[wikilinks]]`, embeds, callouts, and tag rendering
 
 - **Runtime claim verifier (Argent-style)** — after every assistant turn the runtime scans for "claim triggers" (specific future check-in times, asserted team statuses, host facts, sent-message claims, decision-logged claims). Any claim not backed by a tool call this turn fires a synthetic `[verifier]` correction prompt. Capped at 2 corrections; on giveup the gap lands in `decisions.jsonl` so you can grep chronic offenders.
