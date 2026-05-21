@@ -21,7 +21,7 @@ import {
   listAvailableBackends,
   type LocalBackendKind,
 } from "../local-backends";
-import { mapToLocalBackendKind } from "../server";
+import { getApiKeyForProvider, mapToLocalBackendKind } from "../server";
 
 const origFetch = globalThis.fetch;
 
@@ -124,6 +124,47 @@ describe("GET /local-backend — health + catalog shape per backend", () => {
       expect(h.ok).toBe(false);
       expect(h.detail).toBeDefined();
     }
+  });
+});
+
+describe("oMLX auth resolution (CodeRabbit pass-3 #3)", () => {
+  // oMLX supports optional `--api-key` server-side auth. Mirror the
+  // LM Studio pattern so chat-turn dispatch via openai-completions
+  // carries `Authorization: Bearer <token>` when the operator has set
+  // it. Resolution order: env (`OMLX_API_TOKEN`, via envVarFor's
+  // uppercase fallback) → secrets.json#omlx_api_token → "not-needed"
+  // sentinel for localhost-bypass deployments.
+
+  let savedToken: string | undefined;
+
+  beforeEach(() => {
+    savedToken = process.env.OMLX_API_TOKEN;
+    delete process.env.OMLX_API_TOKEN;
+  });
+
+  afterEach(() => {
+    if (savedToken === undefined) delete process.env.OMLX_API_TOKEN;
+    else process.env.OMLX_API_TOKEN = savedToken;
+  });
+
+  test("omlx + env token set → returns the token (used by pi-ai dispatch)", () => {
+    process.env.OMLX_API_TOKEN = "sk-omlx-DEADBEEF";
+    expect(getApiKeyForProvider("omlx")).toBe("sk-omlx-DEADBEEF");
+  });
+
+  test("omlx + token unset → returns 'not-needed' (localhost-bypass back-compat)", () => {
+    expect(getApiKeyForProvider("omlx")).toBe("not-needed");
+  });
+
+  test("omlx token MUST NOT leak to cloud providers", () => {
+    // Mirrors the LMSTUDIO-token leak test in secrets.test.ts: a local-
+    // backend token must never appear as the api_key for a real cloud
+    // provider. (lmstudio is omitted from the assertion because its
+    // env-resolution interacts with the operator's running launchd
+    // plist; the secrets.test.ts suite already pins that path.)
+    process.env.OMLX_API_TOKEN = "sk-omlx-DEADBEEF";
+    expect(getApiKeyForProvider("anthropic")).toBeUndefined();
+    expect(getApiKeyForProvider("openai")).toBeUndefined();
   });
 });
 

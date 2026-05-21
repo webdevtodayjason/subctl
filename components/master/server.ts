@@ -1120,6 +1120,15 @@ export function getApiKeyForProvider(provider: string): string | undefined {
   if (provider === "lmstudio") {
     return resolveSecret("lmstudio_api_token") ?? "not-needed";
   }
+  if (provider === "omlx") {
+    // oMLX supports optional `--api-key` server-side auth. When the
+    // operator runs `omlx serve --api-key …`, every request needs an
+    // `Authorization: Bearer <token>` header. Resolution mirrors the
+    // LM Studio chain — env (`OMLX_API_TOKEN`, via envVarFor's uppercase
+    // fallback) beats `~/.config/subctl/secrets.json#omlx_api_token`
+    // beats the "not-needed" sentinel for localhost-bypass deployments.
+    return resolveSecret("omlx_api_token") ?? "not-needed";
+  }
   if (LOCAL_PROVIDERS.has(provider)) return "not-needed";
   if (provider === "openrouter") {
     // OpenRouter REQUIRES a real key on every request — unlike LM Studio
@@ -1323,7 +1332,11 @@ export async function ensureModelLoaded(
   }
   const desired = resolved.context_length ?? ROLE_DEFAULT_CONTEXT[role] ?? 0;
   const apiKey =
-    kind === "lmstudio" ? resolveSecret("lmstudio_api_token") : null;
+    kind === "lmstudio"
+      ? resolveSecret("lmstudio_api_token")
+      : kind === "omlx"
+        ? resolveSecret("omlx_api_token")
+        : null;
   const result = await adapter.pinModel(
     resolved.host ?? adapter.defaultHost,
     resolved.model,
@@ -2450,16 +2463,33 @@ async function main() {
   const COMPACT_CFG_PATH = join(MASTER_STATE_DIR, "compact.json");
 
   async function getSupervisorLoadedCtx(timeoutMs = 1500): Promise<number | null> {
+    // Phase 4: probe through the LocalBackendAdapter so the loaded-context
+    // lookup is correct for whichever runtime is actually behind
+    // supervisorCfg. Pre-Phase-4 this hit LM Studio's native
+    // /api/v0/models against ANY host — when supervisorCfg.provider had
+    // been rewritten to "ollama" or "omlx" by resolveRoleCfg the request
+    // either 404'd silently (Ollama) or returned the wrong shape (oMLX),
+    // and the caller got `null` for the wrong reason. The adapter knows
+    // the right endpoint per backend; LocalModel.context_length is
+    // populated where the backend exposes it (lmstudio: yes, omlx: yes,
+    // ollama: no — falls through to null naturally).
+    const kind = mapToLocalBackendKind(supervisorCfg.provider);
+    if (!kind) return null;
+    const adapter = getLocalBackendAdapter(kind);
+    const host = supervisorCfg.host ?? adapter.defaultHost;
+    const apiKey =
+      kind === "lmstudio"
+        ? resolveSecret("lmstudio_api_token")
+        : kind === "omlx"
+          ? resolveSecret("omlx_api_token")
+          : null;
     try {
-      const host = (supervisorCfg.host ?? "http://localhost:1234/v1").replace(/\/v1\/?$/, "");
-      const r = await fetch(`${host}/api/v0/models`, {
-        headers: { ...lmstudioAuthHeader() },
-        signal: AbortSignal.timeout(timeoutMs),
+      const models = await adapter.listModels(host, {
+        timeout_ms: timeoutMs,
+        api_key: apiKey,
       });
-      if (!r.ok) return null;
-      const j = (await r.json()) as { data?: Array<{ id: string; loaded_context_length?: number }> };
-      const found = (j.data ?? []).find((m) => m.id === supervisorCfg.model);
-      return found?.loaded_context_length ?? null;
+      const found = models.find((m) => m.id === supervisorCfg.model);
+      return found?.context_length ?? null;
     } catch {
       return null;
     }
@@ -3854,7 +3884,11 @@ async function main() {
 
       // /context — token + context-window stats. Approximates token count
       // via char-count / 4 (good enough for a UX indicator). Reads the
-      // current LM Studio loaded_context_length per supervisor model.
+      // current loaded context length per supervisor model from whichever
+      // local backend resolveRoleCfg routed us to (LM Studio populates
+      // loaded_context_length; oMLX populates context_length; Ollama
+      // doesn't expose load-time context per model and falls through to
+      // null, which the UI renders as "—").
       if (url.pathname === "/context" && req.method === "GET") {
         const messages = agent.state.messages as Array<Record<string, unknown>>;
         let chars = 0;
@@ -3873,22 +3907,13 @@ async function main() {
         // sit in every prompt window. Approximate as 2500 tokens for
         // SKILL.md + 24-tool schema bundle. Empirical from prior /v1/chat/completions logs.
         const fixedOverheadTokens = 2500;
-        // Get loaded context window from LM Studio. Earlier version used
-        // a /v1/../api/v0 string-replace that quietly failed when the
-        // host string didn't end in /v1; just strip /v1 cleanly.
-        let loadedContext: number | null = null;
-        try {
-          const host = (supervisorCfg.host ?? "http://localhost:1234/v1").replace(/\/v1\/?$/, "");
-          const r = await fetch(`${host}/api/v0/models`, {
-            headers: { ...lmstudioAuthHeader() },
-            signal: AbortSignal.timeout(1500),
-          });
-          if (r.ok) {
-            const j = (await r.json()) as { data?: Array<{ id: string; loaded_context_length?: number }> };
-            const found = (j.data ?? []).find((m) => m.id === supervisorCfg.model);
-            if (found?.loaded_context_length) loadedContext = found.loaded_context_length;
-          }
-        } catch { /* ignore */ }
+        // Get loaded context window via the adapter for the resolved
+        // supervisor backend. Pre-Phase-4 this hit LM Studio's native
+        // /api/v0/models directly — that quietly mis-fired against
+        // Ollama / oMLX hosts. getSupervisorLoadedCtx routes through the
+        // adapter's listModels and reads LocalModel.context_length, which
+        // is populated where the backend exposes it.
+        const loadedContext = await getSupervisorLoadedCtx(1500);
         const total = estimatedTokens + fixedOverheadTokens;
         return Response.json({
           ok: true,
@@ -4041,7 +4066,11 @@ async function main() {
         }
         const adapter = getLocalBackendAdapter(lb.kind);
         const apiKey =
-          lb.kind === "lmstudio" ? resolveSecret("lmstudio_api_token") : null;
+          lb.kind === "lmstudio"
+            ? resolveSecret("lmstudio_api_token")
+            : lb.kind === "omlx"
+              ? resolveSecret("omlx_api_token")
+              : null;
         const health = await adapter.healthProbe(lb.host, { api_key: apiKey });
         let available: unknown[] = [];
         if (health.ok) {
@@ -4085,7 +4114,11 @@ async function main() {
         const adapter = getLocalBackendAdapter(mappedKind);
         const host = body.host?.trim() || adapter.defaultHost;
         const apiKey =
-          mappedKind === "lmstudio" ? resolveSecret("lmstudio_api_token") : null;
+          mappedKind === "lmstudio"
+            ? resolveSecret("lmstudio_api_token")
+            : mappedKind === "omlx"
+              ? resolveSecret("omlx_api_token")
+              : null;
         const health = await adapter.healthProbe(host, { api_key: apiKey });
         const prevModels = providers.local_backend?.models ?? {};
         const incoming = body.models ?? {};
@@ -4204,24 +4237,44 @@ async function main() {
         // Fan out connectivity + readiness checks in parallel. Each check
         // returns {name, ok, detail} — UI renders a green/red row per check.
         const checks = await Promise.all([
-          // 1. LM Studio reachability + supervisor model present
+          // 1. Local-backend reachability + supervisor model present.
+          // Pre-Phase-4 the row was hard-coded to "lmstudio" and hit a
+          // raw $host/models URL. resolveRoleCfg can route supervisorCfg
+          // through ollama or omlx — when it does, the old probe label
+          // was misleading AND the path resolved against the wrong port.
+          // Route through the adapter's listModels so the row name + the
+          // endpoint match whichever runtime is actually serving.
           (async () => {
-            const host = supervisorCfg.host ?? "http://localhost:1234/v1";
+            const kind = mapToLocalBackendKind(supervisorCfg.provider);
+            if (!kind) {
+              return {
+                name: "local-inference",
+                ok: true,
+                detail: `supervisor provider="${supervisorCfg.provider}" is cloud — no local backend probe`,
+              };
+            }
+            const adapter = getLocalBackendAdapter(kind);
+            const host = supervisorCfg.host ?? adapter.defaultHost;
+            const apiKey =
+              kind === "lmstudio"
+                ? resolveSecret("lmstudio_api_token")
+                : kind === "omlx"
+                  ? resolveSecret("omlx_api_token")
+                  : null;
             try {
-              const r = await fetch(`${host.replace(/\/$/, "")}/models`, {
-                signal: AbortSignal.timeout(2000),
+              const models = await adapter.listModels(host, {
+                timeout_ms: 2000,
+                api_key: apiKey,
               });
-              if (!r.ok) return { name: "lmstudio", ok: false, detail: `HTTP ${r.status}` };
-              const j = (await r.json()) as { data?: Array<{ id: string }> };
-              const ids = (j.data ?? []).map((m) => m.id);
+              const ids = models.map((m) => m.id);
               const found = ids.includes(supervisorCfg.model);
               return {
-                name: "lmstudio",
+                name: kind,
                 ok: true,
-                detail: `${ids.length} models loaded${found ? `, supervisor "${supervisorCfg.model}" present` : `, supervisor "${supervisorCfg.model}" NOT loaded (will JIT-load on first call)`}`,
+                detail: `${ids.length} models available${found ? `, supervisor "${supervisorCfg.model}" present` : `, supervisor "${supervisorCfg.model}" NOT loaded (will JIT-load on first call)`}`,
               };
             } catch (err) {
-              return { name: "lmstudio", ok: false, detail: (err as Error).message };
+              return { name: kind, ok: false, detail: (err as Error).message };
             }
           })(),
           // 2. Telegram bot reachable + listener actively polling
