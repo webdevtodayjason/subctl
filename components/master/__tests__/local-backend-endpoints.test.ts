@@ -21,7 +21,12 @@ import {
   listAvailableBackends,
   type LocalBackendKind,
 } from "../local-backends";
-import { getApiKeyForProvider, mapToLocalBackendKind } from "../server";
+import {
+  getApiKeyForProvider,
+  mapToLocalBackendKind,
+  mergeModels,
+  normalizeModel,
+} from "../server";
 
 const origFetch = globalThis.fetch;
 
@@ -177,29 +182,10 @@ describe("POST /local-backend — merged-models composition", () => {
   // explicit `null` in `incoming` CLEARS the role. Key absent → fall
   // back to prev. `normalizeModel` still applies in both branches for
   // type / empty-string sanitization (pass-1 invariant).
-
-  function normalizeModel(value: unknown): string | null {
-    if (typeof value !== "string") return null;
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : null;
-  }
-  function mergeModels(
-    prev: Partial<Record<string, string | null>>,
-    incoming: Record<string, unknown>,
-  ): Record<string, string | null> {
-    const pick = (role: "supervisor" | "reviewer" | "embeddings" | "router"): string | null => {
-      if (Object.prototype.hasOwnProperty.call(incoming, role)) {
-        return normalizeModel(incoming[role]);
-      }
-      return normalizeModel(prev[role]);
-    };
-    return {
-      supervisor: pick("supervisor"),
-      reviewer: pick("reviewer"),
-      embeddings: pick("embeddings"),
-      router: pick("router"),
-    };
-  }
+  //
+  // CodeRabbit pass-9 (2): `normalizeModel` + `mergeModels` are now
+  // exported from server.ts (single home for the contract). The tests
+  // import the same helpers the handler uses instead of cloning them.
 
   test("empty incoming preserves existing assignments", () => {
     const prev = { supervisor: "qwen/qwen3.6-27b", reviewer: "qwen/qwen3.6-27b" };
@@ -244,5 +230,60 @@ describe("POST /local-backend — merged-models composition", () => {
   test("all four standard role slots are always present in the output", () => {
     const out = mergeModels({}, {});
     expect(Object.keys(out).sort()).toEqual(["embeddings", "reviewer", "router", "supervisor"]);
+  });
+});
+
+describe("normalizeModel (CodeRabbit pass-9 (2) — exported helper)", () => {
+  // The merge composition tests above exercise normalizeModel transitively;
+  // pin the invariants directly so future contributors don't need to
+  // reverse-engineer them from mergeModels behavior.
+  test("non-string → null", () => {
+    expect(normalizeModel(undefined)).toBeNull();
+    expect(normalizeModel(null)).toBeNull();
+    expect(normalizeModel(42)).toBeNull();
+    expect(normalizeModel({})).toBeNull();
+  });
+  test("empty / whitespace → null", () => {
+    expect(normalizeModel("")).toBeNull();
+    expect(normalizeModel("   ")).toBeNull();
+    expect(normalizeModel("\t\n")).toBeNull();
+  });
+  test("non-empty string → trimmed value", () => {
+    expect(normalizeModel("qwen3.6-27b")).toBe("qwen3.6-27b");
+    expect(normalizeModel("  qwen3.6-27b  ")).toBe("qwen3.6-27b");
+  });
+});
+
+describe("mapToLocalBackendKind — :8000 host heuristic (CodeRabbit pass-9 (3))", () => {
+  // Operators running real oMLX with a legacy `mlx`/`vllm` provider tag
+  // get mislabeled as `lmstudio` and the daemon probes LM Studio
+  // endpoints against an oMLX server forever (last_verified stays null).
+  // When the host clearly points at oMLX's default port (:8000) the
+  // migration picks "omlx" instead.
+
+  test("mlx + :8000 host → omlx (real oMLX with legacy tag)", () => {
+    expect(mapToLocalBackendKind("mlx", "http://127.0.0.1:8000")).toBe("omlx");
+    expect(mapToLocalBackendKind("mlx", "http://localhost:8000/v1")).toBe("omlx");
+  });
+
+  test("vllm + :8000 host → omlx (vllm on oMLX's port)", () => {
+    expect(mapToLocalBackendKind("vllm", "http://127.0.0.1:8000")).toBe("omlx");
+  });
+
+  test("mlx + no host → lmstudio (back-compat, host unavailable at call site)", () => {
+    expect(mapToLocalBackendKind("mlx")).toBe("lmstudio");
+    expect(mapToLocalBackendKind("mlx", null)).toBe("lmstudio");
+    expect(mapToLocalBackendKind("mlx", "")).toBe("lmstudio");
+  });
+
+  test("mlx + non-:8000 host → lmstudio (any other port is treated as LM Studio dialect)", () => {
+    expect(mapToLocalBackendKind("mlx", "http://localhost:1234/v1")).toBe("lmstudio");
+    expect(mapToLocalBackendKind("mlx", "http://localhost:8080")).toBe("lmstudio");
+  });
+
+  test("first-class kinds ignore host (always map to themselves)", () => {
+    expect(mapToLocalBackendKind("lmstudio", "http://localhost:8000")).toBe("lmstudio");
+    expect(mapToLocalBackendKind("ollama", "http://localhost:8000")).toBe("ollama");
+    expect(mapToLocalBackendKind("omlx", "http://localhost:1234")).toBe("omlx");
   });
 });

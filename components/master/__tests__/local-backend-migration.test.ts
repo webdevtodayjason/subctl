@@ -22,9 +22,25 @@ describe("mapToLocalBackendKind", () => {
     expect(mapToLocalBackendKind("omlx")).toBe("omlx");
   });
 
-  test("legacy mlx + vllm fold to lmstudio", () => {
+  test("legacy mlx + vllm fold to lmstudio (no host hint, back-compat)", () => {
     expect(mapToLocalBackendKind("mlx")).toBe("lmstudio");
     expect(mapToLocalBackendKind("vllm")).toBe("lmstudio");
+  });
+
+  test("legacy mlx + vllm on :8000 host disambiguate to omlx (CodeRabbit pass-9 (3))", () => {
+    // Operators running real oMLX with a legacy provider tag previously
+    // got migrated to kind="lmstudio" because mapToLocalBackendKind only
+    // saw the provider string. The migration now considers the host: a
+    // :8000 hint is oMLX's default port, so the legacy tag resolves to
+    // omlx instead of LM Studio.
+    expect(mapToLocalBackendKind("mlx", "http://127.0.0.1:8000")).toBe("omlx");
+    expect(mapToLocalBackendKind("mlx", "http://localhost:8000/v1")).toBe("omlx");
+    expect(mapToLocalBackendKind("vllm", "http://127.0.0.1:8000")).toBe("omlx");
+  });
+
+  test("legacy mlx on non-:8000 host stays lmstudio (e.g. :8080, :1234)", () => {
+    expect(mapToLocalBackendKind("mlx", "http://localhost:8080")).toBe("lmstudio");
+    expect(mapToLocalBackendKind("mlx", "http://localhost:1234/v1")).toBe("lmstudio");
   });
 
   test("cloud providers return null", () => {
@@ -78,15 +94,37 @@ describe("migrateLocalBackend — first boot seeding", () => {
     expect(providers.local_backend!.host).toBe("http://localhost:11434");
   });
 
-  test("legacy vllm folds into lmstudio kind", () => {
+  test("legacy vllm folds into lmstudio kind (non-:8000 host)", () => {
+    // CodeRabbit pass-9 (3): host changed from :8000 → :8080 because the
+    // :8000 path now disambiguates to omlx. This test still pins the
+    // "vllm → lmstudio" fallback for the back-compat case.
     const providers = {
       models: {
-        supervisor: { provider: "vllm", model: "Qwen2.5-Coder", host: "http://localhost:8000/v1" },
+        supervisor: { provider: "vllm", model: "Qwen2.5-Coder", host: "http://localhost:8080/v1" },
       },
     } as Parameters<typeof migrateLocalBackend>[0];
     const result = migrateLocalBackend(providers);
     expect(result.migrated).toBe(true);
     expect(result.picked?.kind).toBe("lmstudio");
+    expect(providers.models.supervisor!.provider).toBe("local");
+  });
+
+  test("legacy mlx on :8000 migrates to omlx (CodeRabbit pass-9 (3))", () => {
+    // Real-world repro: 2026-05-21 the operator's live providers.json had
+    // local_backend.kind="lmstudio" but they were actually running oMLX
+    // on :8000. last_verified stayed null because the daemon probed LM
+    // Studio endpoints against an oMLX server. Now the migration reads
+    // the role's host and picks omlx for the :8000 case.
+    const providers = {
+      models: {
+        supervisor: { provider: "mlx", model: "qwen3-4b-mlx", host: "http://127.0.0.1:8000/v1" },
+      },
+    } as Parameters<typeof migrateLocalBackend>[0];
+    const result = migrateLocalBackend(providers);
+    expect(result.migrated).toBe(true);
+    expect(result.picked?.kind).toBe("omlx");
+    expect(providers.local_backend!.kind).toBe("omlx");
+    expect(providers.local_backend!.host).toBe("http://127.0.0.1:8000/v1");
     expect(providers.models.supervisor!.provider).toBe("local");
   });
 

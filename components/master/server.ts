@@ -1184,11 +1184,73 @@ export const LEGACY_LOCAL_PROVIDER_IDS = new Set([
  * LocalBackendKind. `mlx` and `vllm` aren't first-class adapters; we fold
  * them into LM Studio per the Phase 4 spec (mlx was the operator's
  * dead-config bite — they didn't intentionally pick MLX).
+ *
+ * CodeRabbit pass-9 (3): optional `host` arg for migration disambiguation.
+ * Operators running real oMLX with a legacy `mlx`/`vllm` provider tag get
+ * mislabeled as `lmstudio` and their daemon probes LM Studio endpoints
+ * against an oMLX server forever (`last_verified` stays null). When the
+ * host clearly points at oMLX's default port (:8000) we treat the legacy
+ * tag as `omlx` instead. Hosts without :8000 still map to `lmstudio` for
+ * back-compat (vllm/mlx commonly proxied behind other ports speak the
+ * LM Studio OpenAI-compatible dialect well enough to ride that adapter).
  */
-export function mapToLocalBackendKind(p: string): LocalBackendKind | null {
+export function mapToLocalBackendKind(
+  p: string,
+  host?: string | null,
+): LocalBackendKind | null {
   if (p === "lmstudio" || p === "ollama" || p === "omlx") return p;
-  if (p === "mlx" || p === "vllm") return "lmstudio";
+  if (p === "mlx" || p === "vllm") {
+    if (host && /:8000(\/|$)/.test(host)) return "omlx";
+    return "lmstudio";
+  }
   return null;
+}
+
+/**
+ * Normalize a role-model value coming from POST /local-backend or its
+ * tests. CodeRabbit pass-9 (2) — hoisted from the POST handler so the
+ * helper has one home and the test suite imports it instead of cloning.
+ * Invariant (pass-1): non-string → null; empty/whitespace string → null;
+ * otherwise the trimmed string.
+ */
+export function normalizeModel(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * Merge a prior `local_backend.models` map with an incoming partial.
+ * CodeRabbit pass-9 (2) — hoisted from POST /local-backend so the
+ * presence-check semantics from pass-4 (b) have one home.
+ *
+ * Semantics:
+ *   - key present in `incoming` (even when null) → honor incoming
+ *   - key absent from `incoming`                 → fall back to prev
+ *   - `normalizeModel` applies in both branches (type / empty-string
+ *     sanitization is the pass-1 invariant).
+ *
+ * Output always carries the four standard role slots so persistence sees
+ * a stable shape regardless of which subset the caller mutated.
+ */
+export function mergeModels(
+  prev: Partial<Record<string, string | null>>,
+  incoming: Record<string, unknown>,
+): Record<string, string | null> {
+  const pick = (
+    role: "supervisor" | "reviewer" | "embeddings" | "router",
+  ): string | null => {
+    if (Object.prototype.hasOwnProperty.call(incoming, role)) {
+      return normalizeModel(incoming[role]);
+    }
+    return normalizeModel(prev[role]);
+  };
+  return {
+    supervisor: pick("supervisor"),
+    reviewer: pick("reviewer"),
+    embeddings: pick("embeddings"),
+    router: pick("router"),
+  };
 }
 
 /**
@@ -1262,10 +1324,15 @@ export function migrateLocalBackend(providers: Providers): {
     if (!cfg || typeof cfg !== "object") continue;
     const p = (cfg as { provider?: string }).provider;
     if (!p || !LEGACY_LOCAL_PROVIDER_IDS.has(p)) continue;
-    const kind = mapToLocalBackendKind(p);
+    // CodeRabbit pass-9 (3): pass the role's host so legacy `mlx`/`vllm`
+    // on :8000 disambiguates to omlx instead of falling back to lmstudio.
+    // Operators running real oMLX with a legacy provider tag previously
+    // ended up with kind="lmstudio" and a dead config — the daemon
+    // probed LM Studio endpoints against oMLX forever.
+    const cfgHost = (cfg as { host?: string }).host;
+    const kind = mapToLocalBackendKind(p, cfgHost);
     if (!kind) continue;
-    const h = (cfg as { host?: string }).host
-      ?? getLocalBackendAdapter(kind).defaultHost;
+    const h = cfgHost ?? getLocalBackendAdapter(kind).defaultHost;
     candidates.push({ kind, host: h, role });
   }
   if (candidates.length === 0) {
@@ -1335,7 +1402,9 @@ export async function ensureModelLoaded(
   const resolved = providersForResolve
     ? resolveRoleCfg(role, cfg, providersForResolve)
     : cfg;
-  const kind = mapToLocalBackendKind(resolved.provider);
+  // CodeRabbit pass-9 (3): pass host so a stray un-migrated `mlx`/`vllm`
+  // role on :8000 picks the omlx adapter instead of LM Studio.
+  const kind = mapToLocalBackendKind(resolved.provider, resolved.host);
   if (!kind) {
     return { ok: true, detail: `${role} is ${resolved.provider} (cloud) — no local load needed` };
   }
@@ -2486,7 +2555,7 @@ async function main() {
     // the right endpoint per backend; LocalModel.context_length is
     // populated where the backend exposes it (lmstudio: yes, omlx: yes,
     // ollama: no — falls through to null naturally).
-    const kind = mapToLocalBackendKind(supervisorCfg.provider);
+    const kind = mapToLocalBackendKind(supervisorCfg.provider, supervisorCfg.host);
     if (!kind) return null;
     const adapter = getLocalBackendAdapter(kind);
     const host = supervisorCfg.host ?? adapter.defaultHost;
@@ -4044,7 +4113,10 @@ async function main() {
         let body: { kind?: string; host?: string; api_key?: string | null } = {};
         try { body = await req.json(); } catch { /* empty body 400 below */ }
         const kindRaw = body.kind ?? "";
-        const mappedKind = mapToLocalBackendKind(kindRaw);
+        // CodeRabbit pass-9 (3): pass body.host so the kind-resolve agrees
+        // with the migration heuristic — picking "omlx" for a legacy
+        // `mlx`/`vllm` tag on :8000.
+        const mappedKind = mapToLocalBackendKind(kindRaw, body.host ?? null);
         if (!mappedKind) {
           return Response.json({
             ok: false,
@@ -4124,7 +4196,10 @@ async function main() {
           return Response.json({ ok: false, error: "invalid JSON body" }, { status: 400 });
         }
         const kindRaw = body.kind ?? "";
-        const mappedKind = mapToLocalBackendKind(kindRaw);
+        // CodeRabbit pass-9 (3): pass body.host so the kind-resolve agrees
+        // with the migration heuristic — picking "omlx" for a legacy
+        // `mlx`/`vllm` tag on :8000.
+        const mappedKind = mapToLocalBackendKind(kindRaw, body.host ?? null);
         if (!mappedKind) {
           return Response.json({
             ok: false,
@@ -4156,31 +4231,11 @@ async function main() {
         }
         const prevModels = providers.local_backend?.models ?? {};
         const incoming = body.models ?? {};
-        const normalizeModel = (value: unknown): string | null => {
-          if (typeof value !== "string") return null;
-          const trimmed = value.trim();
-          return trimmed.length > 0 ? trimmed : null;
-        };
-        // CodeRabbit pass-4 (b): use presence-check semantics so an explicit
-        // `null` in `incoming` clears the role. Old `incoming ?? prev` treated
-        // null as "missing" and silently retained the prior assignment, so
-        // the operator couldn't unset a model from the Settings UI. Now:
-        //   - key present in incoming (even when null) → honor incoming
-        //   - key absent → fall back to prev
-        // `normalizeModel` still applies in both branches for type / empty-
-        // string sanitization (pass-1 invariant).
-        const pickRole = (role: "supervisor" | "reviewer" | "embeddings" | "router"): string | null => {
-          if (Object.prototype.hasOwnProperty.call(incoming, role)) {
-            return normalizeModel((incoming as Record<string, unknown>)[role]);
-          }
-          return normalizeModel(prevModels[role]);
-        };
-        const mergedModels: Record<string, string | null> = {
-          supervisor: pickRole("supervisor"),
-          reviewer: pickRole("reviewer"),
-          embeddings: pickRole("embeddings"),
-          router: pickRole("router"),
-        };
+        // CodeRabbit pass-9 (2): merge composition now lives in the
+        // exported `mergeModels` helper (presence-check semantics from
+        // pass-4 (b) and the pass-1 normalizeModel invariant moved with it).
+        // Tests import the same helpers so the contract has one home.
+        const mergedModels = mergeModels(prevModels, incoming);
         providers.local_backend = {
           kind: mappedKind,
           host,
@@ -4370,7 +4425,7 @@ async function main() {
           // Route through the adapter's listModels so the row name + the
           // endpoint match whichever runtime is actually serving.
           (async () => {
-            const kind = mapToLocalBackendKind(supervisorCfg.provider);
+            const kind = mapToLocalBackendKind(supervisorCfg.provider, supervisorCfg.host);
             if (!kind) {
               return {
                 name: "local-inference",

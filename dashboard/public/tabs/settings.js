@@ -794,15 +794,35 @@ export async function mount({ root: _root }) {
       const sel = $("settings-lb-" + role);
       if (!sel) continue;
       const current = lb.models[role];
-      if (lb.available === null) {
-        sel.innerHTML = "<option value=\"\">— select after backend reachable —</option>";
-        sel.disabled = true;
-        continue;
-      }
-      const opts = lbModelOptionsFor(role);
+      const opts = lb.available === null ? [] : lbModelOptionsFor(role);
       if (!opts.length) {
-        sel.innerHTML = "<option value=\"\">— no models available —</option>";
-        sel.disabled = true;
+        // CodeRabbit pass-9 (1): preserve the persisted role assignment
+        // when no catalog is available (backend unreachable OR reachable
+        // but empty for this role). Previously, this branch wiped every
+        // <select> to a single disabled placeholder. Save then walked the
+        // wiped DOM and serialized `null` for every role — silently
+        // clobbering the operator's overrides any time they hit Save with
+        // the backend offline. Now: render `current` as a "· not in
+        // catalog" selected option so the DOM keeps the prior value AND
+        // Save serializes it intact. Operator sees the stale-but-known
+        // assignment instead of an empty form.
+        if (current) {
+          sel.innerHTML =
+            `<option value="${escapeText(current)}" selected>` +
+            `${escapeText(current)} · not in catalog</option>`;
+          // Leave the <select> enabled — the operator still has visibility
+          // and (if the backend comes back) the next render will overlay
+          // the live catalog. Disabling it here would freeze Save into a
+          // partial overwrite the moment the catalog reappears empty for
+          // any reason.
+          sel.disabled = false;
+        } else {
+          const placeholder = lb.available === null
+            ? "— select after backend reachable —"
+            : "— no models available —";
+          sel.innerHTML = `<option value="">${placeholder}</option>`;
+          sel.disabled = true;
+        }
         continue;
       }
       sel.disabled = false;
