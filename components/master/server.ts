@@ -256,6 +256,12 @@ import {
   saveVoiceConfig,
   watchVoiceConfig,
 } from "./voice-config";
+// ── v2.8.13 Provider Model Catalog Phase 4: local backend adapters ──
+import {
+  getAdapter as getLocalBackendAdapter,
+  listAvailableBackends as listLocalBackendKinds,
+  type LocalBackendKind,
+} from "./local-backends";
 
 const HOME = homedir();
 const COMPONENT_DIR = import.meta.dir;
@@ -369,6 +375,16 @@ interface Providers {
   fallback?: { provider: string; model: string; auth?: string };
   routing_policy?: Record<string, string>;
   memory_budget_gb?: { target: number; ceiling: number };
+  // v2.8.13 Phase 4 — single source of truth for local-inference backend.
+  // When a role's provider is "local", the role's effective dispatch (host,
+  // model, kind) is resolved from this block via resolveRoleCfg(). Seeded
+  // on first boot from any pre-existing lmstudio/ollama/mlx/omlx/vllm role.
+  local_backend?: {
+    kind: LocalBackendKind;
+    host: string;
+    models: Partial<Record<string, string | null>>;
+    last_verified?: string | null;
+  };
 }
 
 interface Policy {
@@ -886,12 +902,15 @@ export const PROVIDER_API: Record<string, string> = {
   "google-vertex": "google-vertex",
   "amazon-bedrock": "bedrock-converse-stream",
   mistral: "mistral-conversations",
-  // Local OpenAI-compatible runtimes (mlx, ollama, lmstudio, vllm…) all speak
-  // the OpenAI Chat Completions wire format.
+  // Local OpenAI-compatible runtimes (mlx, ollama, lmstudio, vllm, omlx…)
+  // all speak the OpenAI Chat Completions wire format.
   mlx: "openai-completions",
   ollama: "openai-completions",
   lmstudio: "openai-completions",
   vllm: "openai-completions",
+  // v2.8.13 Phase 4 — oMLX (jundot/omlx) joins as a first-class local
+  // backend. Same wire format as the others.
+  omlx: "openai-completions",
   // OpenRouter — unified gateway for hundreds of models (incl. a free preview
   // tier). OpenAI-compat wire format at https://openrouter.ai/api/v1. Model
   // IDs use vendor/name (e.g. "anthropic/claude-sonnet-4", "openai/gpt-5.2").
@@ -1092,7 +1111,11 @@ export function lmstudioAuthHeader(): Record<string, string> {
 //
 // Exported so the test suite can exercise the resolution chain without
 // having to spin up the full master boot pipeline.
-export const LOCAL_PROVIDERS = new Set(["mlx", "ollama", "lmstudio", "vllm"]);
+// v2.8.13 Phase 4 — `omlx` added so resolveRoleCfg-rewritten roles
+// (provider: "local" → kind from local_backend) flow through the
+// "not-needed" auth sentinel + local baseUrl default like the other
+// OpenAI-compatible local runtimes.
+export const LOCAL_PROVIDERS = new Set(["mlx", "ollama", "lmstudio", "vllm", "omlx"]);
 export function getApiKeyForProvider(provider: string): string | undefined {
   if (provider === "lmstudio") {
     return resolveSecret("lmstudio_api_token") ?? "not-needed";
@@ -1135,82 +1158,182 @@ export function getApiKeyForProvider(provider: string): string | undefined {
   return undefined;
 }
 
-export async function ensureModelLoaded(cfg: { provider: string; model: string; host?: string; context_length?: number }, role: string): Promise<{ ok: boolean; detail: string }> {
-  if (cfg.provider !== "lmstudio") {
-    return { ok: true, detail: `${role} is ${cfg.provider} (cloud) — no local load needed` };
+// v2.8.13 Phase 4 — set of provider IDs that the migration treats as
+// "this role currently points at a local runtime, fold it into
+// local_backend". Includes legacy aliases the operator may have in their
+// providers.json (`mlx`, `vllm`) plus the three first-class backends.
+export const LEGACY_LOCAL_PROVIDER_IDS = new Set([
+  "lmstudio",
+  "ollama",
+  "omlx",
+  "mlx",
+  "vllm",
+]);
+
+/**
+ * Map a legacy/operator-typed provider string to a first-class
+ * LocalBackendKind. `mlx` and `vllm` aren't first-class adapters; we fold
+ * them into LM Studio per the Phase 4 spec (mlx was the operator's
+ * dead-config bite — they didn't intentionally pick MLX).
+ */
+export function mapToLocalBackendKind(p: string): LocalBackendKind | null {
+  if (p === "lmstudio" || p === "ollama" || p === "omlx") return p;
+  if (p === "mlx" || p === "vllm") return "lmstudio";
+  return null;
+}
+
+/**
+ * Pre-resolve a role's effective dispatch config. When provider === "local"
+ * we look up providers.local_backend and rewrite provider/host/model from
+ * the local-backend block. Every downstream reader (buildModel,
+ * getApiKeyForProvider, ensureModelLoaded, /diag probes) only sees concrete
+ * provider strings — no "local" leaks into pi-ai dispatch.
+ */
+export function resolveRoleCfg(
+  role: string,
+  raw: { provider: string; model: string; host?: string; context_length?: number; max_tokens?: number },
+  providers: Pick<Providers, "local_backend">,
+): { provider: string; model: string; host?: string; context_length?: number; max_tokens?: number } {
+  if (raw.provider !== "local") return raw;
+  const lb = providers.local_backend;
+  if (!lb) {
+    // Spec invariant: provider="local" requires a local_backend block.
+    // Failure mode is loud — silently falling back to the raw cfg would
+    // hide a broken migration.
+    throw new Error(
+      `role ${role} has provider="local" but providers.local_backend is missing`,
+    );
   }
-  const desired = cfg.context_length ?? ROLE_DEFAULT_CONTEXT[role] ?? 0;
-  if (!desired) return { ok: true, detail: `${role} context_length=0; not enforcing` };
-  const apiBase = (cfg.host ?? "http://localhost:1234/v1").replace(/\/v1\/?$/, "");
-  // 1. Check current load state — skip the reload if it's already where we
-  //    want it. Tight 2s timeout: if LM Studio isn't even responding to a
-  //    GET we shouldn't dump a load request into it — bail to JIT.
-  let lmReachable = false;
-  try {
-    const r = await fetch(`${apiBase}/api/v0/models`, {
-      headers: { ...lmstudioAuthHeader() },
-      signal: AbortSignal.timeout(2000),
-    });
-    if (r.ok) {
-      lmReachable = true;
-      const j = (await r.json()) as { data?: Array<{ id: string; state?: string; loaded_context_length?: number }> };
-      const current = (j.data ?? []).find((m) => m.id === cfg.model);
-      // If model is already loaded at ANY context, leave it alone. The
-      // operator's manual config (and LM Studio's own state) wins. The
-      // previous "upgrade ctx if loaded < desired" path tried to
-      // unload+reload, but unload-by-model-name silently fails in current
-      // LM Studio (it requires instance_id), so the load step created a
-      // duplicate :2 instance. Master only enforces ctx on cold start
-      // (model not yet loaded) — see commit fix(master): ctx-pin respects
-      // existing model load.
-      if (current?.state === "loaded") {
-        return {
-          ok: true,
-          detail: `${role}=${cfg.model} already loaded at ctx ${(current.loaded_context_length ?? 0).toLocaleString()} — respecting existing load (operator/LM Studio config wins)`,
-        };
-      }
+  const model = lb.models?.[role] ?? raw.model;
+  if (!model) {
+    throw new Error(
+      `role ${role}: providers.local_backend.models.${role} is null and role.model is empty — pick a model in Settings → Local Inference Backend`,
+    );
+  }
+  return {
+    ...raw,
+    provider: lb.kind,
+    host: lb.host,
+    model,
+  };
+}
+
+/**
+ * First-boot migration. If providers.local_backend is missing AND any role
+ * still carries a legacy local-provider string (lmstudio/ollama/mlx/omlx/
+ * vllm), seed local_backend from the most common candidate (preferring LM
+ * Studio per the Phase 4 spec) and rewrite affected roles to
+ * provider: "local". Idempotent — re-running is a no-op once seeded.
+ *
+ * Returns true when a migration was applied (caller persists + logs).
+ */
+export function migrateLocalBackend(providers: Providers): {
+  migrated: boolean;
+  picked: { kind: LocalBackendKind; host: string } | null;
+  rewrittenRoles: string[];
+} {
+  if (providers.local_backend) {
+    return { migrated: false, picked: null, rewrittenRoles: [] };
+  }
+  const candidates: Array<{ kind: LocalBackendKind; host: string; role: string }> = [];
+  for (const [role, cfg] of Object.entries(providers.models)) {
+    if (!cfg || typeof cfg !== "object") continue;
+    const p = (cfg as { provider?: string }).provider;
+    if (!p || !LEGACY_LOCAL_PROVIDER_IDS.has(p)) continue;
+    const kind = mapToLocalBackendKind(p);
+    if (!kind) continue;
+    const h = (cfg as { host?: string }).host
+      ?? getLocalBackendAdapter(kind).defaultHost;
+    candidates.push({ kind, host: h, role });
+  }
+  if (candidates.length === 0) {
+    return { migrated: false, picked: null, rewrittenRoles: [] };
+  }
+  // Prefer LM Studio when any role pointed there; otherwise first candidate.
+  const pick = candidates.find((c) => c.kind === "lmstudio") ?? candidates[0]!;
+  // Operators sometimes had two LM Studio instances on different ports
+  // (the live providers.json on 2026-05-16 had reviewer @ :8000 and
+  // embeddings @ :1234). Phase 4 collapses to ONE host — log the lossy
+  // migration so the operator sees what got dropped and can fix via the
+  // dashboard's Local Inference Backend section.
+  const distinctHosts = Array.from(
+    new Set(candidates.map((c) => c.host)),
+  );
+  if (distinctHosts.length > 1) {
+    console.error(
+      `[master] WARN local_backend migration: ${candidates.length} local-role(s) used ${distinctHosts.length} different hosts (${distinctHosts.join(", ")}); folding into ${pick.host}. Verify in dashboard → Settings → Local Inference Backend.`,
+    );
+  }
+  providers.local_backend = {
+    kind: pick.kind,
+    host: pick.host,
+    models: { supervisor: null, reviewer: null, embeddings: null, router: null },
+    last_verified: null,
+  };
+  const rewrittenRoles: string[] = [];
+  for (const [role, cfg] of Object.entries(providers.models)) {
+    if (!cfg || typeof cfg !== "object") continue;
+    const p = (cfg as { provider?: string }).provider;
+    if (!p || !LEGACY_LOCAL_PROVIDER_IDS.has(p)) continue;
+    const m = (cfg as { model?: string }).model;
+    if (m) {
+      (providers.local_backend.models as Record<string, string | null>)[role] = m;
     }
-  } catch { /* fall through */ }
-  if (!lmReachable) {
-    return {
-      ok: false,
-      detail: `LM Studio at ${apiBase} did not respond to /api/v0/models within 2s — skipping pin, JIT will handle on first prompt`,
-    };
+    (cfg as { provider: string }).provider = "local";
+    rewrittenRoles.push(role);
   }
-  // 2. Unload first (safe reload pattern).
-  try {
-    await fetch(`${apiBase}/api/v1/models/unload`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...lmstudioAuthHeader() },
-      body: JSON.stringify({ model: cfg.model }),
-      signal: AbortSignal.timeout(5_000),
-    });
-  } catch { /* unload failures are non-fatal — load below will replace */ }
-  // 3. Load with explicit context_length. Cap at 20s (was 60) — if LM Studio
-  //    can't load in 20s the daemon shouldn't block boot. JIT-on-first-prompt
-  //    is the fallback.
-  try {
-    const r = await fetch(`${apiBase}/api/v1/models/load`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...lmstudioAuthHeader() },
-      body: JSON.stringify({
-        model: cfg.model,
-        context_length: desired,
-        flash_attention: true,
-        echo_load_config: true,
-      }),
-      signal: AbortSignal.timeout(20_000),
-    });
-    if (!r.ok) {
-      const text = await r.text().catch(() => "");
-      return { ok: false, detail: `load HTTP ${r.status}: ${text.slice(0, 300)}` };
-    }
-    const j = await r.json() as { load_config?: { context_length?: number } };
-    const got = j.load_config?.context_length;
-    return { ok: true, detail: `${role}=${cfg.model} loaded with ctx ${(got ?? desired).toLocaleString()}` };
-  } catch (err) {
-    return { ok: false, detail: `load error: ${(err as Error).message}` };
+  return { migrated: true, picked: { kind: pick.kind, host: pick.host }, rewrittenRoles };
+}
+
+/**
+ * Persist providers.json. Mirrors the dashboard's /api/master/supervisor
+ * write pattern (writeFileSync(providersPath, JSON.stringify(_, null, 2))).
+ * Stays in master so the adapter and migration can call it without
+ * duplicating the path logic.
+ */
+function persistProviders(providers: Providers): void {
+  writeFileSync(PROVIDERS_PATH, JSON.stringify(providers, null, 2));
+}
+
+/**
+ * ensureModelLoaded — delegates to the LocalBackendAdapter for the role's
+ * resolved provider. Master keeps the role-default ctx map (policy) and
+ * the cloud-skip; the adapter owns the protocol (LM Studio's load/unload
+ * dance, or no-op for Ollama/oMLX).
+ *
+ * Accepts the RAW role cfg — local resolution happens here, so callers
+ * (boot pin loop, /reload-supervisor, profile-swap) don't need to know
+ * the local-backend block exists.
+ */
+export async function ensureModelLoaded(
+  cfg: { provider: string; model: string; host?: string; context_length?: number },
+  role: string,
+  providersForResolve?: Pick<Providers, "local_backend">,
+): Promise<{ ok: boolean; detail: string }> {
+  const resolved = providersForResolve
+    ? resolveRoleCfg(role, cfg, providersForResolve)
+    : cfg;
+  const kind = mapToLocalBackendKind(resolved.provider);
+  if (!kind) {
+    return { ok: true, detail: `${role} is ${resolved.provider} (cloud) — no local load needed` };
   }
+  const adapter = getLocalBackendAdapter(kind);
+  if (!adapter.pinModel) {
+    return { ok: true, detail: `${role} backend ${kind} has no pin endpoint — auto-load on first prompt` };
+  }
+  const desired = resolved.context_length ?? ROLE_DEFAULT_CONTEXT[role] ?? 0;
+  const apiKey =
+    kind === "lmstudio" ? resolveSecret("lmstudio_api_token") : null;
+  const result = await adapter.pinModel(
+    resolved.host ?? adapter.defaultHost,
+    resolved.model,
+    desired,
+    { api_key: apiKey },
+  );
+  return {
+    ok: result.ok,
+    detail: `${role}=${resolved.model} (${kind}): ${result.detail}`,
+  };
 }
 
 // ─── agent transcript persistence ──────────────────────────────────────────
@@ -1444,6 +1567,28 @@ async function main() {
     `[master] loaded — operator=${policy.operator.name}, projects=${policy.projects.length}, models=${Object.keys(providers.models).length}`,
   );
 
+  // ── v2.8.13 Phase 4: local_backend migration ────────────────────────────
+  // First boot of a daemon that knows about local_backend, but operator's
+  // providers.json was written before. Seed local_backend from any role
+  // still pointing at lmstudio/ollama/mlx/omlx/vllm, prefer LM Studio,
+  // rewrite affected roles to provider: "local", persist.
+  try {
+    const mig = migrateLocalBackend(providers);
+    if (mig.migrated && mig.picked) {
+      persistProviders(providers);
+      console.error(
+        `[master] local_backend seeded from ${mig.picked.kind} @ ${mig.picked.host}; rewrote roles ${mig.rewrittenRoles.join(", ")} → provider="local"`,
+      );
+      logDecision({
+        project: "_master",
+        action: "providers_migration",
+        rationale: `Phase 4 local_backend seeded from ${mig.picked.kind} @ ${mig.picked.host}; roles rewritten: ${mig.rewrittenRoles.join(", ")}`,
+      });
+    }
+  } catch (err) {
+    console.error(`[master] local_backend migration failed: ${(err as Error).message}`);
+  }
+
   // ── pi-agent-core wiring ────────────────────────────────────────────────
   // v2.7.18: the active supervisor is decided by profiles.json, NOT
   // providers.json. providers.json still supplies the surrounding
@@ -1472,11 +1617,15 @@ async function main() {
   // rest of the daemon (status responses, /diag, /context, LM Studio
   // pre-flight). Reassigned on profile swap so all readers see the
   // new model id / host without restart.
-  let supervisorCfg: Providers["models"][string] = {
+  //
+  // v2.8.13 Phase 4: if the role is provider="local", resolveRoleCfg
+  // rewrites provider/host/model from providers.local_backend before any
+  // downstream reader (buildModel, pi-ai dispatch, /diag probe) sees it.
+  let supervisorCfg: Providers["models"][string] = resolveRoleCfg("supervisor", {
     ...supervisorCfgFromProviders,
     model: profilesFile.profiles[profilesFile.active].supervisor,
     host: profilesFile.profiles[profilesFile.active].host,
-  };
+  }, providers);
   let activeProfile: ProfileName = profilesFile.active;
   console.error(
     `[master] profile=${activeProfile} → supervisor=${supervisorCfg.provider}/${supervisorCfg.model}`,
@@ -1511,10 +1660,16 @@ async function main() {
     a: Providers["models"][string] | undefined,
     b: Providers["models"][string] | undefined,
   ): boolean {
-    return !!a && !!b
-      && a.provider === b.provider
-      && a.model === b.model
-      && (a.host ?? "") === (b.host ?? "");
+    if (!a || !b) return false;
+    // Resolve both through local_backend BEFORE comparing — two roles with
+    // provider="local" both fold to the same backend.kind, model, host. The
+    // dedup is about avoiding LM Studio's `:2` shadow instance when the
+    // actual dispatch target is identical.
+    const ra = resolveRoleCfg("supervisor", a, providers);
+    const rb = resolveRoleCfg("reviewer", b, providers);
+    return ra.provider === rb.provider
+      && ra.model === rb.model
+      && (ra.host ?? "") === (rb.host ?? "");
   }
   const rolesToPin = (["supervisor", "reviewer"] as const).filter(
     (role) => {
@@ -1534,7 +1689,7 @@ async function main() {
   await Promise.allSettled(
     rolesToPin.map(async (role) => {
       const cfg = providers.models[role]!;
-      const result = await ensureModelLoaded(cfg, role);
+      const result = await ensureModelLoaded(cfg, role, providers);
       console.error(`[master] ${result.ok ? "ctx-pin" : "ctx-pin FAILED"} ${role}: ${result.detail}`);
     }),
   );
@@ -1712,11 +1867,11 @@ async function main() {
     const prev = activeProfile;
     const entry = next.profiles[next.active];
     activeProfile = next.active;
-    supervisorCfg = {
+    supervisorCfg = resolveRoleCfg("supervisor", {
       ...supervisorCfgFromProviders,
       model: entry.supervisor,
       host: entry.host,
-    };
+    }, providers);
     supervisorModel = buildModel(supervisorCfg);
     // pi-agent-core's Agent reads model from `state.model` on each
     // prompt — reassign and the next agent.prompt() picks it up.
@@ -1738,7 +1893,7 @@ async function main() {
     });
     // Re-pin LM Studio context length. Non-blocking — first prompt
     // after a profile swap will JIT-load if the pin is still in flight.
-    void ensureModelLoaded(supervisorCfg, "supervisor")
+    void ensureModelLoaded(supervisorCfg, "supervisor", providers)
       .then((r) => console.error(`[profile] ${r.ok ? "ctx-pin" : "ctx-pin FAILED"} supervisor: ${r.detail}`))
       .catch((err) => console.error(`[profile] ctx-pin error: ${(err as Error).message}`));
   }
@@ -2127,7 +2282,9 @@ async function main() {
           // Pick the reviewer-role model if configured; fall back to the
           // active supervisor. Matches the rolesToPin logic above — same
           // provider/model identity that the LM Studio ctx-pin honored.
-          const reviewerCfg = providers.models.reviewer ?? supervisorCfg;
+          const reviewerCfgRaw = providers.models.reviewer ?? supervisorCfg;
+          // v2.8.13 Phase 4: provider="local" → local_backend.kind, host, model
+          const reviewerCfg = resolveRoleCfg("reviewer", reviewerCfgRaw, providers);
           // baseUrl resolution: providers.host is the OpenAI-compatible
           // root (`http://localhost:1234/v1` etc.); the reviewer's
           // callSupervisor helper appends `/v1/...` paths, so strip a
@@ -3830,10 +3987,161 @@ async function main() {
             results.push({ role, ok: false, detail: "no such role in providers.json" });
             continue;
           }
-          const r = await ensureModelLoaded(cfg, role);
+          const r = await ensureModelLoaded(cfg, role, providers);
           results.push({ role, ...r });
         }
         return Response.json({ ok: results.every((r) => r.ok), results });
+      }
+
+      // ── /local-backend — Phase 4 local-inference-backend control ──────
+      //
+      // GET  returns the current backend config + reachability + catalog.
+      // POST {kind, host, models} persists, re-resolves role assignments,
+      //      returns the updated GET shape.
+      // POST /local-backend/test {kind, host, api_key?} runs a non-destructive
+      //      health probe without persisting.
+      //
+      // Internal 127.0.0.1-only — same trust boundary as /profile.
+      if (url.pathname === "/local-backend/test" && req.method === "POST") {
+        let body: { kind?: string; host?: string; api_key?: string | null } = {};
+        try { body = await req.json(); } catch { /* empty body 400 below */ }
+        const kindRaw = body.kind ?? "";
+        const mappedKind = mapToLocalBackendKind(kindRaw);
+        if (!mappedKind) {
+          return Response.json({
+            ok: false,
+            error: `unknown kind "${kindRaw}" — supported: ${listLocalBackendKinds().join(", ")}`,
+          }, { status: 400 });
+        }
+        const adapter = getLocalBackendAdapter(mappedKind);
+        const host = body.host?.trim() || adapter.defaultHost;
+        const probe = await adapter.healthProbe(host, {
+          api_key: body.api_key ?? null,
+        });
+        return Response.json({
+          ok: probe.ok,
+          detail: probe.detail,
+          model_count: probe.model_count ?? null,
+          reachable_at: probe.reachable_at ?? null,
+        });
+      }
+
+      if (url.pathname === "/local-backend" && req.method === "GET") {
+        const lb = providers.local_backend;
+        if (!lb) {
+          return Response.json({
+            ok: true,
+            kind: null,
+            host: null,
+            models: {},
+            available_models: [],
+            health: { ok: false, detail: "no local_backend configured" },
+            last_verified: null,
+          });
+        }
+        const adapter = getLocalBackendAdapter(lb.kind);
+        const apiKey =
+          lb.kind === "lmstudio" ? resolveSecret("lmstudio_api_token") : null;
+        const health = await adapter.healthProbe(lb.host, { api_key: apiKey });
+        let available: unknown[] = [];
+        if (health.ok) {
+          try {
+            available = await adapter.listModels(lb.host, { api_key: apiKey });
+          } catch (err) {
+            // listModels failure shouldn't fail the whole GET — leave
+            // available empty and let the health row tell the operator
+            // what's broken.
+            console.error(`[local-backend] listModels(${lb.kind}) failed: ${(err as Error).message}`);
+          }
+        }
+        return Response.json({
+          ok: true,
+          kind: lb.kind,
+          host: lb.host,
+          models: lb.models,
+          available_models: available,
+          health,
+          last_verified: lb.last_verified ?? null,
+        });
+      }
+
+      if (url.pathname === "/local-backend" && req.method === "POST") {
+        let body: {
+          kind?: string;
+          host?: string;
+          models?: Record<string, string | null>;
+        } = {};
+        try { body = await req.json(); } catch {
+          return Response.json({ ok: false, error: "invalid JSON body" }, { status: 400 });
+        }
+        const kindRaw = body.kind ?? "";
+        const mappedKind = mapToLocalBackendKind(kindRaw);
+        if (!mappedKind) {
+          return Response.json({
+            ok: false,
+            error: `unknown kind "${kindRaw}" — supported: ${listLocalBackendKinds().join(", ")}`,
+          }, { status: 400 });
+        }
+        const adapter = getLocalBackendAdapter(mappedKind);
+        const host = body.host?.trim() || adapter.defaultHost;
+        const apiKey =
+          mappedKind === "lmstudio" ? resolveSecret("lmstudio_api_token") : null;
+        const health = await adapter.healthProbe(host, { api_key: apiKey });
+        const prevModels = providers.local_backend?.models ?? {};
+        const incoming = body.models ?? {};
+        const mergedModels: Record<string, string | null> = {
+          supervisor: incoming.supervisor ?? prevModels.supervisor ?? null,
+          reviewer: incoming.reviewer ?? prevModels.reviewer ?? null,
+          embeddings: incoming.embeddings ?? prevModels.embeddings ?? null,
+          router: incoming.router ?? prevModels.router ?? null,
+        };
+        providers.local_backend = {
+          kind: mappedKind,
+          host,
+          models: mergedModels,
+          last_verified: health.ok ? new Date().toISOString() : null,
+        };
+        // Re-rewrite any role still on a legacy local-provider id to
+        // provider="local" so the new backend is actually used.
+        for (const [role, cfg] of Object.entries(providers.models)) {
+          if (!cfg || typeof cfg !== "object") continue;
+          const p = (cfg as { provider?: string }).provider;
+          if (p && LEGACY_LOCAL_PROVIDER_IDS.has(p)) {
+            const m = (cfg as { model?: string }).model;
+            if (m && !mergedModels[role]) mergedModels[role] = m;
+            (cfg as { provider: string }).provider = "local";
+          }
+        }
+        try {
+          persistProviders(providers);
+        } catch (err) {
+          return Response.json({
+            ok: false,
+            error: `persist failed: ${(err as Error).message}`,
+          }, { status: 500 });
+        }
+        logDecision({
+          project: "_master",
+          action: "local_backend_set",
+          rationale: `kind=${mappedKind} host=${host} health=${health.ok ? "ok" : "fail"}`,
+        });
+        let available: unknown[] = [];
+        if (health.ok) {
+          try {
+            available = await adapter.listModels(host, { api_key: apiKey });
+          } catch (err) {
+            console.error(`[local-backend] listModels(${mappedKind}) failed: ${(err as Error).message}`);
+          }
+        }
+        return Response.json({
+          ok: true,
+          kind: mappedKind,
+          host,
+          models: mergedModels,
+          available_models: available,
+          health,
+          last_verified: providers.local_backend.last_verified,
+        });
       }
 
       if (url.pathname === "/teams" && req.method === "GET") {
