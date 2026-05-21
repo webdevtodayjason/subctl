@@ -75,8 +75,13 @@ describe("omlx adapter", () => {
   test("listModels passes Bearer token when api_key supplied", async () => {
     mockFetch(() => new Response(JSON.stringify({ data: [] }), { status: 200 }));
     await omlx.listModels("http://localhost:8000", { api_key: "omlx-key-123" });
-    const headers = (calls[0]!.init?.headers ?? {}) as Record<string, string>;
-    expect(headers.Authorization).toBe("Bearer omlx-key-123");
+    const headersInit = calls[0]!.init?.headers;
+    const authHeader = headersInit instanceof Headers
+      ? headersInit.get("Authorization")
+      : Array.isArray(headersInit)
+      ? headersInit.find(([k]) => k === "Authorization")?.[1]
+      : (headersInit as Record<string, string> | undefined)?.Authorization;
+    expect(authHeader).toBe("Bearer omlx-key-123");
   });
 
   test("healthProbe ok path counts models", async () => {

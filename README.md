@@ -72,7 +72,7 @@ A persistent conversational orchestrator that runs on your hardware, talks to yo
 
 - **OpenAI Codex OAuth + dynamic provider catalog** — `subctl auth openai-codex <alias>` mints fresh OAuth tokens via in-process device-code flow. The dashboard's model picker is now a live catalog (~30+ providers) fed from the upstream pi-ai registry — new providers light up automatically without a release.
 
-- **Dashboard** — live ops view at `http://<host>:8787` with 12 sidebar tabs (Chat, Orchestration, Dashboard, Projects, Teams, Claude Sessions, Models, Providers, Memory, Vault, Skills, Live Logs, Settings). Frontend decomposed into ES modules; lazy-loaded heavy tools (terminal, update modal, vault editor) keep the initial load light.
+- **Dashboard** — live ops view at `http://<host>:8787` with 13 sidebar tabs (Chat, Orchestration, Dashboard, Projects, Teams, Claude Sessions, Models, Providers, Memory, Vault, Skills, Live Logs, Settings). Frontend decomposed into ES modules; lazy-loaded heavy tools (terminal, update modal, vault editor) keep the initial load light.
 
 - **Multi-channel I/O** — dashboard chat (SSE), Telegram (bidirectional with auto-relay + voice notes), CLI prompt, scheduled self-prompts, inbox events from workers, MCP clients.
 

@@ -4069,7 +4069,7 @@ async function main() {
         let body: {
           kind?: string;
           host?: string;
-          models?: Record<string, string | null>;
+          models?: Record<string, unknown>;
         } = {};
         try { body = await req.json(); } catch {
           return Response.json({ ok: false, error: "invalid JSON body" }, { status: 400 });
@@ -4089,11 +4089,16 @@ async function main() {
         const health = await adapter.healthProbe(host, { api_key: apiKey });
         const prevModels = providers.local_backend?.models ?? {};
         const incoming = body.models ?? {};
+        const normalizeModel = (value: unknown): string | null => {
+          if (typeof value !== "string") return null;
+          const trimmed = value.trim();
+          return trimmed.length > 0 ? trimmed : null;
+        };
         const mergedModels: Record<string, string | null> = {
-          supervisor: incoming.supervisor ?? prevModels.supervisor ?? null,
-          reviewer: incoming.reviewer ?? prevModels.reviewer ?? null,
-          embeddings: incoming.embeddings ?? prevModels.embeddings ?? null,
-          router: incoming.router ?? prevModels.router ?? null,
+          supervisor: normalizeModel(incoming.supervisor) ?? normalizeModel(prevModels.supervisor) ?? null,
+          reviewer: normalizeModel(incoming.reviewer) ?? normalizeModel(prevModels.reviewer) ?? null,
+          embeddings: normalizeModel(incoming.embeddings) ?? normalizeModel(prevModels.embeddings) ?? null,
+          router: normalizeModel(incoming.router) ?? normalizeModel(prevModels.router) ?? null,
         };
         providers.local_backend = {
           kind: mappedKind,
