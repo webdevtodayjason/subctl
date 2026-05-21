@@ -178,6 +178,7 @@ import {
 } from "./background-runs";
 import {
   health as cogneeHealth,
+  recall as cogneeRecall,
   resolveCogneeUrl,
 } from "./cognee-client";
 import {
@@ -5090,11 +5091,262 @@ async function main() {
             metadata: { mcp_provenance: provenance },
           });
         },
+
+        // v2.8.11 — wave-3 tools. Each provider is a thin shim over an
+        // already-existing master function. The MCP layer cares about
+        // schema + auth; the actual behavior lives in master internals.
+
+        enqueuePrompt: (text, source) => {
+          promptQueue.push({ text, source });
+          broadcast("queued", {
+            source,
+            queue_depth: promptQueue.length,
+            ts: new Date().toISOString(),
+          });
+          return { queue_depth: promptQueue.length };
+        },
+
+        getRecentMessages: (limit) => {
+          const msgs = agent.state.messages.slice(-limit);
+          return msgs.map((m) => {
+            // agent messages are openai-shape; trim to opaque shape
+            const role = (m as { role?: string }).role ?? "unknown";
+            let content = "";
+            const c = (m as { content?: unknown }).content;
+            if (typeof c === "string") content = c;
+            else if (Array.isArray(c)) {
+              content = c
+                .map((part) => {
+                  if (typeof part === "string") return part;
+                  if (part && typeof part === "object" && "text" in part) {
+                    return String((part as { text: unknown }).text);
+                  }
+                  return JSON.stringify(part);
+                })
+                .join("");
+            } else if (c != null) {
+              content = JSON.stringify(c);
+            }
+            return { role, content };
+          });
+        },
+
+        getRecentDecisions: (limit) => {
+          try {
+            const path = join(MASTER_STATE_DIR, "decisions.jsonl");
+            const raw = require("node:fs").readFileSync(path, "utf8") as string;
+            const lines = raw.trimEnd().split("\n").filter((l: string) => l.trim());
+            const tail = lines.slice(-limit);
+            const out: Array<{ ts: string; project?: string; action: string; rationale: string }> = [];
+            for (const line of tail) {
+              try {
+                const obj = JSON.parse(line) as {
+                  ts?: string;
+                  project?: string;
+                  action?: string;
+                  rationale?: string;
+                };
+                if (obj && obj.ts && obj.action) {
+                  out.push({
+                    ts: obj.ts,
+                    project: obj.project,
+                    action: obj.action,
+                    rationale: obj.rationale ?? "",
+                  });
+                }
+              } catch {
+                /* skip malformed lines */
+              }
+            }
+            return out;
+          } catch {
+            return [];
+          }
+        },
+
+        listNotifications: ({ unread_only, limit }) => {
+          const lim = Math.max(1, Math.min(200, limit ?? 50));
+          const all = listNotifications({ limit: lim });
+          const filtered = unread_only ? all.filter((n) => !n.read_at) : all;
+          return filtered.map((n) => ({
+            id: n.id,
+            ts: n.ts,
+            kind: n.kind,
+            severity: n.severity,
+            title: n.title,
+            body: n.body,
+            read: Boolean(n.read_at),
+          }));
+        },
+
+        getWatchdogState: () => ({
+          last_tick_at_ms: watchdogLastTickMs,
+          last_fire_at_ms: watchdogLastFireMs,
+          last_fire_reason: watchdogLastFireReason,
+          interval_minutes: watchdogIntervalMin,
+          staleness_threshold_minutes: stalenessThresholdMin,
+          watching: [...teamLastActivity.entries()].map(([team_id, v]) => ({
+            team_id,
+            tmux_session_id: team_id,
+            last_seen_ms: v.ts,
+          })),
+        }),
+
+        listTeams: () => {
+          // Use dashboard's /api/orchestration endpoint via fetch — it
+          // already enriches with attached/windows/last-activity. Sync
+          // call is forbidden here, so we shell to tmux for the cheap
+          // sync path. Returns a minimal slice; richer queries should
+          // hit dashboard directly via team_inbox or HTTP.
+          try {
+            const out = require("node:child_process")
+              .execSync("tmux list-sessions -F '#{session_name}'", {
+                encoding: "utf8",
+                timeout: 1500,
+                stdio: ["ignore", "pipe", "ignore"],
+              }) as string;
+            const names = out
+              .split("\n")
+              .map((s) => s.trim())
+              .filter(Boolean);
+            return names.map((name) => ({ name }));
+          } catch {
+            return [];
+          }
+        },
+
+        getTeamInbox: (team, limit) => {
+          try {
+            const safeTeam = team.replace(/[^A-Za-z0-9._-]/g, "_");
+            const path = join(MASTER_STATE_DIR, "inbox", `${safeTeam}.jsonl`);
+            const raw = require("node:fs").readFileSync(path, "utf8") as string;
+            const lines = raw.trimEnd().split("\n").filter((l: string) => l.trim());
+            const tail = lines.slice(-limit);
+            const out: Array<{ ts: string; [k: string]: unknown }> = [];
+            for (const line of tail) {
+              try {
+                const obj = JSON.parse(line) as { ts?: string } & Record<string, unknown>;
+                if (obj && obj.ts) {
+                  out.push(obj as { ts: string } & Record<string, unknown>);
+                }
+              } catch {
+                /* skip */
+              }
+            }
+            return out;
+          } catch {
+            return [];
+          }
+        },
+
+        sendTeamMsg: async (team, text, phase) => {
+          try {
+            const r = await fetch(
+              `${SUBCTL_API}/api/orchestration/${encodeURIComponent(team)}/msg`,
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ text, phase: phase ?? "mcp" }),
+                signal: AbortSignal.timeout(10_000),
+              },
+            );
+            if (!r.ok) return { ok: false, error: `HTTP ${r.status}` };
+            const j = (await r.json()) as { ok?: boolean; error?: string };
+            if (j.ok === false) return { ok: false, error: j.error ?? "unknown" };
+            return { ok: true };
+          } catch (err) {
+            return { ok: false, error: (err as Error).message };
+          }
+        },
+
+        killTeam: async (team) => {
+          try {
+            const r = await fetch(
+              `${SUBCTL_API}/api/orchestration/${encodeURIComponent(team)}/kill`,
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                signal: AbortSignal.timeout(10_000),
+              },
+            );
+            if (!r.ok) return { ok: false, error: `HTTP ${r.status}` };
+            const j = (await r.json()) as { ok?: boolean; error?: string };
+            if (j.ok === false) return { ok: false, error: j.error ?? "unknown" };
+            return { ok: true };
+          } catch (err) {
+            return { ok: false, error: (err as Error).message };
+          }
+        },
+
+        memorySearch: async (query, limit) => {
+          const out: Array<{ source: string; score?: number; text: string; ts?: string; meta?: Record<string, unknown> }> = [];
+          // Try cognee first — semantic graph recall. Result is wrapped
+          // as `{ ok: true, data: { hits: [...] } }` per the Result<T> shape.
+          try {
+            const res = await cogneeRecall({ query, top_k: limit });
+            if (res.ok) {
+              for (const h of res.data.hits.slice(0, limit)) {
+                out.push({
+                  source: "cognee",
+                  score: h.score,
+                  text: h.text,
+                  meta: h.metadata,
+                });
+              }
+            }
+          } catch {
+            /* cognee unavailable — fall through */
+          }
+          // Then memori — Tier 3 SQLite recall. memori requires
+          // entity_id; operator's id is "jason" per policy.
+          try {
+            const res = await memoriRecall({
+              entity_id: "jason",
+              query,
+              top_k: limit,
+            });
+            if (res.ok) {
+              for (const h of res.data.hits.slice(0, limit)) {
+                out.push({
+                  source: "memori",
+                  score: h.score,
+                  text: h.text,
+                  ts: h.ts,
+                });
+              }
+            }
+          } catch {
+            /* memori unavailable — fall through */
+          }
+          return out.slice(0, limit);
+        },
+
+        memoryTimeline: async (limit) => {
+          // Memori is the canonical Tier-3 timeline. Empty query
+          // returns recent-first results per the memori-client contract.
+          try {
+            const res = await memoriRecall({
+              entity_id: "jason",
+              query: "",
+              top_k: limit,
+            });
+            if (res.ok) {
+              return res.data.hits.slice(0, limit).map((h) => ({
+                ts: h.ts ?? new Date().toISOString(),
+                text: h.text,
+                source: "memori",
+              }));
+            }
+          } catch {
+            /* memori unavailable */
+          }
+          return [];
+        },
       });
     },
   });
   if (mcpHandle) {
-    console.error(`[master] mcp server armed — base=/mcp, discovery=/.well-known/mcp, version=${SUBCTL_VERSION}, tools=ping+state_snapshot+notify`);
+    console.error(`[master] mcp server armed — base=/mcp, discovery=/.well-known/mcp, version=${SUBCTL_VERSION}, tools=ping+state_snapshot+notify+send_message+recent_messages+recent_decisions+list_notifications+watchdog_state+list_teams+team_inbox+team_msg+team_kill+memory_search+memory_timeline`);
   }
 
   // ── graceful shutdown ───────────────────────────────────────────────────
