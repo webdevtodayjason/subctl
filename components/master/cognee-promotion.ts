@@ -280,6 +280,7 @@ export function readCuratedSince(args: {
 export interface PromotionDeps {
   /** Read curated rows. Default: bun:sqlite read of memori.db. */
   listCurated: (args: {
+    entityId: string;
     afterTs: string | null;
     afterId: string | null;
     limit: number;
@@ -304,7 +305,7 @@ function buildRealDeps(): PromotionDeps {
     listCurated: (args) =>
       readCuratedSince({
         dbPath: defaultMemoriDbPath(),
-        entityId: _realEntityId(),
+        entityId: args.entityId,
         afterTs: args.afterTs,
         afterId: args.afterId,
         limit: args.limit,
@@ -440,6 +441,7 @@ export async function runOneTick(): Promise<CogneePromotionTickResult> {
   _state.last_run_at_ms = t0;
 
   const rows = deps.listCurated({
+    entityId: deps.entityId(),
     afterTs: _state.last_promoted_ts,
     afterId: _state.last_promoted_id,
     limit: deps.batchLimit,
