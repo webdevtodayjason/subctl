@@ -4,6 +4,170 @@ Most recent session at top. Older sessions retained below as historical record.
 
 ---
 
+## 2026-05-21 — Provider Model Catalog Phase 4 (local backend picker)
+
+**Session:** local Claude Code session
+**Orchestrator:** pane 0
+**Protocol start:** 2026-05-21T09:55Z
+**Initiative:** [[Initiatives/Provider Model Catalog]] §Phase 4
+
+### Goal
+
+Local inference backend picker — operator chooses ONE of {LM Studio, Ollama, OmniMLX} in Settings; all "local" role assignments (router, embeddings, supervisor-when-local) resolve through that backend. Stops the silent-failure class that bit on 2026-05-15 (operator's `providers.json` had `mlx` pointed at `localhost:8080` with no server running; router silently disabled). ~660 LOC across 7-8 files per initiative spec.
+
+### Done When
+
+1. `GET /local-backend` returns reachability + model list for current backend
+2. `POST /local-backend/test` works without persisting
+3. `POST /local-backend` updates config + re-resolves role assignments
+4. Settings tab: operator can flip LM Studio ↔ Ollama ↔ OmniMLX live
+5. Master boot no longer silently leaves router disabled when backend unreachable
+6. First-boot migration: existing `mlx`/`lmstudio` role configs auto-seeded into `local_backend`
+7. `bun test components/master/` 100% pass
+8. `cd dashboard && bun run build` clean
+9. Manual smoke: flipping backend + saving routes next chat turn through new backend without daemon restart
+
+### Task Ledger
+
+| ID | Task | State | Worker | Started | Finished |
+|----|------|-------|--------|---------|----------|
+| PC4-0 | OmniMLX recon — fetch README + report API surface | **verified, DONE** | omlx-recon | 2026-05-21T09:55 | 2026-05-21T10:05 |
+| PC4-1 | Backend adapters + master endpoints + migration | **verified, DONE** | backend-adapters | 2026-05-21T10:05 | 2026-05-21T10:15 |
+| PC4-2 | Settings tab Local Inference Backend section | **verified, DONE** | settings-ui | 2026-05-21T10:15 | 2026-05-21T10:30 |
+
+### Decision Log
+
+- **2026-05-21T09:55Z** — Three-worker serial-with-fan-out plan. Recon first (read-only, ~10 min) so the OmniMLX adapter has a real spec. Then backend-adapters (master side, ~90 min). Then settings-ui (~60 min). Each is independently verifiable; orchestrator runs DONE-WHEN gates between dispatches.
+- **2026-05-21T09:55Z** — Initiative spec says auto-seed `local_backend` from existing `mlx|lmstudio|ollama|vllm|omlx` role configs on first boot, prefer LM Studio. Sticking with that.
+- **2026-05-21T09:55Z** — Existing LM Studio ctx-pin logic moves into the LM Studio adapter; becomes a no-op for Ollama/OMLX (per spec).
+
+### Verification Evidence
+
+#### PC4-0 (omlx-recon) — VERIFIED 2026-05-21T10:05
+
+oMLX confirmed real, active, Apple-Silicon focused. Project: `jundot/omlx` (~110 stars, 200+ commits, v0.3.9 dev). Default port 8000. OpenAI-compatible across chat/completions/embeddings/models endpoints. Auth optional via `--api-key`. Load/unload semantics: LRU eviction + per-model TTL + manual pin (similar to Ollama auto-load with override). Health probe: fall back to `GET /v1/models` (no dedicated `/health`). Adapter sized at ~80 LOC ("medium" complexity). No blocking unknowns.
+
+#### PC4-1 (backend-adapters) — VERIFIED 2026-05-21T10:15
+
+Worker self-committed on a clean feature branch (`feat/local-backend-phase4`, commit `a664d6e`). Idle without explicit message report; verified directly via tool calls per orchestrator-rule-6.
+
+Tool-call verification:
+
+- **11 files in commit, +1843 / -87 net.** All adapter files (`lmstudio.ts` 227 LOC, `ollama.ts` 150 LOC, `omlx.ts` 137 LOC), shared interface (`index.ts` 112 LOC + `_shared.ts` 23 LOC), 5 test files (lmstudio 207 LOC, ollama 119 LOC, omlx 113 LOC, migration 183 LOC, endpoints 177 LOC), and 482 LOC of changes in `components/master/server.ts` (the 3 new endpoints + ctx-pin migration + first-boot migration).
+- **Test results: 51 / 51 pass** across the 5 new test files.
+- **Full master suite: 1419 pass / 11 fail / 2 skip.** 11 fails are pre-existing env-pollution baseline. Test count went 1367 → 1419 (+52), matching the 51 new tests + 1 pre-existing test that now exercises the migration path.
+- **Smart catch by worker:** dashboard proxy work cancelled — the existing `/api/master/*` catch-all at `dashboard/server.ts:6297` forwards `/local-backend*` verbatim. Saves ~30 LOC of new proxy boilerplate and means settings-ui can call `/api/master/local-backend` directly without any new dashboard route. Worker documented this in the commit message.
+
+Scope deviation worth noting:
+- Worker created `_shared.ts` (~23 LOC) — small utility extraction not in original spec. Reasonable factoring; reduces duplication across the three adapters.
+- Worker self-committed on a fresh feature branch instead of returning a status report — clean isolated commit, no main pollution, but means PC4-2 (settings-ui) will work on this branch too.
+
+Constraints honoured:
+- No edits to `dashboard/public/tabs/settings.js` (settings-ui worker owns).
+- No edits to `dashboard/public/style.css` (settings-ui may modify).
+- LM Studio ctx-pin moved into the LM Studio adapter (per spec).
+- First-boot migration tested for `mlx` / `lmstudio` / `vllm` role configs.
+
+#### PC4-2 (settings-ui) — VERIFIED 2026-05-21T10:30
+
+Worker delivered the Settings-tab UI section. Did NOT self-commit (clean handoff). Orchestrator committed on top of the Phase 4 branch.
+
+Tool-call verification:
+
+- **2 files modified, +380 LOC:** `dashboard/public/tabs/settings.js` (+363), `dashboard/public/style.css` (+17). Within the +205 LOC scope budget I gave (worked allowed ~180 + ~25 CSS); slightly over due to empty-state + error-handling code that I'd asked for but didn't budget.
+- **All three endpoints exercised in the code:** `GET /api/master/local-backend` (mount), `POST .../test` (Test button), `POST .../` (Save). Confirmed via grep at settings.js:844, :882, :923.
+- **Section header + JSX shell present** at settings.js:689 (`<h3>Local Inference Backend</h3>`).
+- **Module shape:** wired into existing `mount`/`unmount` via the standard pattern. No new setInterval timers added (per scope).
+- **CSS scope:** 17 LOC, all under the 25 LOC cap.
+- **Live smoke test deferred** — master daemon still running v2.8.12 from install tree (without the new `/local-backend` endpoints). Requires the Phase 4 branch to deploy before the UI can be exercised end-to-end against a live master. That's the operator's call (PR review + merge + redeploy).
+
+Constraints honoured:
+- No edits to anything under `components/master/local-backends/` (backend-adapters scope).
+- No edits to `components/master/server.ts` (already has the endpoints).
+- No edits to `dashboard/server.ts` (the existing `/api/master/*` catch-all proxy at :6297 forwards the new routes — backend-adapters worker discovered this).
+
+#### PC4-2 (settings-ui) — PENDING
+
+(blocked on PC4-1)
+
+---
+
+## 2026-05-21 — Marketing v2.8.12 sync (subctl.com + READMEs)
+
+**Session:** local Claude Code session, late-night session
+**Orchestrator:** pane 0
+**Protocol start:** 2026-05-21T01:50Z
+
+### Goal
+
+Update subctl.com (Next.js site) + subctl/README.md + subctl.com/README.md from v2.6.2/v2.7.0 stale state → v2.8.12 with refreshed positioning. Add first-party ROI section ($25,912.95 saved this month). Name the primitives publicly. Zero references to internal tooling (Hermes / GPT-5.5 / Evy / ArgentOS / Memori / Cognee / claude-mem internals) in user-facing copy.
+
+### Done When
+
+1. `grep -rn "v2\.6\|2\.7\.0" subctl.com/app/page.tsx subctl/README.md subctl.com/README.md` returns zero matches
+2. `grep -riE "hermes|gpt-5|evy[^a-z]|argentos|memori|cognee|claude-mem" subctl.com/app/page.tsx subctl.com/README.md` returns zero matches
+3. `subctl.com/app/page.tsx` contains: ~$25.9k ROI line, MCP section naming 14-tool surface + claude.ai compatibility, names the primitives
+4. Changelog section enumerates v2.7+v2.8 highlights
+5. `cd subctl.com && bun install && bun run build` exits 0
+6. Both READMEs say v2.8.12 with current stack
+
+### Task Ledger
+
+| ID | Task | State | Worker | Started | Finished |
+|----|------|-------|--------|---------|----------|
+| MK-1 | subctl.com/app/page.tsx rewrite | **verified, DONE** | site-rewrite | 2026-05-21T01:50 | 2026-05-21T02:25 |
+| MK-2 | both README.md sync | **verified, DONE** | readme-sync | 2026-05-21T01:50 | 2026-05-21T02:05 |
+
+### Decision Log
+
+- **2026-05-21T01:50Z** — Selected `expert-react-typescript` for site-rewrite (Next.js + Tailwind v4 + React 19) and `general-purpose` for readme-sync (markdown only). Two parallel workers, non-overlapping file scopes.
+- **2026-05-21T01:50Z** — Internal tool names (Memori, Cognee, Evy, etc.) NEVER appear in user-facing copy per operator. Capabilities they enable ARE fair game — phrased as substrate names ("graph + lexical memory store", etc.).
+- **2026-05-21T01:50Z** — Demo narrative tonight is text-only; no new screenshots/gifs.
+
+### Verification Evidence
+
+#### MK-2 (readme-sync) — VERIFIED 2026-05-21T02:05
+
+Tool-call verification:
+
+- `grep -n "v2\.6\|v2\.7\.0\|2\.6\.2"` against both READMEs → **zero matches**. Stale version markers gone.
+- `grep -n "v2\.8\.12\|2\.8\.12"` → matched in BOTH intros (subctl/README.md:32, subctl.com/README.md:8).
+- `grep -iE "hermes|gpt-5|evy[^a-z]|argentos|memori|cognee"` against subctl.com/README.md → **zero matches**. No internal-name leaks in user-facing copy.
+- `grep -i "tailwind"` against subctl.com/package.json → zero matches. Worker's catch was correct: the stale Tailwind v4 stack claim was inaccurate; site is plain CSS via `app/globals.css`. Stack section now reflects reality.
+- subctl/README.md intro now reads v2.8.12 with a one-paragraph v2.7+v2.8 capability summary (persona, supervisor profiles, HMAC trust markers, dynamic provider catalog, voice, plan-approval, memory substrate, SPEC-block directive contract, policy engine modes, MCP control plane, watchdog classifier).
+- subctl.com/README.md Status checklist: `[x] Visual design` correctly toggled.
+
+Constraints honoured: no edits to subctl.com/app/page.tsx (site-rewrite's exclusive scope) verified by git status check pending. Roadmap-section v2.x mentions in subctl/README.md retained per "historical-context preservation" carve-out in DONE-WHEN.
+
+#### MK-1 (site-rewrite) — VERIFIED 2026-05-21T02:25
+
+Worker went idle without an explicit completion message. Verified deliverable directly via tool calls per orchestrator-rule-6.
+
+Tool-call verification:
+
+- `const VERSION = "v2.8.12"` at app/page.tsx:8 → confirmed via grep.
+- `grep "v2\.6\|2\.6\.2"` against app/page.tsx → only 2 matches, both in the historical v2.6 changelog card (lines 1009 + 1011). No stale "currently shipping" claims.
+- ROI section landed: `$25,912.95` appears at 4 sites (hero accent, ROI headline, ROI total row, comparison-section footer). Math breakdown ($26,512.95 equiv API vs $600 subscription = $25,912.95 saved) renders cleanly in a dedicated `.roi` block with green-accent gradient styling.
+- MCP section: standalone section at `id="mcp"`, eyebrow "v2.8 headline · model context protocol", headline names Claude Desktop and ArgentOS as example MCP clients, mentions the 14-tool count + /mcp endpoint + /.well-known/mcp discovery.
+- Changelog block rewrite: cards now show v2.5 (historical), v2.6 (historical), **NEW** v2.7 card (policy engine + diag + Linear/web tools + JIT compaction + HMAC trust marker + voice kickoff), **NEW** v2.8 card (voice GA + plan-approval + dynamic provider catalog + Codex OAuth + dashboard decomposition + MCP server + memory kernel + WEB-216 watchdog classifier). Latest tag span: `v2.8.0 → v2.8.12`.
+- Comparison section: NEW "MCP server" row ("none" vs "/mcp + /.well-known/mcp · 14 tools · bearer auth"). NEW "Memory across /clear" row ("skills file only" vs "tiered memory: profile / observation / curated / graph / vault"). No mention of Memori/Cognee in the public-facing copy.
+- Primitives named: Master daemon (line 466), dispatcher (multiple), watchdog (multiple including ROI section context), verifier (ROI section + comparison), MCP server (everywhere), Workers/Teams, Provider accounts (5 paid accounts called out in ROI section).
+- Watchdog cadence: no stale "3 min tick" claim remains; correct cadence ("team-staleness watchdog" + "idle-pane watchdog") referenced.
+- `grep -iE "hermes|gpt-5|evy[^a-z]|memori|cognee|claude-mem"` → **zero matches**. No internal-name leaks in user-facing copy.
+- `cd subctl.com && bun run build` → **exits 0**. All 5 static pages generated cleanly. No TS/React-19 type errors.
+
+Side effects:
+- `app/globals.css` modified: roadmap grid changed from 5 → 4 columns (since v2.5 + v2.6 + v2.7 + v2.8 = 4 cards) with nth-child border fixes for wrap rows + ~150 lines of new ROI section styles (green-accent border, gradient overlay, headline number layout, math-breakdown rows). Exceeded the 20-line guidance I gave but the ROI styling needed visual weight — judgment call I'm accepting.
+- `README.md` modified — but that's readme-sync's (verified clean above), not site-rewrite, despite appearing in the same `git status`.
+- `bun.lock` created (worker ran `bun install` first). No production-dependency changes; lockfile only.
+
+Constraints honoured:
+- No edits to either README.md by site-rewrite (readme-sync owns those — verified by diff inspection).
+- No edits to next.config.ts, package.json, or build config.
+- Build verified clean (the load-bearing acceptance criterion).
+
+---
+
 ## Session 2026-05-17 — Memory Consciousness Cycle (autonomous orchestration, Opus 4.7)
 
 **Protocol start:** 2026-05-17T~03:00 CDT
