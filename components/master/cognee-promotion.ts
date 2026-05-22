@@ -337,12 +337,39 @@ export function _resetDepsForTesting(): void {
   deps = buildRealDeps();
   _state = freshState();
   _stateHydratedFor = null;
+  _armed = false;
 }
 
 // ─── in-memory state ──────────────────────────────────────────────────────
 
 let _state: PersistedState = freshState();
 let _stateHydratedFor: string | null = null;
+
+/**
+ * Runtime "armed" flag for the promotion ticker. Lives in this module
+ * (rather than at the arm site in server.ts) so it can be tested
+ * hermetically alongside `startPromotionTicker` — the diag surface
+ * (`bindCogneePromotionState` → `armed`) reads it via `isPromotionArmed()`.
+ *
+ * Lifecycle invariants enforced by `startPromotionTicker` + `stopFn`:
+ *   - Starts `false`. Flipped `true` as the LAST step of a successful
+ *     `startPromotionTicker(...)` call — so if `registerWatchdog` (or
+ *     anything else upstream of that line) throws, `_armed` stays false.
+ *   - Flipped back `false` unconditionally inside the ticker's `stopFn`,
+ *     which is invoked via the watchdog kill path on shutdown.
+ *   - Reset to `false` in `_resetDepsForTesting` so tests start clean.
+ */
+let _armed = false;
+
+/**
+ * Whether the promotion ticker is currently armed (start succeeded and
+ * shutdown hasn't run). Read by `server.ts`'s diag binder so the
+ * `system_cognee_promotion_self` tool reports runtime state instead of
+ * static-gate config.
+ */
+export function isPromotionArmed(): boolean {
+  return _armed;
+}
 
 /**
  * Lazy-hydrate from disk on first access for the current `deps.statePath`.
@@ -547,6 +574,10 @@ export function startPromotionTicker(opts: StartPromotionTickerOpts): () => void
   const stopFn = () => {
     if (stopped) return;
     stopped = true;
+    // Flip armed=false BEFORE we tear timers down so any racing diag
+    // read sees the correct runtime state. Idempotent — re-entering
+    // stopFn no-ops above on `stopped`.
+    _armed = false;
     try {
       if (bootHandle !== null) sched.clearTimeout(bootHandle);
     } catch {
@@ -571,6 +602,12 @@ export function startPromotionTicker(opts: StartPromotionTickerOpts): () => void
     kind: PROMOTION_WATCHDOG_ID,
     kill: stopFn,
   });
+
+  // Last step before returning the stop handle — invariant: if any
+  // earlier line (scheduler, registerWatchdog) throws, _armed stays
+  // false. Mirrors CodeRabbit MAJOR finding (server.ts:5497-5515) that
+  // diag's `armed` must reflect runtime state, not static-gate config.
+  _armed = true;
 
   return stopFn;
 }

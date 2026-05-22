@@ -15,7 +15,9 @@ import {
   _resetDepsForTesting,
   _setDepsForTesting,
   getState,
+  isPromotionArmed,
   runOneTick,
+  startPromotionTicker,
   type CuratedMemoriRow,
   type PromotionDeps,
 } from "../cognee-promotion";
@@ -370,6 +372,105 @@ describe("startPromotionTicker — lifecycle", () => {
     // linters — it's the long-lived recurring handle and we don't drive
     // it in this gate-off test (that's the steady-state path).
     expect(intervalFn).toBeNull();
+  });
+});
+
+// ─── armed-flag state machine ────────────────────────────────────────────
+//
+// CodeRabbit MAJOR (server.ts:5497-5515): `bindCogneePromotionState`'s
+// `armed` flag must reflect RUNTIME ticker state — not a static gate
+// evaluation that stays `true` even when the ticker never started
+// (Cognee unreachable at boot, arm threw, gate disabled mid-runtime).
+//
+// The flag lives in cognee-promotion.ts (alongside the lifecycle it
+// reflects) and is read by server.ts via `isPromotionArmed()`.
+//
+// TODO: integration test for broadcast events
+// (cognee_promotion_tick_success / cognee_promotion_tick_error) — unit
+// scope here covers the armed flag only; broadcast contracts need
+// master-boot integration coverage.
+describe("armed flag — runtime lifecycle", () => {
+  function makeManualScheduler(): {
+    sched: NonNullable<Parameters<typeof startPromotionTicker>[0]["scheduler"]>;
+    fire: () => void;
+  } {
+    let bootFn: (() => void) | null = null;
+    const sched = {
+      setTimeout: (fn: () => void) => {
+        bootFn = fn;
+        return 1 as unknown;
+      },
+      clearTimeout: () => {
+        /* noop */
+      },
+      setInterval: () => 2 as unknown,
+      clearInterval: () => {
+        /* noop */
+      },
+    };
+    return {
+      sched,
+      fire: () => {
+        if (bootFn) bootFn();
+      },
+    };
+  }
+
+  test("armed flips to true after successful startPromotionTicker", () => {
+    expect(isPromotionArmed()).toBe(false);
+
+    const { sched } = makeManualScheduler();
+    const stop = startPromotionTicker({
+      intervalMs: 1_000,
+      registerWatchdog: () => {
+        /* registered */
+      },
+      scheduler: sched,
+      firstTickDelayMs: 100,
+    });
+
+    expect(isPromotionArmed()).toBe(true);
+    stop();
+  });
+
+  test("armed flips back to false after stop()", () => {
+    const { sched } = makeManualScheduler();
+    const stop = startPromotionTicker({
+      intervalMs: 1_000,
+      registerWatchdog: () => {
+        /* registered */
+      },
+      scheduler: sched,
+      firstTickDelayMs: 100,
+    });
+    expect(isPromotionArmed()).toBe(true);
+
+    stop();
+    expect(isPromotionArmed()).toBe(false);
+
+    // Idempotent: a second stop() must not flip armed back on or throw.
+    stop();
+    expect(isPromotionArmed()).toBe(false);
+  });
+
+  test("armed stays false when registerWatchdog throws during start", () => {
+    expect(isPromotionArmed()).toBe(false);
+
+    const { sched } = makeManualScheduler();
+    expect(() =>
+      startPromotionTicker({
+        intervalMs: 1_000,
+        registerWatchdog: () => {
+          throw new Error("synthetic registerWatchdog failure");
+        },
+        scheduler: sched,
+        firstTickDelayMs: 100,
+      }),
+    ).toThrow("synthetic registerWatchdog failure");
+
+    // Invariant: `_armed = true` is the last step in startPromotionTicker,
+    // so an earlier throw must leave armed false.
+    expect(isPromotionArmed()).toBe(false);
   });
 });
 

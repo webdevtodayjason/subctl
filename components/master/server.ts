@@ -190,6 +190,7 @@ import {
   startPromotionTicker as startCogneePromotionTicker,
   resolvePromotionIntervalMs as resolveCogneePromotionIntervalMs,
   getState as getCogneePromotionState,
+  isPromotionArmed as isCogneePromotionArmed,
   _setDepsForTesting as _setCogneePromotionDepsForTesting,
 } from "./cognee-promotion";
 import {
@@ -2645,7 +2646,18 @@ async function main() {
           // that's going to 502 every interval.
           if (TOOL_GATES.cognee) {
             try {
-              const cogneeProbe = await cogneeHealth();
+              // CodeRabbit MAJOR: retry-with-backoff (same shape as the
+              // boot probe above) so a single transient flake during
+              // master boot doesn't disarm the promotion ticker until
+              // restart. Mirrors the cogneeHealth wrap at line ~2484.
+              const cogneeProbe = await probeWithRetry({
+                name: "cognee",
+                probe: cogneeHealth,
+                budgetMs: 30_000,
+                baseDelayMs: 1500,
+                maxAttempts: 6,
+                log: (line) => console.error(line),
+              });
               if (cogneeProbe.reachable) {
                 const promotionIntervalMs = resolveCogneePromotionIntervalMs();
                 // Wire the entity id from the same operator scope the
@@ -2667,13 +2679,25 @@ async function main() {
                       title: "cognee-promotion: tick threw",
                       body: `Tier 3 → Tier 4 promotion surfaced an error: ${err.message}`,
                     });
+                    // CodeRabbit MAJOR: broadcast errored ticks so the
+                    // dashboard can distinguish idle from failed from
+                    // never-armed instead of only emitting on success.
+                    broadcast("cognee_promotion_tick_error", {
+                      ts: new Date().toISOString(),
+                      error: err.message,
+                    });
                   },
                   onTick: (result) => {
-                    if (result.scanned === 0) return;
-                    console.error(
-                      `[cognee-promotion] tick — promoted=${result.promoted} errors=${result.errored} watermark=${result.watermark_id ?? "null"} elapsed=${result.elapsed_ms}ms`,
-                    );
-                    broadcast("cognee_promotion_tick", {
+                    if (result.scanned > 0) {
+                      console.error(
+                        `[cognee-promotion] tick — promoted=${result.promoted} errors=${result.errored} watermark=${result.watermark_id ?? "null"} elapsed=${result.elapsed_ms}ms`,
+                      );
+                    }
+                    // CodeRabbit MAJOR: broadcast EVERY successful tick
+                    // (including idle no-op ticks) so the dashboard can
+                    // render "ticker is alive but no work" as a
+                    // first-class state.
+                    broadcast("cognee_promotion_tick_success", {
                       promoted: result.promoted,
                       errored: result.errored,
                       scanned: result.scanned,
@@ -2691,11 +2715,28 @@ async function main() {
                 console.error(
                   `[cognee-promotion] not armed — Cognee unreachable (${cogneeProbe.error ?? "unknown"}). Tier 3 → Tier 4 promotion will not run until master restart with the service up.`,
                 );
+                // CodeRabbit MAJOR: surface the "not armed" state to the
+                // operator instead of silently logging — otherwise the
+                // ticker silently never runs.
+                emitNotification({
+                  kind: "cognee-promotion-disarmed",
+                  severity: "warn",
+                  title: "cognee-promotion: not armed at boot",
+                  body: `Cognee unreachable after retries (${cogneeProbe.error ?? "unknown"}). Tier 3 → Tier 4 promotion will not run until master restart with the service up.`,
+                });
               }
             } catch (err) {
-              console.error(
-                `[cognee-promotion] arm threw: ${(err as Error).message ?? err}`,
-              );
+              const message = (err as Error).message ?? String(err);
+              console.error(`[cognee-promotion] arm threw: ${message}`);
+              // CodeRabbit MAJOR: surface arm-time exceptions to the
+              // operator — silent failure here means the dashboard's
+              // armed flag goes false and nobody knows why.
+              emitNotification({
+                kind: "cognee-promotion-arm-failed",
+                severity: "warn",
+                title: "cognee-promotion: arm threw",
+                body: `Could not arm the Tier 3 → Tier 4 promotion ticker: ${message}`,
+              });
             }
           }
         } else if (TOOL_GATES.memory_kernel && !probe.reachable) {
@@ -5495,10 +5536,12 @@ async function main() {
   }));
 
   // v2.8.15 — Cognee promotion observability. system_cognee_promotion_self
-  // reads from this getter on demand. "Armed" reflects the static gates
-  // we'd evaluate at the arm site above (TOOL_GATES + the live probes
-  // it gated on are async, so we report the static gate state here; the
-  // tick timestamp is what actually proves the ticker is firing).
+  // reads from this getter on demand. "Armed" reflects RUNTIME ticker
+  // state (`isCogneePromotionArmed()`) — flipped true only after
+  // `startCogneePromotionTicker(...)` resolves, flipped false on
+  // shutdown or arm failure. CodeRabbit MAJOR fix: the previous version
+  // returned a static gate evaluation that stayed `true` even when the
+  // ticker never armed (Cognee unreachable at boot, arm threw, etc).
   bindCogneePromotionState(() => {
     const snap = getCogneePromotionState();
     return {
@@ -5508,10 +5551,7 @@ async function main() {
       total_promoted: snap.total_promoted,
       recent_errors: snap.errors,
       interval_minutes: Math.round(resolveCogneePromotionIntervalMs() / 60_000),
-      armed:
-        TOOL_GATES.cognee &&
-        TOOL_GATES.memori &&
-        TOOL_GATES.memory_kernel,
+      armed: isCogneePromotionArmed(),
     };
   });
 
