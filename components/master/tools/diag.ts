@@ -198,6 +198,33 @@ export function bindWatchdogState(
   _watchdogStateGetter = getter;
 }
 
+// v2.8.15 — Cognee promotion observability binder. Independent of
+// `WatchdogStateSnapshot` so the tmux-team-watching path doesn't pick up
+// memory-pipeline fields that are noise from its perspective.
+export interface CogneePromotionStateSnapshot {
+  /** Wall-clock of the last tick start (epoch ms; 0 if never). */
+  last_run_at_ms: number;
+  /** Watermark `(ts, id)` tuple. `null` until the first successful promotion. */
+  last_watermark_ts: string | null;
+  last_watermark_id: string | null;
+  /** Cumulative successful Tier 3 → Tier 4 writes since the state file was created. */
+  total_promoted: number;
+  /** Most recent ~5 failures (newest at the end). */
+  recent_errors: Array<{ memori_id: string; error: string; ts: string }>;
+  /** Configured tick interval in minutes (`SUBCTL_COGNEE_PROMOTION_INTERVAL_MIN`, default 10). */
+  interval_minutes: number;
+  /** Whether the ticker is currently armed (cognee + memori + memory_kernel + live probes). */
+  armed: boolean;
+}
+
+let _cogneePromotionStateGetter: (() => CogneePromotionStateSnapshot) | null = null;
+
+export function bindCogneePromotionState(
+  getter: () => CogneePromotionStateSnapshot,
+): void {
+  _cogneePromotionStateGetter = getter;
+}
+
 // ─── helpers ────────────────────────────────────────────────────────────────
 
 function isoOrNull(epochMs: number): string | null {
@@ -1027,6 +1054,36 @@ const system_supervisor_info = {
   },
 };
 
+// ─── tool: system_cognee_promotion_self ────────────────────────────────────
+
+const system_cognee_promotion_self = {
+  description:
+    "Inspect the Cognee promotion ticker — when it last ran, where the (ts,id) watermark is, total promoted since boot, and the last few errors. Use when asked 'is the Tier 3 → Tier 4 promotion running?', 'why isn't Cognee growing?', or before troubleshooting a memory-pipeline stall. Surface for the v2.8.15 promotion ticker.",
+  schema: { type: "object", properties: {}, required: [] },
+  invoke: async () => {
+    if (!_cogneePromotionStateGetter) {
+      return {
+        ok: false,
+        error:
+          "cognee-promotion state not bound — daemon is mid-boot, TOOL_GATES.cognee is off, or the ticker never armed (Cognee or Memori unreachable at boot).",
+      };
+    }
+    const snap = _cogneePromotionStateGetter();
+    return {
+      ok: true,
+      armed: snap.armed,
+      interval_minutes: snap.interval_minutes,
+      last_run_at: isoOrNull(snap.last_run_at_ms),
+      last_run_at_ms: snap.last_run_at_ms || null,
+      last_watermark_ts: snap.last_watermark_ts,
+      last_watermark_id: snap.last_watermark_id,
+      total_promoted: snap.total_promoted,
+      recent_error_count: snap.recent_errors.length,
+      recent_errors: snap.recent_errors.slice(-5),
+    };
+  },
+};
+
 // ─── family export ──────────────────────────────────────────────────────────
 
 export const diagTools = {
@@ -1039,4 +1096,5 @@ export const diagTools = {
   system_network_health,
   system_version_status,
   system_supervisor_info,
+  system_cognee_promotion_self,
 };

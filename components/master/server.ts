@@ -89,7 +89,11 @@ import {
 import { attachmentsTools } from "./tools/attachments";
 import { vaultLinkTools } from "./tools/vault-link";
 import { policyTools } from "./tools/policy";
-import { diagTools, bindWatchdogState } from "./tools/diag";
+import {
+  diagTools,
+  bindWatchdogState,
+  bindCogneePromotionState,
+} from "./tools/diag";
 import { webTools } from "./tools/web";
 import { tinyfishTools } from "./tools/tinyfish";
 import {
@@ -179,8 +183,15 @@ import {
 import {
   health as cogneeHealth,
   recall as cogneeRecall,
+  remember as cogneeRemember,
   resolveCogneeUrl,
 } from "./cognee-client";
+import {
+  startPromotionTicker as startCogneePromotionTicker,
+  resolvePromotionIntervalMs as resolveCogneePromotionIntervalMs,
+  getState as getCogneePromotionState,
+  _setDepsForTesting as _setCogneePromotionDepsForTesting,
+} from "./cognee-promotion";
 import {
   health as memoriHealth,
   resolveMemoriUrl,
@@ -2624,6 +2635,69 @@ async function main() {
           console.error(
             `[memory-kernel] armed — interval=5min, entity=${entityId}, reviewer=${reviewerCfg.provider}/${reviewerCfg.model}`,
           );
+
+          // v2.8.15 — Cognee write path (Tier 3 → Tier 4 promotion ticker).
+          //
+          // Gates: cognee + memori + memory_kernel must all be on. We also
+          // require the live Memori probe to have come back reachable
+          // (same `probe.reachable` we already gated the kernel on) and
+          // perform a fast Cognee health probe so we don't arm a ticker
+          // that's going to 502 every interval.
+          if (TOOL_GATES.cognee) {
+            try {
+              const cogneeProbe = await cogneeHealth();
+              if (cogneeProbe.reachable) {
+                const promotionIntervalMs = resolveCogneePromotionIntervalMs();
+                // Wire the entity id from the same operator scope the
+                // memory-kernel uses, and use the explicit `cogneeRemember`
+                // import so the type-link from server.ts → cognee-client
+                // stays declared at this seam.
+                _setCogneePromotionDepsForTesting({
+                  entityId: () => entityId,
+                  cogneeRemember: (input) => cogneeRemember(input),
+                });
+                startCogneePromotionTicker({
+                  intervalMs: promotionIntervalMs,
+                  registerWatchdog,
+                  touchWatchdog,
+                  onError: (err) => {
+                    emitNotification({
+                      kind: "cognee-promotion-error",
+                      severity: "warn",
+                      title: "cognee-promotion: tick threw",
+                      body: `Tier 3 → Tier 4 promotion surfaced an error: ${err.message}`,
+                    });
+                  },
+                  onTick: (result) => {
+                    if (result.scanned === 0) return;
+                    console.error(
+                      `[cognee-promotion] tick — promoted=${result.promoted} errors=${result.errored} watermark=${result.watermark_id ?? "null"} elapsed=${result.elapsed_ms}ms`,
+                    );
+                    broadcast("cognee_promotion_tick", {
+                      promoted: result.promoted,
+                      errored: result.errored,
+                      scanned: result.scanned,
+                      watermark_ts: result.watermark_ts,
+                      watermark_id: result.watermark_id,
+                      elapsed_ms: result.elapsed_ms,
+                      ts: new Date().toISOString(),
+                    });
+                  },
+                });
+                console.error(
+                  `[cognee-promotion] armed — interval=${Math.round(promotionIntervalMs / 60_000)}min, entity=${entityId}, cognee=${cogneeProbe.url}`,
+                );
+              } else {
+                console.error(
+                  `[cognee-promotion] not armed — Cognee unreachable (${cogneeProbe.error ?? "unknown"}). Tier 3 → Tier 4 promotion will not run until master restart with the service up.`,
+                );
+              }
+            } catch (err) {
+              console.error(
+                `[cognee-promotion] arm threw: ${(err as Error).message ?? err}`,
+              );
+            }
+          }
         } else if (TOOL_GATES.memory_kernel && !probe.reachable) {
           console.error(
             `[memory-kernel] not armed — Memori sidecar unreachable (${probe.error ?? "unknown"}). Will not retry until master restart.`,
@@ -5419,6 +5493,27 @@ async function main() {
     interval_minutes: watchdogIntervalMin,
     staleness_threshold_minutes: stalenessThresholdMin,
   }));
+
+  // v2.8.15 — Cognee promotion observability. system_cognee_promotion_self
+  // reads from this getter on demand. "Armed" reflects the static gates
+  // we'd evaluate at the arm site above (TOOL_GATES + the live probes
+  // it gated on are async, so we report the static gate state here; the
+  // tick timestamp is what actually proves the ticker is firing).
+  bindCogneePromotionState(() => {
+    const snap = getCogneePromotionState();
+    return {
+      last_run_at_ms: snap.last_run_at_ms,
+      last_watermark_ts: snap.last_promoted_ts,
+      last_watermark_id: snap.last_promoted_id,
+      total_promoted: snap.total_promoted,
+      recent_errors: snap.errors,
+      interval_minutes: Math.round(resolveCogneePromotionIntervalMs() / 60_000),
+      armed:
+        TOOL_GATES.cognee &&
+        TOOL_GATES.memori &&
+        TOOL_GATES.memory_kernel,
+    };
+  });
 
   // v2.7.22 — per-team auto-nudge state. The watchdog NO LONGER appends a
   // synthetic "[watchdog] ... decide whether to ping" prompt into the agent

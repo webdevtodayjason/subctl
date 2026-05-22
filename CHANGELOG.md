@@ -1,3 +1,21 @@
+## [2.8.15] — 2026-05-21
+
+### `feat(memory): Cognee write path — Tier 3 → Tier 4 promotion ticker`
+
+Cognee has been running healthy since v2.8.7 but with only 3 memories from a one-time May 18-19 backfill. The cognee-client module exported `remember()` but master never imported it — the read path (memory_search, memory_timeline) was wired through `recall()`, but no code anywhere called `cogneeClient.remember()` to ingest. Result: Tier 4 graph was effectively frozen while Memori (Tier 3) accumulated 1046 observations, 221 marked `total_curated`.
+
+**Fix:** New `cognee-promotion` ticker runs every 10 min, pulls recently-curated Memori entries (post-watermark) directly from `subctl_memori_curated` via a read-only `bun:sqlite` open of `~/.config/subctl/master/memori.db`, and ingests them into Cognee via `cogneeClient.remember()`. Tuple watermark `(last_promoted_ts, last_promoted_id)` + error log persist to `~/.config/subctl/master/cognee-promotion.json` so restarts don't re-ingest. Tuple — not bare-ts — because the curated table is keyed `(id TEXT PRIMARY KEY, ts TEXT)`; multiple promotions in the same millisecond would silently drop with a ts-only watermark.
+
+**Observability:** New diag tool `system_cognee_promotion_self` exposes `last_run_at_ms`, `last_watermark_ts`/`_id`, `total_promoted`, recent errors, configured interval, and armed flag. Each non-empty tick also logs `[cognee-promotion] tick — promoted=N errors=M watermark=<id> elapsed=Mms` and broadcasts `cognee_promotion_tick` on the SSE bus.
+
+**Config:** `SUBCTL_COGNEE_PROMOTION_INTERVAL_MIN` (default 10, min clamped to 1 minute).
+
+**Gates:** Ticker arms only when `TOOL_GATES.cognee && memori && memory_kernel` AND both the Memori sidecar AND a live Cognee health probe come back reachable at boot. Failure to reach either at boot → ticker stays disarmed until the next master restart (same shape as the memory-kernel arm gate).
+
+**Backfill path:** The existing `/memory/backfill/claude-mem-to-cognee` endpoint remains for one-shot bulk loads of historic claude-mem observations. The new ticker handles forward flow of curated Memori entries automatically — operators don't need to invoke it.
+
+**Why SQL-direct vs. a new sidecar endpoint:** Adding a `list_curated_since` endpoint would require a Python change in `services/memori/server.py` — out of scope for this hotfix. The curated table lives at a known path, the schema is stable, and we open it `readonly: true` so we can never contend with the sidecar's writes. The HTTP path through memori-client.ts is preserved unchanged.
+
 ## [2.8.14] — 2026-05-21
 
 ### `fix(watchdog): re-classify on pane-hash change to suppress false completed_idle escalation`
