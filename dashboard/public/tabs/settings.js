@@ -634,6 +634,428 @@ export async function mount({ root: _root }) {
     });
   }
 
+  // ── Local Inference Backend (Phase 4 — v2.8.x) ─────────────────────
+  //
+  // Backend picker (LM Studio / Ollama / oMLX) + host field + Test
+  // button + four per-role dropdowns (supervisor/reviewer/embeddings/
+  // router) sourced from `GET /api/master/local-backend`'s
+  // available_models. Save persists via `POST /api/master/local-backend`;
+  // Test probes via `POST /api/master/local-backend/test` WITHOUT
+  // persisting.
+  //
+  // DOM is injected on mount (not in index.html) because the file-scope
+  // constraint for this slice was settings.js + style.css only. The
+  // card is inserted near the top of `.settings-grid` so the operator
+  // sees it next to System health.
+  //
+  // Save payload always includes all four role keys (supervisor /
+  // reviewer / embeddings / router) — `lbReadFormModels` below maps
+  // "" → null so a "— disabled —" selection sends an explicit null.
+  // CodeRabbit pass-4 (b) lifted the matching server-side fix so the
+  // POST /local-backend merge now uses presence-check semantics: an
+  // explicit null in the payload clears the role; key omission falls
+  // back to the prior assignment. Selecting "— disabled —" + Save
+  // now actually unsets the role (no daemon restart required —
+  // CodeRabbit pass-4 (c) also rebinds the in-memory supervisor).
+  //
+  // No setInterval poll: status refreshes on mount / radio change /
+  // Test / Save only. Operator-driven, same cadence as the rest of
+  // this tab.
+  const LB_BACKENDS = {
+    lmstudio: { label: "LM Studio", host: "http://localhost:1234" },
+    ollama:   { label: "Ollama",    host: "http://localhost:11434" },
+    omlx:     { label: "OmniMLX",   host: "http://localhost:8000"  },
+  };
+  const LB_ROLES = ["supervisor", "reviewer", "embeddings", "router"];
+
+  // Form state. `available` is the catalog from the most recent GET or
+  // Save response — null until first fetch, [] when backend reachable
+  // but empty, populated otherwise.
+  const lb = {
+    kind: "lmstudio",
+    host: "",
+    models: { supervisor: null, reviewer: null, embeddings: null, router: null },
+    available: null,
+    inflight: false,
+  };
+
+  function lbInjectCard() {
+    const grid = document.querySelector(".settings-grid");
+    if (!grid) return null;
+    let card = document.getElementById("settings-localbackend-card");
+    if (card) return card;
+    card = document.createElement("section");
+    card.id = "settings-localbackend-card";
+    card.className = "settings-card settings-card-wide";
+    card.innerHTML =
+      "<div class=\"settings-card-head\">" +
+        "<h3>Local Inference Backend</h3>" +
+        "<span class=\"settings-card-meta\" id=\"settings-lb-status\">checking…</span>" +
+      "</div>" +
+      "<div class=\"settings-card-body\" id=\"settings-lb-body\">" +
+        "<p class=\"dim small\" style=\"margin-bottom:10px\">Pick the runtime the master daemon talks to for local inference. Per-role models populate from the selected backend's catalog. Roles set to <code>— disabled —</code> fall through to providers.json defaults.</p>" +
+        "<div class=\"lb-radio-row\">" +
+          Object.entries(LB_BACKENDS).map(([k, v]) =>
+            `<label class="lb-radio"><input type="radio" name="lb-kind" value="${k}"> ${escapeText(v.label)}</label>`
+          ).join("") +
+        "</div>" +
+        "<div class=\"form-row\">" +
+          "<label>Host</label>" +
+          "<div class=\"lb-host-row\">" +
+            "<input type=\"text\" id=\"settings-lb-host\" autocomplete=\"off\" placeholder=\"http://localhost:1234\" />" +
+            "<button type=\"button\" class=\"secondary-btn\" id=\"settings-lb-test\">Test</button>" +
+          "</div>" +
+        "</div>" +
+        "<div class=\"lb-banner\" id=\"settings-lb-banner\" hidden></div>" +
+        LB_ROLES.map((r) => {
+          // CodeRabbit pass-7 (3a): per-role warning slot rendered below
+          // the embeddings dropdown only. Filled in by lbRenderDropdowns
+          // when the catalog has no `type === "embeddings"` models and
+          // lbModelOptionsFor falls back to non-embeddings models.
+          const warnSlot = r === "embeddings"
+            ? `<div class="lb-banner warn" id="settings-lb-embeddings-warn" hidden></div>`
+            : "";
+          return `<div class="form-row"><label>${r[0].toUpperCase() + r.slice(1)}</label>` +
+            `<select id="settings-lb-${r}" class="form-input"></select></div>` +
+            warnSlot;
+        }).join("") +
+        "<div class=\"settings-actions\">" +
+          "<button type=\"button\" class=\"primary-btn\" id=\"settings-lb-save\">Save changes</button>" +
+          "<button type=\"button\" class=\"secondary-btn\" id=\"settings-lb-reset\">Reset to defaults</button>" +
+        "</div>" +
+        "<div class=\"settings-result\" id=\"settings-lb-result\" hidden></div>" +
+      "</div>";
+    // Insert as second card so it sits right after System health.
+    const firstCard = grid.querySelector(".settings-card");
+    if (firstCard && firstCard.nextSibling) {
+      grid.insertBefore(card, firstCard.nextSibling);
+    } else {
+      grid.appendChild(card);
+    }
+    return card;
+  }
+
+  function lbSetStatus(text, kind) {
+    const el = $("settings-lb-status");
+    if (!el) return;
+    el.textContent = text;
+    el.style.color =
+      kind === "ok"   ? "#6cd697" :
+      kind === "err"  ? "#d66c6c" :
+      kind === "warn" ? "#d6c46c" : "#777";
+  }
+
+  function lbShowBanner(text, kind) {
+    const el = $("settings-lb-banner");
+    if (!el) return;
+    if (!text) { el.hidden = true; el.textContent = ""; return; }
+    el.hidden = false;
+    el.textContent = text;
+    el.className = "lb-banner " + (kind === "err" ? "err" : kind === "ok" ? "ok" : "warn");
+  }
+
+  function lbModelOptionsFor(role) {
+    // Embeddings prefer type==="embeddings"; fall back to all if untagged.
+    // Other roles get everything that isn't tagged "embeddings".
+    const all = Array.isArray(lb.available) ? lb.available : [];
+    if (role === "embeddings") {
+      const tagged = all.filter((m) => m && m.type === "embeddings");
+      return tagged.length ? tagged : all;
+    }
+    return all.filter((m) => !m || m.type !== "embeddings");
+  }
+
+  function lbEmbeddingsFallbackActive() {
+    // CodeRabbit pass-7 (3a): true when the catalog is populated but no
+    // models carry `type === "embeddings"`, so lbModelOptionsFor falls
+    // back to the chat-model catalog for the embeddings role. Operator
+    // needs to know the picked model may not work for embeddings.
+    const all = Array.isArray(lb.available) ? lb.available : [];
+    if (!all.length) return false;
+    return !all.some((m) => m && m.type === "embeddings");
+  }
+
+  function lbRenderEmbeddingsWarn() {
+    const el = $("settings-lb-embeddings-warn");
+    if (!el) return;
+    if (lb.available && lb.available.length && lbEmbeddingsFallbackActive()) {
+      el.hidden = false;
+      el.textContent =
+        "⚠ No embeddings-only models detected on this backend. " +
+        "Other models are shown as fallbacks but may not work for the embeddings role.";
+    } else {
+      el.hidden = true;
+      el.textContent = "";
+    }
+  }
+
+  function lbRenderDropdowns() {
+    for (const role of LB_ROLES) {
+      const sel = $("settings-lb-" + role);
+      if (!sel) continue;
+      const current = lb.models[role];
+      const opts = lb.available === null ? [] : lbModelOptionsFor(role);
+      if (!opts.length) {
+        // CodeRabbit pass-9 (1): preserve the persisted role assignment
+        // when no catalog is available (backend unreachable OR reachable
+        // but empty for this role). Previously, this branch wiped every
+        // <select> to a single disabled placeholder. Save then walked the
+        // wiped DOM and serialized `null` for every role — silently
+        // clobbering the operator's overrides any time they hit Save with
+        // the backend offline. Now: render `current` as a "· not in
+        // catalog" selected option so the DOM keeps the prior value AND
+        // Save serializes it intact. Operator sees the stale-but-known
+        // assignment instead of an empty form.
+        if (current) {
+          sel.innerHTML =
+            `<option value="${escapeText(current)}" selected>` +
+            `${escapeText(current)} · not in catalog</option>`;
+          // Leave the <select> enabled — the operator still has visibility
+          // and (if the backend comes back) the next render will overlay
+          // the live catalog. Disabling it here would freeze Save into a
+          // partial overwrite the moment the catalog reappears empty for
+          // any reason.
+          sel.disabled = false;
+        } else {
+          const placeholder = lb.available === null
+            ? "— select after backend reachable —"
+            : "— no models available —";
+          sel.innerHTML = `<option value="">${placeholder}</option>`;
+          sel.disabled = true;
+        }
+        continue;
+      }
+      sel.disabled = false;
+      const parts = [`<option value="">— disabled —</option>`];
+      // If the current assignment isn't in the filtered catalog, surface
+      // it anyway so the operator sees what's persisted and can choose
+      // whether to override.
+      if (current && !opts.some((m) => m && m.id === current)) {
+        parts.push(`<option value="${escapeText(current)}" selected>${escapeText(current)} · not in catalog</option>`);
+      }
+      for (const m of opts) {
+        if (!m || !m.id) continue;
+        const loadedTag = m.loaded === true ? " · loaded" : "";
+        parts.push(
+          `<option value="${escapeText(m.id)}"${m.id === current ? " selected" : ""}>` +
+          `${escapeText(m.id)}${loadedTag}</option>`
+        );
+      }
+      sel.innerHTML = parts.join("");
+      // Default routers to "— disabled —" when no explicit value set.
+      if (!current) sel.value = "";
+    }
+    // CodeRabbit pass-7 (3a): refresh embeddings-fallback warning every
+    // time the dropdowns are re-rendered (mount, Test, Save, backend
+    // switch). Banner sits below the embeddings dropdown and clears
+    // itself when the catalog gains an embeddings-tagged model.
+    lbRenderEmbeddingsWarn();
+  }
+
+  function lbReadFormModels() {
+    const out = {};
+    for (const role of LB_ROLES) {
+      const sel = $("settings-lb-" + role);
+      const v = sel ? sel.value : "";
+      out[role] = v === "" ? null : v;
+    }
+    return out;
+  }
+
+  function lbApplyConfig(j) {
+    // Populate UI from a GET or POST response.
+    lb.kind = j.kind || "lmstudio";
+    lb.host = j.host || LB_BACKENDS[lb.kind]?.host || "";
+    lb.models = {
+      supervisor: j.models?.supervisor ?? null,
+      reviewer:   j.models?.reviewer   ?? null,
+      embeddings: j.models?.embeddings ?? null,
+      router:     j.models?.router     ?? null,
+    };
+    lb.available = Array.isArray(j.available_models) ? j.available_models : [];
+    // Radios
+    document.querySelectorAll("input[name=lb-kind]").forEach((el) => {
+      el.checked = el.value === lb.kind;
+    });
+    // Host
+    const hostIn = $("settings-lb-host");
+    if (hostIn) hostIn.value = lb.host;
+    // Health banner + status
+    const h = j.health || {};
+    if (h.ok) {
+      lbSetStatus("✓ reachable · " + (h.detail || ""), "ok");
+      lbShowBanner("", null);
+    } else {
+      lbSetStatus("✗ unreachable", "err");
+      lbShowBanner(
+        `Backend at ${lb.host} is not reachable. ${h.detail || ""} Click Test after fixing the URL or start the backend.`,
+        "err",
+      );
+      // Empty catalog when unreachable — already [] from GET, render
+      // the "— select after backend reachable —" placeholder.
+      lb.available = null;
+    }
+    lbRenderDropdowns();
+  }
+
+  async function lbLoad() {
+    lbSetStatus("checking…", null);
+    try {
+      const r = await fetch("/api/master/local-backend");
+      const j = await r.json();
+      if (!j.ok) {
+        lbSetStatus("master unreachable", "err");
+        lbShowBanner("Master daemon did not respond. Confirm `subctl master status`.", "err");
+        return;
+      }
+      // First-boot: no config yet → render with LM Studio default.
+      if (!j.kind) {
+        lb.kind = "lmstudio";
+        lb.host = LB_BACKENDS.lmstudio.host;
+        document.querySelectorAll("input[name=lb-kind]").forEach((el) => {
+          el.checked = el.value === "lmstudio";
+        });
+        const hostIn = $("settings-lb-host");
+        if (hostIn) hostIn.value = lb.host;
+        lb.available = null;
+        lbSetStatus("not configured", "warn");
+        lbShowBanner("No local backend configured yet. Pick one and click Test, then Save.", "warn");
+        lbRenderDropdowns();
+        return;
+      }
+      lbApplyConfig(j);
+    } catch (err) {
+      lbSetStatus("error", "err");
+      lbShowBanner("Fetch failed: " + String(err), "err");
+    }
+  }
+
+  async function lbTest() {
+    if (lb.inflight) return;
+    const btn = $("settings-lb-test");
+    const saveBtn = $("settings-lb-save");
+    lb.inflight = true;
+    if (btn) { btn.disabled = true; btn.textContent = "testing…"; }
+    if (saveBtn) saveBtn.disabled = true;
+    lbSetStatus("testing…", null);
+    try {
+      const r = await fetch("/api/master/local-backend/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: lb.kind, host: lb.host }),
+      });
+      const j = await r.json();
+      if (j.ok) {
+        lbSetStatus(
+          "✓ reachable" + (j.model_count != null ? ` · ${j.model_count} models` : "") +
+          (j.detail ? ` · ${j.detail}` : ""),
+          "ok",
+        );
+        lbShowBanner("", null);
+      } else {
+        lbSetStatus("✗ " + (j.detail || j.error || "unreachable"), "err");
+        lbShowBanner(
+          `Backend at ${lb.host} is not reachable. ${j.detail || j.error || ""}`,
+          "err",
+        );
+      }
+    } catch (err) {
+      lbSetStatus("error", "err");
+      lbShowBanner("Test failed: " + String(err), "err");
+    } finally {
+      lb.inflight = false;
+      if (btn) { btn.disabled = false; btn.textContent = "Test"; }
+      if (saveBtn) saveBtn.disabled = false;
+    }
+  }
+
+  async function lbSave() {
+    if (lb.inflight) return;
+    const btn = $("settings-lb-save");
+    const testBtn = $("settings-lb-test");
+    const result = $("settings-lb-result");
+    lb.inflight = true;
+    if (btn) { btn.disabled = true; btn.textContent = "saving…"; }
+    if (testBtn) testBtn.disabled = true;
+    if (result) { result.hidden = true; result.textContent = ""; }
+    const payload = { kind: lb.kind, host: lb.host, models: lbReadFormModels() };
+    try {
+      const r = await fetch("/api/master/local-backend", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const j = await r.json();
+      if (!j.ok) {
+        if (result) {
+          result.hidden = false;
+          result.className = "settings-result err";
+          result.textContent = "Failed: " + (j.error || `HTTP ${r.status}`);
+        }
+        return;
+      }
+      lbApplyConfig(j);
+      if (result) {
+        result.hidden = false;
+        result.className = "settings-result ok";
+        const t = new Date().toLocaleTimeString();
+        result.textContent = `✓ saved at ${t} · role assignments re-resolved without restart`;
+      }
+    } catch (err) {
+      if (result) {
+        result.hidden = false;
+        result.className = "settings-result err";
+        result.textContent = "Error: " + String(err);
+      }
+    } finally {
+      lb.inflight = false;
+      if (btn) { btn.disabled = false; btn.textContent = "Save changes"; }
+      if (testBtn) testBtn.disabled = false;
+    }
+  }
+
+  function lbReset() {
+    // Client-side form reset — DOESN'T POST. Per spec.
+    for (const role of LB_ROLES) {
+      const sel = $("settings-lb-" + role);
+      if (sel && !sel.disabled) sel.value = "";
+    }
+  }
+
+  function lbWire() {
+    const card = lbInjectCard();
+    if (!card) return;
+    // Radios — switching backend reseeds host to that backend's
+    // default + clears the catalog (the master's /test endpoint
+    // doesn't return models, so we can't show a non-persisted
+    // backend's catalog without a Save).
+    card.querySelectorAll("input[name=lb-kind]").forEach((el) => {
+      el.addEventListener("change", () => {
+        if (!el.checked) return;
+        lb.kind = el.value;
+        lb.host = LB_BACKENDS[lb.kind]?.host || "";
+        lb.available = null;
+        const hostIn = $("settings-lb-host");
+        if (hostIn) hostIn.value = lb.host;
+        lbShowBanner(
+          `Switched to ${LB_BACKENDS[lb.kind].label}. Click Test to verify, then Save to load this backend's catalog.`,
+          "warn",
+        );
+        lbSetStatus("not tested", "warn");
+        lbRenderDropdowns();
+      });
+    });
+    // Host input — keep state in sync (don't refetch on every keystroke).
+    const hostIn = $("settings-lb-host");
+    if (hostIn) {
+      hostIn.addEventListener("input", () => { lb.host = hostIn.value.trim(); });
+    }
+    $("settings-lb-test")?.addEventListener("click", lbTest);
+    $("settings-lb-save")?.addEventListener("click", lbSave);
+    $("settings-lb-reset")?.addEventListener("click", lbReset);
+  }
+  lbWire();
+
   function refreshAll() {
     loadHealth();
     loadKeys();
@@ -642,6 +1064,7 @@ export async function mount({ root: _root }) {
     loadTelegramStatus();
     loadVault();
     loadPersonality();
+    lbLoad();
   }
   wireSecretsModal();
   refreshBtn.addEventListener("click", refreshAll);

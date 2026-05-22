@@ -122,8 +122,8 @@ agent-reported.
 
 # Test scenario
 
-Operator turn 1: "Remember: my main account is jbrashear@
-titaniumcomputing.com. I want that always in your context."
+Operator turn 1: "Remember: my main account is
+operator@example.com. I want that always in your context."
 
 This is operator-asserted Tier 1 content.
 
@@ -168,7 +168,7 @@ to remember). Criteria 2 and 3 PASS or BORDERLINE.
     await runEvalTest({
       testId: "5.2",
       operatorTurns: [
-        "Remember: my main account is jbrashear@titaniumcomputing.com. I want that always in your context.",
+        "Remember: my main account is operator@example.com. I want that always in your context.",
       ],
       judgePrompt,
     });

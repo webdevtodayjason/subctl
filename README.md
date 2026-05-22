@@ -29,7 +29,7 @@ A persistent conversational orchestrator that runs on your hardware, talks to yo
                                      └─────────────────────────┘
 ```
 
-> **v2.8.12 shipping.** Full per-release history in [CHANGELOG.md](./CHANGELOG.md). The 1.x series was the multi-account dispatch substrate; the 2.x series is the agentic harness layered on top. v2.7 closed the loop on persona, supervisor profiles, HMAC trust markers, dynamic provider catalog, voice, and plan-approval. v2.8 added the memory substrate, the SPEC-block directive contract, the policy engine modes, the MCP control plane, and the watchdog classifier that ended the false-unresponsive alerts.
+> **v2.8.12 shipping.** Full per-release history in [CHANGELOG.md](./CHANGELOG.md). The 1.x series was the multi-account dispatch substrate; the 2.x series is the agentic harness layered on top. v2.7 closed the loop on persona, supervisor profiles, HMAC trust markers, dynamic provider catalog, voice, and plan-approval. v2.8 added the memory substrate, the SPEC-block directive contract, the policy engine modes, the MCP control plane, the watchdog classifier that ended the false-unresponsive alerts, and the pluggable local backend adapter system (LM Studio, Ollama, oMLX).
 
 > 🚀 **First time on a new Mac?** Open a fresh Claude Code session and paste [`START-HERE.md`](./START-HERE.md). It walks you clone → install → account auth → master daemon enable, asking before any irreversible step.
 
@@ -44,8 +44,8 @@ A persistent conversational orchestrator that runs on your hardware, talks to yo
 - **Tiered memory substrate:**
   - **Tier 1 — profile:** `user.md` + `memory.md` always injected into the master's system prompt (~3500 char budget — fast, durable, operator-editable)
   - **Tier 2 — observation:** [claude-mem](https://github.com/thedotmack/claude-mem) semantic search over every dev-team observation
-  - **Tier 3 — curated:** auto-curated durable facts promoted from raw conversation by a background consciousness loop; surfaced into the master's turn context on demand
-  - **Tier 4 — graph + lexical store:** local-first SQLite + embedded graph for cross-session semantic recall; `memory_search` / `memory_timeline` route here with claude-mem as fallback
+  - **Tier 3 — curated:** auto-curated durable facts (bun:sqlite + FTS5 / Evy Memory) promoted from raw conversation by a background consciousness loop; surfaced into the master's turn context on demand
+  - **Tier 4 — graph + lexical store:** [Cognee](https://github.com/topoteretes/cognee) (primary, v2.8.7+) for cross-session semantic recall with graph context; `memory_search` / `memory_timeline` route here with claude-mem as fallback
   - **Tier 5 — vault:** Obsidian vault for long-form decisions, specs, RESUME files — browse in-page via the built-in viewer with `[[wikilinks]]`, embeds, callouts, and tag rendering
 
 - **Runtime claim verifier (Argent-style)** — after every assistant turn the runtime scans for "claim triggers" (specific future check-in times, asserted team statuses, host facts, sent-message claims, decision-logged claims). Any claim not backed by a tool call this turn fires a synthetic `[verifier]` correction prompt. Capped at 2 corrections; on giveup the gap lands in `decisions.jsonl` so you can grep chronic offenders.
@@ -72,7 +72,7 @@ A persistent conversational orchestrator that runs on your hardware, talks to yo
 
 - **OpenAI Codex OAuth + dynamic provider catalog** — `subctl auth openai-codex <alias>` mints fresh OAuth tokens via in-process device-code flow. The dashboard's model picker is now a live catalog (~30+ providers) fed from the upstream pi-ai registry — new providers light up automatically without a release.
 
-- **Dashboard** — live ops view at `http://<host>:8787` with 12 sidebar tabs (Chat, Orchestration, Dashboard, Projects, Teams, Claude Sessions, Models, Providers, Memory, Vault, Skills, Live Logs, Settings). Frontend decomposed into ES modules; lazy-loaded heavy tools (terminal, update modal, vault editor) keep the initial load light.
+- **Dashboard** — live ops view at `http://<host>:8787` with 17 sidebar tabs (Chat, Orchestration, Dashboard, Projects, Teams, Templates, Claude Sessions, Models, Providers, Plans, Memory, Vault, Skills, Live Logs, Policy, Preferences, Settings). The Settings tab now includes a Local Inference Backend section for picking LM Studio / Ollama / oMLX, configuring host URL, per-role model dropdowns (supervisor / reviewer / router / embeddings), and Test/Save controls. Frontend decomposed into ES modules; lazy-loaded heavy tools (terminal, update modal, vault editor) keep the initial load light.
 
 - **Multi-channel I/O** — dashboard chat (SSE), Telegram (bidirectional with auto-relay + voice notes), CLI prompt, scheduled self-prompts, inbox events from workers, MCP clients.
 
@@ -168,7 +168,7 @@ The installer reads its full dep matrix from `lib/dep-manifest.json` (the single
 
 1. **Preflight** — prints a status table of every hard + soft dep. No side effects.
 2. **Install** — topologically ordered: Homebrew (auto-bootstrap if missing) → brew packages (jq, tmux, gh, gum, go, node) → bun (curl installer with `BUN_INSTALL_NO_PROFILE=1`) → claude CLI → codex → coderabbit → docker (cask, confirm) → claude-mem (npx) → Telegram bot walkthrough. Every step is confirm-gated unless `--yes` is passed.
-3. **Verify** — re-runs preflight, prints a final go/no-go table, then wires the Claude statusline + Stop hook + skills + MCP server + both launchd plists (`com.subctl.master` and `com.subctl.dashboard`) + seeded operator configs (cognition loop enabled, idle-pane watchdog in notify-only, MCP token minted into `secrets.json`). Existing operator configs are never overwritten — the seed only fills in missing files.
+3. **Verify** — re-runs preflight, prints a final go/no-go table, then wires the Claude statusline + Stop hook + skills + MCP server + both launchd plists (`com.subctl.master` and `com.subctl.dashboard`) + seeded operator configs (cognition loop enabled, idle-pane watchdog in notify-only, MCP token minted into `secrets.json`, AND local-backend defaults migrated from any legacy `mlx` / `lmstudio` / `ollama` / `omlx` / `vllm` role configs into the single `providers.local_backend` block — without overwriting existing settings). Existing operator configs are never overwritten — the seed only fills in missing files.
 
 **Auto vs. manual vs. detect-only:**
 
@@ -314,6 +314,7 @@ Per-phase status lives in [`docs/master.md`](docs/master.md) §4. Headline (ship
 - **Phase 3n** (v2.5.0) — in-browser Obsidian vault viewer
 - **Phase 3o** (v2.7.x) — supervisor profiles, watchdog kill controls, HMAC trust marker, web terminal escape hatch, notification channel, dynamic provider catalog, OpenRouter + OpenAI Codex OAuth, voice layer, plan-approval workflow
 - **Phase 3p** (v2.8.x) — tiered memory substrate with autonomous consciousness loop, MCP control plane (14 tools), SPEC-block directive contract, watchdog reply classifier (`completed_idle`), seeded operator-config install, policy engine (Trusted/Gated/Sealed) modes
+- **Phase 4** (v2.8.12) — pluggable local backend adapter registry with LM Studio, Ollama, and oMLX support, first-boot migration from legacy providers, dashboard settings UI for backend selection and model management
 
 Provider expansion (Phase 4+): Gemini, Z.AI GLM, Minimax — see [`ROADMAP.md`](./ROADMAP.md).
 

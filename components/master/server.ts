@@ -256,6 +256,12 @@ import {
   saveVoiceConfig,
   watchVoiceConfig,
 } from "./voice-config";
+// ── v2.8.13 Provider Model Catalog Phase 4: local backend adapters ──
+import {
+  getAdapter as getLocalBackendAdapter,
+  listAvailableBackends as listLocalBackendKinds,
+  type LocalBackendKind,
+} from "./local-backends";
 
 const HOME = homedir();
 const COMPONENT_DIR = import.meta.dir;
@@ -369,6 +375,16 @@ interface Providers {
   fallback?: { provider: string; model: string; auth?: string };
   routing_policy?: Record<string, string>;
   memory_budget_gb?: { target: number; ceiling: number };
+  // v2.8.13 Phase 4 — single source of truth for local-inference backend.
+  // When a role's provider is "local", the role's effective dispatch (host,
+  // model, kind) is resolved from this block via resolveRoleCfg(). Seeded
+  // on first boot from any pre-existing lmstudio/ollama/mlx/omlx/vllm role.
+  local_backend?: {
+    kind: LocalBackendKind;
+    host: string;
+    models: Partial<Record<string, string | null>>;
+    last_verified?: string | null;
+  };
 }
 
 interface Policy {
@@ -886,12 +902,15 @@ export const PROVIDER_API: Record<string, string> = {
   "google-vertex": "google-vertex",
   "amazon-bedrock": "bedrock-converse-stream",
   mistral: "mistral-conversations",
-  // Local OpenAI-compatible runtimes (mlx, ollama, lmstudio, vllm…) all speak
-  // the OpenAI Chat Completions wire format.
+  // Local OpenAI-compatible runtimes (mlx, ollama, lmstudio, vllm, omlx…)
+  // all speak the OpenAI Chat Completions wire format.
   mlx: "openai-completions",
   ollama: "openai-completions",
   lmstudio: "openai-completions",
   vllm: "openai-completions",
+  // v2.8.13 Phase 4 — oMLX (jundot/omlx) joins as a first-class local
+  // backend. Same wire format as the others.
+  omlx: "openai-completions",
   // OpenRouter — unified gateway for hundreds of models (incl. a free preview
   // tier). OpenAI-compat wire format at https://openrouter.ai/api/v1. Model
   // IDs use vendor/name (e.g. "anthropic/claude-sonnet-4", "openai/gpt-5.2").
@@ -1032,7 +1051,18 @@ export function buildModel(cfg: {
     // api.openai.com and sends the local-runtime token to real OpenAI,
     // which 401s. Fixed in v2.7.7 after a long debug.
     baseUrl: cfg.host ?? (
-      LOCAL_PROVIDERS.has(cfg.provider) ? "http://localhost:1234/v1" :
+      // CodeRabbit pass-11 (2): pick the provider-correct defaultHost. Pass-9
+      // added `omlx` to LOCAL_PROVIDERS for the auth-sentinel path, but this
+      // shared :1234 fallback still routed hostless omlx (and ollama) configs
+      // to LM Studio's port. Prefer the adapter's declared defaultHost for
+      // first-class LocalBackendKinds (lmstudio/ollama/omlx); fall through to
+      // the legacy LM Studio default for mlx/vllm tags that aren't adapters
+      // (they speak the OpenAI-compatible dialect well enough to ride it).
+      LOCAL_PROVIDERS.has(cfg.provider) ? (
+        (cfg.provider === "omlx" || cfg.provider === "ollama" || cfg.provider === "lmstudio")
+          ? getLocalBackendAdapter(cfg.provider as LocalBackendKind).defaultHost
+          : "http://localhost:1234/v1"
+      ) :
       cfg.provider === "openrouter" ? "https://openrouter.ai/api/v1" :
       cfg.provider === "xai-oauth" ? getXaiOauthBaseUrl() :
       ""
@@ -1092,10 +1122,23 @@ export function lmstudioAuthHeader(): Record<string, string> {
 //
 // Exported so the test suite can exercise the resolution chain without
 // having to spin up the full master boot pipeline.
-export const LOCAL_PROVIDERS = new Set(["mlx", "ollama", "lmstudio", "vllm"]);
+// v2.8.13 Phase 4 — `omlx` added so resolveRoleCfg-rewritten roles
+// (provider: "local" → kind from local_backend) flow through the
+// "not-needed" auth sentinel + local baseUrl default like the other
+// OpenAI-compatible local runtimes.
+export const LOCAL_PROVIDERS = new Set(["mlx", "ollama", "lmstudio", "vllm", "omlx"]);
 export function getApiKeyForProvider(provider: string): string | undefined {
   if (provider === "lmstudio") {
     return resolveSecret("lmstudio_api_token") ?? "not-needed";
+  }
+  if (provider === "omlx") {
+    // oMLX supports optional `--api-key` server-side auth. When the
+    // operator runs `omlx serve --api-key …`, every request needs an
+    // `Authorization: Bearer <token>` header. Resolution mirrors the
+    // LM Studio chain — env (`OMLX_API_TOKEN`, via envVarFor's uppercase
+    // fallback) beats `~/.config/subctl/secrets.json#omlx_api_token`
+    // beats the "not-needed" sentinel for localhost-bypass deployments.
+    return resolveSecret("omlx_api_token") ?? "not-needed";
   }
   if (LOCAL_PROVIDERS.has(provider)) return "not-needed";
   if (provider === "openrouter") {
@@ -1135,82 +1178,268 @@ export function getApiKeyForProvider(provider: string): string | undefined {
   return undefined;
 }
 
-export async function ensureModelLoaded(cfg: { provider: string; model: string; host?: string; context_length?: number }, role: string): Promise<{ ok: boolean; detail: string }> {
-  if (cfg.provider !== "lmstudio") {
-    return { ok: true, detail: `${role} is ${cfg.provider} (cloud) — no local load needed` };
+// v2.8.13 Phase 4 — set of provider IDs that the migration treats as
+// "this role currently points at a local runtime, fold it into
+// local_backend". Includes legacy aliases the operator may have in their
+// providers.json (`mlx`, `vllm`) plus the three first-class backends.
+export const LEGACY_LOCAL_PROVIDER_IDS = new Set([
+  "lmstudio",
+  "ollama",
+  "omlx",
+  "mlx",
+  "vllm",
+]);
+
+/**
+ * Map a legacy/operator-typed provider string to a first-class
+ * LocalBackendKind. `mlx` and `vllm` aren't first-class adapters; we fold
+ * them into LM Studio per the Phase 4 spec (mlx was the operator's
+ * dead-config bite — they didn't intentionally pick MLX).
+ *
+ * CodeRabbit pass-9 (3): optional `host` arg for migration disambiguation.
+ * Operators running real oMLX with a legacy `mlx`/`vllm` provider tag get
+ * mislabeled as `lmstudio` and their daemon probes LM Studio endpoints
+ * against an oMLX server forever (`last_verified` stays null). When the
+ * host clearly points at oMLX's default port (:8000) we treat the legacy
+ * tag as `omlx` instead. Hosts without :8000 still map to `lmstudio` for
+ * back-compat (vllm/mlx commonly proxied behind other ports speak the
+ * LM Studio OpenAI-compatible dialect well enough to ride that adapter).
+ */
+export function mapToLocalBackendKind(
+  p: string,
+  host?: string | null,
+): LocalBackendKind | null {
+  if (p === "lmstudio" || p === "ollama" || p === "omlx") return p;
+  if (p === "mlx" || p === "vllm") {
+    if (host && /:8000(\/|$)/.test(host)) return "omlx";
+    return "lmstudio";
   }
-  const desired = cfg.context_length ?? ROLE_DEFAULT_CONTEXT[role] ?? 0;
-  if (!desired) return { ok: true, detail: `${role} context_length=0; not enforcing` };
-  const apiBase = (cfg.host ?? "http://localhost:1234/v1").replace(/\/v1\/?$/, "");
-  // 1. Check current load state — skip the reload if it's already where we
-  //    want it. Tight 2s timeout: if LM Studio isn't even responding to a
-  //    GET we shouldn't dump a load request into it — bail to JIT.
-  let lmReachable = false;
-  try {
-    const r = await fetch(`${apiBase}/api/v0/models`, {
-      headers: { ...lmstudioAuthHeader() },
-      signal: AbortSignal.timeout(2000),
-    });
-    if (r.ok) {
-      lmReachable = true;
-      const j = (await r.json()) as { data?: Array<{ id: string; state?: string; loaded_context_length?: number }> };
-      const current = (j.data ?? []).find((m) => m.id === cfg.model);
-      // If model is already loaded at ANY context, leave it alone. The
-      // operator's manual config (and LM Studio's own state) wins. The
-      // previous "upgrade ctx if loaded < desired" path tried to
-      // unload+reload, but unload-by-model-name silently fails in current
-      // LM Studio (it requires instance_id), so the load step created a
-      // duplicate :2 instance. Master only enforces ctx on cold start
-      // (model not yet loaded) — see commit fix(master): ctx-pin respects
-      // existing model load.
-      if (current?.state === "loaded") {
-        return {
-          ok: true,
-          detail: `${role}=${cfg.model} already loaded at ctx ${(current.loaded_context_length ?? 0).toLocaleString()} — respecting existing load (operator/LM Studio config wins)`,
-        };
-      }
+  return null;
+}
+
+/**
+ * Normalize a role-model value coming from POST /local-backend or its
+ * tests. CodeRabbit pass-9 (2) — hoisted from the POST handler so the
+ * helper has one home and the test suite imports it instead of cloning.
+ * Invariant (pass-1): non-string → null; empty/whitespace string → null;
+ * otherwise the trimmed string.
+ */
+export function normalizeModel(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * Merge a prior `local_backend.models` map with an incoming partial.
+ * CodeRabbit pass-9 (2) — hoisted from POST /local-backend so the
+ * presence-check semantics from pass-4 (b) have one home.
+ *
+ * Semantics:
+ *   - key present in `incoming` (even when null) → honor incoming
+ *   - key absent from `incoming`                 → fall back to prev
+ *   - `normalizeModel` applies in both branches (type / empty-string
+ *     sanitization is the pass-1 invariant).
+ *
+ * Output always carries the four standard role slots so persistence sees
+ * a stable shape regardless of which subset the caller mutated.
+ */
+export function mergeModels(
+  prev: Partial<Record<string, string | null>>,
+  incoming: Record<string, unknown>,
+): Record<string, string | null> {
+  const pick = (
+    role: "supervisor" | "reviewer" | "embeddings" | "router",
+  ): string | null => {
+    if (Object.prototype.hasOwnProperty.call(incoming, role)) {
+      return normalizeModel(incoming[role]);
     }
-  } catch { /* fall through */ }
-  if (!lmReachable) {
-    return {
-      ok: false,
-      detail: `LM Studio at ${apiBase} did not respond to /api/v0/models within 2s — skipping pin, JIT will handle on first prompt`,
-    };
+    return normalizeModel(prev[role]);
+  };
+  return {
+    supervisor: pick("supervisor"),
+    reviewer: pick("reviewer"),
+    embeddings: pick("embeddings"),
+    router: pick("router"),
+  };
+}
+
+/**
+ * Pre-resolve a role's effective dispatch config. When provider === "local"
+ * we look up providers.local_backend and rewrite provider/host/model from
+ * the local-backend block. Every downstream reader (buildModel,
+ * getApiKeyForProvider, ensureModelLoaded, /diag probes) only sees concrete
+ * provider strings — no "local" leaks into pi-ai dispatch.
+ */
+export function resolveRoleCfg(
+  role: string,
+  raw: { provider: string; model: string; host?: string; context_length?: number; max_tokens?: number },
+  providers: Pick<Providers, "local_backend">,
+): { provider: string; model: string; host?: string; context_length?: number; max_tokens?: number } {
+  if (raw.provider !== "local") return raw;
+  const lb = providers.local_backend;
+  if (!lb) {
+    // Spec invariant: provider="local" requires a local_backend block.
+    // Failure mode is loud — silently falling back to the raw cfg would
+    // hide a broken migration.
+    throw new Error(
+      `role ${role} has provider="local" but providers.local_backend is missing`,
+    );
   }
-  // 2. Unload first (safe reload pattern).
-  try {
-    await fetch(`${apiBase}/api/v1/models/unload`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...lmstudioAuthHeader() },
-      body: JSON.stringify({ model: cfg.model }),
-      signal: AbortSignal.timeout(5_000),
-    });
-  } catch { /* unload failures are non-fatal — load below will replace */ }
-  // 3. Load with explicit context_length. Cap at 20s (was 60) — if LM Studio
-  //    can't load in 20s the daemon shouldn't block boot. JIT-on-first-prompt
-  //    is the fallback.
-  try {
-    const r = await fetch(`${apiBase}/api/v1/models/load`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...lmstudioAuthHeader() },
-      body: JSON.stringify({
-        model: cfg.model,
-        context_length: desired,
-        flash_attention: true,
-        echo_load_config: true,
-      }),
-      signal: AbortSignal.timeout(20_000),
-    });
-    if (!r.ok) {
-      const text = await r.text().catch(() => "");
-      return { ok: false, detail: `load HTTP ${r.status}: ${text.slice(0, 300)}` };
+  // CodeRabbit pass-6 (a): presence-check semantics so an explicit `null`
+  // in `lb.models[role]` is honored as "operator cleared this role" rather
+  // than treated as missing and silently falling back to `raw.model`. The
+  // legacy `lb.models?.[role] ?? raw.model` defeated the pass-4 (b) fix that
+  // taught the POST /local-backend handler to persist null when the
+  // operator clears a model in Settings — resolveRoleCfg would then ignore
+  // the cleared state and keep using the stale providers.models.<role>.model
+  // from before the local_backend migration. Now:
+  //   - key present in lb.models (even when null) → honor that value
+  //   - key absent → fall back to raw.model (legacy migration safety net)
+  const model =
+    lb.models && Object.prototype.hasOwnProperty.call(lb.models, role)
+      ? lb.models[role]
+      : raw.model;
+  if (!model) {
+    throw new Error(
+      `role ${role}: providers.local_backend.models.${role} is null and role.model is empty — pick a model in Settings → Local Inference Backend`,
+    );
+  }
+  return {
+    ...raw,
+    provider: lb.kind,
+    host: lb.host,
+    model,
+  };
+}
+
+/**
+ * First-boot migration. If providers.local_backend is missing AND any role
+ * still carries a legacy local-provider string (lmstudio/ollama/mlx/omlx/
+ * vllm), seed local_backend from the most common candidate (preferring LM
+ * Studio per the Phase 4 spec) and rewrite affected roles to
+ * provider: "local". Idempotent — re-running is a no-op once seeded.
+ *
+ * Returns true when a migration was applied (caller persists + logs).
+ */
+export function migrateLocalBackend(providers: Providers): {
+  migrated: boolean;
+  picked: { kind: LocalBackendKind; host: string } | null;
+  rewrittenRoles: string[];
+} {
+  if (providers.local_backend) {
+    return { migrated: false, picked: null, rewrittenRoles: [] };
+  }
+  const candidates: Array<{ kind: LocalBackendKind; host: string; role: string }> = [];
+  for (const [role, cfg] of Object.entries(providers.models)) {
+    if (!cfg || typeof cfg !== "object") continue;
+    const p = (cfg as { provider?: string }).provider;
+    if (!p || !LEGACY_LOCAL_PROVIDER_IDS.has(p)) continue;
+    // CodeRabbit pass-9 (3): pass the role's host so legacy `mlx`/`vllm`
+    // on :8000 disambiguates to omlx instead of falling back to lmstudio.
+    // Operators running real oMLX with a legacy provider tag previously
+    // ended up with kind="lmstudio" and a dead config — the daemon
+    // probed LM Studio endpoints against oMLX forever.
+    const cfgHost = (cfg as { host?: string }).host;
+    const kind = mapToLocalBackendKind(p, cfgHost);
+    if (!kind) continue;
+    const h = cfgHost ?? getLocalBackendAdapter(kind).defaultHost;
+    candidates.push({ kind, host: h, role });
+  }
+  if (candidates.length === 0) {
+    return { migrated: false, picked: null, rewrittenRoles: [] };
+  }
+  // Prefer LM Studio when any role pointed there; otherwise first candidate.
+  const pick = candidates.find((c) => c.kind === "lmstudio") ?? candidates[0]!;
+  // Operators sometimes had two LM Studio instances on different ports
+  // (the live providers.json on 2026-05-16 had reviewer @ :8000 and
+  // embeddings @ :1234). Phase 4 collapses to ONE host — log the lossy
+  // migration so the operator sees what got dropped and can fix via the
+  // dashboard's Local Inference Backend section.
+  const distinctHosts = Array.from(
+    new Set(candidates.map((c) => c.host)),
+  );
+  if (distinctHosts.length > 1) {
+    console.error(
+      `[master] WARN local_backend migration: ${candidates.length} local-role(s) used ${distinctHosts.length} different hosts (${distinctHosts.join(", ")}); folding into ${pick.host}. Verify in dashboard → Settings → Local Inference Backend.`,
+    );
+  }
+  providers.local_backend = {
+    kind: pick.kind,
+    host: pick.host,
+    models: { supervisor: null, reviewer: null, embeddings: null, router: null },
+    last_verified: null,
+  };
+  const rewrittenRoles: string[] = [];
+  for (const [role, cfg] of Object.entries(providers.models)) {
+    if (!cfg || typeof cfg !== "object") continue;
+    const p = (cfg as { provider?: string }).provider;
+    if (!p || !LEGACY_LOCAL_PROVIDER_IDS.has(p)) continue;
+    const m = (cfg as { model?: string }).model;
+    if (m) {
+      (providers.local_backend.models as Record<string, string | null>)[role] = m;
     }
-    const j = await r.json() as { load_config?: { context_length?: number } };
-    const got = j.load_config?.context_length;
-    return { ok: true, detail: `${role}=${cfg.model} loaded with ctx ${(got ?? desired).toLocaleString()}` };
-  } catch (err) {
-    return { ok: false, detail: `load error: ${(err as Error).message}` };
+    (cfg as { provider: string }).provider = "local";
+    rewrittenRoles.push(role);
   }
+  return { migrated: true, picked: { kind: pick.kind, host: pick.host }, rewrittenRoles };
+}
+
+/**
+ * Persist providers.json. Mirrors the dashboard's /api/master/supervisor
+ * write pattern (writeFileSync(providersPath, JSON.stringify(_, null, 2))).
+ * Stays in master so the adapter and migration can call it without
+ * duplicating the path logic.
+ */
+function persistProviders(providers: Providers): void {
+  writeFileSync(PROVIDERS_PATH, JSON.stringify(providers, null, 2));
+}
+
+/**
+ * ensureModelLoaded — delegates to the LocalBackendAdapter for the role's
+ * resolved provider. Master keeps the role-default ctx map (policy) and
+ * the cloud-skip; the adapter owns the protocol (LM Studio's load/unload
+ * dance, or no-op for Ollama/oMLX).
+ *
+ * Accepts the RAW role cfg — local resolution happens here, so callers
+ * (boot pin loop, /reload-supervisor, profile-swap) don't need to know
+ * the local-backend block exists.
+ */
+export async function ensureModelLoaded(
+  cfg: { provider: string; model: string; host?: string; context_length?: number },
+  role: string,
+  providersForResolve?: Pick<Providers, "local_backend">,
+): Promise<{ ok: boolean; detail: string }> {
+  const resolved = providersForResolve
+    ? resolveRoleCfg(role, cfg, providersForResolve)
+    : cfg;
+  // CodeRabbit pass-9 (3): pass host so a stray un-migrated `mlx`/`vllm`
+  // role on :8000 picks the omlx adapter instead of LM Studio.
+  const kind = mapToLocalBackendKind(resolved.provider, resolved.host);
+  if (!kind) {
+    return { ok: true, detail: `${role} is ${resolved.provider} (cloud) — no local load needed` };
+  }
+  const adapter = getLocalBackendAdapter(kind);
+  if (!adapter.pinModel) {
+    return { ok: true, detail: `${role} backend ${kind} has no pin endpoint — auto-load on first prompt` };
+  }
+  const desired = resolved.context_length ?? ROLE_DEFAULT_CONTEXT[role] ?? 0;
+  const apiKey =
+    kind === "lmstudio"
+      ? resolveSecret("lmstudio_api_token")
+      : kind === "omlx"
+        ? resolveSecret("omlx_api_token")
+        : null;
+  const result = await adapter.pinModel(
+    resolved.host ?? adapter.defaultHost,
+    resolved.model,
+    desired,
+    { api_key: apiKey },
+  );
+  return {
+    ok: result.ok,
+    detail: `${role}=${resolved.model} (${kind}): ${result.detail}`,
+  };
 }
 
 // ─── agent transcript persistence ──────────────────────────────────────────
@@ -1444,6 +1673,28 @@ async function main() {
     `[master] loaded — operator=${policy.operator.name}, projects=${policy.projects.length}, models=${Object.keys(providers.models).length}`,
   );
 
+  // ── v2.8.13 Phase 4: local_backend migration ────────────────────────────
+  // First boot of a daemon that knows about local_backend, but operator's
+  // providers.json was written before. Seed local_backend from any role
+  // still pointing at lmstudio/ollama/mlx/omlx/vllm, prefer LM Studio,
+  // rewrite affected roles to provider: "local", persist.
+  try {
+    const mig = migrateLocalBackend(providers);
+    if (mig.migrated && mig.picked) {
+      persistProviders(providers);
+      console.error(
+        `[master] local_backend seeded from ${mig.picked.kind} @ ${mig.picked.host}; rewrote roles ${mig.rewrittenRoles.join(", ")} → provider="local"`,
+      );
+      logDecision({
+        project: "_master",
+        action: "providers_migration",
+        rationale: `Phase 4 local_backend seeded from ${mig.picked.kind} @ ${mig.picked.host}; roles rewritten: ${mig.rewrittenRoles.join(", ")}`,
+      });
+    }
+  } catch (err) {
+    console.error(`[master] local_backend migration failed: ${(err as Error).message}`);
+  }
+
   // ── pi-agent-core wiring ────────────────────────────────────────────────
   // v2.7.18: the active supervisor is decided by profiles.json, NOT
   // providers.json. providers.json still supplies the surrounding
@@ -1472,11 +1723,15 @@ async function main() {
   // rest of the daemon (status responses, /diag, /context, LM Studio
   // pre-flight). Reassigned on profile swap so all readers see the
   // new model id / host without restart.
-  let supervisorCfg: Providers["models"][string] = {
+  //
+  // v2.8.13 Phase 4: if the role is provider="local", resolveRoleCfg
+  // rewrites provider/host/model from providers.local_backend before any
+  // downstream reader (buildModel, pi-ai dispatch, /diag probe) sees it.
+  let supervisorCfg: Providers["models"][string] = resolveRoleCfg("supervisor", {
     ...supervisorCfgFromProviders,
     model: profilesFile.profiles[profilesFile.active].supervisor,
     host: profilesFile.profiles[profilesFile.active].host,
-  };
+  }, providers);
   let activeProfile: ProfileName = profilesFile.active;
   console.error(
     `[master] profile=${activeProfile} → supervisor=${supervisorCfg.provider}/${supervisorCfg.model}`,
@@ -1511,17 +1766,23 @@ async function main() {
     a: Providers["models"][string] | undefined,
     b: Providers["models"][string] | undefined,
   ): boolean {
-    return !!a && !!b
-      && a.provider === b.provider
-      && a.model === b.model
-      && (a.host ?? "") === (b.host ?? "");
+    if (!a || !b) return false;
+    // Resolve both through local_backend BEFORE comparing — two roles with
+    // provider="local" both fold to the same backend.kind, model, host. The
+    // dedup is about avoiding LM Studio's `:2` shadow instance when the
+    // actual dispatch target is identical.
+    const ra = resolveRoleCfg("reviewer", a, providers);
+    const rb = resolveRoleCfg("supervisor", b, providers);
+    return ra.provider === rb.provider
+      && ra.model === rb.model
+      && (ra.host ?? "") === (rb.host ?? "");
   }
   const rolesToPin = (["supervisor", "reviewer"] as const).filter(
     (role) => {
       if (!providers.models[role]) return false;
       if (
         role === "reviewer"
-        && sameLocalRoute(providers.models.reviewer, providers.models.supervisor)
+        && sameLocalRoute(providers.models.reviewer, supervisorCfg)
       ) {
         console.error(
           `[master] ctx-pin reviewer: SKIPPED — same model+host as supervisor (avoids LM Studio :2 instance)`,
@@ -1534,7 +1795,7 @@ async function main() {
   await Promise.allSettled(
     rolesToPin.map(async (role) => {
       const cfg = providers.models[role]!;
-      const result = await ensureModelLoaded(cfg, role);
+      const result = await ensureModelLoaded(cfg, role, providers);
       console.error(`[master] ${result.ok ? "ctx-pin" : "ctx-pin FAILED"} ${role}: ${result.detail}`);
     }),
   );
@@ -1712,11 +1973,11 @@ async function main() {
     const prev = activeProfile;
     const entry = next.profiles[next.active];
     activeProfile = next.active;
-    supervisorCfg = {
+    supervisorCfg = resolveRoleCfg("supervisor", {
       ...supervisorCfgFromProviders,
       model: entry.supervisor,
       host: entry.host,
-    };
+    }, providers);
     supervisorModel = buildModel(supervisorCfg);
     // pi-agent-core's Agent reads model from `state.model` on each
     // prompt — reassign and the next agent.prompt() picks it up.
@@ -1738,7 +1999,7 @@ async function main() {
     });
     // Re-pin LM Studio context length. Non-blocking — first prompt
     // after a profile swap will JIT-load if the pin is still in flight.
-    void ensureModelLoaded(supervisorCfg, "supervisor")
+    void ensureModelLoaded(supervisorCfg, "supervisor", providers)
       .then((r) => console.error(`[profile] ${r.ok ? "ctx-pin" : "ctx-pin FAILED"} supervisor: ${r.detail}`))
       .catch((err) => console.error(`[profile] ctx-pin error: ${(err as Error).message}`));
   }
@@ -2127,7 +2388,9 @@ async function main() {
           // Pick the reviewer-role model if configured; fall back to the
           // active supervisor. Matches the rolesToPin logic above — same
           // provider/model identity that the LM Studio ctx-pin honored.
-          const reviewerCfg = providers.models.reviewer ?? supervisorCfg;
+          const reviewerCfgRaw = providers.models.reviewer ?? supervisorCfg;
+          // v2.8.13 Phase 4: provider="local" → local_backend.kind, host, model
+          const reviewerCfg = resolveRoleCfg("reviewer", reviewerCfgRaw, providers);
           // baseUrl resolution: providers.host is the OpenAI-compatible
           // root (`http://localhost:1234/v1` etc.); the reviewer's
           // callSupervisor helper appends `/v1/...` paths, so strip a
@@ -2293,16 +2556,33 @@ async function main() {
   const COMPACT_CFG_PATH = join(MASTER_STATE_DIR, "compact.json");
 
   async function getSupervisorLoadedCtx(timeoutMs = 1500): Promise<number | null> {
+    // Phase 4: probe through the LocalBackendAdapter so the loaded-context
+    // lookup is correct for whichever runtime is actually behind
+    // supervisorCfg. Pre-Phase-4 this hit LM Studio's native
+    // /api/v0/models against ANY host — when supervisorCfg.provider had
+    // been rewritten to "ollama" or "omlx" by resolveRoleCfg the request
+    // either 404'd silently (Ollama) or returned the wrong shape (oMLX),
+    // and the caller got `null` for the wrong reason. The adapter knows
+    // the right endpoint per backend; LocalModel.context_length is
+    // populated where the backend exposes it (lmstudio: yes, omlx: yes,
+    // ollama: no — falls through to null naturally).
+    const kind = mapToLocalBackendKind(supervisorCfg.provider, supervisorCfg.host);
+    if (!kind) return null;
+    const adapter = getLocalBackendAdapter(kind);
+    const host = supervisorCfg.host ?? adapter.defaultHost;
+    const apiKey =
+      kind === "lmstudio"
+        ? resolveSecret("lmstudio_api_token")
+        : kind === "omlx"
+          ? resolveSecret("omlx_api_token")
+          : null;
     try {
-      const host = (supervisorCfg.host ?? "http://localhost:1234/v1").replace(/\/v1\/?$/, "");
-      const r = await fetch(`${host}/api/v0/models`, {
-        headers: { ...lmstudioAuthHeader() },
-        signal: AbortSignal.timeout(timeoutMs),
+      const models = await adapter.listModels(host, {
+        timeout_ms: timeoutMs,
+        api_key: apiKey,
       });
-      if (!r.ok) return null;
-      const j = (await r.json()) as { data?: Array<{ id: string; loaded_context_length?: number }> };
-      const found = (j.data ?? []).find((m) => m.id === supervisorCfg.model);
-      return found?.loaded_context_length ?? null;
+      const found = models.find((m) => m.id === supervisorCfg.model);
+      return found?.context_length ?? null;
     } catch {
       return null;
     }
@@ -3697,7 +3977,11 @@ async function main() {
 
       // /context — token + context-window stats. Approximates token count
       // via char-count / 4 (good enough for a UX indicator). Reads the
-      // current LM Studio loaded_context_length per supervisor model.
+      // current loaded context length per supervisor model from whichever
+      // local backend resolveRoleCfg routed us to (LM Studio populates
+      // loaded_context_length; oMLX populates context_length; Ollama
+      // doesn't expose load-time context per model and falls through to
+      // null, which the UI renders as "—").
       if (url.pathname === "/context" && req.method === "GET") {
         const messages = agent.state.messages as Array<Record<string, unknown>>;
         let chars = 0;
@@ -3716,22 +4000,13 @@ async function main() {
         // sit in every prompt window. Approximate as 2500 tokens for
         // SKILL.md + 24-tool schema bundle. Empirical from prior /v1/chat/completions logs.
         const fixedOverheadTokens = 2500;
-        // Get loaded context window from LM Studio. Earlier version used
-        // a /v1/../api/v0 string-replace that quietly failed when the
-        // host string didn't end in /v1; just strip /v1 cleanly.
-        let loadedContext: number | null = null;
-        try {
-          const host = (supervisorCfg.host ?? "http://localhost:1234/v1").replace(/\/v1\/?$/, "");
-          const r = await fetch(`${host}/api/v0/models`, {
-            headers: { ...lmstudioAuthHeader() },
-            signal: AbortSignal.timeout(1500),
-          });
-          if (r.ok) {
-            const j = (await r.json()) as { data?: Array<{ id: string; loaded_context_length?: number }> };
-            const found = (j.data ?? []).find((m) => m.id === supervisorCfg.model);
-            if (found?.loaded_context_length) loadedContext = found.loaded_context_length;
-          }
-        } catch { /* ignore */ }
+        // Get loaded context window via the adapter for the resolved
+        // supervisor backend. Pre-Phase-4 this hit LM Studio's native
+        // /api/v0/models directly — that quietly mis-fired against
+        // Ollama / oMLX hosts. getSupervisorLoadedCtx routes through the
+        // adapter's listModels and reads LocalModel.context_length, which
+        // is populated where the backend exposes it.
+        const loadedContext = await getSupervisorLoadedCtx(1500);
         const total = estimatedTokens + fixedOverheadTokens;
         return Response.json({
           ok: true,
@@ -3830,10 +4105,351 @@ async function main() {
             results.push({ role, ok: false, detail: "no such role in providers.json" });
             continue;
           }
-          const r = await ensureModelLoaded(cfg, role);
+          const r = await ensureModelLoaded(cfg, role, providers);
           results.push({ role, ...r });
         }
         return Response.json({ ok: results.every((r) => r.ok), results });
+      }
+
+      // ── /local-backend — Phase 4 local-inference-backend control ──────
+      //
+      // GET  returns the current backend config + reachability + catalog.
+      // POST {kind, host, models} persists, re-resolves role assignments,
+      //      returns the updated GET shape.
+      // POST /local-backend/test {kind, host, api_key?} runs a non-destructive
+      //      health probe without persisting.
+      //
+      // Internal 127.0.0.1-only — same trust boundary as /profile.
+      if (url.pathname === "/local-backend/test" && req.method === "POST") {
+        let body: { kind?: string; host?: string; api_key?: string | null } = {};
+        try { body = await req.json(); } catch { /* empty body 400 below */ }
+        const kindRaw = body.kind ?? "";
+        // CodeRabbit pass-9 (3): pass body.host so the kind-resolve agrees
+        // with the migration heuristic — picking "omlx" for a legacy
+        // `mlx`/`vllm` tag on :8000.
+        const mappedKind = mapToLocalBackendKind(kindRaw, body.host ?? null);
+        if (!mappedKind) {
+          return Response.json({
+            ok: false,
+            error: `unknown kind "${kindRaw}" — supported: ${listLocalBackendKinds().join(", ")}`,
+          }, { status: 400 });
+        }
+        const adapter = getLocalBackendAdapter(mappedKind);
+        const host = body.host?.trim() || adapter.defaultHost;
+        const apiKey =
+          body.api_key ??
+          (mappedKind === "lmstudio"
+            ? resolveSecret("lmstudio_api_token")
+            : mappedKind === "omlx"
+              ? resolveSecret("omlx_api_token")
+              : null);
+        const probe = await adapter.healthProbe(host, {
+          api_key: apiKey,
+        });
+        return Response.json({
+          ok: probe.ok,
+          detail: probe.detail,
+          model_count: probe.model_count ?? null,
+          reachable_at: probe.reachable_at ?? null,
+        });
+      }
+
+      if (url.pathname === "/local-backend" && req.method === "GET") {
+        const lb = providers.local_backend;
+        if (!lb) {
+          return Response.json({
+            ok: true,
+            kind: null,
+            host: null,
+            models: {},
+            available_models: [],
+            health: { ok: false, detail: "no local_backend configured" },
+            last_verified: null,
+          });
+        }
+        const adapter = getLocalBackendAdapter(lb.kind);
+        const apiKey =
+          lb.kind === "lmstudio"
+            ? resolveSecret("lmstudio_api_token")
+            : lb.kind === "omlx"
+              ? resolveSecret("omlx_api_token")
+              : null;
+        const health = await adapter.healthProbe(lb.host, { api_key: apiKey });
+        let available: unknown[] = [];
+        if (health.ok) {
+          try {
+            available = await adapter.listModels(lb.host, { api_key: apiKey });
+          } catch (err) {
+            // listModels failure shouldn't fail the whole GET — leave
+            // available empty and let the health row tell the operator
+            // what's broken.
+            console.error(`[local-backend] listModels(${lb.kind}) failed: ${(err as Error).message}`);
+          }
+        }
+        return Response.json({
+          ok: true,
+          kind: lb.kind,
+          host: lb.host,
+          models: lb.models,
+          available_models: available,
+          health,
+          last_verified: lb.last_verified ?? null,
+        });
+      }
+
+      if (url.pathname === "/local-backend" && req.method === "POST") {
+        let body: {
+          kind?: string;
+          host?: string;
+          models?: Record<string, unknown>;
+        } = {};
+        try { body = await req.json(); } catch {
+          return Response.json({ ok: false, error: "invalid JSON body" }, { status: 400 });
+        }
+        const kindRaw = body.kind ?? "";
+        // CodeRabbit pass-9 (3): pass body.host so the kind-resolve agrees
+        // with the migration heuristic — picking "omlx" for a legacy
+        // `mlx`/`vllm` tag on :8000.
+        const mappedKind = mapToLocalBackendKind(kindRaw, body.host ?? null);
+        if (!mappedKind) {
+          return Response.json({
+            ok: false,
+            error: `unknown kind "${kindRaw}" — supported: ${listLocalBackendKinds().join(", ")}`,
+          }, { status: 400 });
+        }
+        const adapter = getLocalBackendAdapter(mappedKind);
+        const host = body.host?.trim() || adapter.defaultHost;
+        const apiKey =
+          mappedKind === "lmstudio"
+            ? resolveSecret("lmstudio_api_token")
+            : mappedKind === "omlx"
+              ? resolveSecret("omlx_api_token")
+              : null;
+        const health = await adapter.healthProbe(host, { api_key: apiKey });
+        // CodeRabbit pass-7 (1): refuse to mutate providers.local_backend or
+        // persist when the probe failed. Previously the handler would assign
+        // providers.local_backend and call persistProviders regardless of
+        // health.ok, leaving the operator with a persisted-but-unreachable
+        // config and (more importantly) clobbering whatever previously
+        // working backend was already there. Guard placed BEFORE any mutation
+        // so prevModels and the prior providers.local_backend stay untouched.
+        if (!health.ok) {
+          return Response.json({
+            ok: false,
+            error: `local_backend health probe failed: ${health.detail ?? "unknown error"} — previous configuration preserved`,
+            health,
+          }, { status: 400 });
+        }
+        const prevModels = providers.local_backend?.models ?? {};
+        const incoming = body.models ?? {};
+        // CodeRabbit pass-9 (2): merge composition now lives in the
+        // exported `mergeModels` helper (presence-check semantics from
+        // pass-4 (b) and the pass-1 normalizeModel invariant moved with it).
+        // Tests import the same helpers so the contract has one home.
+        const mergedModels = mergeModels(prevModels, incoming);
+        // CodeRabbit pass-10 (1) — CRITICAL: supervisor is mandatory.
+        // The pass-4 (b) presence-check semantics let operators clear a
+        // role by sending an explicit `null` (— disabled — in the
+        // dashboard). That's the right contract for `embeddings`,
+        // `reviewer`, and `router` — all optional — but supervisor is
+        // load-bearing: the daemon can't boot a turn without one, and
+        // resolveRoleCfg("supervisor", ...) throws when it's null. Reject
+        // BEFORE mutating providers.local_backend so the prior config
+        // stays intact when the operator tried to clear supervisor.
+        if (mergedModels.supervisor === null) {
+          return Response.json({
+            ok: false,
+            error:
+              "supervisor role cannot be cleared — pick a supervisor model before saving",
+            health,
+          }, { status: 400 });
+        }
+        providers.local_backend = {
+          kind: mappedKind,
+          host,
+          models: mergedModels,
+          last_verified: new Date().toISOString(),
+        };
+        // Re-rewrite any role still on a legacy local-provider id to
+        // provider="local" so the new backend is actually used.
+        for (const [role, cfg] of Object.entries(providers.models)) {
+          if (!cfg || typeof cfg !== "object") continue;
+          const p = (cfg as { provider?: string }).provider;
+          if (p && LEGACY_LOCAL_PROVIDER_IDS.has(p)) {
+            // CodeRabbit pass-7 (2): explicit `undefined` checks replace the
+            // old truthy guards (`m && !mergedModels[role]`). The truthy form
+            // treated operator-set `null` (an explicit "disabled") as missing
+            // and overwrote it with the stale legacy `raw.model`, defeating
+            // the pass-4 (b) presence-check semantics in mergedModels above.
+            // Same null-vs-missing thread as pass-4 (b) and pass-6 (a).
+            const m = (cfg as { model?: string | null }).model;
+            if (m !== undefined && mergedModels[role] === undefined) {
+              mergedModels[role] = m;
+            }
+            (cfg as { provider: string }).provider = "local";
+          }
+        }
+        try {
+          persistProviders(providers);
+        } catch (err) {
+          return Response.json({
+            ok: false,
+            error: `persist failed: ${(err as Error).message}`,
+          }, { status: 500 });
+        }
+        // CodeRabbit pass-4 (c): rebind in-memory supervisor state so chat /
+        // diag / context routes pick up the new local backend on the NEXT
+        // prompt without a daemon restart. The original Phase 4 commit
+        // message promised "no restart needed" but didn't actually reapply
+        // supervisorCfg / supervisorModel / agent.state.model — the running
+        // daemon kept dispatching to the old backend until manual restart.
+        //
+        // Mirrors applyProfileSwap (~L1872). We're outside processOnePrompt
+        // here so we lack the promptInFlight guarantee — but readers either
+        // grab supervisorCfg or supervisorModel independently (no caller
+        // pairs them in a torn-read window), pi-agent-core reads
+        // agent.state.model at the START of each prompt (not mid-turn), and
+        // single JS field assignment is atomic. In-flight prompts keep
+        // their captured model reference; the new value lands next prompt.
+        // TODO: factor with profile-swap path.
+        try {
+          let entrySupervisor: string | undefined;
+          let entryHost: string | undefined;
+          try {
+            const pf = loadProfiles();
+            const entry = pf.profiles[pf.active];
+            entrySupervisor = entry?.supervisor;
+            entryHost = entry?.host;
+          } catch (err) {
+            console.error(
+              `[local-backend] profiles reload during rebind failed (continuing without profile override): ${(err as Error).message}`,
+            );
+          }
+          const newSupCfg = resolveRoleCfg(
+            "supervisor",
+            {
+              ...supervisorCfgFromProviders,
+              ...(entrySupervisor ? { model: entrySupervisor } : {}),
+              ...(entryHost ? { host: entryHost } : {}),
+            },
+            providers,
+          );
+          supervisorCfg = newSupCfg;
+          supervisorModel = buildModel(supervisorCfg);
+          (agent.state as { model?: unknown }).model = supervisorModel;
+          console.error(
+            `[local-backend] supervisor rebound — ${supervisorCfg.provider}/${supervisorCfg.model} @ ${supervisorCfg.host ?? "(default)"}`,
+          );
+          broadcast("supervisor_swap", {
+            ts: new Date().toISOString(),
+            reason: "local-backend-change",
+            supervisor: `${supervisorCfg.provider}/${supervisorCfg.model}`,
+            backend: `${mappedKind}@${host}`,
+          });
+          // Re-pin context length on the new backend. Fire-and-forget;
+          // first prompt after the swap will JIT-load if the pin is still
+          // in flight (same pattern as applyProfileSwap).
+          void ensureModelLoaded(supervisorCfg, "supervisor", providers)
+            .then((r) =>
+              console.error(
+                `[local-backend] ${r.ok ? "ctx-pin" : "ctx-pin FAILED"} supervisor: ${r.detail}`,
+              ),
+            )
+            .catch((err) =>
+              console.error(`[local-backend] ctx-pin error: ${(err as Error).message}`),
+            );
+        } catch (err) {
+          // Rebind failure is non-fatal: providers.json is already
+          // persisted, the daemon will pick up the change on next restart.
+          // Surface it loudly so the operator knows to restart.
+          console.error(
+            `[local-backend] supervisor rebind failed (daemon restart required to pick up change): ${(err as Error).message}`,
+          );
+        }
+        // CodeRabbit pass-11 (1): mirror the pass-4 (c) supervisor rebind for
+        // the memory-kernel's reviewer closure. The boot block at L2376–2461
+        // captures `reviewerCfg` (a `const`) inside the `llmFetcher` and
+        // `reviewEventsWired` closures and hands them to the kernel via
+        // `_setMemoryKernelDepsForTesting`. The captured value is the closure
+        // shape — the const itself cannot be reassigned — so the rebind path
+        // is: rebuild fresh `llmFetcher` + `reviewEventsWired` closures with
+        // a re-resolved `reviewerCfg`, then call the setter again. The
+        // kernel's `runOneCycle` reads `deps.reviewEvents` at the START of
+        // each tick (memory-kernel.ts:368), so the next tick uses the new
+        // closures atomically. We only re-wire when TOOL_GATES.memory_kernel
+        // is on — the kernel may have never been armed at boot (Memori
+        // sidecar unreachable), in which case there's no ticker reading deps
+        // and the re-wire would be a harmless no-op anyway.
+        if (TOOL_GATES.memory_kernel) {
+          try {
+            const reviewerCfgRaw = providers.models?.reviewer ?? supervisorCfgFromProviders;
+            const newReviewerCfg = resolveRoleCfg("reviewer", reviewerCfgRaw, providers);
+            const baseUrl = (newReviewerCfg.host ?? "").replace(/\/v1\/?$/, "");
+            const reviewerHasUsableHost = baseUrl.length > 0;
+            if (!reviewerHasUsableHost) {
+              console.error(
+                `[local-backend] reviewer rebind — reviewer host not configured for ${newReviewerCfg.provider}/${newReviewerCfg.model}; kernel ticker will run no-op cycles until a host is set`,
+              );
+            }
+            const llmFetcher = async (
+              messages: Parameters<typeof memoryKernelSupervisorFetcher>[0],
+              opts: Parameters<typeof memoryKernelSupervisorFetcher>[1],
+            ): Promise<string> => {
+              if (!reviewerHasUsableHost) return "";
+              const token = getApiKeyForProvider(newReviewerCfg.provider);
+              return memoryKernelSupervisorFetcher(messages, {
+                ...opts,
+                baseUrl,
+                authToken: token === "not-needed" ? undefined : token,
+              });
+            };
+            const reviewEventsWired: Parameters<typeof _setMemoryKernelDepsForTesting>[0]["reviewEvents"] =
+              async (events, ctx) =>
+                memoryKernelReviewEvents(events, ctx, {
+                  llmFetcher,
+                  configuredSupervisor: () => ({
+                    provider: newReviewerCfg.provider,
+                    model: newReviewerCfg.model,
+                  }),
+                });
+            _setMemoryKernelDepsForTesting({ reviewEvents: reviewEventsWired });
+            console.error(
+              `[local-backend] reviewer rebound — ${newReviewerCfg.provider}/${newReviewerCfg.model} @ ${newReviewerCfg.host ?? "(default)"}`,
+            );
+            broadcast("reviewer_swap", {
+              ts: new Date().toISOString(),
+              reason: "local-backend-change",
+              reviewer: `${newReviewerCfg.provider}/${newReviewerCfg.model}`,
+              backend: `${mappedKind}@${host}`,
+            });
+          } catch (err) {
+            console.error(
+              `[local-backend] reviewer rebind failed (daemon restart required to pick up change): ${(err as Error).message}`,
+            );
+          }
+        }
+        logDecision({
+          project: "_master",
+          action: "local_backend_set",
+          rationale: `kind=${mappedKind} host=${host} health=${health.ok ? "ok" : "fail"}`,
+        });
+        let available: unknown[] = [];
+        if (health.ok) {
+          try {
+            available = await adapter.listModels(host, { api_key: apiKey });
+          } catch (err) {
+            console.error(`[local-backend] listModels(${mappedKind}) failed: ${(err as Error).message}`);
+          }
+        }
+        return Response.json({
+          ok: true,
+          kind: mappedKind,
+          host,
+          models: mergedModels,
+          available_models: available,
+          health,
+          last_verified: providers.local_backend.last_verified,
+        });
       }
 
       if (url.pathname === "/teams" && req.method === "GET") {
@@ -3891,24 +4507,52 @@ async function main() {
         // Fan out connectivity + readiness checks in parallel. Each check
         // returns {name, ok, detail} — UI renders a green/red row per check.
         const checks = await Promise.all([
-          // 1. LM Studio reachability + supervisor model present
+          // 1. Local-backend reachability + supervisor model present.
+          // Pre-Phase-4 the row was hard-coded to "lmstudio" and hit a
+          // raw $host/models URL. resolveRoleCfg can route supervisorCfg
+          // through ollama or omlx — when it does, the old probe label
+          // was misleading AND the path resolved against the wrong port.
+          // Route through the adapter's listModels so the row name + the
+          // endpoint match whichever runtime is actually serving.
           (async () => {
-            const host = supervisorCfg.host ?? "http://localhost:1234/v1";
-            try {
-              const r = await fetch(`${host.replace(/\/$/, "")}/models`, {
-                signal: AbortSignal.timeout(2000),
-              });
-              if (!r.ok) return { name: "lmstudio", ok: false, detail: `HTTP ${r.status}` };
-              const j = (await r.json()) as { data?: Array<{ id: string }> };
-              const ids = (j.data ?? []).map((m) => m.id);
-              const found = ids.includes(supervisorCfg.model);
+            const kind = mapToLocalBackendKind(supervisorCfg.provider, supervisorCfg.host);
+            if (!kind) {
               return {
-                name: "lmstudio",
+                name: "local-inference",
                 ok: true,
-                detail: `${ids.length} models loaded${found ? `, supervisor "${supervisorCfg.model}" present` : `, supervisor "${supervisorCfg.model}" NOT loaded (will JIT-load on first call)`}`,
+                detail: `supervisor provider="${supervisorCfg.provider}" is cloud — no local backend probe`,
+              };
+            }
+            const adapter = getLocalBackendAdapter(kind);
+            const host = supervisorCfg.host ?? adapter.defaultHost;
+            const apiKey =
+              kind === "lmstudio"
+                ? resolveSecret("lmstudio_api_token")
+                : kind === "omlx"
+                  ? resolveSecret("omlx_api_token")
+                  : null;
+            try {
+              const models = await adapter.listModels(host, {
+                timeout_ms: 2000,
+                api_key: apiKey,
+              });
+              const ids = models.map((m) => m.id);
+              const found = ids.includes(supervisorCfg.model);
+              // CodeRabbit pass-11 (3): /diag readiness must reflect whether
+              // the configured supervisor model is actually present in the
+              // backend's listModels response. Returning ok=true even when
+              // the model was missing made the green row a lie — the JIT
+              // load promise is best-effort and the operator deserves a red
+              // row when the chosen supervisor isn't loaded yet. listModels
+              // succeeded (we're past the catch), so connectivity is fine;
+              // ok now mirrors model presence.
+              return {
+                name: kind,
+                ok: found,
+                detail: `${ids.length} models available${found ? `, supervisor "${supervisorCfg.model}" present` : `, supervisor "${supervisorCfg.model}" NOT loaded (will JIT-load on first call)`}`,
               };
             } catch (err) {
-              return { name: "lmstudio", ok: false, detail: (err as Error).message };
+              return { name: kind, ok: false, detail: (err as Error).message };
             }
           })(),
           // 2. Telegram bot reachable + listener actively polling
