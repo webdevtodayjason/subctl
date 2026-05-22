@@ -29,6 +29,7 @@ import {
   isCatalogProvider,
   getBundledModels,
   listAllProviderIds,
+  getDefaultModel,
 } from "../../components/master/pi-ai-catalog.ts";
 
 const HOME = homedir();
@@ -63,8 +64,10 @@ export interface CatalogModel {
     cache_read?: number;
     cache_write?: number;
   };
-  /** Operator opt-in/opt-out toggle. Defaults to true — every model from
-   *  the source is shown unless the operator explicitly hides it. */
+  /** Operator opt-in/opt-out toggle. v2.8.17 — a freshly-seeded catalog
+   *  enables ONLY the provider's default model; the operator opts the rest
+   *  in via the Providers-tab model table. A model is "enabled" (appears in
+   *  the chat dropdown) unless this is explicitly false. */
   enabled: boolean;
 }
 
@@ -102,6 +105,12 @@ function catalogPath(provider: string): string {
 export function fromPiAiBundle(provider: string): CatalogFile {
   const canonical = resolveProviderId(provider);
   const raw = getBundledModels(canonical);
+  // v2.8.17 — seed only the provider's default model as enabled. Previously
+  // every bundled model seeded `enabled: true`, so connecting a provider
+  // flipped all ~40 models into the chat dropdown at once. Now a fresh
+  // catalog is immediately usable (the default works) but uncluttered; the
+  // operator opts the rest in via the Providers-tab model table.
+  const shippedDefault = getDefaultModel(canonical);
   const models: CatalogModel[] = raw.map((m) => ({
     id: String(m.id ?? ""),
     name: String(m.name ?? m.id ?? ""),
@@ -130,13 +139,48 @@ export function fromPiAiBundle(provider: string): CatalogFile {
               : undefined,
         }
       : undefined,
-    enabled: true,
+    enabled: String(m.id ?? "") === shippedDefault,
   }));
   return {
     provider: canonical,
     fetched_at: new Date().toISOString(),
     source: "pi-ai-bundle",
     models,
+  };
+}
+
+/** v2.8.17 — Reconcile the `enabled` flags of a freshly-derived catalog
+ *  against whatever is already on disk for the provider.
+ *
+ *  - If a prior catalog file exists, carry every prior model's `enabled`
+ *    flag forward (matched by id). Models that are new since the last
+ *    refresh seed `enabled: false` — the operator opts them in. This is
+ *    the load-bearing "Refresh must not clobber operator curation" rule.
+ *  - If no prior catalog exists (first-ever derivation), seed only the
+ *    provider's default model as enabled, mirroring fromPiAiBundle().
+ *
+ *  Pure: returns a new CatalogFile, does not persist. */
+function reconcileEnabled(fresh: CatalogFile): CatalogFile {
+  const prior = loadCatalog(fresh.provider);
+  if (prior) {
+    const priorEnabled = new Map(
+      prior.models.map((m) => [m.id, m.enabled !== false] as const),
+    );
+    return {
+      ...fresh,
+      models: fresh.models.map((m) => ({
+        ...m,
+        enabled: priorEnabled.has(m.id) ? priorEnabled.get(m.id)! : false,
+      })),
+    };
+  }
+  const shippedDefault = getDefaultModel(fresh.provider);
+  return {
+    ...fresh,
+    models: fresh.models.map((m) => ({
+      ...m,
+      enabled: m.id === shippedDefault,
+    })),
   };
 }
 
@@ -210,6 +254,21 @@ export function setModelEnabled(
     throw new Error(`model "${modelId}" not found in ${canonical} catalog`);
   }
   current.models[idx] = { ...current.models[idx], enabled };
+  saveCatalog(current);
+  return current;
+}
+
+/** v2.8.17 — Flip EVERY model in a provider's catalog to `enabled`. Backs
+ *  the "Enable all" / "Disable all" buttons in the Providers-tab model
+ *  table. Like setModelEnabled, materialises from the pi-ai bundle first
+ *  when no cache exists yet, then writes + returns the post-write catalog. */
+export function setAllModelsEnabled(
+  provider: string,
+  enabled: boolean,
+): CatalogFile {
+  const canonical = resolveProviderId(provider);
+  const current = loadCatalog(canonical) ?? fromPiAiBundle(canonical);
+  current.models = current.models.map((m) => ({ ...m, enabled }));
   saveCatalog(current);
   return current;
 }
@@ -472,12 +531,12 @@ async function refreshMistral(): Promise<CatalogFile | null> {
   };
 }
 
-/** Refresh a provider's catalog. Tries the live-fetch path first; falls
- *  back to a fresh derivation from pi-ai's bundle on auth failure (return
- *  null from the live helper) or fetch error (caller catches). The caller
- *  is responsible for saving via saveCatalog() — this function only
- *  computes the new value. */
-export async function refreshCatalog(provider: string): Promise<{
+/** Derive a provider's catalog afresh. Tries the live-fetch path first;
+ *  falls back to a fresh derivation from pi-ai's bundle on auth failure
+ *  (return null from the live helper) or fetch error (caught here).
+ *  Produces a catalog whose `enabled` flags are NOT yet reconciled against
+ *  the on-disk state — refreshCatalog() does that. */
+async function deriveRefreshedCatalog(provider: string): Promise<{
   catalog: CatalogFile;
   notice?: string;
 }> {
@@ -529,4 +588,20 @@ export async function refreshCatalog(provider: string): Promise<{
     catalog: fromPiAiBundle(canonical),
     notice: "no live-fetch implementation for this provider yet — using pi-ai bundle",
   };
+}
+
+/** Refresh a provider's catalog. Wraps deriveRefreshedCatalog() and then
+ *  reconciles the new catalog's `enabled` flags against whatever is on
+ *  disk — see reconcileEnabled(). This is what preserves operator
+ *  enable/disable curation across a Refresh: a freshly live-fetched model
+ *  list never resets choices the operator already made.
+ *
+ *  The caller is responsible for persisting the result via saveCatalog()
+ *  — this function only computes the new value. */
+export async function refreshCatalog(provider: string): Promise<{
+  catalog: CatalogFile;
+  notice?: string;
+}> {
+  const { catalog, notice } = await deriveRefreshedCatalog(provider);
+  return { catalog: reconcileEnabled(catalog), notice };
 }

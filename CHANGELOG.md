@@ -1,3 +1,15 @@
+## [2.8.17] — 2026-05-22
+
+### `feat(dashboard): chat dropdown enumerates all catalog-enabled models`
+
+The Providers-tab model table's "on" column has always been documented as "enabled — appears in chat dropdown", but the chat model selector only ever rendered each cloud provider's single `default_model`. Operators who enabled GPT-5.5 (or any non-default model) in the catalog couldn't actually switch to it from chat.
+
+**Fix:** `/api/providers` now returns `enabled_models[]` per provider. The chat dropdown enumerates one option per catalog-enabled model — the provider's default sorted first with a ★ marker. Providers whose catalog hasn't been fetched yet fall back to the single default-model row (pre-v2.8.17 behavior).
+
+**Catalog seed no longer auto-enables everything.** A freshly-connected provider previously flipped all ~40 bundled models `enabled: true`. Now only the provider's shipped default seeds on; the operator opts the rest in via the Providers-tab model table. `Refresh` preserves existing enable/disable choices — new models since the last refresh seed `enabled: false` instead of clobbering operator curation.
+
+**New: Enable-all / Disable-all** buttons on each provider's model table for fast bulk curation. `POST /api/catalogs/<provider>/models/enabled-all  body { enabled: boolean }`.
+
 ## [2.8.16] — 2026-05-22
 
 ### `fix(cognee-promotion): entityId override now reaches listCurated SQL query`

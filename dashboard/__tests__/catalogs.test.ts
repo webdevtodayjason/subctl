@@ -24,8 +24,11 @@ import {
   saveCatalog,
   isKnownProvider,
   listCachedCatalogs,
+  setAllModelsEnabled,
+  setModelEnabled,
   type CatalogFile,
 } from "../lib/catalogs.ts";
+import { getDefaultModel } from "../../components/master/pi-ai-catalog.ts";
 
 let scratchDir: string;
 
@@ -50,7 +53,26 @@ describe("fromPiAiBundle", () => {
     expect(typeof m.id).toBe("string");
     expect(m.id.length).toBeGreaterThan(0);
     expect(typeof m.name).toBe("string");
-    expect(m.enabled).toBe(true);
+    // v2.8.17 — enabled depends on whether this is the provider's default
+    expect(typeof m.enabled).toBe("boolean");
+  });
+
+  // v2.8.17 — fresh seed enables only the provider's shipped default model;
+  // every other bundled model starts off so a freshly-connected provider
+  // doesn't flood the chat dropdown with ~40 options.
+  test("v2.8.17: seeds only the provider's default model as enabled", () => {
+    const cat = fromPiAiBundle("anthropic");
+    const shippedDefault = getDefaultModel("anthropic");
+    expect(shippedDefault).toBeTruthy();
+    const enabled = cat.models.filter((m) => m.enabled);
+    expect(enabled).toHaveLength(1);
+    expect(enabled[0].id).toBe(shippedDefault);
+    // All others should be explicitly disabled (false, not undefined).
+    for (const m of cat.models) {
+      if (m.id !== shippedDefault) {
+        expect(m.enabled).toBe(false);
+      }
+    }
   });
 
   test("populates context_window when pi-ai has it", () => {
@@ -183,5 +205,70 @@ describe("isKnownProvider", () => {
   test("rejects gibberish provider names", () => {
     expect(isKnownProvider("not-a-real-thing")).toBe(false);
     expect(isKnownProvider("")).toBe(false);
+  });
+});
+
+// v2.8.17 — bulk toggle endpoint backing.
+describe("setAllModelsEnabled", () => {
+  test("flips every model in the catalog to enabled=true", () => {
+    // Seed via fromPiAiBundle (default model is the only one enabled).
+    const before = fromPiAiBundle("anthropic");
+    saveCatalog(before);
+    const offCount = before.models.filter((m) => !m.enabled).length;
+    expect(offCount).toBeGreaterThan(0);
+    const after = setAllModelsEnabled("anthropic", true);
+    expect(after.models.length).toBe(before.models.length);
+    for (const m of after.models) expect(m.enabled).toBe(true);
+  });
+
+  test("flips every model to enabled=false", () => {
+    const seed = fromPiAiBundle("anthropic");
+    saveCatalog(seed);
+    setAllModelsEnabled("anthropic", true); // first enable all
+    const after = setAllModelsEnabled("anthropic", false);
+    for (const m of after.models) expect(m.enabled).toBe(false);
+  });
+
+  test("persists to disk so loadCatalog sees the change", () => {
+    saveCatalog(fromPiAiBundle("anthropic"));
+    setAllModelsEnabled("anthropic", true);
+    const reloaded = loadCatalog("anthropic");
+    expect(reloaded).not.toBeNull();
+    for (const m of reloaded!.models) expect(m.enabled).toBe(true);
+  });
+
+  test("materialises from pi-ai bundle when no cache exists yet", () => {
+    // No saveCatalog call — first interaction is bulk-enable. Should not throw.
+    const result = setAllModelsEnabled("anthropic", true);
+    expect(result.models.length).toBeGreaterThan(0);
+    for (const m of result.models) expect(m.enabled).toBe(true);
+  });
+
+  test("resolves legacy alias", () => {
+    saveCatalog(fromPiAiBundle("anthropic"));
+    const result = setAllModelsEnabled("claude", true); // legacy → anthropic
+    expect(result.provider).toBe("anthropic");
+  });
+});
+
+// v2.8.17 — single-model toggle preserves other models' state.
+describe("setModelEnabled preserves siblings (v2.8.17 regression guard)", () => {
+  test("flipping one model on does not enable the others", () => {
+    // Fresh seed: only default is on. Enable a non-default model. The other
+    // non-default models must STILL be off.
+    saveCatalog(fromPiAiBundle("anthropic"));
+    const seeded = loadCatalog("anthropic")!;
+    const shippedDefault = getDefaultModel("anthropic");
+    const nonDefault = seeded.models.find((m) => m.id !== shippedDefault);
+    expect(nonDefault).toBeDefined();
+    const result = setModelEnabled("anthropic", nonDefault!.id, true);
+    const enabledIds = result.models.filter((m) => m.enabled).map((m) => m.id);
+    expect(enabledIds).toContain(shippedDefault);
+    expect(enabledIds).toContain(nonDefault!.id);
+    // Pick a third model that wasn't touched — it should still be off.
+    const thirdOff = result.models.find(
+      (m) => m.id !== shippedDefault && m.id !== nonDefault!.id,
+    );
+    if (thirdOff) expect(thirdOff.enabled).toBe(false);
   });
 });

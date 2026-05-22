@@ -503,32 +503,60 @@ export async function mount({ root: _root }) {
           for (const p of cloud) {
             const dot = p.available ? "●" : "○";
             const wired = p.wired !== false; // default-true for legacy entries
-            // v2.8.8 Phase 1c — disable cloud options that have no shipped
-            // default_model. Previously these rendered as "<provider>|?" which
-            // POSTed model="?" to /api/master/supervisor and wrote garbage
-            // into providers.json. Server-side validation now rejects this,
-            // but disabling the option is the better UX.
-            //
-            // v2.8.9 — also disable when the current default_model has been
-            // toggled off in the catalog (operator unchecked it in the Models
-            // panel). `default_model_enabled` comes from /api/providers.
             const hasDefault = !!p.default_model;
-            const defaultEnabled = p.default_model_enabled !== false; // default true
-            const model = p.default_model || "(no default)";
-            const value = (hasDefault && defaultEnabled) ? `${p.id}|${p.default_model}` : "";
-            const state = !wired
-              ? "not yet wired"
-              : !hasDefault
-                ? "no default model — pick via + New Profile"
-                : !defaultEnabled
-                  ? "default disabled — re-enable in Providers tab"
-                  : p.available
-                    ? "ready"
-                    : "not authed";
-            const isCurrent = hasDefault && defaultEnabled && supervisor === `${p.id}/${p.default_model}`;
-            const disabledAttr = (!wired || !hasDefault || !defaultEnabled) ? " disabled" : "";
             const noteAttr = !wired && p.wired_note ? ` title="${escapeText(p.wired_note)}"` : "";
-            html += `<option value="${escapeText(value)}"${disabledAttr}${noteAttr} ${isCurrent ? "selected" : ""}>${dot}  ${escapeText(p.display)} · ${escapeText(model)} · ${state}</option>`;
+            // v2.8.17 — enumerate one <option> per catalog-enabled model.
+            // The Providers-tab model table's "on" column has always been
+            // documented "enabled — appears in chat dropdown"; before this
+            // the dropdown only ever rendered each provider's single
+            // default_model, so an operator who enabled GPT-5.5 couldn't
+            // pick it. `enabled_models` comes from /api/providers.
+            const enabledModels = Array.isArray(p.enabled_models) ? p.enabled_models : [];
+            if (wired && hasDefault && enabledModels.length) {
+              // Sort the provider's default model FIRST (★-marked), the
+              // rest by id. The whole provider is authed-or-not, so the
+              // per-provider `available` flag drives the state text.
+              const sorted = enabledModels.slice().sort((a, b) => {
+                if (a.id === p.default_model) return -1;
+                if (b.id === p.default_model) return 1;
+                return (a.id || "").localeCompare(b.id || "");
+              });
+              const state = p.available ? "ready" : "not authed";
+              for (const m of sorted) {
+                const isDefault = m.id === p.default_model;
+                const value = `${p.id}|${m.id}`;
+                const isCurrent = supervisor === `${p.id}/${m.id}`;
+                const label = `${dot}  ${escapeText(p.display)} · ${escapeText(m.id)}${isDefault ? " ★" : ""} · ${state}`;
+                html += `<option value="${escapeText(value)}" ${isCurrent ? "selected" : ""}>${label}</option>`;
+              }
+            } else {
+              // Fallback: no catalog fetched yet (or catalog has no enabled
+              // models). Render the single default_model row — same logic
+              // as pre-v2.8.17.
+              //
+              // v2.8.8 Phase 1c — disable cloud options that have no shipped
+              // default_model. Previously these rendered as "<provider>|?"
+              // which POSTed model="?" and wrote garbage into providers.json.
+              //
+              // v2.8.9 — also disable when the current default_model has been
+              // toggled off in the catalog. `default_model_enabled` comes
+              // from /api/providers.
+              const defaultEnabled = p.default_model_enabled !== false; // default true
+              const model = p.default_model || "(no default)";
+              const value = (hasDefault && defaultEnabled) ? `${p.id}|${p.default_model}` : "";
+              const state = !wired
+                ? "not yet wired"
+                : !hasDefault
+                  ? "no default model — pick via + New Profile"
+                  : !defaultEnabled
+                    ? "default disabled — re-enable in Providers tab"
+                    : p.available
+                      ? "ready"
+                      : "not authed";
+              const isCurrent = hasDefault && defaultEnabled && supervisor === `${p.id}/${p.default_model}`;
+              const disabledAttr = (!wired || !hasDefault || !defaultEnabled) ? " disabled" : "";
+              html += `<option value="${escapeText(value)}"${disabledAttr}${noteAttr} ${isCurrent ? "selected" : ""}>${dot}  ${escapeText(p.display)} · ${escapeText(model)} · ${state}</option>`;
+            }
           }
           html += "</optgroup>";
         }
