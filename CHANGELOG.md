@@ -6,7 +6,7 @@ Cognee has been running healthy since v2.8.7 but with only 3 memories from a one
 
 **Fix:** New `cognee-promotion` ticker runs every 10 min, pulls recently-curated Memori entries (post-watermark) directly from `subctl_memori_curated` via a read-only `bun:sqlite` open of `~/.config/subctl/master/memori.db`, and ingests them into Cognee via `cogneeClient.remember()`. Tuple watermark `(last_promoted_ts, last_promoted_id)` + error log persist to `~/.config/subctl/master/cognee-promotion.json` so restarts don't re-ingest. Tuple — not bare-ts — because the curated table is keyed `(id TEXT PRIMARY KEY, ts TEXT)`; multiple promotions in the same millisecond would silently drop with a ts-only watermark.
 
-**Observability:** New diag tool `system_cognee_promotion_self` exposes `last_run_at_ms`, `last_watermark_ts`/`_id`, `total_promoted`, recent errors, configured interval, and armed flag. Each non-empty tick also logs `[cognee-promotion] tick — promoted=N errors=M watermark=<id> elapsed=Mms` and broadcasts `cognee_promotion_tick` on the SSE bus.
+**Observability:** New diag tool `system_cognee_promotion_self` exposes `last_run_at_ms`, `last_watermark_ts`/`_id`, `total_promoted`, recent errors, configured interval, and armed flag (live runtime state, flipped false on arm failure / shutdown). Each non-empty tick logs `[cognee-promotion] tick — promoted=N errors=M watermark=<id> elapsed=Mms` and broadcasts `cognee_promotion_tick_success` on the SSE bus; ticks that throw broadcast `cognee_promotion_tick_error` plus a warn-severity notification. Boot-time disarms (Cognee unreachable, arm threw) also emit warn notifications.
 
 **Config:** `SUBCTL_COGNEE_PROMOTION_INTERVAL_MIN` (default 10, min clamped to 1 minute).
 
