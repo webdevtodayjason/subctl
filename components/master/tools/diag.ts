@@ -163,6 +163,20 @@ export interface WatchdogStateSnapshot {
     team_id: string;
     tmux_session_id: string;
     last_seen_ms: number; // epoch ms
+    /** v2.8.14 — epoch ms of the most recent successful auto-nudge POST
+     *  for this team. null when no nudge has ever fired. */
+    last_nudge_at_ms?: number | null;
+    /** v2.8.14 — epoch ms of the first pane-hash change observed AFTER
+     *  the most recent nudge. null when no post-nudge change has been
+     *  detected (worker hasn't visibly replied yet). */
+    last_reply_at_ms?: number | null;
+    /** v2.8.14 — classifier kind for the worker's latest pane content
+     *  ("working" | "completed_idle" | "awaiting_input" | "blocked").
+     *  null when classification has never run. */
+    reply_classification?: string | null;
+    /** v2.8.14 — convenience flag: true iff `reply_classification ===
+     *  "completed_idle"`. Suppresses escalation in decideTeamAction. */
+    completion_flag?: boolean;
   }>;
   /** When the last watchdog tick ran (epoch ms, 0 if never). */
   last_tick_at_ms: number;
@@ -226,6 +240,11 @@ const system_watchdog_self = {
       tmux_session_id: w.tmux_session_id,
       last_seen: isoOrNull(w.last_seen_ms),
       tmux_session_exists: live.has(w.tmux_session_id),
+      // v2.8.14 — nudge/reply observability for false-positive debugging.
+      last_nudge_at: isoOrNull(w.last_nudge_at_ms ?? 0),
+      last_reply_at: isoOrNull(w.last_reply_at_ms ?? 0),
+      reply_classification: w.reply_classification ?? null,
+      completion_flag: w.completion_flag ?? false,
     }));
     const stuck_sessions = watching.filter((w) => !w.tmux_session_exists);
     return {

@@ -1,3 +1,30 @@
+## [2.8.14] — 2026-05-21
+
+### `fix(watchdog): re-classify on pane-hash change to suppress false completed_idle escalation`
+
+v2.8.13 ships Phase 4. Hours later, the operator caught a watchdog false-positive on
+team `claude-birdie`: worker replied twice via tmux pane with "work complete, idle by
+design"; watchdog kept escalating every 30 min as if no reply happened.
+
+Root cause: classification only ran on inbox.jsonl arrivals
+(`components/master/server.ts:2192`, `:2234`). When a worker replied via the tmux
+pane (the auto-nudge response path), `classifyWorkerReply` never re-ran. Pane-hash
+bump path at server.ts:5177 preserved the stale `classification` from spawn time
+("working"), so `decideTeamAction`'s `completed_idle` short-circuit at
+auto-nudge.ts:193 never fired.
+
+**Fix:** When pane-hash changes, capture pane content via `tmux capture-pane` and
+re-run `classifyWorkerReply` on the actual text. Falls back to preserved
+classification on capture failure.
+
+**Observability:** Watchdog state now exposes per-team `last_nudge_at_ms`,
+`last_reply_at_ms`, `reply_classification`, and `completion_flag` so future
+false-positives are debuggable from the diag tool.
+
+Repro: spawn team → wait for completion → idle worker replies once → without
+this fix, watchdog escalates every 30 min indefinitely. With fix: classification
+flips to `completed_idle` on the worker's next pane update, escalation suppressed.
+
 ## [2.8.12] — 2026-05-21
 
 ### `fix(mcp): send_message actually triggers Evy's drain loop`
