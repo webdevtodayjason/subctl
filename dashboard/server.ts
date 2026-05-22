@@ -5323,13 +5323,20 @@ const server = Bun.serve({
           { status: 400 },
         );
       }
-      const updated = setAllModelsEnabled(provider, body.enabled);
-      return Response.json({
-        ok: true,
-        provider: updated.provider,
-        enabled: body.enabled,
-        model_count: updated.models.length,
-      });
+      try {
+        const updated = setAllModelsEnabled(provider, body.enabled);
+        return Response.json({
+          ok: true,
+          provider: updated.provider,
+          enabled: body.enabled,
+          model_count: updated.models.length,
+        });
+      } catch (err) {
+        return Response.json(
+          { ok: false, error: (err as Error).message },
+          { status: 500 },
+        );
+      }
     }
     // POST /api/catalogs/<provider>/models/<model_id>/enabled
     //   body: { enabled: boolean }
