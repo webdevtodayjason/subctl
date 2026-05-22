@@ -178,7 +178,12 @@ describe("runOneTick — happy path", () => {
 });
 
 describe("runOneTick — mixed success and failure", () => {
-  test("watermark advances past successes; failures recorded; ordering preserved", async () => {
+  // CodeRabbit pass-2 CRITICAL fix: break-on-first-failure semantics.
+  // The watermark only advances past the contiguous-success prefix of a
+  // batch. Earlier "advance on every success, even past failures" was a
+  // silent data-loss bug: the failed row's (ts, id) would be skipped by
+  // the next tick's `WHERE ts > ? OR (ts = ? AND id > ?)` query.
+  test("watermark pinned to contiguous-success prefix; failures stop the batch", async () => {
     const statePath = join(tempDir, "state.json");
     const rows = [
       makeRow("a", "2026-05-21T01:00:00.000Z"),
@@ -186,7 +191,7 @@ describe("runOneTick — mixed success and failure", () => {
       makeRow("c", "2026-05-21T03:00:00.000Z"),
       makeRow("d", "2026-05-21T04:00:00.000Z"),
     ];
-    // Fail the middle one — successes before AND after still advance.
+    // Fail the second — break should stop us here, leaving c/d untouched.
     const { deps, state } = makeMocks({
       rows,
       failFor: ["b"],
@@ -197,44 +202,88 @@ describe("runOneTick — mixed success and failure", () => {
     const result = await runOneTick();
 
     expect(result.ok).toBe(false);
-    expect(result.scanned).toBe(4);
-    expect(result.promoted).toBe(3);
+    expect(result.scanned).toBe(4); // SQL batch size unchanged
+    expect(result.promoted).toBe(1);
     expect(result.errored).toBe(1);
-    // Watermark should be the LAST successfully-promoted row (d), NOT
-    // pinned at the failed row (b) — we want subsequent ticks to
-    // re-attempt the failed row's id via the bare-id-watermark query
-    // path (it's strictly less than d's ts).
-    expect(result.watermark_ts).toBe("2026-05-21T04:00:00.000Z");
-    expect(result.watermark_id).toBe("d");
-    // Every row attempted; failure recorded in errors[].
-    expect(state.cogneeRememberCalls).toHaveLength(4);
+    // Watermark pinned at the last successful contiguous row (a) — NOT
+    // any later "success past a failure". Next tick re-reads from
+    // (a.ts, a.id) and retries `b`.
+    expect(result.watermark_ts).toBe("2026-05-21T01:00:00.000Z");
+    expect(result.watermark_id).toBe("a");
+    // Only a + b attempted; c + d untouched (deferred to next tick).
+    expect(state.cogneeRememberCalls).toHaveLength(2);
     const persisted = JSON.parse(readFileSync(statePath, "utf8"));
-    expect(persisted.total_promoted).toBe(3);
+    expect(persisted.total_promoted).toBe(1);
     expect(persisted.errors).toHaveLength(1);
     expect(persisted.errors[0].memori_id).toBe("b");
     expect(persisted.errors[0].error).toContain("synthetic fail for b");
   });
 
-  test("error ring capped at 50 — older entries evicted FIFO", async () => {
+  test("watermark does not advance past a failed row even if later rows would succeed", async () => {
+    // Lead-spec'd test: rows = [A=success, B=fail, C=success]. After the
+    // tick: watermark = A's ts/id (NOT C's), promoted=1, errored=1. The
+    // previous "advance on every success" code would have rolled the
+    // watermark forward to C, silently skipping B forever.
     const statePath = join(tempDir, "state.json");
-    // 60 rows, all failing → ring should keep last 50.
-    const rows = Array.from({ length: 60 }, (_, i) =>
-      makeRow(`x${String(i).padStart(3, "0")}`, `2026-05-21T${String(i).padStart(2, "0")}:00:00.000Z`),
-    );
-    const { deps } = makeMocks({
+    const rows = [
+      makeRow("A", "2026-05-21T01:00:00.000Z"),
+      makeRow("B", "2026-05-21T02:00:00.000Z"),
+      makeRow("C", "2026-05-21T03:00:00.000Z"),
+    ];
+    const { deps, state } = makeMocks({
       rows,
-      failFor: rows.map((r) => r.id),
+      failFor: ["B"],
       statePath,
     });
     _setDepsForTesting(deps);
 
     const result = await runOneTick();
 
-    expect(result.promoted).toBe(0);
-    expect(result.errored).toBe(60);
+    expect(result.promoted).toBe(1);
+    expect(result.errored).toBe(1);
+    expect(result.watermark_ts).toBe("2026-05-21T01:00:00.000Z");
+    expect(result.watermark_id).toBe("A");
+    // Critically: C never attempted in this tick (no remember call).
+    expect(state.cogneeRememberCalls).toHaveLength(2);
+    expect(state.cogneeRememberCalls.map((c) => c.metadata.memori_id)).toEqual([
+      "A",
+      "B",
+    ]);
+  });
+
+  test("error ring capped at 50 across ticks — older entries evicted FIFO", async () => {
+    // CodeRabbit pass-2 MINOR fix: ISO 8601 hour overflow. The previous
+    // version used `String(i).padStart(2,"0")` as the hour, which
+    // produced invalid hour="24" through "59" for i >= 24. Now uses
+    // day = 21 + floor(i/24), hour = i % 24.
+    //
+    // Under break-on-first-failure semantics, each tick can record at
+    // most 1 error. To exercise the 50-cap we stage 60 single-row
+    // batches and run 60 ticks; the ring tracks the most recent 50.
+    const statePath = join(tempDir, "state.json");
+    const allRows = Array.from({ length: 60 }, (_, i) => {
+      const day = 21 + Math.floor(i / 24);
+      const hour = i % 24;
+      return makeRow(
+        `x${String(i).padStart(3, "0")}`,
+        `2026-05-${String(day).padStart(2, "0")}T${String(hour).padStart(2, "0")}:00:00.000Z`,
+      );
+    });
+    const { deps } = makeMocks({
+      // Each batch is a single failing row → 1 error per tick.
+      rows: allRows.map((r) => [r]),
+      failFor: allRows.map((r) => r.id),
+      statePath,
+    });
+    _setDepsForTesting(deps);
+
+    for (let i = 0; i < 60; i++) {
+      await runOneTick();
+    }
+
     const persisted = JSON.parse(readFileSync(statePath, "utf8"));
     expect(persisted.errors).toHaveLength(50);
-    // Newest preserved.
+    // Newest preserved (last tick's failure).
     expect(persisted.errors[49].memori_id).toBe("x059");
     // Oldest evicted (x000-x009 dropped; first kept is x010).
     expect(persisted.errors[0].memori_id).toBe("x010");
@@ -475,7 +524,11 @@ describe("armed flag — runtime lifecycle", () => {
 });
 
 describe("runOneTick — cogneeRemember throws (transport-level explosion)", () => {
-  test("treated as a recorded error, watermark advances past successes", async () => {
+  // Under CodeRabbit pass-2 break-on-first-failure semantics, a throw
+  // on the FIRST row stops the batch immediately — the throw is treated
+  // as an error result, recorded, and the loop breaks. The watermark
+  // therefore stays at its prior position (null on first run).
+  test("throw on first row stops batch; watermark stays at prior position", async () => {
     const statePath = join(tempDir, "state.json");
     const rows = [
       makeRow("a", "2026-05-21T01:00:00.000Z"),
@@ -498,10 +551,14 @@ describe("runOneTick — cogneeRemember throws (transport-level explosion)", () 
 
     expect(result.ok).toBe(false);
     expect(result.errored).toBe(1);
-    expect(result.promoted).toBe(1);
-    // Watermark = the successful row.
-    expect(result.watermark_id).toBe("b");
+    expect(result.promoted).toBe(0);
+    // Watermark stays null — `a` failed (was first row), `b` never
+    // attempted because the loop broke.
+    expect(result.watermark_ts).toBeNull();
+    expect(result.watermark_id).toBeNull();
     const persisted = JSON.parse(readFileSync(statePath, "utf8"));
+    expect(persisted.errors).toHaveLength(1);
+    expect(persisted.errors[0].memori_id).toBe("a");
     expect(persisted.errors[0].error).toContain("cognee remember threw");
     expect(persisted.errors[0].error).toContain("ECONNREFUSED");
   });

@@ -464,6 +464,16 @@ export async function runOneTick(): Promise<CogneePromotionTickResult> {
   let errored = 0;
   let firstError: string | undefined;
 
+  // CodeRabbit pass-2 CRITICAL: break on first failure so the watermark
+  // only advances past the contiguous-success prefix of the batch. The
+  // previous "continue past failures" version silently dropped the
+  // failed row: next tick's query
+  // (`WHERE ts > ? OR (ts = ? AND id > ?)`) skips it because the
+  // watermark has already moved past on a later success. Single-tick
+  // throughput is now lower under failures (max 1 error recorded per
+  // tick), but the next tick resumes from the failed row and retries
+  // — which is what we actually want. The 50-cap error ring accumulates
+  // ACROSS ticks rather than within one.
   for (const row of rows) {
     const payload = buildPayload(row);
     let result: CogneeResult<{ id: string | null }>;
@@ -484,10 +494,10 @@ export async function runOneTick(): Promise<CogneePromotionTickResult> {
       if (_state.errors.length > MAX_RECENT_ERRORS) {
         _state.errors = _state.errors.slice(-MAX_RECENT_ERRORS);
       }
-      // DO NOT advance watermark on failure — leave the row to retry
-      // next tick. We continue past this row so a single bad write
-      // doesn't block the rest of the batch.
-      continue;
+      // Stop the batch here. Watermark stays at the last contiguous
+      // success (or null if this row is the first failure). Next tick
+      // re-reads from the same point and retries this row.
+      break;
     }
     // Success → advance watermark to this row's (ts, id).
     _state.last_promoted_ts = row.ts;

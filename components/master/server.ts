@@ -2102,6 +2102,14 @@ async function main() {
   let stopped = false;
   let promptInFlight = false;
 
+  // v2.8.15 (CodeRabbit pass-2 MAJOR): capture the Cognee promotion
+  // ticker's stop handle at function scope so the SIGTERM/SIGINT
+  // shutdown path can cancel it cleanly. The ticker also registers a
+  // watchdog (kill via /watchdogs killall), but graceful shutdown
+  // explicitly tears down each ticker rather than going through the
+  // watchdog registry — so we wire stop() into shutdown() directly.
+  let cogneePromotionStop: (() => void) | null = null;
+
   // v2.7.18: profile-swap state. Watcher fires async on file change
   // (debounced inside watchProfiles); we set this flag and rebuild the
   // model at the START of the next prompt processing — never mid-turn.
@@ -2668,7 +2676,11 @@ async function main() {
                   entityId: () => entityId,
                   cogneeRemember: (input) => cogneeRemember(input),
                 });
-                startCogneePromotionTicker({
+                // CodeRabbit pass-2 MAJOR: capture the stop handle into
+                // function-scope `cogneePromotionStop` so shutdown() can
+                // cancel the ticker. The previous version dropped the
+                // return value entirely.
+                cogneePromotionStop = startCogneePromotionTicker({
                   intervalMs: promotionIntervalMs,
                   registerWatchdog,
                   touchWatchdog,
@@ -6347,6 +6359,11 @@ async function main() {
     try { upstreamWatchdog?.stop(); } catch { /* ignore */ }
     try { cognitionLoop.kill(); } catch { /* ignore */ }
     try { idlePaneWatchdog.kill(); } catch { /* ignore */ }
+    // v2.8.15 (CodeRabbit pass-2 MAJOR): cancel the Cognee promotion
+    // ticker on graceful shutdown. stop() flips _armed=false +
+    // clearInterval; idempotent if it's already been killed via the
+    // watchdog registry.
+    try { cogneePromotionStop?.(); } catch { /* ignore */ }
     try { profilesWatcher.close(); } catch { /* ignore */ }
     try { voiceWatcher.close(); } catch { /* ignore */ }
     if (inboxWatcher) try { inboxWatcher.close(); } catch { /* ignore */ }
