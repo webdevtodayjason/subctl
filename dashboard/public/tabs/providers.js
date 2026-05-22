@@ -554,6 +554,8 @@ export async function mount({ root: _root }) {
         const reJ = await re.json();
         if (reJ.ok) {
           await renderModelsList(wrap, providerId, reJ.catalog, null);
+        } else {
+          alert(`Bulk ${enabled ? "enable" : "disable"} succeeded but catalog re-fetch failed (${reJ.error || "unknown"}). Click Refresh to update the view.`);
         }
       } catch (err) {
         alert(`Bulk toggle error: ${String(err)}`);
