@@ -504,8 +504,9 @@ describe("system_version_status", () => {
 // ---------------------------------------------------------------------------
 
 describe("diagTools family export", () => {
-  test("exports the v2.7.1 tools + the v2.7.2 supervisor-info tool", () => {
+  test("exports the v2.7.1 tools + the v2.7.2 supervisor-info tool + v2.8.15 cognee-promotion-self tool", () => {
     expect(Object.keys(diagTools).sort()).toEqual([
+      "system_cognee_promotion_self",
       "system_git_status",
       "system_lmstudio_health",
       "system_log_tail",

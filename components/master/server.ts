@@ -89,7 +89,11 @@ import {
 import { attachmentsTools } from "./tools/attachments";
 import { vaultLinkTools } from "./tools/vault-link";
 import { policyTools } from "./tools/policy";
-import { diagTools, bindWatchdogState } from "./tools/diag";
+import {
+  diagTools,
+  bindWatchdogState,
+  bindCogneePromotionState,
+} from "./tools/diag";
 import { webTools } from "./tools/web";
 import { tinyfishTools } from "./tools/tinyfish";
 import {
@@ -179,8 +183,16 @@ import {
 import {
   health as cogneeHealth,
   recall as cogneeRecall,
+  remember as cogneeRemember,
   resolveCogneeUrl,
 } from "./cognee-client";
+import {
+  startPromotionTicker as startCogneePromotionTicker,
+  resolvePromotionIntervalMs as resolveCogneePromotionIntervalMs,
+  getState as getCogneePromotionState,
+  isPromotionArmed as isCogneePromotionArmed,
+  _setDepsForTesting as _setCogneePromotionDepsForTesting,
+} from "./cognee-promotion";
 import {
   health as memoriHealth,
   resolveMemoriUrl,
@@ -2090,6 +2102,14 @@ async function main() {
   let stopped = false;
   let promptInFlight = false;
 
+  // v2.8.15 (CodeRabbit pass-2 MAJOR): capture the Cognee promotion
+  // ticker's stop handle at function scope so the SIGTERM/SIGINT
+  // shutdown path can cancel it cleanly. The ticker also registers a
+  // watchdog (kill via /watchdogs killall), but graceful shutdown
+  // explicitly tears down each ticker rather than going through the
+  // watchdog registry — so we wire stop() into shutdown() directly.
+  let cogneePromotionStop: (() => void) | null = null;
+
   // v2.7.18: profile-swap state. Watcher fires async on file change
   // (debounced inside watchProfiles); we set this flag and rebuild the
   // model at the START of the next prompt processing — never mid-turn.
@@ -2624,6 +2644,113 @@ async function main() {
           console.error(
             `[memory-kernel] armed — interval=5min, entity=${entityId}, reviewer=${reviewerCfg.provider}/${reviewerCfg.model}`,
           );
+
+          // v2.8.15 — Cognee write path (Tier 3 → Tier 4 promotion ticker).
+          //
+          // Gates: cognee + memori + memory_kernel must all be on. We also
+          // require the live Memori probe to have come back reachable
+          // (same `probe.reachable` we already gated the kernel on) and
+          // perform a fast Cognee health probe so we don't arm a ticker
+          // that's going to 502 every interval.
+          if (TOOL_GATES.cognee) {
+            try {
+              // CodeRabbit MAJOR: retry-with-backoff (same shape as the
+              // boot probe above) so a single transient flake during
+              // master boot doesn't disarm the promotion ticker until
+              // restart. Mirrors the cogneeHealth wrap at line ~2484.
+              const cogneeProbe = await probeWithRetry({
+                name: "cognee",
+                probe: cogneeHealth,
+                budgetMs: 30_000,
+                baseDelayMs: 1500,
+                maxAttempts: 6,
+                log: (line) => console.error(line),
+              });
+              if (cogneeProbe.reachable) {
+                const promotionIntervalMs = resolveCogneePromotionIntervalMs();
+                // Wire the entity id from the same operator scope the
+                // memory-kernel uses, and use the explicit `cogneeRemember`
+                // import so the type-link from server.ts → cognee-client
+                // stays declared at this seam.
+                _setCogneePromotionDepsForTesting({
+                  entityId: () => entityId,
+                  cogneeRemember: (input) => cogneeRemember(input),
+                });
+                // CodeRabbit pass-2 MAJOR: capture the stop handle into
+                // function-scope `cogneePromotionStop` so shutdown() can
+                // cancel the ticker. The previous version dropped the
+                // return value entirely.
+                cogneePromotionStop = startCogneePromotionTicker({
+                  intervalMs: promotionIntervalMs,
+                  registerWatchdog,
+                  touchWatchdog,
+                  onError: (err) => {
+                    emitNotification({
+                      kind: "cognee-promotion-error",
+                      severity: "warn",
+                      title: "cognee-promotion: tick threw",
+                      body: `Tier 3 → Tier 4 promotion surfaced an error: ${err.message}`,
+                    });
+                    // CodeRabbit MAJOR: broadcast errored ticks so the
+                    // dashboard can distinguish idle from failed from
+                    // never-armed instead of only emitting on success.
+                    broadcast("cognee_promotion_tick_error", {
+                      ts: new Date().toISOString(),
+                      error: err.message,
+                    });
+                  },
+                  onTick: (result) => {
+                    if (result.scanned > 0) {
+                      console.error(
+                        `[cognee-promotion] tick — promoted=${result.promoted} errors=${result.errored} watermark=${result.watermark_id ?? "null"} elapsed=${result.elapsed_ms}ms`,
+                      );
+                    }
+                    // CodeRabbit MAJOR: broadcast EVERY successful tick
+                    // (including idle no-op ticks) so the dashboard can
+                    // render "ticker is alive but no work" as a
+                    // first-class state.
+                    broadcast("cognee_promotion_tick_success", {
+                      promoted: result.promoted,
+                      errored: result.errored,
+                      scanned: result.scanned,
+                      watermark_ts: result.watermark_ts,
+                      watermark_id: result.watermark_id,
+                      elapsed_ms: result.elapsed_ms,
+                      ts: new Date().toISOString(),
+                    });
+                  },
+                });
+                console.error(
+                  `[cognee-promotion] armed — interval=${Math.round(promotionIntervalMs / 60_000)}min, entity=${entityId}, cognee=${cogneeProbe.url}`,
+                );
+              } else {
+                console.error(
+                  `[cognee-promotion] not armed — Cognee unreachable (${cogneeProbe.error ?? "unknown"}). Tier 3 → Tier 4 promotion will not run until master restart with the service up.`,
+                );
+                // CodeRabbit MAJOR: surface the "not armed" state to the
+                // operator instead of silently logging — otherwise the
+                // ticker silently never runs.
+                emitNotification({
+                  kind: "cognee-promotion-disarmed",
+                  severity: "warn",
+                  title: "cognee-promotion: not armed at boot",
+                  body: `Cognee unreachable after retries (${cogneeProbe.error ?? "unknown"}). Tier 3 → Tier 4 promotion will not run until master restart with the service up.`,
+                });
+              }
+            } catch (err) {
+              const message = (err as Error).message ?? String(err);
+              console.error(`[cognee-promotion] arm threw: ${message}`);
+              // CodeRabbit MAJOR: surface arm-time exceptions to the
+              // operator — silent failure here means the dashboard's
+              // armed flag goes false and nobody knows why.
+              emitNotification({
+                kind: "cognee-promotion-arm-failed",
+                severity: "warn",
+                title: "cognee-promotion: arm threw",
+                body: `Could not arm the Tier 3 → Tier 4 promotion ticker: ${message}`,
+              });
+            }
+          }
         } else if (TOOL_GATES.memory_kernel && !probe.reachable) {
           console.error(
             `[memory-kernel] not armed — Memori sidecar unreachable (${probe.error ?? "unknown"}). Will not retry until master restart.`,
@@ -5420,6 +5547,26 @@ async function main() {
     staleness_threshold_minutes: stalenessThresholdMin,
   }));
 
+  // v2.8.15 — Cognee promotion observability. system_cognee_promotion_self
+  // reads from this getter on demand. "Armed" reflects RUNTIME ticker
+  // state (`isCogneePromotionArmed()`) — flipped true only after
+  // `startCogneePromotionTicker(...)` resolves, flipped false on
+  // shutdown or arm failure. CodeRabbit MAJOR fix: the previous version
+  // returned a static gate evaluation that stayed `true` even when the
+  // ticker never armed (Cognee unreachable at boot, arm threw, etc).
+  bindCogneePromotionState(() => {
+    const snap = getCogneePromotionState();
+    return {
+      last_run_at_ms: snap.last_run_at_ms,
+      last_watermark_ts: snap.last_promoted_ts,
+      last_watermark_id: snap.last_promoted_id,
+      total_promoted: snap.total_promoted,
+      recent_errors: snap.errors,
+      interval_minutes: Math.round(resolveCogneePromotionIntervalMs() / 60_000),
+      armed: isCogneePromotionArmed(),
+    };
+  });
+
   // v2.7.22 — per-team auto-nudge state. The watchdog NO LONGER appends a
   // synthetic "[watchdog] ... decide whether to ping" prompt into the agent
   // transcript. Instead it attempts the cheap remediation itself — POST to
@@ -6212,6 +6359,11 @@ async function main() {
     try { upstreamWatchdog?.stop(); } catch { /* ignore */ }
     try { cognitionLoop.kill(); } catch { /* ignore */ }
     try { idlePaneWatchdog.kill(); } catch { /* ignore */ }
+    // v2.8.15 (CodeRabbit pass-2 MAJOR): cancel the Cognee promotion
+    // ticker on graceful shutdown. stop() flips _armed=false +
+    // clearInterval; idempotent if it's already been killed via the
+    // watchdog registry.
+    try { cogneePromotionStop?.(); } catch { /* ignore */ }
     try { profilesWatcher.close(); } catch { /* ignore */ }
     try { voiceWatcher.close(); } catch { /* ignore */ }
     if (inboxWatcher) try { inboxWatcher.close(); } catch { /* ignore */ }
