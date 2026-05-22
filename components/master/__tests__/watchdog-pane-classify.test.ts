@@ -171,6 +171,48 @@ describe("deriveActivityFromPaneCapture — nudge/reply observability", () => {
     expect(next.last_reply_at_ms).toBe(1_900); // unchanged
   });
 
+  test("capture failure (paneText=null) preserves prior last_reply_at_ms", () => {
+    // CodeRabbit MINOR catch: before the hasPaneText guard, a transient
+    // tmux capture failure would falsely stamp last_reply_at_ms=now even
+    // though we never actually observed a worker reply. With the guard:
+    // null capture leaves last_reply_at_ms exactly where it was (in this
+    // case, undefined — no reply has been recorded yet).
+    const existing: TeamActivity = {
+      ts: 1_000,
+      classification: { kind: "working", snippet: "" },
+      last_nudge_at_ms: 1_500,
+      // last_reply_at_ms intentionally undefined — no prior reply.
+    };
+    const next = deriveActivityFromPaneCapture({
+      existing,
+      paneText: null,
+      now: 2_000,
+    });
+    // Critical: NOT bumped to 2_000 just because lastNudgeAtMs > 0.
+    expect(next.last_reply_at_ms).toBeUndefined();
+    // And capture failure preserves prior classification (already tested
+    // above, but re-asserting here keeps this test self-contained).
+    expect(next.classification?.kind).toBe("working");
+  });
+
+  test("capture failure with prior last_reply_at_ms preserves the prior value (no overwrite)", () => {
+    // Defensive variant: even when an older reply is on record, a
+    // capture failure must NOT clobber it with `now` just because a
+    // newer nudge exists.
+    const existing: TeamActivity = {
+      ts: 1_900,
+      classification: { kind: "working", snippet: "" },
+      last_nudge_at_ms: 2_500, // newer than last_reply_at_ms below
+      last_reply_at_ms: 1_900,
+    };
+    const next = deriveActivityFromPaneCapture({
+      existing,
+      paneText: null,
+      now: 3_000,
+    });
+    expect(next.last_reply_at_ms).toBe(1_900); // unchanged, NOT 3_000
+  });
+
   test("a NEW nudge (newer than last_reply_at_ms) re-arms reply tracking", () => {
     // Operator sequence: nudge1 → reply → nudge2 (auto-renudge after 30min)
     // → pane bumps again. That second bump IS a new reply to nudge2 and

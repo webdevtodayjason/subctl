@@ -1670,16 +1670,26 @@ export function deriveActivityFromPaneCapture(opts: {
   const existing = opts.existing;
   const now = opts.now;
 
+  // v2.8.14 (CodeRabbit MINOR follow-up) — `hasPaneText` gates BOTH the
+  // re-classify and the last_reply_at_ms stamp. Treating a capture
+  // failure (paneText === null) or whitespace-only capture as a "reply"
+  // would falsely record an acknowledgement timestamp on a transient
+  // tmux error, breaking nudge/reply pairing for the diag tool.
+  const hasPaneText =
+    opts.paneText !== null && opts.paneText.trim().length > 0;
+
   let nextClassification = existing?.classification;
-  if (opts.paneText !== null && opts.paneText.trim().length > 0) {
+  if (hasPaneText) {
     nextClassification = classify(opts.paneText);
   }
 
-  // last_reply_at_ms: only stamped when there's an outstanding nudge that
-  // hasn't been acknowledged yet (the pane change IS the acknowledgement).
+  // last_reply_at_ms: only stamped when we actually observed pane text
+  // AND there's an outstanding nudge that hasn't been acknowledged yet
+  // (the pane change IS the acknowledgement).
   let nextLastReplyAtMs = existing?.last_reply_at_ms;
   const lastNudgeAtMs = existing?.last_nudge_at_ms;
   if (
+    hasPaneText &&
     lastNudgeAtMs !== undefined &&
     lastNudgeAtMs > (existing?.last_reply_at_ms ?? 0)
   ) {
