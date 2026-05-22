@@ -29,7 +29,7 @@ A persistent conversational orchestrator that runs on your hardware, talks to yo
                                      └─────────────────────────┘
 ```
 
-> **v2.8.12 shipping.** Full per-release history in [CHANGELOG.md](./CHANGELOG.md). The 1.x series was the multi-account dispatch substrate; the 2.x series is the agentic harness layered on top. v2.7 closed the loop on persona, supervisor profiles, HMAC trust markers, dynamic provider catalog, voice, and plan-approval. v2.8 added the memory substrate, the SPEC-block directive contract, the policy engine modes, the MCP control plane, the watchdog classifier that ended the false-unresponsive alerts, and the pluggable local backend adapter system (LM Studio, Ollama, OmniMLX).
+> **v2.8.12 shipping.** Full per-release history in [CHANGELOG.md](./CHANGELOG.md). The 1.x series was the multi-account dispatch substrate; the 2.x series is the agentic harness layered on top. v2.7 closed the loop on persona, supervisor profiles, HMAC trust markers, dynamic provider catalog, voice, and plan-approval. v2.8 added the memory substrate, the SPEC-block directive contract, the policy engine modes, the MCP control plane, the watchdog classifier that ended the false-unresponsive alerts, and the pluggable local backend adapter system (LM Studio, Ollama, oMLX).
 
 > 🚀 **First time on a new Mac?** Open a fresh Claude Code session and paste [`START-HERE.md`](./START-HERE.md). It walks you clone → install → account auth → master daemon enable, asking before any irreversible step.
 
@@ -72,7 +72,7 @@ A persistent conversational orchestrator that runs on your hardware, talks to yo
 
 - **OpenAI Codex OAuth + dynamic provider catalog** — `subctl auth openai-codex <alias>` mints fresh OAuth tokens via in-process device-code flow. The dashboard's model picker is now a live catalog (~30+ providers) fed from the upstream pi-ai registry — new providers light up automatically without a release.
 
-- **Dashboard** — live ops view at `http://<host>:8787` with 13 sidebar tabs (Chat, Orchestration, Dashboard, Projects, Teams, Claude Sessions, Models, Providers, Memory, Vault, Skills, Live Logs, Settings). The Settings tab now includes a Local Inference Backend section for picking LM Studio / Ollama / OmniMLX, configuring host URL, per-role model dropdowns (supervisor / reviewer / router / embeddings), and Test/Save controls. Frontend decomposed into ES modules; lazy-loaded heavy tools (terminal, update modal, vault editor) keep the initial load light.
+- **Dashboard** — live ops view at `http://<host>:8787` with 17 sidebar tabs (Chat, Orchestration, Dashboard, Projects, Teams, Templates, Claude Sessions, Models, Providers, Plans, Memory, Vault, Skills, Live Logs, Policy, Preferences, Settings). The Settings tab now includes a Local Inference Backend section for picking LM Studio / Ollama / oMLX, configuring host URL, per-role model dropdowns (supervisor / reviewer / router / embeddings), and Test/Save controls. Frontend decomposed into ES modules; lazy-loaded heavy tools (terminal, update modal, vault editor) keep the initial load light.
 
 - **Multi-channel I/O** — dashboard chat (SSE), Telegram (bidirectional with auto-relay + voice notes), CLI prompt, scheduled self-prompts, inbox events from workers, MCP clients.
 
@@ -314,7 +314,7 @@ Per-phase status lives in [`docs/master.md`](docs/master.md) §4. Headline (ship
 - **Phase 3n** (v2.5.0) — in-browser Obsidian vault viewer
 - **Phase 3o** (v2.7.x) — supervisor profiles, watchdog kill controls, HMAC trust marker, web terminal escape hatch, notification channel, dynamic provider catalog, OpenRouter + OpenAI Codex OAuth, voice layer, plan-approval workflow
 - **Phase 3p** (v2.8.x) — tiered memory substrate with autonomous consciousness loop, MCP control plane (14 tools), SPEC-block directive contract, watchdog reply classifier (`completed_idle`), seeded operator-config install, policy engine (Trusted/Gated/Sealed) modes
-- **Phase 4** (v2.8.12) — pluggable local backend adapter registry with LM Studio, Ollama, and OmniMLX support, first-boot migration from legacy providers, dashboard settings UI for backend selection and model management
+- **Phase 4** (v2.8.12) — pluggable local backend adapter registry with LM Studio, Ollama, and oMLX support, first-boot migration from legacy providers, dashboard settings UI for backend selection and model management
 
 Provider expansion (Phase 4+): Gemini, Z.AI GLM, Minimax — see [`ROADMAP.md`](./ROADMAP.md).
 

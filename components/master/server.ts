@@ -1051,7 +1051,18 @@ export function buildModel(cfg: {
     // api.openai.com and sends the local-runtime token to real OpenAI,
     // which 401s. Fixed in v2.7.7 after a long debug.
     baseUrl: cfg.host ?? (
-      LOCAL_PROVIDERS.has(cfg.provider) ? "http://localhost:1234/v1" :
+      // CodeRabbit pass-11 (2): pick the provider-correct defaultHost. Pass-9
+      // added `omlx` to LOCAL_PROVIDERS for the auth-sentinel path, but this
+      // shared :1234 fallback still routed hostless omlx (and ollama) configs
+      // to LM Studio's port. Prefer the adapter's declared defaultHost for
+      // first-class LocalBackendKinds (lmstudio/ollama/omlx); fall through to
+      // the legacy LM Studio default for mlx/vllm tags that aren't adapters
+      // (they speak the OpenAI-compatible dialect well enough to ride it).
+      LOCAL_PROVIDERS.has(cfg.provider) ? (
+        (cfg.provider === "omlx" || cfg.provider === "ollama" || cfg.provider === "lmstudio")
+          ? getLocalBackendAdapter(cfg.provider as LocalBackendKind).defaultHost
+          : "http://localhost:1234/v1"
+      ) :
       cfg.provider === "openrouter" ? "https://openrouter.ai/api/v1" :
       cfg.provider === "xai-oauth" ? getXaiOauthBaseUrl() :
       ""
@@ -4355,6 +4366,68 @@ async function main() {
             `[local-backend] supervisor rebind failed (daemon restart required to pick up change): ${(err as Error).message}`,
           );
         }
+        // CodeRabbit pass-11 (1): mirror the pass-4 (c) supervisor rebind for
+        // the memory-kernel's reviewer closure. The boot block at L2376–2461
+        // captures `reviewerCfg` (a `const`) inside the `llmFetcher` and
+        // `reviewEventsWired` closures and hands them to the kernel via
+        // `_setMemoryKernelDepsForTesting`. The captured value is the closure
+        // shape — the const itself cannot be reassigned — so the rebind path
+        // is: rebuild fresh `llmFetcher` + `reviewEventsWired` closures with
+        // a re-resolved `reviewerCfg`, then call the setter again. The
+        // kernel's `runOneCycle` reads `deps.reviewEvents` at the START of
+        // each tick (memory-kernel.ts:368), so the next tick uses the new
+        // closures atomically. We only re-wire when TOOL_GATES.memory_kernel
+        // is on — the kernel may have never been armed at boot (Memori
+        // sidecar unreachable), in which case there's no ticker reading deps
+        // and the re-wire would be a harmless no-op anyway.
+        if (TOOL_GATES.memory_kernel) {
+          try {
+            const reviewerCfgRaw = providers.models?.reviewer ?? supervisorCfgFromProviders;
+            const newReviewerCfg = resolveRoleCfg("reviewer", reviewerCfgRaw, providers);
+            const baseUrl = (newReviewerCfg.host ?? "").replace(/\/v1\/?$/, "");
+            const reviewerHasUsableHost = baseUrl.length > 0;
+            if (!reviewerHasUsableHost) {
+              console.error(
+                `[local-backend] reviewer rebind — reviewer host not configured for ${newReviewerCfg.provider}/${newReviewerCfg.model}; kernel ticker will run no-op cycles until a host is set`,
+              );
+            }
+            const llmFetcher = async (
+              messages: Parameters<typeof memoryKernelSupervisorFetcher>[0],
+              opts: Parameters<typeof memoryKernelSupervisorFetcher>[1],
+            ): Promise<string> => {
+              if (!reviewerHasUsableHost) return "";
+              const token = getApiKeyForProvider(newReviewerCfg.provider);
+              return memoryKernelSupervisorFetcher(messages, {
+                ...opts,
+                baseUrl,
+                authToken: token === "not-needed" ? undefined : token,
+              });
+            };
+            const reviewEventsWired: Parameters<typeof _setMemoryKernelDepsForTesting>[0]["reviewEvents"] =
+              async (events, ctx) =>
+                memoryKernelReviewEvents(events, ctx, {
+                  llmFetcher,
+                  configuredSupervisor: () => ({
+                    provider: newReviewerCfg.provider,
+                    model: newReviewerCfg.model,
+                  }),
+                });
+            _setMemoryKernelDepsForTesting({ reviewEvents: reviewEventsWired });
+            console.error(
+              `[local-backend] reviewer rebound — ${newReviewerCfg.provider}/${newReviewerCfg.model} @ ${newReviewerCfg.host ?? "(default)"}`,
+            );
+            broadcast("reviewer_swap", {
+              ts: new Date().toISOString(),
+              reason: "local-backend-change",
+              reviewer: `${newReviewerCfg.provider}/${newReviewerCfg.model}`,
+              backend: `${mappedKind}@${host}`,
+            });
+          } catch (err) {
+            console.error(
+              `[local-backend] reviewer rebind failed (daemon restart required to pick up change): ${(err as Error).message}`,
+            );
+          }
+        }
         logDecision({
           project: "_master",
           action: "local_backend_set",
@@ -4465,9 +4538,17 @@ async function main() {
               });
               const ids = models.map((m) => m.id);
               const found = ids.includes(supervisorCfg.model);
+              // CodeRabbit pass-11 (3): /diag readiness must reflect whether
+              // the configured supervisor model is actually present in the
+              // backend's listModels response. Returning ok=true even when
+              // the model was missing made the green row a lie — the JIT
+              // load promise is best-effort and the operator deserves a red
+              // row when the chosen supervisor isn't loaded yet. listModels
+              // succeeded (we're past the catch), so connectivity is fine;
+              // ok now mirrors model presence.
               return {
                 name: kind,
-                ok: true,
+                ok: found,
                 detail: `${ids.length} models available${found ? `, supervisor "${supervisorCfg.model}" present` : `, supervisor "${supervisorCfg.model}" NOT loaded (will JIT-load on first call)`}`,
               };
             } catch (err) {
