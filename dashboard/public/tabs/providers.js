@@ -445,6 +445,16 @@ export async function mount({ root: _root }) {
           defaultSource = dmJson.source;
         }
       } catch { /* best effort — radio just won't be filled */ }
+      // v2.8.17 — bulk toggle toolbar. POSTs /api/catalogs/<p>/models/enabled-all
+      // then re-renders the whole table via renderModelsList by re-fetching.
+      const enabledCount = catalog.models.filter((m) => m.enabled !== false).length;
+      parts.push(
+        `<div class="models-bulk-toolbar" style="padding:6px 0 8px;display:flex;gap:6px;align-items:center;font-size:0.8em">` +
+          `<span class="dim">${enabledCount}/${catalog.models.length} enabled</span>` +
+          `<button type="button" class="codex-models-enable-all" data-provider="${escapeText(providerId)}" style="font-size:0.85em;padding:2px 8px;cursor:pointer">Enable all</button>` +
+          `<button type="button" class="codex-models-disable-all" data-provider="${escapeText(providerId)}" style="font-size:0.85em;padding:2px 8px;cursor:pointer">Disable all</button>` +
+        `</div>`,
+      );
       parts.push("<table style=\"width:100%;font-size:0.85em;border-collapse:collapse\">");
       parts.push("<thead><tr style=\"text-align:left;border-bottom:1px solid var(--border,#333)\">");
       parts.push("<th style=\"padding:4px 4px 4px 0;width:28px\" title=\"enabled — appears in chat dropdown\">on</th>");
@@ -518,6 +528,46 @@ export async function mount({ root: _root }) {
           target.disabled = false;
         }
       });
+    }
+    // v2.8.17 — wire bulk Enable-all / Disable-all buttons. POSTs the bulk
+    // endpoint, then re-fetches the catalog and re-renders the table so the
+    // new state is reflected (checkboxes, count badge, everything in sync).
+    async function bulkSetEnabled(provider, enabled, button) {
+      button.disabled = true;
+      const otherBtns = body.querySelectorAll(".codex-models-enable-all, .codex-models-disable-all");
+      for (const b of otherBtns) b.disabled = true;
+      try {
+        const res = await fetch(
+          `/api/catalogs/${encodeURIComponent(provider)}/models/enabled-all`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ enabled }),
+          },
+        );
+        const j = await res.json();
+        if (!j.ok) {
+          alert(`Bulk ${enabled ? "enable" : "disable"} failed: ${j.error || "unknown"}`);
+          return;
+        }
+        const re = await fetch(`/api/catalogs/${encodeURIComponent(provider)}`);
+        const reJ = await re.json();
+        if (reJ.ok) {
+          await renderModelsList(wrap, providerId, reJ.catalog, null);
+        } else {
+          alert(`Bulk ${enabled ? "enable" : "disable"} succeeded but catalog re-fetch failed (${reJ.error || "unknown"}). Click Refresh to update the view.`);
+        }
+      } catch (err) {
+        alert(`Bulk toggle error: ${String(err)}`);
+      } finally {
+        for (const b of otherBtns) b.disabled = false;
+      }
+    }
+    for (const b of body.querySelectorAll(".codex-models-enable-all")) {
+      b.addEventListener("click", (e) => bulkSetEnabled(e.currentTarget.getAttribute("data-provider"), true, e.currentTarget));
+    }
+    for (const b of body.querySelectorAll(".codex-models-disable-all")) {
+      b.addEventListener("click", (e) => bulkSetEnabled(e.currentTarget.getAttribute("data-provider"), false, e.currentTarget));
     }
     // v2.8.9 — wire star-click handlers AFTER innerHTML is set. Each click
     // toggles the operator override: if already-operator-default → DELETE

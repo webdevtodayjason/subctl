@@ -128,6 +128,7 @@ import {
   refreshCatalog,
   saveCatalog,
   setModelEnabled,
+  setAllModelsEnabled,
 } from "./lib/catalogs.ts";
 import {
   completeCodexLogin,
@@ -5187,6 +5188,22 @@ const server = Bun.serve({
               return true; // catalog read fails → assume enabled
             }
           })(),
+          // v2.8.17 — every catalog model the operator has enabled. The
+          // chat-tab dropdown enumerates one <option> per entry (cloud
+          // providers only) so non-default models the operator opted in
+          // are actually selectable as the supervisor. Empty when the
+          // catalog hasn't been derived yet — the chat tab then falls
+          // back to the single default_model row.
+          enabled_models: (() => {
+            try {
+              const cached = getCatalog(entry.id);
+              return cached.models
+                .filter((m) => m.enabled !== false)
+                .map((m) => ({ id: m.id, name: m.name }));
+            } catch {
+              return [];
+            }
+          })(),
           // Surface a legacy alias when one exists so the UI can render
           // `subctl auth <legacy> <alias>` correctly without having to
           // know the alias table.
@@ -5269,6 +5286,57 @@ const server = Bun.serve({
         );
       }
       return Response.json({ ok: true, catalog: getCatalog(provider) });
+    }
+    // POST /api/catalogs/<provider>/models/enabled-all
+    //   body: { enabled: boolean }
+    // v2.8.17 — bulk toggle. Flips EVERY model in the provider's catalog
+    // on or off in one write. Backs the "Enable all" / "Disable all"
+    // buttons in the Providers-tab model table. Checked BEFORE the
+    // per-model /enabled branch below — `/models/enabled-all` does not end
+    // in `/enabled`, but listing it first keeps routing unambiguous.
+    if (
+      url.pathname.startsWith("/api/catalogs/") &&
+      url.pathname.endsWith("/models/enabled-all") &&
+      req.method === "POST"
+    ) {
+      const provider = url.pathname
+        .slice("/api/catalogs/".length, url.pathname.length - "/models/enabled-all".length)
+        .replace(/\/+$/, "");
+      if (!provider || provider.includes("/")) {
+        return Response.json(
+          { ok: false, error: "expected /api/catalogs/<provider>/models/enabled-all" },
+          { status: 400 },
+        );
+      }
+      if (!isKnownProvider(provider)) {
+        return Response.json(
+          { ok: false, error: `unknown provider "${provider}"` },
+          { status: 404 },
+        );
+      }
+      let body: { enabled?: boolean };
+      try { body = await req.json(); }
+      catch { return Response.json({ ok: false, error: "invalid JSON body" }, { status: 400 }); }
+      if (typeof body.enabled !== "boolean") {
+        return Response.json(
+          { ok: false, error: "body.enabled must be a boolean" },
+          { status: 400 },
+        );
+      }
+      try {
+        const updated = setAllModelsEnabled(provider, body.enabled);
+        return Response.json({
+          ok: true,
+          provider: updated.provider,
+          enabled: body.enabled,
+          model_count: updated.models.length,
+        });
+      } catch (err) {
+        return Response.json(
+          { ok: false, error: (err as Error).message },
+          { status: 500 },
+        );
+      }
     }
     // POST /api/catalogs/<provider>/models/<model_id>/enabled
     //   body: { enabled: boolean }
