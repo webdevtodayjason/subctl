@@ -19,6 +19,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   deriveActivityFromPaneCapture,
+  mergeActivityUpdate,
   type TeamActivity,
 } from "../server";
 
@@ -221,5 +222,100 @@ describe("deriveActivityFromPaneCapture — nudge/reply observability", () => {
     });
     expect(next.lastEvent?.type).toBe("report");
     expect(next.lastEvent?.text).toBe("checkpoint");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// CodeRabbit-caught follow-up: both inbox.jsonl paths (boot-scan at
+// server.ts:2283, tail at server.ts:2325) were calling
+// `teamLastActivity.set(team, { ts, lastEvent, classification })` which
+// REPLACES the whole record — clobbering the new v2.8.14 observability
+// fields. The mergeActivityUpdate helper preserves them. These tests
+// pin the contract so a future drive-by edit can't regress it.
+// ─────────────────────────────────────────────────────────────────────────
+describe("mergeActivityUpdate — inbox.jsonl arrivals preserve observability fields", () => {
+  test("inbox tail update preserves last_nudge_at_ms and last_reply_at_ms", () => {
+    // Realistic scenario: watchdog nudged at ts=1500, worker replied via
+    // pane at ts=1900 (stamped last_reply_at_ms=1900), THEN the worker
+    // also writes a "report" event into inbox.jsonl. Without merge, the
+    // inbox-tail set() would clobber both observability fields.
+    const existing: TeamActivity = {
+      ts: 1_900,
+      classification: { kind: "completed_idle", snippet: "done" },
+      lastEvent: { ts: "old", type: "report", text: "earlier" },
+      last_nudge_at_ms: 1_500,
+      last_reply_at_ms: 1_900,
+    };
+    const merged = mergeActivityUpdate(existing, {
+      ts: 2_000,
+      lastEvent: { ts: "new", type: "report", text: "checkpoint" },
+      classification: { kind: "working", snippet: "" },
+    });
+    // Fresh fields applied.
+    expect(merged.ts).toBe(2_000);
+    expect(merged.lastEvent?.text).toBe("checkpoint");
+    expect(merged.classification?.kind).toBe("working");
+    // Observability fields preserved — the fix.
+    expect(merged.last_nudge_at_ms).toBe(1_500);
+    expect(merged.last_reply_at_ms).toBe(1_900);
+  });
+
+  test("inbox boot-scan update preserves last_nudge_at_ms and last_reply_at_ms", () => {
+    // Boot-scan typically runs against an empty map, but if anything has
+    // already seeded the entry (e.g. a pane-refresh tick that won the
+    // race) we must not clobber its observability fields.
+    const existing: TeamActivity = {
+      ts: 1_000,
+      classification: { kind: "working", snippet: "" },
+      last_nudge_at_ms: 800,
+      last_reply_at_ms: 950,
+    };
+    const merged = mergeActivityUpdate(existing, {
+      ts: 1_200, // stat.mtimeMs at boot
+      lastEvent: { ts: "boot", type: "report", text: "from disk" },
+      classification: { kind: "completed_idle", snippet: "done" },
+    });
+    expect(merged.ts).toBe(1_200);
+    expect(merged.classification?.kind).toBe("completed_idle");
+    expect(merged.last_nudge_at_ms).toBe(800);
+    expect(merged.last_reply_at_ms).toBe(950);
+  });
+
+  test("merge with no existing record leaves observability fields undefined", () => {
+    // First-time seed path — no existing entry to preserve from. The
+    // merged record should have undefined observability fields, not 0
+    // or any other sentinel that could falsely satisfy the "nudge has
+    // been sent" check in deriveActivityFromPaneCapture.
+    const merged = mergeActivityUpdate(undefined, {
+      ts: 1_000,
+      lastEvent: { ts: "seed", type: "report" },
+      classification: { kind: "working", snippet: "" },
+    });
+    expect(merged.ts).toBe(1_000);
+    expect(merged.last_nudge_at_ms).toBeUndefined();
+    expect(merged.last_reply_at_ms).toBeUndefined();
+  });
+
+  test("only the new fresh fields overwrite (no spread leakage of stale ts/lastEvent/classification)", () => {
+    // Defensive: confirm we replace ts/lastEvent/classification with the
+    // FRESH values, not the existing ones. An accidental `...existing` /
+    // `...fresh` order swap during refactor would regress this.
+    const existing: TeamActivity = {
+      ts: 999,
+      classification: { kind: "blocked", snippet: "stuck" },
+      lastEvent: { ts: "old", type: "blocked", text: "old text" },
+      last_nudge_at_ms: 500,
+      last_reply_at_ms: 600,
+    };
+    const merged = mergeActivityUpdate(existing, {
+      ts: 2_000,
+      lastEvent: { ts: "new", type: "report", text: "all good" },
+      classification: { kind: "working", snippet: "" },
+    });
+    expect(merged.ts).toBe(2_000); // not 999
+    expect(merged.lastEvent?.type).toBe("report"); // not "blocked"
+    expect(merged.classification?.kind).toBe("working"); // not "blocked"
+    expect(merged.last_nudge_at_ms).toBe(500);
+    expect(merged.last_reply_at_ms).toBe(600);
   });
 });

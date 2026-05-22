@@ -1695,6 +1695,38 @@ export function deriveActivityFromPaneCapture(opts: {
   };
 }
 
+/**
+ * v2.8.14 — Merge a fresh activity update onto an existing record while
+ * preserving the nudge/reply observability fields (`last_nudge_at_ms`,
+ * `last_reply_at_ms`).
+ *
+ * CodeRabbit-caught follow-up on the original fix: both inbox-jsonl paths
+ * (boot-scan reconciliation at server.ts:2283, tail at server.ts:2325)
+ * were calling `teamLastActivity.set(team, { ts, lastEvent, classification })`
+ * which REPLACES the whole record. After v2.8.14 added the new fields,
+ * any inbox event arrival would clobber a freshly-stamped `last_nudge_at_ms`
+ * and break nudge/reply pairing for the diag tool.
+ *
+ * Centralised here so all "I have a fresh ts + classification + lastEvent"
+ * call sites go through one merge function and don't drift over time.
+ */
+export function mergeActivityUpdate(
+  existing: TeamActivity | undefined,
+  fresh: {
+    ts: number;
+    lastEvent?: TeamEvent;
+    classification?: import("./auto-nudge").ClassifiedReply;
+  },
+): TeamActivity {
+  return {
+    ts: fresh.ts,
+    lastEvent: fresh.lastEvent,
+    classification: fresh.classification,
+    last_nudge_at_ms: existing?.last_nudge_at_ms,
+    last_reply_at_ms: existing?.last_reply_at_ms,
+  };
+}
+
 // v2.8.9 — strip helpers moved to components/master/text-sanitize.ts so the
 // Telegram outgoing path (tools/telegram.ts) and any future surface can
 // import the same regex without duplicating it. Existing call sites in
@@ -2280,11 +2312,21 @@ async function main() {
               // restarted starts the next session classified, not
               // mistakenly marked as silent-and-stale.
               const classification = classifyWorkerReply(lastEv.text);
-              teamLastActivity.set(team, {
-                ts: stat.mtimeMs,
-                lastEvent: lastEv,
-                classification,
-              });
+              // v2.8.14 (CodeRabbit follow-up) — go through
+              // mergeActivityUpdate so an in-memory record's nudge/reply
+              // observability fields survive the boot reconciliation.
+              // (In practice the map is empty at boot scan, so this is a
+              // no-op there — but the same helper is used by the inbox
+              // tail path below where the map IS populated, and keeping
+              // both sites symmetric makes the contract obvious.)
+              teamLastActivity.set(
+                team,
+                mergeActivityUpdate(teamLastActivity.get(team), {
+                  ts: stat.mtimeMs,
+                  lastEvent: lastEv,
+                  classification,
+                }),
+              );
             } catch { /* ignore parse errors */ }
           }
         } catch { /* ignore */ }
@@ -2322,7 +2364,19 @@ async function main() {
       // The classifier accepts undefined/empty text and degrades to
       // {kind:"working"} so non-text events keep the prior behavior.
       const classification = classifyWorkerReply(ev.text);
-      teamLastActivity.set(team, { ts: Date.now(), lastEvent: ev, classification });
+      // v2.8.14 (CodeRabbit follow-up) — go through mergeActivityUpdate
+      // so the nudge/reply observability fields survive inbox arrivals.
+      // Without this, a sendAutoNudge that stamps last_nudge_at_ms would
+      // be clobbered by the worker's next inbox-jsonl write, breaking
+      // the next pane bump's ability to recognise the reply.
+      teamLastActivity.set(
+        team,
+        mergeActivityUpdate(teamLastActivity.get(team), {
+          ts: Date.now(),
+          lastEvent: ev,
+          classification,
+        }),
+      );
       broadcast("team_event", { team, ...ev });
       // Auto-prompt the agent on important event types so it can react.
       if (ev.type === "blocked" || ev.type === "error") {
