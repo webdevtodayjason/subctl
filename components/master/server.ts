@@ -1599,6 +1599,102 @@ export function dropOrphanToolResults(messages: AgentMessage[]): AgentMessage[] 
   return filtered;
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// v2.8.14 — Per-team activity record shape, lifted to module scope so the
+// re-classify helper below (deriveActivityFromPaneCapture) and its tests
+// can reference the same shape used by the closure-local teamLastActivity
+// Map inside startMaster.
+//
+// Background: classifyWorkerReply only ran on inbox.jsonl arrivals. When a
+// worker replied via the tmux pane (auto-nudge response path), the
+// pane-hash bump path preserved the spawn-time "working" classification
+// forever, so the staleness sweep kept escalating even after the worker
+// said "work complete, idle by design". v2.8.14 re-runs the classifier on
+// every pane-hash change and surfaces nudge/reply observability through
+// the watchdog state snapshot. (operator-reported false positive on
+// claude-birdie, 2026-05-21).
+// ─────────────────────────────────────────────────────────────────────────
+export type TeamEvent = {
+  ts: string;
+  type: string;
+  text?: string;
+  [k: string]: unknown;
+};
+
+export interface TeamActivity {
+  /** Date.now()-style ms of last observed activity (inbox event or pane bump). */
+  ts: number;
+  /** Last inbox event we saw, if any. Used for notification context. */
+  lastEvent?: TeamEvent;
+  /** Most recent worker-reply classification. v2.8.14: refreshed on every
+   *  pane-hash change, not just inbox events. */
+  classification?: import("./auto-nudge").ClassifiedReply;
+  /** v2.8.14 — set inside sendAutoNudge after a successful POST. Allows the
+   *  pane-hash bump path to recognise a reply that lands after a nudge. */
+  last_nudge_at_ms?: number;
+  /** v2.8.14 — set when a pane-hash change is detected AFTER the most
+   *  recent nudge. Surfaces in watchdog state for operator debugging. */
+  last_reply_at_ms?: number;
+}
+
+/**
+ * Pure helper for the v2.8.14 fix: given an existing activity record and a
+ * fresh pane capture, return the next activity record.
+ *
+ *   - When `paneText` is non-empty, re-classify it via classifyWorkerReply
+ *     and adopt the fresh classification. This is the fix for the false
+ *     positive: a worker that replies via the tmux pane (e.g. responding
+ *     "work complete, idle by design" to an auto-nudge) will now flip to
+ *     classification "completed_idle", which decideTeamAction short-circuits.
+ *   - When `paneText` is null (capture failed), preserve the prior
+ *     classification. Capture failure is non-fatal; better to keep the
+ *     last-known good signal than reset to "working" on transient error.
+ *   - Always carry `lastEvent` and `last_nudge_at_ms` forward.
+ *   - Set `last_reply_at_ms` to `now` iff a nudge has been sent AND no
+ *     reply has been recorded since that nudge — i.e. this pane change is
+ *     the first detectable response since the last nudge.
+ *
+ * Pure (no side effects) and exported so the watchdog-pane-classify test
+ * suite can exercise the decision logic without booting the master.
+ */
+export function deriveActivityFromPaneCapture(opts: {
+  existing: TeamActivity | undefined;
+  paneText: string | null;
+  now: number;
+}): TeamActivity {
+  // Import lazily inside the function to avoid a circular-import surprise.
+  // classifyWorkerReply is also imported at module top; this synchronous
+  // require keeps the function pure-ish without a top-level cycle risk.
+  const { classifyWorkerReply: classify } = require("./auto-nudge") as typeof import("./auto-nudge");
+
+  const existing = opts.existing;
+  const now = opts.now;
+
+  let nextClassification = existing?.classification;
+  if (opts.paneText !== null && opts.paneText.trim().length > 0) {
+    nextClassification = classify(opts.paneText);
+  }
+
+  // last_reply_at_ms: only stamped when there's an outstanding nudge that
+  // hasn't been acknowledged yet (the pane change IS the acknowledgement).
+  let nextLastReplyAtMs = existing?.last_reply_at_ms;
+  const lastNudgeAtMs = existing?.last_nudge_at_ms;
+  if (
+    lastNudgeAtMs !== undefined &&
+    lastNudgeAtMs > (existing?.last_reply_at_ms ?? 0)
+  ) {
+    nextLastReplyAtMs = now;
+  }
+
+  return {
+    ts: now,
+    lastEvent: existing?.lastEvent,
+    classification: nextClassification,
+    last_nudge_at_ms: lastNudgeAtMs,
+    last_reply_at_ms: nextLastReplyAtMs,
+  };
+}
+
 // v2.8.9 — strip helpers moved to components/master/text-sanitize.ts so the
 // Telegram outgoing path (tools/telegram.ts) and any future surface can
 // import the same regex without duplicating it. Existing call sites in
@@ -2086,16 +2182,10 @@ async function main() {
   const INBOX_DIR = join(MASTER_STATE_DIR, "inbox");
   mkdirSync(INBOX_DIR, { recursive: true });
 
-  type TeamEvent = {
-    ts: string;
-    type: string;
-    text?: string;
-    [k: string]: unknown;
-  };
-  const teamLastActivity = new Map<
-    string,
-    { ts: number; lastEvent?: TeamEvent; classification?: ClassifiedReply }
-  >();
+  // TeamEvent + TeamActivity types are declared at module scope so the
+  // exported re-classify helper (deriveActivityFromPaneCapture) and its
+  // tests can reference the same shape — see notes above the helper.
+  const teamLastActivity = new Map<string, TeamActivity>();
   const teamReadOffsets = new Map<string, number>(); // file path → last byte read
   // v2.8.2 — Hoisted up here (was declared near the watchdog ticker
   // further down) so the inbox first-scan reconciliation and the
@@ -5163,22 +5253,34 @@ async function main() {
           teamPaneHash.set(session, hash);
           const existing = teamLastActivity.get(session);
           // First time we see this session AND no inbox entry → seed
-          // activity at now.
+          // activity at now. Classify the visible pane content so a
+          // worker that boots straight into a "work complete" state
+          // doesn't get mistaken for "working" on the first tick.
           if (!existing) {
-            teamLastActivity.set(session, { ts: now });
+            const seedClassification = classifyWorkerReply(content);
+            teamLastActivity.set(session, {
+              ts: now,
+              classification: seedClassification,
+            });
           } else {
             // Bump only if our new "now" is later than existing — it
             // always is in practice, but defensively ordered.
             if (now > existing.ts) {
-              // WEB-216: preserve classification across pane-hash bumps
-              // so a completed_idle worker stays classified between
-              // sweep ticks (pane content updates don't carry text to
-              // re-classify; the original classification still applies).
-              teamLastActivity.set(session, {
-                ts: now,
-                lastEvent: existing.lastEvent,
-                classification: existing.classification,
-              });
+              // v2.8.14 — re-classify the actual pane content on every
+              // hash change. Previously this path preserved the stale
+              // spawn-time "working" classification forever, which is
+              // why a worker that replied via the pane (auto-nudge
+              // response path) kept getting escalated as silent.
+              // Routed through the pure helper so the decision logic
+              // is unit-testable (see watchdog-pane-classify.test.ts).
+              teamLastActivity.set(
+                session,
+                deriveActivityFromPaneCapture({
+                  existing,
+                  paneText: content,
+                  now,
+                }),
+              );
             }
           }
         }
@@ -5238,6 +5340,14 @@ async function main() {
       team_id: team,
       tmux_session_id: team,
       last_seen_ms: v.ts,
+      // v2.8.14 — nudge/reply observability so future false-positives
+      // (worker replied via pane, watchdog kept escalating) are
+      // debuggable from `system_watchdog_self` without re-reading
+      // jsonl decision logs.
+      last_nudge_at_ms: v.last_nudge_at_ms ?? null,
+      last_reply_at_ms: v.last_reply_at_ms ?? null,
+      reply_classification: v.classification?.kind ?? null,
+      completion_flag: v.classification?.kind === "completed_idle",
     })),
     last_tick_at_ms: watchdogLastTickMs,
     last_fire_at_ms: watchdogLastFireMs,
@@ -5286,6 +5396,17 @@ async function main() {
       if (!r.ok) return { ok: false, error: `HTTP ${r.status}` };
       const j = (await r.json()) as { ok?: boolean; error?: string };
       if (j.ok === false) return { ok: false, error: j.error ?? "unknown" };
+      // v2.8.14 — stamp last_nudge_at_ms on the team's activity record so
+      // the pane-hash bump path can recognise the next pane change as a
+      // reply to this nudge (last_reply_at_ms) and so operators can read
+      // the nudge/reply pairing out of system_watchdog_self.
+      const existing = teamLastActivity.get(team);
+      if (existing) {
+        teamLastActivity.set(team, {
+          ...existing,
+          last_nudge_at_ms: Date.now(),
+        });
+      }
       return { ok: true };
     } catch (err) {
       return { ok: false, error: (err as Error).message };
@@ -5846,6 +5967,13 @@ async function main() {
             team_id,
             tmux_session_id: team_id,
             last_seen_ms: v.ts,
+            // v2.8.14 — same observability surface as bindWatchdogState
+            // for kernel-surface readers that don't go through the diag
+            // tool path.
+            last_nudge_at_ms: v.last_nudge_at_ms ?? null,
+            last_reply_at_ms: v.last_reply_at_ms ?? null,
+            reply_classification: v.classification?.kind ?? null,
+            completion_flag: v.classification?.kind === "completed_idle",
           })),
         }),
 
