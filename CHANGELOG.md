@@ -1,3 +1,13 @@
+## [2.8.16] — 2026-05-22
+
+### `fix(cognee-promotion): entityId override now reaches listCurated SQL query`
+
+v2.8.15 shipped the Tier 3 → Tier 4 promotion ticker, but post-deploy validation found it silently scanned 0 rows for 8+ hours. Root cause: `_setCogneePromotionDepsForTesting({ entityId: () => "jason" })` in server.ts only overrode `deps.entityId` — but the default `listCurated` closure embedded `_realEntityId()` directly, which falls back to `"operator"` when `SUBCTL_OPERATOR_NAME` env is unset. SQL query ran with `WHERE entity_id = "operator"`, returning 0 of 222 curated rows. No errors recorded (no errors to record), no log lines (only logs when scanned > 0), pure silent no-op.
+
+**Fix:** `listCurated` interface now takes `entityId` in args. `runOneTick` passes `deps.entityId()` so the server-side override actually reaches the SQL query.
+
+**Validation:** new test pins the contract — `listCurated` must receive `entityId` from `deps.entityId()` override, not from any default fallback.
+
 ## [2.8.15] — 2026-05-21
 
 ### `feat(memory): Cognee write path — Tier 3 → Tier 4 promotion ticker`

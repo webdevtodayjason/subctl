@@ -46,6 +46,7 @@ function makeRow(
 
 interface MockState {
   listCuratedCalls: Array<{
+    entityId: string;
     afterTs: string | null;
     afterId: string | null;
     limit: number;
@@ -328,6 +329,31 @@ describe("runOneTick — watermark persistence across restart", () => {
       const persisted = JSON.parse(readFileSync(statePath, "utf8"));
       expect(persisted.total_promoted).toBe(3);
     }
+  });
+});
+
+describe("runOneTick — entityId propagation (v2.8.16 regression guard)", () => {
+  // v2.8.15 bug: `_setCogneePromotionDepsForTesting({ entityId: () => "jason" })`
+  // in server.ts only overrode `deps.entityId`. The default `listCurated`
+  // closure embedded `_realEntityId()` directly, so it ignored the override
+  // and used the env-fallback ("operator"). Live DB had entity_id="jason" —
+  // SQL returned 0 rows for 8+ hours.
+  //
+  // Fix: `listCurated` interface takes `entityId` in args; `runOneTick`
+  // passes `deps.entityId()`. This test pins the contract so the bug
+  // can't silently come back.
+  test("listCurated receives entityId from deps.entityId() override, not from any default", async () => {
+    const statePath = join(tempDir, "state.json");
+    const { deps, state } = makeMocks({ rows: [], statePath });
+    _setDepsForTesting({
+      ...deps,
+      entityId: () => "test-operator",
+    });
+
+    await runOneTick();
+
+    expect(state.listCuratedCalls).toHaveLength(1);
+    expect(state.listCuratedCalls[0]!.entityId).toBe("test-operator");
   });
 });
 
