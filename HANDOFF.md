@@ -1,29 +1,29 @@
-# HANDOFF.md — session 2026-05-22 EOD (six-release wave + infrastructure cleanup)
+# HANDOFF.md — session 2026-05-23 (v2.9.0 Tier 1 Consolidator)
 
 **Operator:** Jason Brashear
 **Repo:** `webdevtodayjason/subctl` @ `/Users/sem/code/subctl`
 **Branch:** `main` (no feature branches in flight)
-**Main HEAD:** `246bbcd` (v2.8.18 squash-merge)
-**VERSION file:** `2.8.18`
-**Last tag:** `v2.8.18` (pushed to origin)
-**Vault:** `/Users/sem/Documents/Obsidian Vault/Subctl/` — refreshed 2026-05-22 21:30 CDT in this session
+**Main HEAD:** (after this PR merges) v2.9.0 squash-merge of `feat/tier1-consolidator`
+**VERSION file:** `2.9.0`
+**Last tag:** `v2.9.0` (after tag is pushed)
+**Vault:** `/Users/sem/Documents/Obsidian Vault/Subctl/` — refreshed 2026-05-22 21:30 CDT in prior session; new entries for v2.9.0 land at merge time
 
 ## Quick verify (run these first on next session)
 
 ```bash
 cd /Users/sem/code/subctl
-git log --oneline -1                                              # expect: 246bbcd
-git tag -l 'v*' | sort -V | tail -1                               # expect: v2.8.18
-cat VERSION                                                       # expect: 2.8.18
-curl -s http://127.0.0.1:8787/api/version                         # expect: {"version":"2.8.18"}
-curl -s http://127.0.0.1:8788/health | jq .version                # expect: "2.8.18"
+git log --oneline -1                                              # expect v2.9.0 squash-merge
+git tag -l 'v*' | sort -V | tail -1                               # expect: v2.9.0
+cat VERSION                                                       # expect: 2.9.0
+curl -s http://127.0.0.1:8787/api/version                         # expect: {"version":"2.9.0"}
+curl -s http://127.0.0.1:8788/health | jq .version                # expect: "2.9.0"
 curl -s http://127.0.0.1:8745/health | jq .total_memories         # expect: 225 (or higher)
 ls ~/Library/LaunchAgents/com.subctl.claude-mem-reaper.plist 2>&1 # expect: file not found (retired)
 ```
 
 If `main HEAD` doesn't match, fetch + verify before doing anything else.
 
-## Today's six-release wave
+## Releases (2026-05-22 → 2026-05-23)
 
 | Tag | What | PR | Notes |
 |-----|------|-----|-------|
@@ -33,6 +33,7 @@ If `main HEAD` doesn't match, fetch + verify before doing anything else.
 | **v2.8.16** | Cognee entity_id fix | #16 | 222/222 promoted on first tick |
 | **v2.8.17** | Chat dropdown enumerates enabled models + bulk toggle | #17 | Worker stalled mid-task; salvaged + finished manually |
 | **v2.8.18** | API-key privacy guard + usage resilience | #18 | 8 CodeRabbit passes |
+| **v2.9.0** | Tier 1 Consolidator — LLM-driven dedup of pending Tier 1 candidates | (this PR) | New `POST /memory/tier1/consolidate` endpoint + dashboard ⚗ button + modal. `text_override` on approve endpoint so consolidator-merged text wins. Operator-in-the-loop required. |
 
 ## Infrastructure work today
 
@@ -53,11 +54,16 @@ Cognee sidecar runs LOCAL ONLY (not M3). M3's cognee-promotion stays disarmed as
 
 ## Open work (priority order)
 
-### 1. Tier 1 Consolidator (operator priority for next session)
+### 1. v2.9.0 smoke test — actually run the consolidator
 
-63 candidates pending in dashboard with semantic duplicates. LLM-driven consolidator endpoint + small dashboard modal that merges near-dups into the minimum distinct set. ~150 LOC, single worker, 60-90 min.
+The consolidator endpoint shipped behind operator-in-the-loop. Smoke test path:
+1. Open Memory tab in dashboard
+2. Click ⚗ Consolidate (LLM) button
+3. Modal renders with proposal — review the consolidated set + char budget meter
+4. Edit any entries inline, expand the Dropped section to spot-check
+5. Click Apply — should iterate through 1 approve per merged group + N rejects for merged-from + N rejects for dropped
 
-Detailed plan: `/Users/sem/Documents/Obsidian Vault/Subctl/Initiatives/Tier 1 Consolidator.md`
+If anything's off, file a bug. The 63 pending candidates are the perfect test bed.
 
 ### 2. v2.8.19 — per-alias backoff + composite-key cache
 

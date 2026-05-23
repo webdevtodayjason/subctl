@@ -4198,7 +4198,20 @@ async function main() {
         // time so profile swaps and provider edits land without restart.
         const reviewerCfgRaw = providers.models.reviewer ?? supervisorCfg;
         const reviewerCfg = resolveRoleCfg("reviewer", reviewerCfgRaw, providers);
-        const baseUrl = (reviewerCfg.host ?? "").replace(/\/v1\/?$/, "");
+        // CodeRabbit pass-1: fall back to provider-default base URL when
+        // reviewerCfg.host is empty — matches buildModel's behavior at
+        // server.ts:1086 (openrouter, xai-oauth, and local providers all
+        // have canonical defaults). Otherwise the consolidate handler
+        // returned 500 for openrouter / xai-oauth supervisors with no
+        // explicit host set.
+        const resolvedHost =
+          reviewerCfg.host
+          ?? (reviewerCfg.provider === "openrouter"
+            ? "https://openrouter.ai/api/v1"
+            : reviewerCfg.provider === "xai-oauth"
+              ? getXaiOauthBaseUrl()
+              : "");
+        const baseUrl = resolvedHost.replace(/\/v1\/?$/, "");
         if (!baseUrl) {
           return Response.json(
             {

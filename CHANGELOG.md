@@ -20,10 +20,10 @@ The Tier 1 candidate queue accumulates semantic duplicates (Memori's reviewer is
   "dropped_candidate_ids": ["c_mpc9aa_..."],
   "dropped_reasons": { "c_mpc9aa_...": "Low confidence (0.5) and redundant with merged entry above" },
   "pending_unchanged_candidate_ids": [],
-  "char_current": 2212,
-  "char_total": 240,
-  "char_budget": 4000,
-  "headroom_after": 1548,
+  "char_current": 2212,         // current memory.md size
+  "char_total": 240,            // delta — chars the proposal would ADD if applied (NOT the projected total)
+  "char_budget": 4000,          // SUBCTL_MEMORY_LIMIT
+  "headroom_after": 1548,       // char_budget - (char_current + char_total) = 4000 - 2452 = 1548
   "reviewer_model": "lmstudio/qwen2.5-32b-instruct"
 }
 ```
