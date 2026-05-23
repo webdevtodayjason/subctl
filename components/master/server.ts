@@ -205,6 +205,13 @@ import {
   type MemoriRecallInput,
   type MemoriResult,
 } from "./memori-client";
+import {
+  hydrateContext,
+  loadContextHydrationConfig,
+  type ContextHydrationConfig,
+  type CogneeHit as ContextHydrationCogneeHit,
+  type MemoriCuratedRow as ContextHydrationCuratedRow,
+} from "./context-hydration";
 import { probeWithRetry } from "./probe-with-retry";
 import {
   runOneCycle as runMemoryKernelCycle,
@@ -2023,6 +2030,147 @@ async function main() {
       });
   }
 
+  // ── v2.10.0 — Memory Cycle Phase 4: context slimming hydration ──────────
+  //
+  // SEPARATE from the v2.8.11 curated-cache above. The cache prepends the
+  // SAME curated rows into the SYSTEM PROMPT on EVERY turn. The Phase 4
+  // hydration block is a ONE-SHOT synthetic `role: "user"` message
+  // (mirrors compactTranscriptInline's summary message) pushed into
+  // `agent.state.messages` on the FIRST prompt after master boot OR
+  // immediately after `/compact` clears the transcript. It also adds
+  // Cognee graph hits — the cache doesn't.
+  //
+  // The raw transcript file on disk (agent-state.json) stays untouched
+  // as the audit trail. We still loadAgentTranscript() at boot so
+  // multi-turn coherence holds across daemon restarts — the slimming
+  // here is the LLM-VISIBLE summary that gets prepended ON TOP of the
+  // resumed transcript, not a replacement for it.
+  //
+  // Lifecycle (set/clear of _pendingHydrationPayload):
+  //   1. SET at boot once Memori + Cognee probes complete (scheduleHydration("boot"))
+  //   2. SET inside compactTranscriptInline AFTER clearing messages (scheduleHydration("post-compact"))
+  //   3. CLEAR inside processOnePrompt the moment it gets prepended
+  //
+  // Failure modes are absorbed inside hydrateContext (Cognee outage →
+  // no graph section, Memori outage → ok:false → we just don't set the
+  // flag). The agent never crashes on missing hydration.
+  let _pendingHydrationPayload: string | null = null;
+  const _contextHydrationConfig: ContextHydrationConfig =
+    loadContextHydrationConfig();
+  console.error(
+    `[context-hydration] config: enabled=${_contextHydrationConfig.enabled} curated_limit=${_contextHydrationConfig.recent_curated_limit} cognee_limit=${_contextHydrationConfig.cognee_limit} cognee_query=${_contextHydrationConfig.cognee_relevance_query ?? "null"}`,
+  );
+
+  /**
+   * Kick off an async hydration query and stash the result in
+   * `_pendingHydrationPayload` for the next prompt to consume. Safe to
+   * call repeatedly — re-entry is allowed (the latest call wins; older
+   * payloads get overwritten before any prompt sees them).
+   *
+   * `reason` shows up in the decision log + SSE event so the operator can
+   * tell boot-hydration from post-compact-hydration in the transcript view.
+   */
+  function scheduleHydration(reason: "boot" | "post-compact" | "manual"): void {
+    if (!_contextHydrationConfig.enabled) {
+      console.error(
+        `[context-hydration] skipped (${reason}) — disabled via config / env`,
+      );
+      return;
+    }
+    const entityId = (policy.operator.name ?? "operator").toLowerCase();
+    void (async () => {
+      try {
+        const result = await hydrateContext(
+          {
+            entity_id: entityId,
+            recent_curated_limit: _contextHydrationConfig.recent_curated_limit,
+            cognee_relevance_query:
+              _contextHydrationConfig.cognee_relevance_query,
+            cognee_limit: _contextHydrationConfig.cognee_limit,
+          },
+          {
+            // Memori curated rows come through the same /recall +
+            // curated_-prefix filter the v2.8.11 cache uses. Keeps a
+            // single source-of-truth for what counts as curated.
+            listMemoriCurated: async ({ entity_id, limit }) => {
+              const wide = await memoriRecall({
+                entity_id,
+                query: "",
+                // Pull a wider window so the prefix-filter has material;
+                // hydrateContext clamps to `limit` internally.
+                top_k: Math.max(limit * 4, 50),
+              });
+              if (!wide.ok) {
+                throw new Error(wide.error);
+              }
+              const curated = wide.data.hits.filter(
+                (h: MemoriHit) =>
+                  typeof h.id === "string" && h.id.startsWith("curated_"),
+              );
+              // Newest first — ts is ISO-8601 so lexicographic compare works.
+              curated.sort((a, b) =>
+                (b.ts ?? "").localeCompare(a.ts ?? ""),
+              );
+              const rows: ContextHydrationCuratedRow[] = curated.map((h) => ({
+                id: h.id,
+                text: h.text,
+                ts: h.ts,
+                kind: h.kind,
+                // memori-client typing doesn't surface confidence on hits;
+                // omit — formatter falls back to kind-only tag.
+              }));
+              return rows.slice(0, limit);
+            },
+            queryCognee: async ({ query, limit }) => {
+              const r = await cogneeRecall({ query, top_k: limit });
+              if (!r.ok) {
+                throw new Error(r.error);
+              }
+              const hits: ContextHydrationCogneeHit[] = r.data.hits.map((h) => ({
+                text: h.text,
+                score: h.score,
+                id: h.id,
+              }));
+              return hits;
+            },
+            now: () => new Date(),
+          },
+        );
+        if (!result.ok) {
+          console.error(
+            `[context-hydration] ${reason} hydration failed: ${result.error}`,
+          );
+          // Still log a decision so the audit trail reflects the attempt.
+          logDecision({
+            project: "_master",
+            action: "context_hydration_failed",
+            rationale: `${reason}: ${result.error ?? "unknown"}`,
+          });
+          return;
+        }
+        _pendingHydrationPayload = result.context_payload;
+        console.error(
+          `[context-hydration] ${reason} ready — ${result.sources.memori_curated_count} curated + ${result.sources.cognee_hits_count} graph hits + tier1=${result.sources.tier1_chars}b; will prepend on next prompt`,
+        );
+        try {
+          broadcast("context_hydration_ready", {
+            ts: new Date().toISOString(),
+            reason,
+            sources: result.sources,
+          });
+        } catch {
+          /* never block on broadcast */
+        }
+      } catch (err) {
+        // hydrateContext is defensive — should never throw out — but
+        // protect against bad deps wiring just in case.
+        console.error(
+          `[context-hydration] ${reason} scheduler threw: ${(err as Error).message ?? String(err)}`,
+        );
+      }
+    })();
+  }
+
   function composeSystemPrompt(userMessage?: string): string {
     // Curated Tier 3 goes FIRST so the supervisor sees the consciousness-
     // cycle output ahead of tier-1 + skill + persona. Stale or empty
@@ -2554,6 +2702,13 @@ async function main() {
           // fire-and-forget; subsequent refreshes are driven by the
           // TTL check inside composeSystemPrompt.
           refreshCuratedAsync("boot");
+          // v2.10.0 — Memory Cycle Phase 4 (different lifecycle from
+          // the v2.8.11 cache above). One-shot hydration block prepended
+          // to the FIRST new prompt as a synthetic role:"user" message.
+          // Includes curated Tier 3 + Cognee Tier 4 hits. Fire-and-forget
+          // — if the operator types before the async resolves, the next
+          // turn picks it up.
+          scheduleHydration("boot");
         } else {
           console.error(
             `[memori] Tier 3 falls back to evy-memory until the sidecar is up (last error: ${probe.error ?? "unknown"}, auth=${probe.auth_status}).`,
@@ -3016,6 +3171,12 @@ async function main() {
         action: "transcript_compacted",
         rationale: `compacted ${toCompact.length} msgs, kept last ${recent.length} (initiator=${opts.initiator})`,
       });
+      // v2.10.0 — Memory Cycle Phase 4. Compaction just dumped most of
+      // the transcript into a single summary message; the LLM has lost
+      // the broader curated/graph context that previously rode along
+      // implicitly in the bulk. Re-hydrate so the FIRST prompt after
+      // compaction sees a fresh `[memory-context-hydration]` block.
+      scheduleHydration("post-compact");
       return {
         ok: true,
         archived_count: toCompact.length,
@@ -3184,6 +3345,57 @@ async function main() {
       // (so the new user text doesn't sneak in over-budget). The 5-min
       // ticker below is a safety net; this is the primary gate.
       await runJitCompactCheck();
+
+      // ── v2.10.0 — Memory Cycle Phase 4: context-hydration injection ────
+      // After any pending compact (jit gate above) has settled, but
+      // BEFORE composeSystemPrompt + agent.prompt, prepend the latest
+      // ready hydration payload as a synthetic `role:"user"` message.
+      // The agent.prompt(p.text) call below then naturally appends the
+      // operator's real prompt AFTER the hydration block.
+      //
+      // Why AFTER runJitCompactCheck (not at function top): if the JIT
+      // compact fires this turn, it clears agent.state.messages and
+      // calls scheduleHydration("post-compact") — the new payload
+      // populates AFTER hydrateContext's async resolves. We check the
+      // flag here so EITHER a boot-pending payload OR a freshly-set
+      // post-compact payload (when it has time to land) gets prepended
+      // on the same turn. Boot-pending is the common case; the post-
+      // compact race is acceptable because the next operator turn
+      // picks it up.
+      if (_pendingHydrationPayload !== null) {
+        const payload = _pendingHydrationPayload;
+        _pendingHydrationPayload = null;
+        try {
+          agent.state.messages.push({
+            role: "user",
+            content: [{ type: "text", text: payload }],
+            timestamp: Date.now(),
+          } as any);
+          logDecision({
+            project: "_master",
+            action: "context_hydrated",
+            rationale: `prepended ${payload.length}-char [memory-context-hydration] block on ${p.source} prompt`,
+          });
+          try {
+            broadcast("context_hydration_injected", {
+              ts: new Date().toISOString(),
+              source: p.source,
+              payload_chars: payload.length,
+            });
+          } catch {
+            /* never block on broadcast */
+          }
+          console.error(
+            `[context-hydration] injected ${payload.length} chars into transcript ahead of ${p.source} prompt`,
+          );
+        } catch (err) {
+          // Push failure is unrecoverable for THIS turn; the flag is
+          // already cleared so it doesn't loop on the next prompt.
+          console.error(
+            `[context-hydration] inject failed: ${(err as Error).message ?? String(err)} — continuing without hydration`,
+          );
+        }
+      }
 
       // ── v2.8.1 chat perf / skill router ──
       // Per-turn latency telemetry. Stage timestamps recorded on the
