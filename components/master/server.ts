@@ -207,6 +207,13 @@ import {
   type MemoriRecallInput,
   type MemoriResult,
 } from "./memori-client";
+import {
+  hydrateContext,
+  loadContextHydrationConfig,
+  type ContextHydrationConfig,
+  type CogneeHit as ContextHydrationCogneeHit,
+  type MemoriCuratedRow as ContextHydrationCuratedRow,
+} from "./context-hydration";
 import { probeWithRetry } from "./probe-with-retry";
 import {
   runOneCycle as runMemoryKernelCycle,
@@ -1573,6 +1580,234 @@ export async function buildCuratedPromptSection(deps: {
   return formatCuratedSection(curated.slice(0, topK), budget);
 }
 
+// ── v2.10.1 — Memory Cycle Phase 4: outcome reducer ──────────────────────
+//
+// Pure helper that converts a resolved (or thrown) hydrateContext call
+// into the right side-effects on the master daemon. Extracted out of
+// scheduleHydration so the seq-guard + audit-emission contract is
+// unit-testable without standing up the whole daemon.
+//
+// Decision matrix:
+//   superseded (mySeq < currentSeq)  → no state write, no audit emission
+//   threw, not superseded            → audit + broadcast failure
+//   ok:false, not superseded         → audit + broadcast failure
+//   ok:true,  not superseded         → setPayload + broadcast ready
+//
+// Failure cases emit BOTH logDecision AND broadcast — operator looking at
+// decisions.jsonl OR watching SSE sees the same event. Pre-2.10.1 the
+// throw path was silent (CodeRabbit pass-1 MAJOR).
+//
+// v2.10.x CodeRabbit pass-2 — every deps.* call (setPayload, log,
+// logDecision, broadcast, now) is individually try-wrapped so the
+// reducer NEVER throws. Side-effect failures degrade gracefully:
+//   - setPayload throwing → state-write didn't take, return logged_failure
+//   - log/logDecision/broadcast throwing → swallowed locally, other
+//     channels still fire, outcome action reflects what actually happened
+//   - now() throwing → fall back to a deps-free "ts: <unknown>" sentinel
+//     so broadcasts can still construct without exploding
+
+export type HydrationOutcomeAction =
+  | "applied"
+  | "superseded"
+  | "logged_failure"
+  | "ignored_superseded_failure";
+
+export interface ApplyHydrationOutcomeDeps {
+  reason: string;
+  /** This request's sequence number (captured at scheduleHydration call). */
+  mySeq: number;
+  /** Latest sequence number at outcome time. mySeq < currentSeq → stale. */
+  currentSeq: number;
+  /** hydrateContext's resolved result, or null when the await threw. */
+  result:
+    | import("./context-hydration").HydrationResult
+    | null;
+  /** Error message captured from the throw path. Null when not thrown. */
+  threwMessage: string | null;
+  setPayload: (payload: string) => void;
+  logDecision: (entry: { project: string; action: string; rationale: string }) => void;
+  broadcast: (eventType: string, payload: unknown) => void;
+  log: (line: string) => void;
+  now: () => Date;
+}
+
+// ── deps wrappers — each side-effect dep wrapped in its own try/catch ────
+//
+// All defensive: any thrown error is swallowed. The reducer reports the
+// outcome via the returned tagged action, not via thrown exceptions.
+
+function _safeLog(deps: ApplyHydrationOutcomeDeps, line: string): void {
+  try {
+    deps.log(line);
+  } catch {
+    /* swallow — log channel itself is broken; nothing we can do */
+  }
+}
+
+function _safeLogDecision(
+  deps: ApplyHydrationOutcomeDeps,
+  entry: { project: string; action: string; rationale: string },
+): void {
+  try {
+    deps.logDecision(entry);
+  } catch (err) {
+    // logDecision is the audit primary; if it broke, log the breakage
+    // so operator can investigate via stderr, then swallow.
+    _safeLog(
+      deps,
+      `[context-hydration] logDecision threw (audit dropped): ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+function _safeBroadcast(
+  deps: ApplyHydrationOutcomeDeps,
+  eventType: string,
+  payload: unknown,
+): void {
+  try {
+    deps.broadcast(eventType, payload);
+  } catch (err) {
+    _safeLog(
+      deps,
+      `[context-hydration] broadcast(${eventType}) threw: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+function _safeNowIso(deps: ApplyHydrationOutcomeDeps): string {
+  try {
+    return deps.now().toISOString();
+  } catch {
+    return "<unknown>";
+  }
+}
+
+/**
+ * Apply the outcome of a hydration attempt. Returns a tag indicating
+ * which branch ran (for tests + observability). Never throws.
+ *
+ * State-write contract:
+ *   - "applied": setPayload succeeded. log/broadcast MAY have thrown
+ *     but the payload IS committed.
+ *   - "logged_failure": payload is NOT committed. Either we never
+ *     attempted setPayload (failure path), OR setPayload itself threw.
+ *   - "superseded" / "ignored_superseded_failure": no setPayload
+ *     attempt by design.
+ */
+export function applyHydrationOutcome(deps: ApplyHydrationOutcomeDeps): HydrationOutcomeAction {
+  const superseded = deps.mySeq !== deps.currentSeq;
+  // Throw path — async await rejected.
+  if (deps.result === null) {
+    const msg = deps.threwMessage ?? "unknown";
+    if (superseded) {
+      // Don't pollute the audit trail with stale-throw noise; just log.
+      _safeLog(
+        deps,
+        `[context-hydration] ${deps.reason} (seq=${deps.mySeq}) superseded then threw — ignoring: ${msg}`,
+      );
+      return "ignored_superseded_failure";
+    }
+    _safeLog(deps, `[context-hydration] ${deps.reason} scheduler threw: ${msg}`);
+    _safeLogDecision(deps, {
+      project: "_master",
+      action: "context_hydration_failed",
+      rationale: `${deps.reason}: ${msg}`,
+    });
+    _safeBroadcast(deps, "context_hydration_failed", {
+      ts: _safeNowIso(deps),
+      reason: deps.reason,
+      error: msg,
+    });
+    return "logged_failure";
+  }
+
+  // Resolved with ok:false — Memori or other structural failure.
+  if (!deps.result.ok) {
+    const errMsg = deps.result.error ?? "unknown";
+    if (superseded) {
+      _safeLog(
+        deps,
+        `[context-hydration] ${deps.reason} (seq=${deps.mySeq}) superseded; discarding stale ok:false`,
+      );
+      return "superseded";
+    }
+    _safeLog(deps, `[context-hydration] ${deps.reason} hydration failed: ${errMsg}`);
+    _safeLogDecision(deps, {
+      project: "_master",
+      action: "context_hydration_failed",
+      rationale: `${deps.reason}: ${errMsg}`,
+    });
+    _safeBroadcast(deps, "context_hydration_failed", {
+      ts: _safeNowIso(deps),
+      reason: deps.reason,
+      error: errMsg,
+    });
+    return "logged_failure";
+  }
+
+  // Resolved with ok:true — success path.
+  if (superseded) {
+    // Quietly drop the stale-success: a fresher payload is on its way
+    // (or already landed) and we MUST NOT overwrite it.
+    _safeLog(
+      deps,
+      `[context-hydration] ${deps.reason} (seq=${deps.mySeq}) superseded by seq=${deps.currentSeq}; discarding ${deps.result.context_payload.length}-char payload`,
+    );
+    return "superseded";
+  }
+
+  // setPayload is the load-bearing state write. If it throws, the
+  // payload didn't land — degrade to logged_failure and emit the same
+  // audit a failure path would. Returning "applied" with no state
+  // change would be a lie to the caller; returning "logged_failure"
+  // lets observers see the breakage. CodeRabbit pass-2 MAJOR.
+  try {
+    deps.setPayload(deps.result.context_payload);
+  } catch (err) {
+    const setMsg = err instanceof Error ? err.message : String(err);
+    _safeLog(
+      deps,
+      `[context-hydration] ${deps.reason} setPayload threw — state NOT written: ${setMsg}`,
+    );
+    _safeLogDecision(deps, {
+      project: "_master",
+      action: "context_hydration_failed",
+      rationale: `${deps.reason}: setPayload threw: ${setMsg}`,
+    });
+    _safeBroadcast(deps, "context_hydration_failed", {
+      ts: _safeNowIso(deps),
+      reason: deps.reason,
+      error: `setPayload threw: ${setMsg}`,
+    });
+    return "logged_failure";
+  }
+
+  // State write succeeded — anything below is observational. log +
+  // broadcast + logDecision failures don't downgrade the action;
+  // "applied" reflects that the payload IS committed.
+  _safeLog(
+    deps,
+    `[context-hydration] ${deps.reason} ready — ${deps.result.sources.memori_curated_count} curated + ${deps.result.sources.cognee_hits_count} graph hits + tier1=${deps.result.sources.tier1_chars}b; will prepend on next prompt`,
+  );
+  _safeBroadcast(deps, "context_hydration_ready", {
+    ts: _safeNowIso(deps),
+    reason: deps.reason,
+    sources: deps.result.sources,
+  });
+  // CodeRabbit pass-3: durable audit on success path, symmetric with
+  // the failure branches above. Failures already land in
+  // decisions.jsonl via `context_hydration_failed`; this row lets the
+  // operator grep for both "the hydration ATTEMPTS" and "the hydration
+  // RESULTS" in the same audit stream.
+  _safeLogDecision(deps, {
+    project: "_master",
+    action: "context_hydration_ready",
+    rationale: `${deps.reason}: ${deps.result.sources.memori_curated_count} curated + ${deps.result.sources.cognee_hits_count} graph hits + ${deps.result.sources.tier1_chars} tier1_chars`,
+  });
+  return "applied";
+}
+
 function loadAgentTranscript(): AgentMessage[] {
   if (!existsSync(AGENT_STATE_PATH)) return [];
   try {
@@ -1792,11 +2027,70 @@ function scrubMessageContent(messages: AgentMessage[]): AgentMessage[] {
   });
 }
 
+// v2.10.x CodeRabbit pass-4: filter `_ephemeral: true` messages
+// (Phase 4 hydration blocks) out of the durable transcript. The
+// pi-agent-core supervisor sees them in-memory for the turn they
+// land on; they're invisible to disk persistence so they don't
+// accumulate across restarts.
+//
+// Pure helper, exported for unit tests. The flag is a synthetic-only
+// marker placed by master itself (the operator can't smuggle it in
+// because pi-agent-core doesn't surface a way to set arbitrary
+// per-message metadata via /chat). Safe to scan unconditionally.
+export function dropEphemeralMessages(messages: AgentMessage[]): AgentMessage[] {
+  let dropped = 0;
+  const kept = messages.filter((m) => {
+    if ((m as { _ephemeral?: boolean })._ephemeral === true) {
+      dropped++;
+      return false;
+    }
+    return true;
+  });
+  if (dropped > 0) {
+    console.error(
+      `[transcript] dropped ${dropped} ephemeral message(s) before persistence (hydration blocks etc.)`,
+    );
+  }
+  return kept;
+}
+
+// v2.10.x CodeRabbit pass-5: in-place strip used by the prompt
+// handler immediately after the model has consumed the current
+// turn's messages. Without this, the hydration block (pushed with
+// `_ephemeral: true` per pass-4) survives in `agent.state.messages`
+// forever — defeating Phase 4's whole point: token bloat on every
+// subsequent supervisor call.
+//
+// Mirrors the splice-from-tail idiom compactTranscriptInline uses
+// for orphan-toolResult removal — pi-agent-core's Agent holds the
+// reference to `state.messages`, so we mutate in place rather than
+// reassign. Returns the count of removed entries for caller logging.
+//
+// Exported pure helper — unit-testable without standing up the daemon.
+export function stripEphemeralInPlace(messages: AgentMessage[]): number {
+  let dropped = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i] as { _ephemeral?: boolean } | undefined;
+    if (m && m._ephemeral === true) {
+      messages.splice(i, 1);
+      dropped++;
+    }
+  }
+  return dropped;
+}
+
 function saveAgentTranscript(messages: AgentMessage[]) {
   writeFileSync(
     AGENT_STATE_PATH,
     JSON.stringify(
-      { saved_at: new Date().toISOString(), messages: scrubMessageContent(messages) },
+      {
+        saved_at: new Date().toISOString(),
+        // CodeRabbit pass-4: filter ephemeral hydration blocks first,
+        // then scrub reasoning channels. Order matters — scrubbing
+        // mutates content; doing it on already-dropped messages saves
+        // work and keeps the ephemeral filter loud.
+        messages: scrubMessageContent(dropEphemeralMessages(messages)),
+      },
       null,
       2,
     ),
@@ -2023,6 +2317,147 @@ async function main() {
       .finally(() => {
         curatedRefreshInFlight = false;
       });
+  }
+
+  // ── v2.10.0 — Memory Cycle Phase 4: context slimming hydration ──────────
+  //
+  // SEPARATE from the v2.8.11 curated-cache above. The cache prepends the
+  // SAME curated rows into the SYSTEM PROMPT on EVERY turn. The Phase 4
+  // hydration block is a ONE-SHOT synthetic `role: "user"` message
+  // (mirrors compactTranscriptInline's summary message) pushed into
+  // `agent.state.messages` on the FIRST prompt after master boot OR
+  // immediately after `/compact` clears the transcript. It also adds
+  // Cognee graph hits — the cache doesn't.
+  //
+  // The raw transcript file on disk (agent-state.json) stays untouched
+  // as the audit trail. We still loadAgentTranscript() at boot so
+  // multi-turn coherence holds across daemon restarts — the slimming
+  // here is the LLM-VISIBLE summary that gets prepended ON TOP of the
+  // resumed transcript, not a replacement for it.
+  //
+  // Lifecycle (set/clear of _pendingHydrationPayload):
+  //   1. SET at boot once Memori + Cognee probes complete (scheduleHydration("boot"))
+  //   2. SET inside compactTranscriptInline AFTER clearing messages (scheduleHydration("post-compact"))
+  //   3. CLEAR inside processOnePrompt the moment it gets prepended
+  //
+  // Failure modes are absorbed inside hydrateContext (Cognee outage →
+  // no graph section, Memori outage → ok:false → we just don't set the
+  // flag). The agent never crashes on missing hydration.
+  let _pendingHydrationPayload: string | null = null;
+  const _contextHydrationConfig: ContextHydrationConfig =
+    loadContextHydrationConfig();
+  // v2.10.1 — monotonic seq counter for hydration requests. Defends
+  // against the boot-then-post-compact race where the slow boot reply
+  // would otherwise stale-overwrite a fresh post-compact payload. Each
+  // call to scheduleHydration() ++'s this; the resolved continuation
+  // checks `mySeq === _lastHydrationReqSeq` BEFORE writing state.
+  let _lastHydrationReqSeq = 0;
+  console.error(
+    `[context-hydration] config: enabled=${_contextHydrationConfig.enabled} curated_limit=${_contextHydrationConfig.recent_curated_limit} cognee_limit=${_contextHydrationConfig.cognee_limit} cognee_query=${_contextHydrationConfig.cognee_relevance_query ?? "null"}`,
+  );
+
+  /**
+   * Kick off an async hydration query and stash the result in
+   * `_pendingHydrationPayload` for the next prompt to consume. Safe to
+   * call repeatedly — re-entry is allowed and seq-guarded: stale results
+   * are discarded WITHOUT overwriting a fresher payload.
+   *
+   * `reason` shows up in the decision log + SSE event so the operator can
+   * tell boot-hydration from post-compact-hydration in the transcript view.
+   */
+  function scheduleHydration(reason: "boot" | "post-compact" | "manual"): void {
+    if (!_contextHydrationConfig.enabled) {
+      console.error(
+        `[context-hydration] skipped (${reason}) — disabled via config / env`,
+      );
+      return;
+    }
+    const entityId = (policy.operator.name ?? "operator").toLowerCase();
+    // Reserve a sequence number for THIS request. The async continuation
+    // below uses the captured `mySeq` to detect supersession.
+    const mySeq = ++_lastHydrationReqSeq;
+    void (async () => {
+      let result: Awaited<ReturnType<typeof hydrateContext>> | null = null;
+      let threwMessage: string | null = null;
+      try {
+        result = await hydrateContext(
+          {
+            entity_id: entityId,
+            recent_curated_limit: _contextHydrationConfig.recent_curated_limit,
+            cognee_relevance_query:
+              _contextHydrationConfig.cognee_relevance_query,
+            cognee_limit: _contextHydrationConfig.cognee_limit,
+          },
+          {
+            // Memori curated rows come through the same /recall +
+            // curated_-prefix filter the v2.8.11 cache uses. Keeps a
+            // single source-of-truth for what counts as curated.
+            listMemoriCurated: async ({ entity_id, limit }) => {
+              const wide = await memoriRecall({
+                entity_id,
+                query: "",
+                // Pull a wider window so the prefix-filter has material;
+                // hydrateContext clamps to `limit` internally.
+                top_k: Math.max(limit * 4, 50),
+              });
+              if (!wide.ok) {
+                throw new Error(wide.error);
+              }
+              const curated = wide.data.hits.filter(
+                (h: MemoriHit) =>
+                  typeof h.id === "string" && h.id.startsWith("curated_"),
+              );
+              // Newest first — ts is ISO-8601 so lexicographic compare works.
+              curated.sort((a, b) =>
+                (b.ts ?? "").localeCompare(a.ts ?? ""),
+              );
+              const rows: ContextHydrationCuratedRow[] = curated.map((h) => ({
+                id: h.id,
+                text: h.text,
+                ts: h.ts,
+                kind: h.kind,
+                // memori-client typing doesn't surface confidence on hits;
+                // omit — formatter falls back to kind-only tag.
+              }));
+              return rows.slice(0, limit);
+            },
+            queryCognee: async ({ query, limit }) => {
+              const r = await cogneeRecall({ query, top_k: limit });
+              if (!r.ok) {
+                throw new Error(r.error);
+              }
+              const hits: ContextHydrationCogneeHit[] = r.data.hits.map((h) => ({
+                text: h.text,
+                score: h.score,
+                id: h.id,
+              }));
+              return hits;
+            },
+            now: () => new Date(),
+          },
+        );
+      } catch (err) {
+        // hydrateContext is defensive — should never throw out — but
+        // protect against bad deps wiring just in case. Audit emission
+        // happens via applyHydrationOutcome below so the throw path
+        // shares the same logDecision + broadcast contract as ok:false.
+        threwMessage = err instanceof Error ? err.message : String(err);
+      }
+      applyHydrationOutcome({
+        reason,
+        mySeq,
+        currentSeq: _lastHydrationReqSeq,
+        result,
+        threwMessage,
+        setPayload: (p) => {
+          _pendingHydrationPayload = p;
+        },
+        logDecision: (entry) => logDecision(entry),
+        broadcast: (eventType, payload) => broadcast(eventType, payload),
+        log: (line) => console.error(line),
+        now: () => new Date(),
+      });
+    })();
   }
 
   function composeSystemPrompt(userMessage?: string): string {
@@ -2556,6 +2991,13 @@ async function main() {
           // fire-and-forget; subsequent refreshes are driven by the
           // TTL check inside composeSystemPrompt.
           refreshCuratedAsync("boot");
+          // v2.10.0 — Memory Cycle Phase 4 (different lifecycle from
+          // the v2.8.11 cache above). One-shot hydration block prepended
+          // to the FIRST new prompt as a synthetic role:"user" message.
+          // Includes curated Tier 3 + Cognee Tier 4 hits. Fire-and-forget
+          // — if the operator types before the async resolves, the next
+          // turn picks it up.
+          scheduleHydration("boot");
         } else {
           console.error(
             `[memori] Tier 3 falls back to evy-memory until the sidecar is up (last error: ${probe.error ?? "unknown"}, auth=${probe.auth_status}).`,
@@ -3018,6 +3460,12 @@ async function main() {
         action: "transcript_compacted",
         rationale: `compacted ${toCompact.length} msgs, kept last ${recent.length} (initiator=${opts.initiator})`,
       });
+      // v2.10.0 — Memory Cycle Phase 4. Compaction just dumped most of
+      // the transcript into a single summary message; the LLM has lost
+      // the broader curated/graph context that previously rode along
+      // implicitly in the bulk. Re-hydrate so the FIRST prompt after
+      // compaction sees a fresh `[memory-context-hydration]` block.
+      scheduleHydration("post-compact");
       return {
         ok: true,
         archived_count: toCompact.length,
@@ -3187,6 +3635,67 @@ async function main() {
       // ticker below is a safety net; this is the primary gate.
       await runJitCompactCheck();
 
+      // ── v2.10.0 — Memory Cycle Phase 4: context-hydration injection ────
+      // After any pending compact (jit gate above) has settled, but
+      // BEFORE composeSystemPrompt + agent.prompt, prepend the latest
+      // ready hydration payload as a synthetic `role:"user"` message.
+      // The agent.prompt(p.text) call below then naturally appends the
+      // operator's real prompt AFTER the hydration block.
+      //
+      // Why AFTER runJitCompactCheck (not at function top): if the JIT
+      // compact fires this turn, it clears agent.state.messages and
+      // calls scheduleHydration("post-compact") — the new payload
+      // populates AFTER hydrateContext's async resolves. We check the
+      // flag here so EITHER a boot-pending payload OR a freshly-set
+      // post-compact payload (when it has time to land) gets prepended
+      // on the same turn. Boot-pending is the common case; the post-
+      // compact race is acceptable because the next operator turn
+      // picks it up.
+      if (_pendingHydrationPayload !== null) {
+        const payload = _pendingHydrationPayload;
+        _pendingHydrationPayload = null;
+        try {
+          // v2.10.x CodeRabbit pass-4: tag the synthetic hydration
+          // message with `_ephemeral: true` so saveAgentTranscript's
+          // dropEphemeralMessages filter strips it before writing to
+          // agent-state.json. The pi-agent-core supervisor still sees
+          // the message in-memory this turn (which is the whole point
+          // — Phase 4 hydration), but it's NEVER persisted to the
+          // durable transcript. Without this marker, every boot would
+          // accumulate stale `[memory-context-hydration]` blocks in
+          // the audit file and they'd replay forever on restore.
+          agent.state.messages.push({
+            role: "user",
+            content: [{ type: "text", text: payload }],
+            timestamp: Date.now(),
+            _ephemeral: true,
+          } as any);
+          logDecision({
+            project: "_master",
+            action: "context_hydrated",
+            rationale: `prepended ${payload.length}-char [memory-context-hydration] block on ${p.source} prompt (ephemeral — not persisted)`,
+          });
+          try {
+            broadcast("context_hydration_injected", {
+              ts: new Date().toISOString(),
+              source: p.source,
+              payload_chars: payload.length,
+            });
+          } catch {
+            /* never block on broadcast */
+          }
+          console.error(
+            `[context-hydration] injected ${payload.length} chars into transcript ahead of ${p.source} prompt`,
+          );
+        } catch (err) {
+          // Push failure is unrecoverable for THIS turn; the flag is
+          // already cleared so it doesn't loop on the next prompt.
+          console.error(
+            `[context-hydration] inject failed: ${(err as Error).message ?? String(err)} — continuing without hydration`,
+          );
+        }
+      }
+
       // ── v2.8.1 chat perf / skill router ──
       // Per-turn latency telemetry. Stage timestamps recorded on the
       // local stack so they don't leak across overlapping turns
@@ -3311,6 +3820,33 @@ async function main() {
         await new Promise((r) => setTimeout(r, 5000));
         await agent.prompt(p.text);
         ({ stop, err } = lastStopReason());
+      }
+      // ── v2.10.x CodeRabbit pass-5: one-shot hydration cleanup ──────────
+      // The pass-4 `_ephemeral: true` flag kept the hydration block off
+      // disk, but the message itself remained in `agent.state.messages`
+      // and bloated every subsequent supervisor call's token budget.
+      // The model has now consumed (or attempted to consume) the
+      // hydration on this turn's dispatch — strip the ephemeral
+      // message(s) from in-memory state so turn 2+ proceeds without
+      // them. Runs BEFORE the verifier gate so claim verification +
+      // any synthetic re-prompt sees a clean transcript without the
+      // bootstrap noise.
+      try {
+        const stripped = stripEphemeralInPlace(agent.state.messages);
+        if (stripped > 0) {
+          console.error(
+            `[context-hydration] stripped ${stripped} ephemeral message(s) from in-memory transcript after ${p.source} dispatch — one-shot consumed`,
+          );
+        }
+      } catch (stripErr) {
+        // Stripping is best-effort. The disk-persistence filter
+        // (dropEphemeralMessages inside saveAgentTranscript) is still
+        // load-bearing for durability; this is just the in-memory
+        // hygiene pass. Worst case: the block lingers for the rest
+        // of this session, but never lands on disk.
+        console.error(
+          `[context-hydration] strip threw (best-effort, continuing): ${(stripErr as Error).message ?? String(stripErr)}`,
+        );
       }
       if (stop === "error") {
         logDecision({

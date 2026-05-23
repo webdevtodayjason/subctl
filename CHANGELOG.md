@@ -1,3 +1,67 @@
+## [2.10.0] — 2026-05-23
+
+### `feat(memory): Phase 4 — context slimming on boot + post-compact`
+
+Master daemon now hydrates first-prompt context from CURATED Tier 3 (Memori curated table) + Tier 4 (Cognee graph) instead of relying purely on raw transcript bulk. The raw transcript stays on disk for audit but no longer carries the consciousness-cycle output implicitly through replay.
+
+**The before:** master boot replayed the entire `~/.config/subctl/master/agent-state.json` (potentially 100k+ tokens of prior turns) into the agent's working memory. After `/compact`, the same replay continued from the post-compact tail. The consciousness-cycle distillation existed in Memori curated rows but was only visible to the supervisor via the v2.8.11 system-prompt cache — not as a self-bounded, auditable hydration moment.
+
+**The after:** at boot AND immediately after every compaction event (manual `/compact` OR the just-in-time gate), the master kicks off an async query that pulls 20 most-recent curated Memori rows + 5 most-relevant Cognee graph hits (configurable). The result is a self-bounded `[memory-context-hydration]` block prepended to the FIRST new prompt as a synthetic `role:"user"` message. The dashboard transcript view surfaces what was hydrated at each boundary — operator can audit the slimming decision in-context.
+
+```text
+[memory-context-hydration · 2026-05-23T17:30:00.000Z · 18 curated + 5 graph hits]
+
+CURATED FACTS (recent + high-confidence):
+1. [preference] Operator prefers terse responses.
+2. [decision] v2.10.0 ships Phase 4 hydration on boot + post-compact.
+…
+
+GRAPH CONTEXT (top-relevance hits for "current task"):
+- [Cognee [score=0.92]] Tier 3 → Tier 4 promotion runs every 10 min.
+…
+
+[/memory-context-hydration]
+```
+
+**Tier 1 (memory.md) is unchanged** — still auto-injected via system prompt as always. The v2.8.11 system-prompt curated cache also stays in place; the new Phase 4 mechanism is additive (one-shot synthetic message at boundaries) not replacement.
+
+**Config:** new `~/.config/subctl/master/context-hydration.json`:
+```json
+{
+  "enabled": true,
+  "recent_curated_limit": 20,
+  "cognee_limit": 5,
+  "cognee_relevance_query": null
+}
+```
+
+`cognee_relevance_query: null` skips Cognee entirely (Memori-only hydration); set it to a phrase like `"current task"` or `"project state"` to seed the graph traversal. Operator can disable the whole feature with env `SUBCTL_CONTEXT_SLIMMING_ENABLED=0` in the master plist.
+
+**Decision log + SSE:** every hydration event is logged via `logDecision({action: "context_hydrated", ...})` with the payload size, plus a `context_hydration_ready` SSE event when the async query resolves and a `context_hydration_injected` SSE event when the payload is prepended to a prompt. Audit trail covers both attempt and consumption.
+
+**Failure modes are absorbed:** Cognee down → no graph section, curated still rendered. Memori down → no curated, hydration attempt is logged but no synthetic message is pushed (next prompt gets a fresh attempt — Memori probe has 30s retry budget). Operator never sees a crash on missing hydration.
+
+**Tests:** 22 new tests in `context-hydration.test.ts` covering empty inputs, curated rendering, Cognee graph hits, Cognee failure absorption, Memori failure surfacing, limit enforcement, payload structure markers, config loader (defaults / env override / malformed file / per-field overrides).
+
+#### CodeRabbit pass-1 follow-up (same 2.10.0)
+
+Two structural gaps surfaced in the scheduler:
+
+- **Throw path was silent.** When `hydrateContext` itself threw (defensive deps wiring), the catch block only logged to stderr. The `ok:false` branch already emitted `logDecision({action: "context_hydration_failed"})` for the audit trail; the throw path now mirrors that AND emits a `context_hydration_failed` SSE broadcast. Both failure modes are now indistinguishable from an audit perspective — operator looking at `decisions.jsonl` or watching the SSE bus sees the same event regardless of which way hydration died.
+- **Stale-overwrite race.** Pre-fix sequence: `scheduleHydration("boot")` fires at t=0, `scheduleHydration("post-compact")` fires at t=1, but boot's hydrateContext is slower and resolves AFTER post-compact. The old code would unconditionally write boot's now-stale payload over the fresh post-compact one. Fix: monotonic `_lastHydrationReqSeq` counter; each request captures its `mySeq` at call time and the resolved continuation refuses to write state if `mySeq !== _lastHydrationReqSeq`. Stale-success is silently discarded (no log noise on every superseded continuation); stale-failure is also dropped so the audit trail doesn't get polluted with already-superseded errors.
+
+The outcome handler was extracted into a pure `applyHydrationOutcome(deps)` reducer (exported from `server.ts`) so the seq guard + audit-emission contract is unit-testable without standing up the daemon. Decision matrix:
+
+| state              | not superseded         | superseded                    |
+| ------------------ | ---------------------- | ----------------------------- |
+| `ok:true`          | `setPayload` + ready   | `superseded` (silent discard) |
+| `ok:false`         | `failed` (log + bcast) | `superseded` (silent discard) |
+| threw              | `failed` (log + bcast) | `ignored_superseded_failure`  |
+
+Plus the unlabeled code fence above (markdownlint MD040) is now tagged `text`. 10 additional test cases in `context-hydration.test.ts` cover the reducer's branches — every state × supersession combination — plus "fast post-compact wins over slow boot" race scenario, "logDecision throwing doesn't prevent broadcast", and "broadcast throwing doesn't bubble out".
+
+---
+
 ## [2.9.1] — 2026-05-23
 
 ### `feat(providers): Phase 3 — aggregator routing (OpenRouter, Bedrock, Vercel, Cloudflare)`
