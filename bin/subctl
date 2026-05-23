@@ -319,11 +319,20 @@ case "$cmd" in
         . "$SUBCTL_REPO_ROOT/providers/pi-coding-agent/teams.sh"
         provider_pi_coding_agent_teams "$@"
         ;;
+      codex|openai-codex)
+        # v3.0 Phase 2: Codex CLI worker. Both `codex` and `openai-codex`
+        # route here — `codex` matches the dispatcher convention
+        # (`subctl teams codex -a <alias> ...`); `openai-codex` matches
+        # the provider name in accounts.conf for symmetry with
+        # `subctl auth openai-codex`.
+        . "$SUBCTL_REPO_ROOT/providers/openai-codex/teams.sh"
+        provider_openai_codex_teams "$@"
+        ;;
       gemini|openai)
         subctl_warn "$target teams not yet implemented (phase 2/3)"
         exit 1
         ;;
-      *) subctl_die "usage: subctl teams <claude|pi-coding-agent|gemini|openai> [opts]" ;;
+      *) subctl_die "usage: subctl teams <claude|codex|pi-coding-agent|gemini|openai> [opts]" ;;
     esac
     ;;
 
