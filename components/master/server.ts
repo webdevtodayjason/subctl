@@ -2025,11 +2025,45 @@ function scrubMessageContent(messages: AgentMessage[]): AgentMessage[] {
   });
 }
 
+// v2.10.x CodeRabbit pass-4: filter `_ephemeral: true` messages
+// (Phase 4 hydration blocks) out of the durable transcript. The
+// pi-agent-core supervisor sees them in-memory for the turn they
+// land on; they're invisible to disk persistence so they don't
+// accumulate across restarts.
+//
+// Pure helper, exported for unit tests. The flag is a synthetic-only
+// marker placed by master itself (the operator can't smuggle it in
+// because pi-agent-core doesn't surface a way to set arbitrary
+// per-message metadata via /chat). Safe to scan unconditionally.
+export function dropEphemeralMessages(messages: AgentMessage[]): AgentMessage[] {
+  let dropped = 0;
+  const kept = messages.filter((m) => {
+    if ((m as { _ephemeral?: boolean })._ephemeral === true) {
+      dropped++;
+      return false;
+    }
+    return true;
+  });
+  if (dropped > 0) {
+    console.error(
+      `[transcript] dropped ${dropped} ephemeral message(s) before persistence (hydration blocks etc.)`,
+    );
+  }
+  return kept;
+}
+
 function saveAgentTranscript(messages: AgentMessage[]) {
   writeFileSync(
     AGENT_STATE_PATH,
     JSON.stringify(
-      { saved_at: new Date().toISOString(), messages: scrubMessageContent(messages) },
+      {
+        saved_at: new Date().toISOString(),
+        // CodeRabbit pass-4: filter ephemeral hydration blocks first,
+        // then scrub reasoning channels. Order matters — scrubbing
+        // mutates content; doing it on already-dropped messages saves
+        // work and keeps the ephemeral filter loud.
+        messages: scrubMessageContent(dropEphemeralMessages(messages)),
+      },
       null,
       2,
     ),
@@ -3594,15 +3628,25 @@ async function main() {
         const payload = _pendingHydrationPayload;
         _pendingHydrationPayload = null;
         try {
+          // v2.10.x CodeRabbit pass-4: tag the synthetic hydration
+          // message with `_ephemeral: true` so saveAgentTranscript's
+          // dropEphemeralMessages filter strips it before writing to
+          // agent-state.json. The pi-agent-core supervisor still sees
+          // the message in-memory this turn (which is the whole point
+          // — Phase 4 hydration), but it's NEVER persisted to the
+          // durable transcript. Without this marker, every boot would
+          // accumulate stale `[memory-context-hydration]` blocks in
+          // the audit file and they'd replay forever on restore.
           agent.state.messages.push({
             role: "user",
             content: [{ type: "text", text: payload }],
             timestamp: Date.now(),
+            _ephemeral: true,
           } as any);
           logDecision({
             project: "_master",
             action: "context_hydrated",
-            rationale: `prepended ${payload.length}-char [memory-context-hydration] block on ${p.source} prompt`,
+            rationale: `prepended ${payload.length}-char [memory-context-hydration] block on ${p.source} prompt (ephemeral — not persisted)`,
           });
           try {
             broadcast("context_hydration_injected", {

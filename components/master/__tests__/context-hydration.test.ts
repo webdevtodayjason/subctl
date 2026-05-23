@@ -26,7 +26,7 @@ import type {
   HydrationResult,
   MemoriCuratedRow,
 } from "../context-hydration";
-import { applyHydrationOutcome } from "../server";
+import { applyHydrationOutcome, dropEphemeralMessages } from "../server";
 import type { ApplyHydrationOutcomeDeps } from "../server";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -965,5 +965,130 @@ describe("applyHydrationOutcome — observational throws don't downgrade 'applie
     expect(broadcasts).toHaveLength(1);
     // Payload still constructed despite now() throwing.
     expect((broadcasts[0]?.payload as { ts: string }).ts).toBe("<unknown>");
+  });
+});
+
+// ─── dropEphemeralMessages — transcript persistence filter (pass-4) ──────
+//
+// The hydration injection point pushes a `_ephemeral: true` flag on the
+// synthetic message so it lives ONLY in the in-memory agent.state.messages
+// for the turn it lands on. saveAgentTranscript pipes through this filter
+// before writing — durable transcript stays clean across boots.
+
+describe("dropEphemeralMessages — CodeRabbit pass-4", () => {
+  test("strips messages tagged `_ephemeral: true`, preserves the rest", () => {
+    const messages = [
+      { role: "user", content: [{ type: "text", text: "real user prompt" }] },
+      {
+        role: "user",
+        content: [{ type: "text", text: "[memory-context-hydration · …]" }],
+        _ephemeral: true,
+      },
+      { role: "assistant", content: [{ type: "text", text: "real assistant reply" }] },
+    ];
+    // bun:test's import of AgentMessage isn't required — the helper
+    // narrows on the structural `_ephemeral` flag at runtime. Cast at
+    // the test boundary mirrors how server-side code calls it.
+    const kept = dropEphemeralMessages(messages as any);
+    expect(kept).toHaveLength(2);
+    expect((kept[0] as any).content[0].text).toBe("real user prompt");
+    expect((kept[1] as any).content[0].text).toBe("real assistant reply");
+    // No surviving message carries the ephemeral marker.
+    expect(kept.every((m) => (m as { _ephemeral?: boolean })._ephemeral !== true)).toBe(true);
+  });
+
+  test("no-op when no messages are marked", () => {
+    const messages = [
+      { role: "user", content: [{ type: "text", text: "a" }] },
+      { role: "assistant", content: [{ type: "text", text: "b" }] },
+    ];
+    const kept = dropEphemeralMessages(messages as any);
+    expect(kept).toHaveLength(2);
+    // Ordering preserved.
+    expect((kept[0] as any).content[0].text).toBe("a");
+    expect((kept[1] as any).content[0].text).toBe("b");
+  });
+
+  test("strips multiple ephemeral messages interleaved with real ones", () => {
+    // Real-world shape: hydration on boot → operator turn → operator
+    // /compact → hydration on post-compact → operator turn. Two
+    // separate hydration blocks would land if the daemon persisted
+    // and then re-loaded; the filter must catch both.
+    const messages = [
+      { role: "user", content: [{ type: "text", text: "boot-hydration" }], _ephemeral: true },
+      { role: "user", content: [{ type: "text", text: "first prompt" }] },
+      { role: "assistant", content: [{ type: "text", text: "first reply" }] },
+      { role: "user", content: [{ type: "text", text: "compact-hydration" }], _ephemeral: true },
+      { role: "user", content: [{ type: "text", text: "second prompt" }] },
+    ];
+    const kept = dropEphemeralMessages(messages as any);
+    expect(kept).toHaveLength(3);
+    expect((kept[0] as any).content[0].text).toBe("first prompt");
+    expect((kept[1] as any).content[0].text).toBe("first reply");
+    expect((kept[2] as any).content[0].text).toBe("second prompt");
+  });
+
+  test("`_ephemeral: false` is treated as a normal (non-ephemeral) message", () => {
+    // Defensive: the synthetic-only marker should be `=== true`, not
+    // just any truthy value. A user message arriving with
+    // `_ephemeral: false` (e.g. an external client setting it) must
+    // NOT be silently dropped.
+    const messages = [
+      { role: "user", content: [{ type: "text", text: "explicit non-ephemeral" }], _ephemeral: false },
+      { role: "user", content: [{ type: "text", text: "no flag" }] },
+      { role: "user", content: [{ type: "text", text: "ephemeral!" }], _ephemeral: true },
+    ];
+    const kept = dropEphemeralMessages(messages as any);
+    expect(kept).toHaveLength(2);
+    expect((kept[0] as any).content[0].text).toBe("explicit non-ephemeral");
+    expect((kept[1] as any).content[0].text).toBe("no flag");
+  });
+
+  test("empty input returns empty array, never throws", () => {
+    expect(dropEphemeralMessages([])).toEqual([]);
+  });
+});
+
+// ─── config trim (pass-4 Fix 2) ──────────────────────────────────────────
+
+describe("loadContextHydrationConfig — cognee_relevance_query trimmed on store", () => {
+  test("file with leading/trailing whitespace stores TRIMMED value", async () => {
+    const { writeFileSync, unlinkSync } = require("node:fs") as typeof import("node:fs");
+    const path = `/tmp/subctl-test-context-hydration-trim-${Date.now()}.json`;
+    writeFileSync(
+      path,
+      JSON.stringify({ cognee_relevance_query: "  current focus  " }),
+    );
+    try {
+      const cfg = loadContextHydrationConfig(path);
+      // CodeRabbit pass-4: validate-vs-store mismatch — must store
+      // the trimmed string, not the raw padded version.
+      expect(cfg.cognee_relevance_query).toBe("current focus");
+    } finally {
+      try {
+        unlinkSync(path);
+      } catch {
+        /* ignore */
+      }
+    }
+  });
+
+  test("file with tabs / newlines in the surrounding whitespace still trimmed", async () => {
+    const { writeFileSync, unlinkSync } = require("node:fs") as typeof import("node:fs");
+    const path = `/tmp/subctl-test-context-hydration-trim2-${Date.now()}.json`;
+    writeFileSync(
+      path,
+      JSON.stringify({ cognee_relevance_query: "\n\tcurrent task\t\n" }),
+    );
+    try {
+      const cfg = loadContextHydrationConfig(path);
+      expect(cfg.cognee_relevance_query).toBe("current task");
+    } finally {
+      try {
+        unlinkSync(path);
+      } catch {
+        /* ignore */
+      }
+    }
   });
 });

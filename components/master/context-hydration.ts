@@ -423,9 +423,12 @@ export function loadContextHydrationConfig(path?: string): ContextHydrationConfi
             ? Math.floor(parsed.cognee_limit)
             : DEFAULT_CONFIG.cognee_limit,
         cognee_relevance_query:
+          // CodeRabbit pass-4: validate AND store trimmed. Prior code
+          // validated `.trim().length > 0` but stored the raw string,
+          // leaving surrounding whitespace in the in-memory config.
           typeof parsed.cognee_relevance_query === "string" &&
           parsed.cognee_relevance_query.trim().length > 0
-            ? parsed.cognee_relevance_query
+            ? parsed.cognee_relevance_query.trim()
             : null,
       };
     } catch (err) {
