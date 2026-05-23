@@ -8,7 +8,7 @@ Master daemon now hydrates first-prompt context from CURATED Tier 3 (Memori cura
 
 **The after:** at boot AND immediately after every compaction event (manual `/compact` OR the just-in-time gate), the master kicks off an async query that pulls 20 most-recent curated Memori rows + 5 most-relevant Cognee graph hits (configurable). The result is a self-bounded `[memory-context-hydration]` block prepended to the FIRST new prompt as a synthetic `role:"user"` message. The dashboard transcript view surfaces what was hydrated at each boundary — operator can audit the slimming decision in-context.
 
-```
+```text
 [memory-context-hydration · 2026-05-23T17:30:00.000Z · 18 curated + 5 graph hits]
 
 CURATED FACTS (recent + high-confidence):
@@ -42,6 +42,23 @@ GRAPH CONTEXT (top-relevance hits for "current task"):
 **Failure modes are absorbed:** Cognee down → no graph section, curated still rendered. Memori down → no curated, hydration attempt is logged but no synthetic message is pushed (next prompt gets a fresh attempt — Memori probe has 30s retry budget). Operator never sees a crash on missing hydration.
 
 **Tests:** 22 new tests in `context-hydration.test.ts` covering empty inputs, curated rendering, Cognee graph hits, Cognee failure absorption, Memori failure surfacing, limit enforcement, payload structure markers, config loader (defaults / env override / malformed file / per-field overrides).
+
+#### CodeRabbit pass-1 follow-up (same 2.10.0)
+
+Two structural gaps surfaced in the scheduler:
+
+- **Throw path was silent.** When `hydrateContext` itself threw (defensive deps wiring), the catch block only logged to stderr. The `ok:false` branch already emitted `logDecision({action: "context_hydration_failed"})` for the audit trail; the throw path now mirrors that AND emits a `context_hydration_failed` SSE broadcast. Both failure modes are now indistinguishable from an audit perspective — operator looking at `decisions.jsonl` or watching the SSE bus sees the same event regardless of which way hydration died.
+- **Stale-overwrite race.** Pre-fix sequence: `scheduleHydration("boot")` fires at t=0, `scheduleHydration("post-compact")` fires at t=1, but boot's hydrateContext is slower and resolves AFTER post-compact. The old code would unconditionally write boot's now-stale payload over the fresh post-compact one. Fix: monotonic `_lastHydrationReqSeq` counter; each request captures its `mySeq` at call time and the resolved continuation refuses to write state if `mySeq !== _lastHydrationReqSeq`. Stale-success is silently discarded (no log noise on every superseded continuation); stale-failure is also dropped so the audit trail doesn't get polluted with already-superseded errors.
+
+The outcome handler was extracted into a pure `applyHydrationOutcome(deps)` reducer (exported from `server.ts`) so the seq guard + audit-emission contract is unit-testable without standing up the daemon. Decision matrix:
+
+| state              | not superseded         | superseded                    |
+| ------------------ | ---------------------- | ----------------------------- |
+| `ok:true`          | `setPayload` + ready   | `superseded` (silent discard) |
+| `ok:false`         | `failed` (log + bcast) | `superseded` (silent discard) |
+| threw              | `failed` (log + bcast) | `ignored_superseded_failure`  |
+
+Plus the unlabeled code fence above (markdownlint MD040) is now tagged `text`. 10 additional test cases in `context-hydration.test.ts` cover the reducer's branches — every state × supersession combination — plus "fast post-compact wins over slow boot" race scenario, "logDecision throwing doesn't prevent broadcast", and "broadcast throwing doesn't bubble out".
 
 ## [2.9.0] — 2026-05-23
 

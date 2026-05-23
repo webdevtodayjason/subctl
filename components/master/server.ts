@@ -1578,6 +1578,142 @@ export async function buildCuratedPromptSection(deps: {
   return formatCuratedSection(curated.slice(0, topK), budget);
 }
 
+// ── v2.10.1 — Memory Cycle Phase 4: outcome reducer ──────────────────────
+//
+// Pure helper that converts a resolved (or thrown) hydrateContext call
+// into the right side-effects on the master daemon. Extracted out of
+// scheduleHydration so the seq-guard + audit-emission contract is
+// unit-testable without standing up the whole daemon.
+//
+// Decision matrix:
+//   superseded (mySeq < currentSeq)  → no state write, no audit emission
+//   threw, not superseded            → audit + broadcast failure
+//   ok:false, not superseded         → audit + broadcast failure
+//   ok:true,  not superseded         → setPayload + broadcast ready
+//
+// Failure cases emit BOTH logDecision AND broadcast — operator looking at
+// decisions.jsonl OR watching SSE sees the same event. Pre-2.10.1 the
+// throw path was silent (CodeRabbit pass-1 MAJOR).
+
+export type HydrationOutcomeAction =
+  | "applied"
+  | "superseded"
+  | "logged_failure"
+  | "ignored_superseded_failure";
+
+export interface ApplyHydrationOutcomeDeps {
+  reason: string;
+  /** This request's sequence number (captured at scheduleHydration call). */
+  mySeq: number;
+  /** Latest sequence number at outcome time. mySeq < currentSeq → stale. */
+  currentSeq: number;
+  /** hydrateContext's resolved result, or null when the await threw. */
+  result:
+    | import("./context-hydration").HydrationResult
+    | null;
+  /** Error message captured from the throw path. Null when not thrown. */
+  threwMessage: string | null;
+  setPayload: (payload: string) => void;
+  logDecision: (entry: { project: string; action: string; rationale: string }) => void;
+  broadcast: (eventType: string, payload: unknown) => void;
+  log: (line: string) => void;
+  now: () => Date;
+}
+
+/**
+ * Apply the outcome of a hydration attempt. Returns a tag indicating
+ * which branch ran (for tests + observability). Never throws.
+ */
+export function applyHydrationOutcome(deps: ApplyHydrationOutcomeDeps): HydrationOutcomeAction {
+  const superseded = deps.mySeq !== deps.currentSeq;
+  // Throw path — async await rejected.
+  if (deps.result === null) {
+    const msg = deps.threwMessage ?? "unknown";
+    if (superseded) {
+      // Don't pollute the audit trail with stale-throw noise; just log.
+      deps.log(
+        `[context-hydration] ${deps.reason} (seq=${deps.mySeq}) superseded then threw — ignoring: ${msg}`,
+      );
+      return "ignored_superseded_failure";
+    }
+    deps.log(`[context-hydration] ${deps.reason} scheduler threw: ${msg}`);
+    try {
+      deps.logDecision({
+        project: "_master",
+        action: "context_hydration_failed",
+        rationale: `${deps.reason}: ${msg}`,
+      });
+    } catch {
+      /* ignore log failures */
+    }
+    try {
+      deps.broadcast("context_hydration_failed", {
+        ts: deps.now().toISOString(),
+        reason: deps.reason,
+        error: msg,
+      });
+    } catch {
+      /* swallow broadcast errors per existing pattern */
+    }
+    return "logged_failure";
+  }
+
+  // Resolved with ok:false — Memori or other structural failure.
+  if (!deps.result.ok) {
+    const errMsg = deps.result.error ?? "unknown";
+    if (superseded) {
+      deps.log(
+        `[context-hydration] ${deps.reason} (seq=${deps.mySeq}) superseded; discarding stale ok:false`,
+      );
+      return "superseded";
+    }
+    deps.log(`[context-hydration] ${deps.reason} hydration failed: ${errMsg}`);
+    try {
+      deps.logDecision({
+        project: "_master",
+        action: "context_hydration_failed",
+        rationale: `${deps.reason}: ${errMsg}`,
+      });
+    } catch {
+      /* ignore log failures */
+    }
+    try {
+      deps.broadcast("context_hydration_failed", {
+        ts: deps.now().toISOString(),
+        reason: deps.reason,
+        error: errMsg,
+      });
+    } catch {
+      /* swallow broadcast errors */
+    }
+    return "logged_failure";
+  }
+
+  // Resolved with ok:true — success path.
+  if (superseded) {
+    // Quietly drop the stale-success: a fresher payload is on its way
+    // (or already landed) and we MUST NOT overwrite it.
+    deps.log(
+      `[context-hydration] ${deps.reason} (seq=${deps.mySeq}) superseded by seq=${deps.currentSeq}; discarding ${deps.result.context_payload.length}-char payload`,
+    );
+    return "superseded";
+  }
+  deps.setPayload(deps.result.context_payload);
+  deps.log(
+    `[context-hydration] ${deps.reason} ready — ${deps.result.sources.memori_curated_count} curated + ${deps.result.sources.cognee_hits_count} graph hits + tier1=${deps.result.sources.tier1_chars}b; will prepend on next prompt`,
+  );
+  try {
+    deps.broadcast("context_hydration_ready", {
+      ts: deps.now().toISOString(),
+      reason: deps.reason,
+      sources: deps.result.sources,
+    });
+  } catch {
+    /* never block on broadcast */
+  }
+  return "applied";
+}
+
 function loadAgentTranscript(): AgentMessage[] {
   if (!existsSync(AGENT_STATE_PATH)) return [];
   try {
@@ -2057,6 +2193,12 @@ async function main() {
   let _pendingHydrationPayload: string | null = null;
   const _contextHydrationConfig: ContextHydrationConfig =
     loadContextHydrationConfig();
+  // v2.10.1 — monotonic seq counter for hydration requests. Defends
+  // against the boot-then-post-compact race where the slow boot reply
+  // would otherwise stale-overwrite a fresh post-compact payload. Each
+  // call to scheduleHydration() ++'s this; the resolved continuation
+  // checks `mySeq === _lastHydrationReqSeq` BEFORE writing state.
+  let _lastHydrationReqSeq = 0;
   console.error(
     `[context-hydration] config: enabled=${_contextHydrationConfig.enabled} curated_limit=${_contextHydrationConfig.recent_curated_limit} cognee_limit=${_contextHydrationConfig.cognee_limit} cognee_query=${_contextHydrationConfig.cognee_relevance_query ?? "null"}`,
   );
@@ -2064,8 +2206,8 @@ async function main() {
   /**
    * Kick off an async hydration query and stash the result in
    * `_pendingHydrationPayload` for the next prompt to consume. Safe to
-   * call repeatedly — re-entry is allowed (the latest call wins; older
-   * payloads get overwritten before any prompt sees them).
+   * call repeatedly — re-entry is allowed and seq-guarded: stale results
+   * are discarded WITHOUT overwriting a fresher payload.
    *
    * `reason` shows up in the decision log + SSE event so the operator can
    * tell boot-hydration from post-compact-hydration in the transcript view.
@@ -2078,9 +2220,14 @@ async function main() {
       return;
     }
     const entityId = (policy.operator.name ?? "operator").toLowerCase();
+    // Reserve a sequence number for THIS request. The async continuation
+    // below uses the captured `mySeq` to detect supersession.
+    const mySeq = ++_lastHydrationReqSeq;
     void (async () => {
+      let result: Awaited<ReturnType<typeof hydrateContext>> | null = null;
+      let threwMessage: string | null = null;
       try {
-        const result = await hydrateContext(
+        result = await hydrateContext(
           {
             entity_id: entityId,
             recent_curated_limit: _contextHydrationConfig.recent_curated_limit,
@@ -2136,38 +2283,27 @@ async function main() {
             now: () => new Date(),
           },
         );
-        if (!result.ok) {
-          console.error(
-            `[context-hydration] ${reason} hydration failed: ${result.error}`,
-          );
-          // Still log a decision so the audit trail reflects the attempt.
-          logDecision({
-            project: "_master",
-            action: "context_hydration_failed",
-            rationale: `${reason}: ${result.error ?? "unknown"}`,
-          });
-          return;
-        }
-        _pendingHydrationPayload = result.context_payload;
-        console.error(
-          `[context-hydration] ${reason} ready — ${result.sources.memori_curated_count} curated + ${result.sources.cognee_hits_count} graph hits + tier1=${result.sources.tier1_chars}b; will prepend on next prompt`,
-        );
-        try {
-          broadcast("context_hydration_ready", {
-            ts: new Date().toISOString(),
-            reason,
-            sources: result.sources,
-          });
-        } catch {
-          /* never block on broadcast */
-        }
       } catch (err) {
         // hydrateContext is defensive — should never throw out — but
-        // protect against bad deps wiring just in case.
-        console.error(
-          `[context-hydration] ${reason} scheduler threw: ${(err as Error).message ?? String(err)}`,
-        );
+        // protect against bad deps wiring just in case. Audit emission
+        // happens via applyHydrationOutcome below so the throw path
+        // shares the same logDecision + broadcast contract as ok:false.
+        threwMessage = err instanceof Error ? err.message : String(err);
       }
+      applyHydrationOutcome({
+        reason,
+        mySeq,
+        currentSeq: _lastHydrationReqSeq,
+        result,
+        threwMessage,
+        setPayload: (p) => {
+          _pendingHydrationPayload = p;
+        },
+        logDecision: (entry) => logDecision(entry),
+        broadcast: (eventType, payload) => broadcast(eventType, payload),
+        log: (line) => console.error(line),
+        now: () => new Date(),
+      });
     })();
   }
 

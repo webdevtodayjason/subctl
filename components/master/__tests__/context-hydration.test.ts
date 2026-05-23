@@ -1,9 +1,13 @@
 // v2.10.0 Memory Cycle Phase 4 — context-hydration unit tests.
+// v2.10.1 — extended with CodeRabbit pass-1 coverage:
+//   - throw-path audit emission (logDecision + broadcast)
+//   - seq guard against stale-overwrite (boot vs post-compact races)
 //
 // Exercises the pure entry point `hydrateContext` against deps-injected
 // stubs (no real Memori/Cognee sidecars). Covers the seven cases the
 // spec calls out, plus a couple of structural invariants (open/close
-// markers always present, ordering deterministic).
+// markers always present, ordering deterministic), plus the
+// `applyHydrationOutcome` reducer exported from server.ts.
 
 import { describe, test, expect } from "bun:test";
 
@@ -19,8 +23,11 @@ import type {
   CogneeHit,
   HydrationDeps,
   HydrationInput,
+  HydrationResult,
   MemoriCuratedRow,
 } from "../context-hydration";
+import { applyHydrationOutcome } from "../server";
+import type { ApplyHydrationOutcomeDeps } from "../server";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -450,5 +457,272 @@ describe("loadContextHydrationConfig", () => {
         /* ignore */
       }
     }
+  });
+});
+
+// ─── applyHydrationOutcome reducer (v2.10.1 CodeRabbit pass-1) ────────────
+//
+// Tests the seq-guarded outcome reducer extracted from scheduleHydration.
+// All branches are exercised: success, ok:false, throw, plus the
+// supersession variants of each.
+
+function mkOutcomeDeps(
+  overrides: Partial<ApplyHydrationOutcomeDeps>,
+): ApplyHydrationOutcomeDeps & {
+  // expose spies for assertion
+  __payloads: string[];
+  __decisions: Array<{ project: string; action: string; rationale: string }>;
+  __broadcasts: Array<{ event: string; payload: unknown }>;
+  __logs: string[];
+} {
+  const payloads: string[] = [];
+  const decisions: Array<{ project: string; action: string; rationale: string }> = [];
+  const broadcasts: Array<{ event: string; payload: unknown }> = [];
+  const logs: string[] = [];
+  return {
+    reason: "boot",
+    mySeq: 1,
+    currentSeq: 1,
+    result: null,
+    threwMessage: null,
+    setPayload: (p) => payloads.push(p),
+    logDecision: (e) => decisions.push(e),
+    broadcast: (event, payload) => broadcasts.push({ event, payload }),
+    log: (l) => logs.push(l),
+    now: () => new Date("2026-05-23T17:30:00.000Z"),
+    ...overrides,
+    __payloads: payloads,
+    __decisions: decisions,
+    __broadcasts: broadcasts,
+    __logs: logs,
+  };
+}
+
+function mkSuccessResult(payload: string, counts?: Partial<HydrationResult["sources"]>): HydrationResult {
+  return {
+    ok: true,
+    context_payload: payload,
+    sources: {
+      memori_curated_count: counts?.memori_curated_count ?? 1,
+      cognee_hits_count: counts?.cognee_hits_count ?? 0,
+      tier1_chars: counts?.tier1_chars ?? 0,
+    },
+  };
+}
+
+function mkFailureResult(err: string): HydrationResult {
+  return {
+    ok: false,
+    context_payload: "",
+    sources: {
+      memori_curated_count: 0,
+      cognee_hits_count: 0,
+      tier1_chars: 0,
+    },
+    error: err,
+  };
+}
+
+describe("applyHydrationOutcome — success path", () => {
+  test("ok:true + not superseded → setPayload + broadcast 'context_hydration_ready'", () => {
+    const deps = mkOutcomeDeps({
+      reason: "boot",
+      mySeq: 7,
+      currentSeq: 7,
+      result: mkSuccessResult("[memory-context-hydration · ts · 2 curated + 0 graph hits]\n\nCURATED FACTS:\n1. [fact] hi\n\n[/memory-context-hydration]"),
+    });
+    const action = applyHydrationOutcome(deps);
+    expect(action).toBe("applied");
+    expect(deps.__payloads).toHaveLength(1);
+    expect(deps.__payloads[0]).toContain("[memory-context-hydration");
+    expect(deps.__broadcasts).toHaveLength(1);
+    expect(deps.__broadcasts[0]?.event).toBe("context_hydration_ready");
+    // No failure decisions on the success path.
+    expect(deps.__decisions).toHaveLength(0);
+  });
+});
+
+describe("applyHydrationOutcome — ok:false failure path", () => {
+  test("ok:false + not superseded → logDecision + broadcast 'context_hydration_failed', no payload write", () => {
+    const deps = mkOutcomeDeps({
+      reason: "boot",
+      mySeq: 1,
+      currentSeq: 1,
+      result: mkFailureResult("memori transport: ECONNREFUSED"),
+    });
+    const action = applyHydrationOutcome(deps);
+    expect(action).toBe("logged_failure");
+    expect(deps.__payloads).toHaveLength(0);
+    expect(deps.__decisions).toHaveLength(1);
+    expect(deps.__decisions[0]?.action).toBe("context_hydration_failed");
+    expect(deps.__decisions[0]?.rationale).toContain("ECONNREFUSED");
+    expect(deps.__broadcasts).toHaveLength(1);
+    expect(deps.__broadcasts[0]?.event).toBe("context_hydration_failed");
+    expect((deps.__broadcasts[0]?.payload as { error: string }).error).toContain("ECONNREFUSED");
+  });
+});
+
+describe("applyHydrationOutcome — throw path (CodeRabbit pass-1 Fix 2)", () => {
+  test("threw + not superseded → audit BOTH logDecision AND broadcast", () => {
+    const deps = mkOutcomeDeps({
+      reason: "boot",
+      mySeq: 1,
+      currentSeq: 1,
+      result: null,
+      threwMessage: "deps wiring blew up",
+    });
+    const action = applyHydrationOutcome(deps);
+    expect(action).toBe("logged_failure");
+    // Pre-2.10.1 this was silent. Both audit channels MUST fire.
+    expect(deps.__decisions).toHaveLength(1);
+    expect(deps.__decisions[0]?.action).toBe("context_hydration_failed");
+    expect(deps.__decisions[0]?.rationale).toContain("deps wiring blew up");
+    expect(deps.__broadcasts).toHaveLength(1);
+    expect(deps.__broadcasts[0]?.event).toBe("context_hydration_failed");
+    // Payload stays null — no write attempted.
+    expect(deps.__payloads).toHaveLength(0);
+  });
+
+  test("throw with null message → still emits failure audit with 'unknown'", () => {
+    const deps = mkOutcomeDeps({
+      result: null,
+      threwMessage: null,
+    });
+    const action = applyHydrationOutcome(deps);
+    expect(action).toBe("logged_failure");
+    expect(deps.__decisions[0]?.rationale).toContain("unknown");
+  });
+
+  test("logDecision throwing does NOT prevent broadcast", () => {
+    const broadcasts: Array<{ event: string; payload: unknown }> = [];
+    const action = applyHydrationOutcome({
+      reason: "boot",
+      mySeq: 1,
+      currentSeq: 1,
+      result: null,
+      threwMessage: "x",
+      setPayload: () => {},
+      logDecision: () => {
+        throw new Error("disk full");
+      },
+      broadcast: (e, p) => broadcasts.push({ event: e, payload: p }),
+      log: () => {},
+      now: () => new Date(),
+    });
+    expect(action).toBe("logged_failure");
+    expect(broadcasts).toHaveLength(1);
+    expect(broadcasts[0]?.event).toBe("context_hydration_failed");
+  });
+
+  test("broadcast throwing does NOT bubble out of applyHydrationOutcome", () => {
+    expect(() =>
+      applyHydrationOutcome({
+        reason: "boot",
+        mySeq: 1,
+        currentSeq: 1,
+        result: null,
+        threwMessage: "x",
+        setPayload: () => {},
+        logDecision: () => {},
+        broadcast: () => {
+          throw new Error("sse client gone");
+        },
+        log: () => {},
+        now: () => new Date(),
+      }),
+    ).not.toThrow();
+  });
+});
+
+describe("applyHydrationOutcome — seq guard (CodeRabbit pass-1 Fix 3)", () => {
+  test("ok:true + mySeq < currentSeq → 'superseded', no payload write, no broadcast", () => {
+    const deps = mkOutcomeDeps({
+      reason: "boot",
+      mySeq: 1,
+      currentSeq: 2, // a fresher request came in after this one
+      result: mkSuccessResult("STALE BOOT PAYLOAD"),
+    });
+    const action = applyHydrationOutcome(deps);
+    expect(action).toBe("superseded");
+    expect(deps.__payloads).toHaveLength(0);
+    expect(deps.__broadcasts).toHaveLength(0);
+    expect(deps.__decisions).toHaveLength(0);
+    // We do log to stderr so the operator can see the discard happened.
+    expect(deps.__logs.some((l) => l.includes("superseded"))).toBe(true);
+  });
+
+  test("ok:false + superseded → 'superseded' (no stale audit noise)", () => {
+    const deps = mkOutcomeDeps({
+      reason: "boot",
+      mySeq: 1,
+      currentSeq: 2,
+      result: mkFailureResult("transport"),
+    });
+    const action = applyHydrationOutcome(deps);
+    expect(action).toBe("superseded");
+    // Don't pollute the audit trail with a stale failure.
+    expect(deps.__decisions).toHaveLength(0);
+    expect(deps.__broadcasts).toHaveLength(0);
+  });
+
+  test("threw + superseded → 'ignored_superseded_failure', no audit noise", () => {
+    const deps = mkOutcomeDeps({
+      reason: "boot",
+      mySeq: 1,
+      currentSeq: 2,
+      result: null,
+      threwMessage: "would have been a failure",
+    });
+    const action = applyHydrationOutcome(deps);
+    expect(action).toBe("ignored_superseded_failure");
+    expect(deps.__decisions).toHaveLength(0);
+    expect(deps.__broadcasts).toHaveLength(0);
+    expect(deps.__logs.some((l) => l.includes("superseded then threw"))).toBe(true);
+  });
+
+  test("fast post-compact wins over slow boot (race scenario)", () => {
+    // Simulates the documented race: boot scheduled first (seq=1), then
+    // post-compact scheduled (seq=2), then BOOT's hydrateContext
+    // resolves AFTER post-compact's, with stale data. The reducer
+    // discards boot's stale payload; the post-compact payload wins.
+    let payload: string | null = null;
+    const setPayload = (p: string) => { payload = p; };
+    const now = () => new Date("2026-05-23T17:30:00.000Z");
+    const broadcasts: Array<{ event: string; payload: unknown }> = [];
+    const broadcast = (e: string, p: unknown) => broadcasts.push({ event: e, payload: p });
+    // Step 1: post-compact resolves first with currentSeq=2, mySeq=2 → applies.
+    const postCompactAction = applyHydrationOutcome({
+      reason: "post-compact",
+      mySeq: 2,
+      currentSeq: 2,
+      result: mkSuccessResult("FRESH POST-COMPACT PAYLOAD"),
+      threwMessage: null,
+      setPayload,
+      logDecision: () => {},
+      broadcast,
+      log: () => {},
+      now,
+    });
+    expect(postCompactAction).toBe("applied");
+    expect(payload).toBe("FRESH POST-COMPACT PAYLOAD");
+    // Step 2: boot's stale resolution comes in AFTER. currentSeq still 2,
+    // boot's mySeq was 1 → superseded → discarded. Payload UNCHANGED.
+    const bootAction = applyHydrationOutcome({
+      reason: "boot",
+      mySeq: 1,
+      currentSeq: 2,
+      result: mkSuccessResult("STALE BOOT PAYLOAD"),
+      threwMessage: null,
+      setPayload,
+      logDecision: () => {},
+      broadcast,
+      log: () => {},
+      now,
+    });
+    expect(bootAction).toBe("superseded");
+    expect(payload).toBe("FRESH POST-COMPACT PAYLOAD");
+    // Only the post-compact 'ready' broadcast should have fired.
+    expect(broadcasts).toHaveLength(1);
+    expect(broadcasts[0]?.event).toBe("context_hydration_ready");
   });
 });
