@@ -69,11 +69,16 @@ subctl_accounts_add() {
   # the key should go into ~/.config/subctl/secrets.json instead. Caught by
   # operator validation on M3 where an OpenRouter key got pasted as the alias
   # and was then rendered in plain text in the dashboard.
+  # CodeRabbit pass-4: case-insensitive to match the UI redact (which uses /i).
+  # SK-foo or PK-Bar should fall through the same guard as sk-foo / pk-bar.
+  shopt -s nocasematch
   if [[ "$alias" =~ ^(sk-|pk-|Bearer[[:space:]]) ]]; then
+    shopt -u nocasematch
     subctl_err "alias \"${alias:0:12}...\" looks like an API key. For API-key providers, use:"
     subctl_err "  subctl secrets set ${provider}_api_key <your-key>"
     return 1
   fi
+  shopt -u nocasematch
 
   # Check duplicate
   if subctl_list_accounts | awk -F'\t' -v a="$alias" '$1==a {found=1} END{exit !found}'; then

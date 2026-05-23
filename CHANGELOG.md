@@ -14,6 +14,8 @@ Bundle of two operator-validated bugs caught on M3 + local dashboards today.
 - **429 backoff:** the poll loop now backs off exponentially (5min → 10 → 20 → 30 cap) when responses come back 429, resetting on any success. Stops the dashboard from hammering Anthropic's rate-limited endpoint every 5 min.
 - **Error surfacing:** per-account `usage_error` is exposed in `/api/state` so the dashboard can show the actual cause (429 rate-limited, no credentials, etc.) in the table cell.
 
+**Known limitation (deferred to v2.8.19):** the 429 backoff state is currently global across all aliases — if one alias 429s, the next poll skips ALL of them. Real-world impact is minor because Anthropic typically throttles per-IP not per-token, but per-alias backoff state will land in v2.8.19 so a healthy alias keeps polling while a 429'd alias backs off independently.
+
 **Manual repro for A1 (no `lib/` unit-test framework today):**
 ```bash
 $ subctl accounts add claude sk-ant-api03-XXXXX me@example.com
