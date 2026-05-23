@@ -756,7 +756,11 @@ export async function mount({ root: _root }) {
         : `partial: ${approves} ok, ${failures} failed (see modal log)`;
       setTimeout(() => { if (statusEl) statusEl.textContent = ""; }, 8000);
     }
-    setTimeout(() => { refreshCandidates(); refreshKernelStatus(); }, 400);
+    // CodeRabbit pass-4: removed duplicate refresh — applyBtn.onclick (above)
+    // already calls refreshCandidates() + refreshKernelStatus() when the
+    // operator clicks "OK" to dismiss the modal. The prior unconditional
+    // 400ms setTimeout fired BEFORE the operator dismissed the modal and
+    // double-refreshed on successful applies.
   }
 
   async function openConsolidatorModal() {

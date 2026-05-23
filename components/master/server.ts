@@ -4113,6 +4113,28 @@ async function main() {
           body.source_type_override.trim().length > 0
             ? body.source_type_override.trim()
             : undefined;
+        // CodeRabbit pass-4: validate source_type_override against the
+        // canonical enum used by memory_remember (tools/tier1-memory.ts).
+        // Reject unknown values with 400 instead of silently letting
+        // garbage flow into the [source:<x>] provenance tag.
+        const allowedSourceTypes = new Set([
+          "operator-asserted",
+          "verified-external",
+          "self-inferred",
+          "agent-reported",
+        ]);
+        if (
+          sourceTypeOverride !== undefined &&
+          !allowedSourceTypes.has(sourceTypeOverride)
+        ) {
+          return Response.json(
+            {
+              ok: false,
+              error: `invalid source_type_override "${sourceTypeOverride}" (allowed: ${[...allowedSourceTypes].join(", ")})`,
+            },
+            { status: 400 },
+          );
+        }
         try {
           const result = await approveTier1Candidate(candidateId, {
             resolved_by: "operator",
@@ -4196,14 +4218,23 @@ async function main() {
         // memory-kernel ticker does — prefer providers.models.reviewer,
         // fall back to the active supervisorCfg. Re-resolve at request
         // time so profile swaps and provider edits land without restart.
-        // CodeRabbit pass-3: defensively fall back to supervisorCfg if the
+        // CodeRabbit pass-3/4: defensively fall back to supervisorCfg if the
         // reviewer slot is present-but-unresolvable (explicitly false, empty
-        // object, missing required keys, etc.). The memory-kernel reviewer
-        // ticker uses the same defensive pattern.
+        // object, missing required keys, throws). Pass-4 adds structural
+        // validation — a resolveRoleCfg that returns successfully but lacks
+        // provider/model would otherwise sneak through.
+        const isUsableRoleCfg = (
+          cfg: Partial<{ provider: string; model: string }>,
+        ): cfg is { provider: string; model: string } =>
+          typeof cfg?.provider === "string" &&
+          cfg.provider.trim().length > 0 &&
+          typeof cfg?.model === "string" &&
+          cfg.model.trim().length > 0;
         let reviewerCfg = supervisorCfg;
         if (providers.models.reviewer) {
           try {
-            reviewerCfg = resolveRoleCfg("reviewer", providers.models.reviewer, providers);
+            const resolved = resolveRoleCfg("reviewer", providers.models.reviewer, providers);
+            reviewerCfg = isUsableRoleCfg(resolved) ? resolved : supervisorCfg;
           } catch {
             reviewerCfg = supervisorCfg;
           }
