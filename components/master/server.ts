@@ -4239,14 +4239,14 @@ async function main() {
             reviewerCfg = supervisorCfg;
           }
         }
-        // CodeRabbit pass-1/2: fall back to provider-default base URL when
-        // reviewerCfg.host is empty. Mirrors the buildModel fallback chain
-        // at server.ts:1078-1088 — local backends (lmstudio/ollama/omlx)
-        // resolve via getLocalBackendAdapter(kind).defaultHost; mlx/vllm
-        // legacy tags ride the LM Studio default; cloud providers have
-        // their canonical bases. Without this, the consolidate endpoint
-        // returned 500 for the common case of a clean providers.json that
-        // doesn't carry explicit host values.
+        // CodeRabbit pass-1/2/5: fall back to provider-default base URL
+        // when reviewerCfg.host is empty. The consolidator does a DIRECT
+        // OpenAI-compat chat-completion HTTP fetch (not via pi-ai), so
+        // only providers whose canonical wire format IS OpenAI-compat
+        // make sense here. Reject non-compat providers (anthropic,
+        // google, mistral, openai-codex which talks to chatgpt.com/backend-api)
+        // early with a clear error instead of falling through to the
+        // generic "host not configured" 500.
         const resolvedHost =
           reviewerCfg.host
           ?? (LOCAL_PROVIDERS.has(reviewerCfg.provider)
@@ -4259,16 +4259,19 @@ async function main() {
               ? "https://openrouter.ai/api/v1"
               : reviewerCfg.provider === "xai-oauth"
                 ? getXaiOauthBaseUrl()
-                : "");
+                : reviewerCfg.provider === "openai"
+                  ? "https://api.openai.com/v1"
+                  : "");
         const baseUrl = resolvedHost.replace(/\/v1\/?$/, "");
         if (!baseUrl) {
+          const openaiCompat = "lmstudio, ollama, omlx, openai, openrouter, xai-oauth, mlx, vllm";
           return Response.json(
             {
               ok: false,
-              error: `reviewer host not configured for ${reviewerCfg.provider}/${reviewerCfg.model} — set providers.json models.reviewer.host or pick a local provider`,
+              error: `reviewer provider "${reviewerCfg.provider}" isn't OpenAI-compatible for the consolidator. The consolidator does a direct OpenAI chat-completions call — pick a reviewer from: ${openaiCompat}. (Set via providers.json models.reviewer or use the dashboard's chat model picker.)`,
               reviewer_model: `${reviewerCfg.provider}/${reviewerCfg.model}`,
             },
-            { status: 500 },
+            { status: 400 },
           );
         }
         const consolidatorDeps: Tier1ConsolidatorDeps = {
