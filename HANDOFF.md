@@ -43,12 +43,14 @@ If `main HEAD` doesn't match, fetch + verify before doing anything else.
 - **Tier 1 memory budget raised** 2200 → 4000 chars (`SUBCTL_MEMORY_LIMIT=4000` in master plist EnvironmentVariables). Unblocks the 63 pending Tier 1 approvals.
 - **System memory recovered** 127 GB → 76 GB used (killed 545 stuck 9.0.12 claude-mem retries + a runaway `--help` loop at 99% CPU).
 
-## Fleet status
+## Fleet status (pre-v2.9.0 merge — both hosts still on v2.8.18)
 
 | Host | Master | Dashboard | Network |
 |------|--------|-----------|---------|
 | Local | v2.8.18 ✓ | v2.8.18 ✓ | localhost |
 | M3 Ultra | v2.8.18 ✓ | v2.8.18 ✓ | 192.168.100.62 (home), 100.84.108.16 (office Tailscale) |
+
+After this PR merges + tag is pushed + deploy runs, both hosts move to v2.9.0.
 
 Cognee sidecar runs LOCAL ONLY (not M3). M3's cognee-promotion stays disarmed as expected.
 
@@ -119,10 +121,10 @@ These are in the vault at `/Users/sem/Documents/Obsidian Vault/Subctl/Lessons Le
 - **Vault root:** `/Users/sem/Documents/Obsidian Vault/Subctl/`
   - `01 - Current State.md` (always read first; refreshed today)
   - `04 - Roadmap.md` (refreshed today)
-  - `Daily Updates/2026-05-22.md` (detailed wave narrative)
-  - `Orchestration Handoffs/2026-05-22-eod.md` (this handoff's vault mirror)
-  - `Lessons Learned/2026-05-22 - *.md` (3 lessons, listed above)
-  - `Initiatives/Tier 1 Consolidator.md` (new — operator-priority next)
+  - `Daily Updates/2026-05-22.md` (six-release wave narrative — prior session)
+  - `Orchestration Handoffs/2026-05-22-eod.md` (prior session's EOD snapshot — the v2.9.0 vault entries land at merge time)
+  - `Lessons Learned/2026-05-22 - *.md` (3 lessons captured 2026-05-22)
+  - `Initiatives/Tier 1 Consolidator.md` (now shipped as v2.9.0 — keeps the plan as the design-of-record)
 
 ## Memory system
 

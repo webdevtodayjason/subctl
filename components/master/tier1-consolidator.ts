@@ -390,12 +390,28 @@ export async function consolidate(
   input: ConsolidateInput,
   deps: ConsolidatorDeps,
 ): Promise<ConsolidateResult> {
-  const supervisor = deps.configuredSupervisor();
-  const reviewer_model = `${supervisor.provider}/${supervisor.model}`;
-
-  const candidates = deps.listPending();
-  const currentContent = deps.readMemoryContent();
-  const charBudget = deps.charBudget();
+  // CodeRabbit pass-7: honor the "NEVER throws" contract — wrap deps
+  // resolution + dispatch in a top-level try/catch so any throw
+  // (file-read errors, malformed providers.json, etc.) returns a
+  // structured ConsolidateError instead of crashing the endpoint.
+  let supervisor: { provider: string; model: string };
+  let reviewer_model: string;
+  let candidates: Tier1Candidate[];
+  let currentContent: string;
+  let charBudget: number;
+  try {
+    supervisor = deps.configuredSupervisor();
+    reviewer_model = `${supervisor.provider}/${supervisor.model}`;
+    candidates = deps.listPending();
+    currentContent = deps.readMemoryContent();
+    charBudget = deps.charBudget();
+  } catch (err) {
+    return {
+      ok: false,
+      error: `consolidator deps failed to resolve: ${(err as Error).message ?? err}`,
+      reviewer_model: "(unresolved)",
+    };
+  }
 
   // Empty queue → trivial proposal, no LLM call.
   if (candidates.length === 0) {

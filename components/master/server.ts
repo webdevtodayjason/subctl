@@ -4247,8 +4247,15 @@ async function main() {
         // google, mistral, openai-codex which talks to chatgpt.com/backend-api)
         // early with a clear error instead of falling through to the
         // generic "host not configured" 500.
+        // CodeRabbit pass-7: trim + treat empty-string as unset.
+        // `??` only catches null/undefined, but reviewerCfg.host = ""
+        // (operator cleared the field) should also trigger the fallback.
+        const normalizedHost =
+          typeof reviewerCfg.host === "string" && reviewerCfg.host.trim().length > 0
+            ? reviewerCfg.host.trim()
+            : undefined;
         const resolvedHost =
-          reviewerCfg.host
+          normalizedHost
           ?? (LOCAL_PROVIDERS.has(reviewerCfg.provider)
             ? ((reviewerCfg.provider === "omlx"
                 || reviewerCfg.provider === "ollama"
