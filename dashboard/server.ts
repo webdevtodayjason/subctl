@@ -788,12 +788,15 @@ function subctlUsageApplyFallback(parsed: AccountUsageResult[], now: number): Ac
   // restart with no successful fetch yet, or every fetch has been
   // failing), synthesize a "no data yet" row so the dashboard renders
   // a per-row error indicator instead of dropping the row silently.
-  // Only claude accounts emit usage; non-claude (gemini/openai) get
-  // null usage naturally and are intentionally omitted here.
+  // Only Anthropic accounts emit usage; non-Anthropic (gemini/openai) get
+  // null usage naturally and are intentionally omitted here. CodeRabbit
+  // pass-5: accept both legacy ("claude") and canonical ("anthropic")
+  // provider ids — accounts.conf can carry either form depending on when
+  // the row was written.
   try {
     const { accounts: configured } = parseAccountsConf();
     for (const acct of configured) {
-      if (acct.provider !== "claude") continue;
+      if (acct.provider !== "claude" && acct.provider !== "anthropic") continue;
       if (seenAliases.has(acct.alias)) continue;
       out.push({
         alias: acct.alias,
