@@ -103,6 +103,8 @@
 // patched the host label, until they reload the dashboard. See
 // DECISIONS.md "wave 10" for the readout.
 
+import { redactAlias } from "../lib/redact.js";
+
 export const id = "settings";
 
 export async function mount({ root: _root }) {
@@ -374,7 +376,9 @@ export async function mount({ root: _root }) {
         row.className = "oauth-row " + (ok ? "ok" : "err");
         row.innerHTML =
           "<span class=\"mark\">" + (ok ? "✓" : "✗") + "</span>" +
-          "<span class=\"name\">" + escapeText(a.alias) + "</span>" +
+          // v2.8.18 — redact api-key-shaped aliases (defense-in-depth;
+          // the CLI guard at lib/accounts.sh prevents new occurrences).
+          "<span class=\"name\">" + escapeText(redactAlias(a.alias)) + "</span>" +
           "<span class=\"detail\">" + escapeText(a.email + " · " + (ok ? "authed" : "not authenticated")) + "</span>";
         if (!ok) {
           // Use the account's actual provider (claude/openai/gemini) so

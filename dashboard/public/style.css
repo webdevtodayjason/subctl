@@ -1033,6 +1033,30 @@ main {
   letter-spacing: 0.02em;
 }
 
+/* v2.8.18 — stale / error indicators for usage cells.
+   `usage-stale` (dim yellow) = cell shows last-good cached numbers + a
+   "·stale Xm" tag while a fresh fetch errored (typically Anthropic 429).
+   `usage-error` (dim red) = cell has no fallback to show; only the short
+   error label ("429", "no auth", …) is rendered to explain the dash. */
+.usage-stale-indicator {
+  color: var(--yellow);
+  opacity: 0.75;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+.usage-error-indicator {
+  color: var(--red);
+  opacity: 0.75;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+.usage-cell-stack.usage-stale .usage-cell,
+.usage-cell-stack.usage-stale .usage-bar-text { opacity: 0.7; }
+.usage-cell-stack.usage-error .usage-cell,
+.usage-cell-stack.usage-error .usage-bar-text { opacity: 0.5; }
+
 /* Copy claude-use button per account */
 .copy-col { width: 36px; }
 .copy-alias-btn {

@@ -27,6 +27,8 @@
 //     not need explicit removal in unmount(). Only the interval needs
 //     teardown. See DECISIONS.md "wave 5" entry for the readout.
 
+import { redactAlias } from "../lib/redact.js";
+
 export const id = "providers";
 
 // Module-scope poll handle so unmount() can clear it. Parity with
@@ -250,7 +252,9 @@ export async function mount({ root: _root }) {
             row.className = "profile-row " + (prof.authed ? "authed" : "");
             row.innerHTML =
               "<span class=\"mark\">" + (prof.authed ? "✓" : "○") + "</span>" +
-              "<span class=\"alias\">" + escapeText(prof.alias) + "</span>" +
+              // v2.8.18 — alias is rendered through redactAlias() so an
+              // api-key-shaped legacy alias (sk-/pk-/Bearer) doesn't leak.
+              "<span class=\"alias\">" + escapeText(redactAlias(prof.alias)) + "</span>" +
               "<span class=\"email\">" + escapeText(prof.email || "—") + "</span>" +
               "<span class=\"config-dir\">" + escapeText(prof.config_dir || "") + "</span>";
             const actions = document.createElement("div");
@@ -669,7 +673,7 @@ export async function mount({ root: _root }) {
     function renderVerification(verificationUrl, userCode, expiresInMs) {
       const mins = Math.floor(expiresInMs / 60_000);
       render(
-        `<h2 style="margin:0 0 12px;font-size:1.1em">Sign in to ChatGPT — ${escapeText(alias)}</h2>` +
+        `<h2 style="margin:0 0 12px;font-size:1.1em">Sign in to ChatGPT — ${escapeText(redactAlias(alias))}</h2>` +
           `<p style="margin:0 0 8px;color:var(--dim,#999);font-size:0.9em">In another tab, open this URL:</p>` +
           `<div style="margin:0 0 16px"><a href="${escapeText(verificationUrl)}" target="_blank" style="font-family:monospace;color:var(--accent,#88f);word-break:break-all">${escapeText(verificationUrl)}</a></div>` +
           `<p style="margin:0 0 8px;color:var(--dim,#999);font-size:0.9em">and enter this code:</p>` +
@@ -683,7 +687,7 @@ export async function mount({ root: _root }) {
     function renderSuccess(authPath, expiresAt, accountId) {
       const expDate = new Date(expiresAt);
       render(
-        `<h2 style="margin:0 0 12px;font-size:1.1em;color:#6c6">✓ signed in — ${escapeText(alias)}</h2>` +
+        `<h2 style="margin:0 0 12px;font-size:1.1em;color:#6c6">✓ signed in — ${escapeText(redactAlias(alias))}</h2>` +
           `<dl style="margin:0 0 16px;font-size:0.9em">` +
           `<dt style="color:var(--dim,#999)">tokens written to</dt>` +
           `<dd style="margin:4px 0 8px;font-family:monospace">${escapeText(authPath)}</dd>` +

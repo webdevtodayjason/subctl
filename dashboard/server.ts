@@ -593,6 +593,11 @@ interface AccountUsageResult {
   ok: boolean;
   usage?: UsageEntry;
   error?: string;
+  // v2.8.18 — added fields for stale-fallback rendering. Set when the
+  // fresh fetch failed and we're returning a cached last-good entry.
+  stale?: boolean;
+  stale_age_ms?: number;
+  last_good_at_ms?: number;
 }
 
 let _usageCache: { fetchedAt: number; data: AccountUsageResult[] } | null = null;
@@ -600,34 +605,231 @@ let _usageCache: { fetchedAt: number; data: AccountUsageResult[] } | null = null
 // (POST or GET) clears this cache for an explicit on-demand fetch.
 const USAGE_CACHE_TTL_MS = 5 * 60 * 1000;
 
+// v2.8.18 — per-alias last-good cache. When a fresh fetch errors for an
+// alias (Anthropic 429, transient network, etc.) we substitute the cached
+// last-successful entry tagged `stale: true` so the dashboard shows real
+// numbers + a "·stale Xm" indicator instead of blank dashes.
+const _usageLastGood = new Map<string, { entry: AccountUsageResult; at_ms: number }>();
+
+// v2.8.18 — exponential backoff on Anthropic 429s. Anthropic rate-limits
+// /api/oauth/usage aggressively; before this fix the dashboard hammered
+// the endpoint every 5min even while being throttled. Backoff starts at
+// 5min, doubles per consecutive 429 wave, caps at 30min. Resets on any
+// successful tick. Module-level state — restart clears it, which is
+// acceptable (the next tick will simply observe whatever Anthropic says).
+let _usagePollBackoffUntil = 0;
+let _usagePollConsecutive429s = 0;
+const USAGE_BACKOFF_BASE_MS = 5 * 60 * 1000;
+const USAGE_BACKOFF_CAP_MS = 30 * 60 * 1000;
+
 // Shells out to `subctl usage --json` once per TTL window. The bash impl has
 // its own 60s on-disk cache; this in-process cache just avoids spawning a
 // subprocess on every WebSocket tick.
-function subctlUsageFetchAll(now: number): AccountUsageResult[] {
-  if (_usageCache && now - _usageCache.fetchedAt < USAGE_CACHE_TTL_MS) {
-    return _usageCache.data;
+//
+// CodeRabbit pass-2 fixes:
+//   Fix 1: `forceRefresh: true` bypasses the backoff short-circuit so the
+//          operator's explicit /api/refresh button always attempts a live
+//          fetch (otherwise clicking Refresh during a 429 storm would
+//          silently keep showing stale data). The backoff bookkeeping
+//          (consecutive-429s, until-ms) still ticks on the forced fetch
+//          — if the forced refresh also 429s, we record the sample and
+//          extend the backoff window like any other 429.
+//   Fix 2: cache-hit branch now bumps `stale_age_ms` by
+//          `now - _usageCache.fetchedAt` so the UI indicator advances
+//          inside the 5-min in-process TTL window instead of being
+//          frozen at whatever it was when the cache was last filled.
+function subctlUsageFetchAll(now: number, opts?: { forceRefresh?: boolean }): AccountUsageResult[] {
+  const forceRefresh = opts?.forceRefresh === true;
+
+  if (!forceRefresh && _usageCache && now - _usageCache.fetchedAt < USAGE_CACHE_TTL_MS) {
+    // Fix 2 — recompute stale_age_ms on every cache-hit read so the UI
+    // doesn't show a frozen "stale 3m" for the whole 5-min cache TTL.
+    const elapsedSinceCacheFetch = now - _usageCache.fetchedAt;
+    if (elapsedSinceCacheFetch <= 0) return _usageCache.data;
+    return _usageCache.data.map((u) => {
+      if (!u.stale) return u;
+      return {
+        ...u,
+        stale_age_ms: (u.stale_age_ms ?? 0) + elapsedSinceCacheFetch,
+      };
+    });
   }
+  // v2.8.18 — honour the backoff window. While backed off we don't spawn
+  // a subprocess; we re-run the stale-fallback against `_usageLastGood`
+  // with an empty parsed[] so `stale_age_ms` is recomputed for every
+  // /api/state call (CodeRabbit pass-1 Fix 3 — without this, stale_age_ms
+  // gets frozen at the value computed when the cache was last filled and
+  // the UI shows "stale 5m" for the entire backoff window). Cheap — just
+  // a Map iteration.
+  //
+  // Fix 1 (pass-2): forceRefresh skips this; explicit /api/refresh
+  // attempts to spawn a live fetch even mid-backoff. If the forced
+  // refresh also 429s, the post-parse backoff bookkeeping (below) ticks
+  // the consecutive-429s and extends the window like normal.
+  if (!forceRefresh && now < _usagePollBackoffUntil) {
+    return subctlUsageApplyFallback([], now);
+  }
+  // CodeRabbit pass-3 Fix 4 — track whether the fetch genuinely succeeded.
+  // Hard errors (spawnSync error, non-zero exit, JSON parse throw) used to
+  // collapse `parsed = []` and downstream code treated that as a clean
+  // zero-429 sample, wrongly CLEARING the 429 backoff state. A hard error
+  // is not a successful fetch — preserve the backoff window across it.
+  let fetchSucceeded = false;
+  let parsed: AccountUsageResult[] = [];
   try {
     const r = spawnSync(SUBCTL_BIN, ["usage", "--json"], {
       encoding: "utf8",
       timeout: 12_000,
     });
     if (r.error || (typeof r.status === "number" && r.status !== 0)) {
-      _usageCache = { fetchedAt: now, data: [] };
-      return [];
+      // hard failure — leave parsed=[], DON'T touch backoff
+    } else {
+      parsed = JSON.parse(r.stdout || "[]") as AccountUsageResult[];
+      // CodeRabbit pass-7: an empty array isn't a real success — it means
+      // the bash CLI silently returned nothing (corrupted accounts.conf,
+      // internal bash bug). Only treat non-empty as success so backoff
+      // state isn't wrongly cleared.
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        fetchSucceeded = true;
+      }
     }
-    const parsed = JSON.parse(r.stdout || "[]") as AccountUsageResult[];
-    _usageCache = { fetchedAt: now, data: parsed };
-    return parsed;
   } catch {
-    _usageCache = { fetchedAt: now, data: [] };
-    return [];
+    // parse threw — leave parsed=[], DON'T touch backoff
   }
+
+  // Stale-fallback first — substitute cached entries for any failed alias
+  // BEFORE updating last-good, so a fresh failure followed by a fresh
+  // success doesn't accidentally overwrite the cache with stale data.
+  const withFallback = subctlUsageApplyFallback(parsed, now);
+
+  // Backoff bookkeeping: count 429s in the fresh response. Use the raw
+  // `parsed` (not withFallback) so substituted stale-good entries don't
+  // hide a 429 that triggered them.
+  let count429 = 0;
+  for (const u of parsed) {
+    if (!u.ok && typeof u.error === "string" && /\b429\b/.test(u.error)) count429++;
+  }
+  if (count429 > 0) {
+    _usagePollConsecutive429s++;
+    const k = _usagePollConsecutive429s - 1;
+    const backoff = Math.min(USAGE_BACKOFF_BASE_MS * Math.pow(2, k), USAGE_BACKOFF_CAP_MS);
+    _usagePollBackoffUntil = now + backoff;
+    console.warn(
+      `[usage-poll] ${count429} alias(es) returned 429 — backing off ${Math.round(backoff / 60_000)}min (consecutive=${_usagePollConsecutive429s})`,
+    );
+  } else if (fetchSucceeded && (_usagePollConsecutive429s > 0 || _usagePollBackoffUntil > 0)) {
+    // Fix 4 — only clear backoff on a real success with zero 429s.
+    // !fetchSucceeded && count429===0 → hard error: preserve backoff.
+    console.warn(`[usage-poll] backoff cleared (no 429s this tick)`);
+    _usagePollConsecutive429s = 0;
+    _usagePollBackoffUntil = 0;
+  }
+
+  _usageCache = { fetchedAt: now, data: withFallback };
+  return withFallback;
+}
+
+// v2.8.18 — for any alias whose fresh fetch returned ok:false, substitute
+// the cached last-good entry tagged stale. For ok:true entries, update the
+// cache.
+//
+// CodeRabbit pass-1 fixes:
+//   Fix 2: also synthesize entries for cached aliases the fresh-fetch
+//          omitted entirely (e.g. `subctl usage --json` returned []
+//          because the bash CLI itself failed before reaching all
+//          aliases). Without this, those cached good entries silently
+//          vanish from /api/state.
+//   Fix 4: stale entries are tagged `ok: false`. The dashboard render
+//          path uses `stale` / `usage_stale` (not `ok`), so the cells
+//          still show their cached numbers + "·stale Xm". But
+//          recordUsageSnapshot() gates on `u.ok` and would otherwise
+//          append the SAME cached entry to usage-history.jsonl every
+//          5-min tick during a 429 storm — exploding the history file
+//          with synthetic samples.
+// CodeRabbit pass-3 fix:
+//   Fix 3: when BOTH parsed and _usageLastGood are empty (fresh install,
+//          fresh restart with no prior good fetch), synthesize a "no
+//          data yet" row per configured claude account so the dashboard
+//          renders an error indicator instead of dropping the row
+//          silently.
+function subctlUsageApplyFallback(parsed: AccountUsageResult[], now: number): AccountUsageResult[] {
+  const out: AccountUsageResult[] = parsed.map((u) => {
+    if (u.ok && u.usage) {
+      _usageLastGood.set(u.alias, { entry: u, at_ms: now });
+      return u;
+    }
+    const cached = _usageLastGood.get(u.alias);
+    if (!cached) return u;
+    return {
+      alias: u.alias,
+      cfg_dir: u.cfg_dir,
+      ok: false,                            // Fix 4 — synthetic, not fresh
+      usage: cached.entry.usage,
+      error: u.error,
+      stale: true,
+      stale_age_ms: Math.max(0, now - cached.at_ms),
+      last_good_at_ms: cached.at_ms,
+    };
+  });
+
+  // Fix 2 — fold in cached aliases the fresh-fetch dropped entirely.
+  const seenAliases = new Set(out.map((u) => u.alias));
+  for (const [alias, cached] of _usageLastGood) {
+    if (seenAliases.has(alias)) continue;
+    out.push({
+      alias,
+      cfg_dir: cached.entry.cfg_dir,
+      ok: false,                            // Fix 4 — synthetic, not fresh
+      usage: cached.entry.usage,
+      error: "no fresh fetch result — using cached",
+      stale: true,
+      stale_age_ms: Math.max(0, now - cached.at_ms),
+      last_good_at_ms: cached.at_ms,
+    });
+    seenAliases.add(alias);
+  }
+
+  // CodeRabbit pass-3 Fix 3 — when BOTH parsed and _usageLastGood produce
+  // nothing for a configured claude account (brand-new install, fresh
+  // restart with no successful fetch yet, or every fetch has been
+  // failing), synthesize a "no data yet" row so the dashboard renders
+  // a per-row error indicator instead of dropping the row silently.
+  // Only Anthropic accounts emit usage; non-Anthropic (gemini/openai) get
+  // null usage naturally and are intentionally omitted here. CodeRabbit
+  // pass-5: accept both legacy ("claude") and canonical ("anthropic")
+  // provider ids — accounts.conf can carry either form depending on when
+  // the row was written.
+  try {
+    const { accounts: configured } = parseAccountsConf();
+    for (const acct of configured) {
+      if (acct.provider !== "claude" && acct.provider !== "anthropic") continue;
+      if (seenAliases.has(acct.alias)) continue;
+      out.push({
+        alias: acct.alias,
+        cfg_dir: acct.config_dir,
+        ok: false,
+        error: "usage fetch failed — no data yet",
+        stale: false,                       // never had good data; not stale
+      });
+      seenAliases.add(acct.alias);
+    }
+  } catch { /* best-effort — parseAccountsConf is normally pure */ }
+
+  return out;
 }
 
 function usageForAlias(alias: string, all: AccountUsageResult[]): UsageEntry | null {
-  const hit = all.find(u => u.alias === alias && u.ok);
+  // v2.8.18 — accept stale entries too; the per-row `usage_stale` flag in
+  // /api/state tells the UI to dim/label them.
+  const hit = all.find(u => u.alias === alias && (u.ok || u.stale));
   return hit?.usage ?? null;
+}
+
+// v2.8.18 — companion lookup so /api/state can surface per-row error +
+// stale info. Returns the full entry (or null if absent) so callers can
+// pick the fields they want.
+function usageEntryForAlias(alias: string, all: AccountUsageResult[]): AccountUsageResult | null {
+  return all.find(u => u.alias === alias) ?? null;
 }
 
 // ---------- utilization history (24h sparkline) ----------
@@ -1601,6 +1803,9 @@ function buildAccountSummaries(
     const rlEntry = rl.by_account.get(acc.alias);
     const auth = authStatus(acc);
     const usage = usageForAlias(acc.alias, usageAll);
+    // v2.8.18 — pick up the raw entry so we can surface per-row error +
+    // stale info without re-running the lookup downstream.
+    const usageEntry = usageEntryForAlias(acc.alias, usageAll);
     const verdict = computeAccountVerdict({
       alias: acc.alias,
       authReady: auth === "ready",
@@ -1622,6 +1827,13 @@ function buildAccountSummaries(
       usage,
       dispatch: verdict,
       usage_history_24h: hist,
+      // v2.8.18 — per-row usage status for the dashboard. `usage_error`
+      // is the actual cause (e.g. "HTTP 429" / "no auth"); `usage_stale`
+      // tells the UI to dim the cells + show "·stale Xm"; the `_ms`
+      // field is the age of the cached fallback if any.
+      usage_error: usageEntry?.error ?? null,
+      usage_stale: !!usageEntry?.stale,
+      usage_stale_age_ms: usageEntry?.stale_age_ms ?? null,
     };
   });
 }
@@ -1708,7 +1920,7 @@ function buildOrchestrations(): Array<{
 
 // ---------- top-level state builder ----------
 
-function buildState() {
+function buildState(opts?: { forceUsageRefresh?: boolean }) {
   const now = Date.now();
   const { accounts: rawAccounts, warning } = parseAccountsConf();
 
@@ -1728,7 +1940,12 @@ function buildState() {
   );
 
   ensureUsagePoller();
-  const usageAll = subctlUsageFetchAll(now);
+  // CodeRabbit pass-2 Fix 1 — when the caller is the operator-clicked
+  // /api/refresh, bypass both the in-process TTL cache (already cleared
+  // by the handler) AND the 429 backoff so an explicit refresh always
+  // attempts a live fetch. Background pollers / regular state queries
+  // keep the default (respect backoff).
+  const usageAll = subctlUsageFetchAll(now, { forceRefresh: opts?.forceUsageRefresh === true });
   const history24h = readUsageHistory24h(now);
   const accountSummaries = buildAccountSummaries(rawAccounts, sessions, rl, usageAll, history24h, now);
 
@@ -6407,6 +6624,11 @@ const server = Bun.serve({
     // and return a fresh state snapshot. Clicked from the dashboard "↻" button
     // or invoked by scripts. Costs one API call per claude account; rest of
     // the day uses the normal 5-min auto-cadence.
+    //
+    // v2.8.18 (CodeRabbit pass-2 Fix 1) — `forceUsageRefresh: true` also
+    // skips the 429 backoff. Without it, clicking Refresh mid-backoff was
+    // a silent no-op (kept returning stale data) which is a confusing
+    // UX. The forced fetch still records 429s if Anthropic returns them.
     if (url.pathname === "/api/refresh") {
       _usageCache = null;
       _costCache = null;
@@ -6420,7 +6642,7 @@ const server = Bun.serve({
           }
         }
       } catch { /* best-effort */ }
-      const fresh = buildState();
+      const fresh = buildState({ forceUsageRefresh: true });
       for (const ws of sockets) {
         try { ws.send(JSON.stringify(fresh)); } catch { /* ignore */ }
       }
