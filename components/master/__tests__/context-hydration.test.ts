@@ -26,7 +26,11 @@ import type {
   HydrationResult,
   MemoriCuratedRow,
 } from "../context-hydration";
-import { applyHydrationOutcome, dropEphemeralMessages } from "../server";
+import {
+  applyHydrationOutcome,
+  dropEphemeralMessages,
+  stripEphemeralInPlace,
+} from "../server";
 import type { ApplyHydrationOutcomeDeps } from "../server";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -1090,5 +1094,129 @@ describe("loadContextHydrationConfig — cognee_relevance_query trimmed on store
         /* ignore */
       }
     }
+  });
+});
+
+// ─── stripEphemeralInPlace — one-shot cleanup (CodeRabbit pass-5) ─────────
+//
+// Pass-4 marked hydration messages with `_ephemeral: true` and the
+// persistence filter (dropEphemeralMessages) keeps them off disk. But
+// without an in-memory strip, the ephemeral message survives forever
+// in agent.state.messages — token bloat on every subsequent supervisor
+// call. Pass-5 introduces stripEphemeralInPlace, called immediately
+// after the model has consumed the current turn's messages.
+//
+// The helper MUTATES THE INPUT ARRAY (matching the splice idiom
+// compactTranscriptInline uses for orphan-toolResult removal) so the
+// pi-agent-core Agent's reference to `state.messages` stays valid.
+
+describe("stripEphemeralInPlace — CodeRabbit pass-5", () => {
+  test("removes `_ephemeral: true` entries in place, returns count", () => {
+    const messages: any[] = [
+      { role: "user", content: "real first prompt" },
+      {
+        role: "user",
+        content: "[memory-context-hydration · …]",
+        _ephemeral: true,
+      },
+      { role: "assistant", content: "real reply" },
+    ];
+    const dropped = stripEphemeralInPlace(messages as any);
+    expect(dropped).toBe(1);
+    // MUTATION in place — original array is now length 2.
+    expect(messages).toHaveLength(2);
+    expect(messages[0].content).toBe("real first prompt");
+    expect(messages[1].content).toBe("real reply");
+    // No surviving entry carries the ephemeral marker.
+    expect(messages.every((m) => m._ephemeral !== true)).toBe(true);
+  });
+
+  test("no-op when no ephemeral messages — array unchanged, returns 0", () => {
+    const messages: any[] = [
+      { role: "user", content: "a" },
+      { role: "assistant", content: "b" },
+    ];
+    const before = [...messages];
+    const dropped = stripEphemeralInPlace(messages as any);
+    expect(dropped).toBe(0);
+    expect(messages).toEqual(before);
+  });
+
+  test("strips multiple interleaved ephemeral messages and preserves order", () => {
+    const messages: any[] = [
+      { role: "user", content: "boot-hydration", _ephemeral: true },
+      { role: "user", content: "real prompt 1" },
+      { role: "assistant", content: "real reply 1" },
+      { role: "user", content: "compact-hydration", _ephemeral: true },
+      { role: "user", content: "real prompt 2" },
+      { role: "assistant", content: "real reply 2" },
+    ];
+    const dropped = stripEphemeralInPlace(messages as any);
+    expect(dropped).toBe(2);
+    expect(messages).toHaveLength(4);
+    // Order of survivors must match input order — splice-from-tail
+    // is the correct idiom for that.
+    expect(messages.map((m) => m.content)).toEqual([
+      "real prompt 1",
+      "real reply 1",
+      "real prompt 2",
+      "real reply 2",
+    ]);
+  });
+
+  test("strict `=== true` — `_ephemeral: false` does NOT match", () => {
+    // Defensive: an external client setting `_ephemeral: false`
+    // (i.e. explicitly non-ephemeral) must not be silently dropped.
+    const messages: any[] = [
+      { role: "user", content: "explicit non-ephemeral", _ephemeral: false },
+      { role: "user", content: "no flag at all" },
+      { role: "user", content: "real ephemeral", _ephemeral: true },
+    ];
+    const dropped = stripEphemeralInPlace(messages as any);
+    expect(dropped).toBe(1);
+    expect(messages).toHaveLength(2);
+    expect(messages[0].content).toBe("explicit non-ephemeral");
+    expect(messages[1].content).toBe("no flag at all");
+  });
+
+  test("empty input array — returns 0, no throw", () => {
+    const messages: any[] = [];
+    const dropped = stripEphemeralInPlace(messages as any);
+    expect(dropped).toBe(0);
+    expect(messages).toHaveLength(0);
+  });
+
+  test("all-ephemeral array → returns count, array becomes empty", () => {
+    const messages: any[] = [
+      { role: "user", content: "h1", _ephemeral: true },
+      { role: "user", content: "h2", _ephemeral: true },
+    ];
+    const dropped = stripEphemeralInPlace(messages as any);
+    expect(dropped).toBe(2);
+    expect(messages).toHaveLength(0);
+  });
+
+  test("Phase 4 one-shot semantics: after dispatch + strip, find(_ephemeral) is undefined", () => {
+    // Simulates the contract the spec calls for: fire hydration push
+    // → run prompt (we represent this as a 'real prompt' landing
+    // after the ephemeral) → strip → assert no ephemeral remains.
+    // This is the exact assertion the team-lead's spec wanted.
+    const messages: any[] = [
+      // boot push:
+      { role: "user", content: "[memory-context-hydration · …]", _ephemeral: true },
+      // operator's actual prompt this turn:
+      { role: "user", content: "operator prompt" },
+      // assistant's reply lands during agent.prompt:
+      { role: "assistant", content: "assistant reply" },
+    ];
+    // POST-DISPATCH CLEANUP — this is what processOnePrompt calls.
+    stripEphemeralInPlace(messages as any);
+    // The exact spec assertion: no surviving entry carries _ephemeral.
+    expect(messages.find((m) => m._ephemeral === true)).toBeUndefined();
+    // And the real conversation remains intact.
+    expect(messages.map((m) => m.content)).toEqual([
+      "operator prompt",
+      "assistant reply",
+    ]);
   });
 });

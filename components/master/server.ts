@@ -2052,6 +2052,31 @@ export function dropEphemeralMessages(messages: AgentMessage[]): AgentMessage[] 
   return kept;
 }
 
+// v2.10.x CodeRabbit pass-5: in-place strip used by the prompt
+// handler immediately after the model has consumed the current
+// turn's messages. Without this, the hydration block (pushed with
+// `_ephemeral: true` per pass-4) survives in `agent.state.messages`
+// forever — defeating Phase 4's whole point: token bloat on every
+// subsequent supervisor call.
+//
+// Mirrors the splice-from-tail idiom compactTranscriptInline uses
+// for orphan-toolResult removal — pi-agent-core's Agent holds the
+// reference to `state.messages`, so we mutate in place rather than
+// reassign. Returns the count of removed entries for caller logging.
+//
+// Exported pure helper — unit-testable without standing up the daemon.
+export function stripEphemeralInPlace(messages: AgentMessage[]): number {
+  let dropped = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i] as { _ephemeral?: boolean } | undefined;
+    if (m && m._ephemeral === true) {
+      messages.splice(i, 1);
+      dropped++;
+    }
+  }
+  return dropped;
+}
+
 function saveAgentTranscript(messages: AgentMessage[]) {
   writeFileSync(
     AGENT_STATE_PATH,
@@ -3793,6 +3818,33 @@ async function main() {
         await new Promise((r) => setTimeout(r, 5000));
         await agent.prompt(p.text);
         ({ stop, err } = lastStopReason());
+      }
+      // ── v2.10.x CodeRabbit pass-5: one-shot hydration cleanup ──────────
+      // The pass-4 `_ephemeral: true` flag kept the hydration block off
+      // disk, but the message itself remained in `agent.state.messages`
+      // and bloated every subsequent supervisor call's token budget.
+      // The model has now consumed (or attempted to consume) the
+      // hydration on this turn's dispatch — strip the ephemeral
+      // message(s) from in-memory state so turn 2+ proceeds without
+      // them. Runs BEFORE the verifier gate so claim verification +
+      // any synthetic re-prompt sees a clean transcript without the
+      // bootstrap noise.
+      try {
+        const stripped = stripEphemeralInPlace(agent.state.messages);
+        if (stripped > 0) {
+          console.error(
+            `[context-hydration] stripped ${stripped} ephemeral message(s) from in-memory transcript after ${p.source} dispatch — one-shot consumed`,
+          );
+        }
+      } catch (stripErr) {
+        // Stripping is best-effort. The disk-persistence filter
+        // (dropEphemeralMessages inside saveAgentTranscript) is still
+        // load-bearing for durability; this is just the in-memory
+        // hygiene pass. Worst case: the block lingers for the rest
+        // of this session, but never lands on disk.
+        console.error(
+          `[context-hydration] strip threw (best-effort, continuing): ${(stripErr as Error).message ?? String(stripErr)}`,
+        );
       }
       if (stop === "error") {
         logDecision({
