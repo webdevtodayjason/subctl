@@ -726,3 +726,178 @@ describe("applyHydrationOutcome — seq guard (CodeRabbit pass-1 Fix 3)", () => 
     expect(broadcasts[0]?.event).toBe("context_hydration_ready");
   });
 });
+
+// ─── applyHydrationOutcome — defensive deps wrapping (CodeRabbit pass-2) ──
+//
+// The reducer must NEVER throw, regardless of which deps callback blows
+// up. State-write contract: returns "applied" only when setPayload
+// actually succeeded; if setPayload throws, the reducer degrades to
+// "logged_failure" and emits the standard failure audit so observers
+// see the breakage. log / logDecision / broadcast failures are
+// individually swallowed and do NOT downgrade the action.
+
+describe("applyHydrationOutcome — setPayload failure (CodeRabbit pass-2)", () => {
+  test("setPayload throws → returns 'logged_failure', payload not committed, failure audit emitted", () => {
+    const decisions: Array<{ project: string; action: string; rationale: string }> = [];
+    const broadcasts: Array<{ event: string; payload: unknown }> = [];
+    const logs: string[] = [];
+    const action = applyHydrationOutcome({
+      reason: "boot",
+      mySeq: 1,
+      currentSeq: 1,
+      result: mkSuccessResult("PAYLOAD THAT DOES NOT LAND"),
+      threwMessage: null,
+      setPayload: () => {
+        throw new Error("state lock contention");
+      },
+      logDecision: (e) => decisions.push(e),
+      broadcast: (event, payload) => broadcasts.push({ event, payload }),
+      log: (l) => logs.push(l),
+      now: () => new Date(),
+    });
+    expect(action).toBe("logged_failure");
+    // Failure audit must mention setPayload + the underlying error.
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]?.action).toBe("context_hydration_failed");
+    expect(decisions[0]?.rationale).toContain("setPayload threw");
+    expect(decisions[0]?.rationale).toContain("state lock contention");
+    expect(broadcasts).toHaveLength(1);
+    expect(broadcasts[0]?.event).toBe("context_hydration_failed");
+    expect((broadcasts[0]?.payload as { error: string }).error).toContain("setPayload threw");
+    // The "ready" broadcast must NOT have fired — state never wrote.
+    expect(broadcasts.some((b) => b.event === "context_hydration_ready")).toBe(false);
+    // The setPayload failure must be loud on stderr too.
+    expect(logs.some((l) => l.includes("setPayload threw"))).toBe(true);
+  });
+
+  test("setPayload + logDecision + broadcast ALL throw → still returns 'logged_failure' without bubbling", () => {
+    // Worst-case: every observable channel is broken. Reducer must
+    // still return the right tag and not throw.
+    const logs: string[] = [];
+    const action = applyHydrationOutcome({
+      reason: "boot",
+      mySeq: 1,
+      currentSeq: 1,
+      result: mkSuccessResult("X"),
+      threwMessage: null,
+      setPayload: () => { throw new Error("set"); },
+      logDecision: () => { throw new Error("log"); },
+      broadcast: () => { throw new Error("bcast"); },
+      log: (l) => logs.push(l),
+      now: () => new Date(),
+    });
+    expect(action).toBe("logged_failure");
+    // The log channel itself stays alive in this scenario; it
+    // captures the breakage of the other channels.
+    expect(logs.some((l) => l.includes("setPayload threw"))).toBe(true);
+  });
+});
+
+describe("applyHydrationOutcome — observational throws don't downgrade 'applied' (CodeRabbit pass-2)", () => {
+  test("broadcast throws AFTER setPayload success → still returns 'applied', state IS written", () => {
+    // The contract: once setPayload returns, the payload IS committed.
+    // A failing broadcast is observational — degrade to "applied" anyway.
+    let written: string | null = null;
+    const logs: string[] = [];
+    const action = applyHydrationOutcome({
+      reason: "boot",
+      mySeq: 1,
+      currentSeq: 1,
+      result: mkSuccessResult("COMMITTED"),
+      threwMessage: null,
+      setPayload: (p) => { written = p; },
+      logDecision: () => {},
+      broadcast: () => { throw new Error("sse client gone"); },
+      log: (l) => logs.push(l),
+      now: () => new Date(),
+    });
+    expect(action).toBe("applied");
+    expect(written).toBe("COMMITTED");
+    // Breakage logged for operator visibility.
+    expect(logs.some((l) => l.includes("broadcast(context_hydration_ready) threw"))).toBe(true);
+  });
+
+  test("log channel throwing in 'applied' branch does NOT bubble", () => {
+    let written: string | null = null;
+    let action: ReturnType<typeof applyHydrationOutcome> | null = null;
+    expect(() => {
+      action = applyHydrationOutcome({
+        reason: "boot",
+        mySeq: 1,
+        currentSeq: 1,
+        result: mkSuccessResult("DURABLE"),
+        threwMessage: null,
+        setPayload: (p) => { written = p; },
+        logDecision: () => {},
+        broadcast: () => {},
+        log: () => { throw new Error("stderr closed"); },
+        now: () => new Date(),
+      });
+    }).not.toThrow();
+    expect(action).toBe("applied");
+    expect(written).toBe("DURABLE");
+  });
+
+  test("log channel throwing in 'superseded' branch does NOT bubble", () => {
+    let action: ReturnType<typeof applyHydrationOutcome> | null = null;
+    expect(() => {
+      action = applyHydrationOutcome({
+        reason: "boot",
+        mySeq: 1,
+        currentSeq: 2,
+        result: mkSuccessResult("stale"),
+        threwMessage: null,
+        setPayload: () => {},
+        logDecision: () => {},
+        broadcast: () => {},
+        log: () => { throw new Error("stderr closed"); },
+        now: () => new Date(),
+      });
+    }).not.toThrow();
+    expect(action).toBe("superseded");
+  });
+
+  test("log channel throwing in 'ignored_superseded_failure' branch does NOT bubble", () => {
+    let action: ReturnType<typeof applyHydrationOutcome> | null = null;
+    expect(() => {
+      action = applyHydrationOutcome({
+        reason: "boot",
+        mySeq: 1,
+        currentSeq: 2,
+        result: null,
+        threwMessage: "would have failed",
+        setPayload: () => {},
+        logDecision: () => {},
+        broadcast: () => {},
+        log: () => { throw new Error("stderr closed"); },
+        now: () => new Date(),
+      });
+    }).not.toThrow();
+    expect(action).toBe("ignored_superseded_failure");
+  });
+
+  test("now() throwing in failure broadcast → still returns 'logged_failure', payload uses sentinel ts", () => {
+    // Defensive: if Date construction blows up (clock-skew faker,
+    // tests overriding global Date weirdly, etc.), the broadcast
+    // payload should still construct with a sentinel ts.
+    const broadcasts: Array<{ event: string; payload: unknown }> = [];
+    const action = applyHydrationOutcome({
+      reason: "boot",
+      mySeq: 1,
+      currentSeq: 1,
+      result: mkFailureResult("transport"),
+      threwMessage: null,
+      setPayload: () => {},
+      logDecision: () => {},
+      broadcast: (e, p) => broadcasts.push({ event: e, payload: p }),
+      log: () => {},
+      now: () => {
+        throw new Error("Date factory broken");
+      },
+    });
+    expect(action).toBe("logged_failure");
+    expect(broadcasts).toHaveLength(1);
+    // Payload still constructed despite now() throwing.
+    expect((broadcasts[0]?.payload as { ts: string }).ts).toBe("<unknown>");
+  });
+});

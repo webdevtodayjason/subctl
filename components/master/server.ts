@@ -1594,6 +1594,15 @@ export async function buildCuratedPromptSection(deps: {
 // Failure cases emit BOTH logDecision AND broadcast — operator looking at
 // decisions.jsonl OR watching SSE sees the same event. Pre-2.10.1 the
 // throw path was silent (CodeRabbit pass-1 MAJOR).
+//
+// v2.10.x CodeRabbit pass-2 — every deps.* call (setPayload, log,
+// logDecision, broadcast, now) is individually try-wrapped so the
+// reducer NEVER throws. Side-effect failures degrade gracefully:
+//   - setPayload throwing → state-write didn't take, return logged_failure
+//   - log/logDecision/broadcast throwing → swallowed locally, other
+//     channels still fire, outcome action reflects what actually happened
+//   - now() throwing → fall back to a deps-free "ts: <unknown>" sentinel
+//     so broadcasts can still construct without exploding
 
 export type HydrationOutcomeAction =
   | "applied"
@@ -1620,9 +1629,69 @@ export interface ApplyHydrationOutcomeDeps {
   now: () => Date;
 }
 
+// ── deps wrappers — each side-effect dep wrapped in its own try/catch ────
+//
+// All defensive: any thrown error is swallowed. The reducer reports the
+// outcome via the returned tagged action, not via thrown exceptions.
+
+function _safeLog(deps: ApplyHydrationOutcomeDeps, line: string): void {
+  try {
+    deps.log(line);
+  } catch {
+    /* swallow — log channel itself is broken; nothing we can do */
+  }
+}
+
+function _safeLogDecision(
+  deps: ApplyHydrationOutcomeDeps,
+  entry: { project: string; action: string; rationale: string },
+): void {
+  try {
+    deps.logDecision(entry);
+  } catch (err) {
+    // logDecision is the audit primary; if it broke, log the breakage
+    // so operator can investigate via stderr, then swallow.
+    _safeLog(
+      deps,
+      `[context-hydration] logDecision threw (audit dropped): ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+function _safeBroadcast(
+  deps: ApplyHydrationOutcomeDeps,
+  eventType: string,
+  payload: unknown,
+): void {
+  try {
+    deps.broadcast(eventType, payload);
+  } catch (err) {
+    _safeLog(
+      deps,
+      `[context-hydration] broadcast(${eventType}) threw: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+function _safeNowIso(deps: ApplyHydrationOutcomeDeps): string {
+  try {
+    return deps.now().toISOString();
+  } catch {
+    return "<unknown>";
+  }
+}
+
 /**
  * Apply the outcome of a hydration attempt. Returns a tag indicating
  * which branch ran (for tests + observability). Never throws.
+ *
+ * State-write contract:
+ *   - "applied": setPayload succeeded. log/broadcast MAY have thrown
+ *     but the payload IS committed.
+ *   - "logged_failure": payload is NOT committed. Either we never
+ *     attempted setPayload (failure path), OR setPayload itself threw.
+ *   - "superseded" / "ignored_superseded_failure": no setPayload
+ *     attempt by design.
  */
 export function applyHydrationOutcome(deps: ApplyHydrationOutcomeDeps): HydrationOutcomeAction {
   const superseded = deps.mySeq !== deps.currentSeq;
@@ -1631,30 +1700,23 @@ export function applyHydrationOutcome(deps: ApplyHydrationOutcomeDeps): Hydratio
     const msg = deps.threwMessage ?? "unknown";
     if (superseded) {
       // Don't pollute the audit trail with stale-throw noise; just log.
-      deps.log(
+      _safeLog(
+        deps,
         `[context-hydration] ${deps.reason} (seq=${deps.mySeq}) superseded then threw — ignoring: ${msg}`,
       );
       return "ignored_superseded_failure";
     }
-    deps.log(`[context-hydration] ${deps.reason} scheduler threw: ${msg}`);
-    try {
-      deps.logDecision({
-        project: "_master",
-        action: "context_hydration_failed",
-        rationale: `${deps.reason}: ${msg}`,
-      });
-    } catch {
-      /* ignore log failures */
-    }
-    try {
-      deps.broadcast("context_hydration_failed", {
-        ts: deps.now().toISOString(),
-        reason: deps.reason,
-        error: msg,
-      });
-    } catch {
-      /* swallow broadcast errors per existing pattern */
-    }
+    _safeLog(deps, `[context-hydration] ${deps.reason} scheduler threw: ${msg}`);
+    _safeLogDecision(deps, {
+      project: "_master",
+      action: "context_hydration_failed",
+      rationale: `${deps.reason}: ${msg}`,
+    });
+    _safeBroadcast(deps, "context_hydration_failed", {
+      ts: _safeNowIso(deps),
+      reason: deps.reason,
+      error: msg,
+    });
     return "logged_failure";
   }
 
@@ -1662,30 +1724,23 @@ export function applyHydrationOutcome(deps: ApplyHydrationOutcomeDeps): Hydratio
   if (!deps.result.ok) {
     const errMsg = deps.result.error ?? "unknown";
     if (superseded) {
-      deps.log(
+      _safeLog(
+        deps,
         `[context-hydration] ${deps.reason} (seq=${deps.mySeq}) superseded; discarding stale ok:false`,
       );
       return "superseded";
     }
-    deps.log(`[context-hydration] ${deps.reason} hydration failed: ${errMsg}`);
-    try {
-      deps.logDecision({
-        project: "_master",
-        action: "context_hydration_failed",
-        rationale: `${deps.reason}: ${errMsg}`,
-      });
-    } catch {
-      /* ignore log failures */
-    }
-    try {
-      deps.broadcast("context_hydration_failed", {
-        ts: deps.now().toISOString(),
-        reason: deps.reason,
-        error: errMsg,
-      });
-    } catch {
-      /* swallow broadcast errors */
-    }
+    _safeLog(deps, `[context-hydration] ${deps.reason} hydration failed: ${errMsg}`);
+    _safeLogDecision(deps, {
+      project: "_master",
+      action: "context_hydration_failed",
+      rationale: `${deps.reason}: ${errMsg}`,
+    });
+    _safeBroadcast(deps, "context_hydration_failed", {
+      ts: _safeNowIso(deps),
+      reason: deps.reason,
+      error: errMsg,
+    });
     return "logged_failure";
   }
 
@@ -1693,24 +1748,51 @@ export function applyHydrationOutcome(deps: ApplyHydrationOutcomeDeps): Hydratio
   if (superseded) {
     // Quietly drop the stale-success: a fresher payload is on its way
     // (or already landed) and we MUST NOT overwrite it.
-    deps.log(
+    _safeLog(
+      deps,
       `[context-hydration] ${deps.reason} (seq=${deps.mySeq}) superseded by seq=${deps.currentSeq}; discarding ${deps.result.context_payload.length}-char payload`,
     );
     return "superseded";
   }
-  deps.setPayload(deps.result.context_payload);
-  deps.log(
+
+  // setPayload is the load-bearing state write. If it throws, the
+  // payload didn't land — degrade to logged_failure and emit the same
+  // audit a failure path would. Returning "applied" with no state
+  // change would be a lie to the caller; returning "logged_failure"
+  // lets observers see the breakage. CodeRabbit pass-2 MAJOR.
+  try {
+    deps.setPayload(deps.result.context_payload);
+  } catch (err) {
+    const setMsg = err instanceof Error ? err.message : String(err);
+    _safeLog(
+      deps,
+      `[context-hydration] ${deps.reason} setPayload threw — state NOT written: ${setMsg}`,
+    );
+    _safeLogDecision(deps, {
+      project: "_master",
+      action: "context_hydration_failed",
+      rationale: `${deps.reason}: setPayload threw: ${setMsg}`,
+    });
+    _safeBroadcast(deps, "context_hydration_failed", {
+      ts: _safeNowIso(deps),
+      reason: deps.reason,
+      error: `setPayload threw: ${setMsg}`,
+    });
+    return "logged_failure";
+  }
+
+  // State write succeeded — anything below is observational. log +
+  // broadcast failures don't downgrade the action; "applied" reflects
+  // that the payload IS committed.
+  _safeLog(
+    deps,
     `[context-hydration] ${deps.reason} ready — ${deps.result.sources.memori_curated_count} curated + ${deps.result.sources.cognee_hits_count} graph hits + tier1=${deps.result.sources.tier1_chars}b; will prepend on next prompt`,
   );
-  try {
-    deps.broadcast("context_hydration_ready", {
-      ts: deps.now().toISOString(),
-      reason: deps.reason,
-      sources: deps.result.sources,
-    });
-  } catch {
-    /* never block on broadcast */
-  }
+  _safeBroadcast(deps, "context_hydration_ready", {
+    ts: _safeNowIso(deps),
+    reason: deps.reason,
+    sources: deps.result.sources,
+  });
   return "applied";
 }
 
