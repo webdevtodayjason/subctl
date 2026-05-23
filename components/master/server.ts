@@ -4259,12 +4259,16 @@ async function main() {
               ? "https://openrouter.ai/api/v1"
               : reviewerCfg.provider === "xai-oauth"
                 ? getXaiOauthBaseUrl()
-                : reviewerCfg.provider === "openai"
-                  ? "https://api.openai.com/v1"
-                  : "");
+                : "");
+        // CodeRabbit pass-6: openai removed from the fallback list — though
+        // api.openai.com/v1 IS OpenAI-compat, getApiKeyForProvider("openai")
+        // doesn't resolve an OPENAI_API_KEY in this flow (only lmstudio and
+        // omlx have explicit secret-resolution paths). Adding it would send
+        // unauthenticated requests. Operator can use openrouter for cloud
+        // reviewer or any local backend.
         const baseUrl = resolvedHost.replace(/\/v1\/?$/, "");
         if (!baseUrl) {
-          const openaiCompat = "lmstudio, ollama, omlx, openai, openrouter, xai-oauth, mlx, vllm";
+          const openaiCompat = "lmstudio, ollama, omlx, openrouter, xai-oauth, mlx, vllm";
           return Response.json(
             {
               ok: false,

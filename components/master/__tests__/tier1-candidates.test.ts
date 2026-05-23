@@ -97,7 +97,7 @@ describe("listPending", () => {
     const c = appendCandidate(baseInput({ memory: "fact C" }));
 
     // Reject B; approve C with a noop writeTier1.
-    const writes: Array<{ text: string; kind: string }> = [];
+    const writes: Array<{ text: string; kind: string; source_type_override?: string }> = [];
     _setDepsForTesting({ writeTier1: makeWriteTier1(writes) });
     rejectCandidate(b.id);
     await approveCandidate(c.id);
@@ -113,7 +113,7 @@ describe("listPending", () => {
 
 describe("approveCandidate", () => {
   test("invokes writeTier1 with memory + kind and appends an approved record", async () => {
-    const writes: Array<{ text: string; kind: string }> = [];
+    const writes: Array<{ text: string; kind: string; source_type_override?: string }> = [];
     _setDepsForTesting({ writeTier1: makeWriteTier1(writes) });
 
     const c = appendCandidate(baseInput({ memory: "operator likes tmux", kind: "preference" }));
@@ -172,7 +172,7 @@ describe("approveCandidate", () => {
   });
 
   test("does NOT approve when writeTier1 returns ok:false (leaves pending)", async () => {
-    const writes: Array<{ text: string; kind: string }> = [];
+    const writes: Array<{ text: string; kind: string; source_type_override?: string }> = [];
     _setDepsForTesting({
       writeTier1: makeWriteTier1(writes, () => ({ ok: false, error: "char budget" })),
     });
@@ -223,7 +223,7 @@ describe("rejectCandidate", () => {
 
 describe("getCandidate", () => {
   test("returns the latest resolution for an id", async () => {
-    const writes: Array<{ text: string; kind: string }> = [];
+    const writes: Array<{ text: string; kind: string; source_type_override?: string }> = [];
     _setDepsForTesting({ writeTier1: makeWriteTier1(writes) });
 
     const c = appendCandidate(baseInput());
