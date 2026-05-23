@@ -138,6 +138,8 @@ import {
 } from "./compact-policy";
 import { loadSecret, resolveSecret } from "./secrets";
 import { registerMcpTools, startMcpServer } from "./mcp";
+// v2.9.1 — Provider Model Catalog Phase 3: aggregator routing
+import { fetchUpstreamCatalog } from "./aggregator-clients";
 // ── v2.7.31 secret backends ──
 import {
   describeBackendChain,
@@ -5226,6 +5228,53 @@ async function main() {
           active: result.preset,
           note: "takes effect on the next prompt — no restart needed",
         });
+      }
+
+      // ── Provider Model Catalog Phase 3 — aggregator routing ─────────────
+      //
+      // GET  /providers/<id>/upstream-catalog          — cached if fresh
+      // POST /providers/<id>/upstream-catalog/refresh  — force live fetch
+      //
+      // Caches into the existing per-provider catalog file
+      // (~/.config/subctl/catalogs/<id>.json) in the same on-disk shape
+      // that dashboard/lib/catalogs.ts reads, so the existing
+      // /api/catalogs/<id> reader + the per-model enable-toggle endpoint
+      // continue to work against aggregator data.
+      //
+      // Proxied transparently by the dashboard /api/master/* catch-all.
+      // Browser URL ends up as /api/master/providers/<id>/upstream-catalog.
+      if (
+        url.pathname.startsWith("/providers/") &&
+        url.pathname.endsWith("/upstream-catalog") &&
+        req.method === "GET"
+      ) {
+        const provider = url.pathname.slice("/providers/".length, url.pathname.length - "/upstream-catalog".length);
+        if (!provider || provider.includes("/")) {
+          return Response.json(
+            { ok: false, error: "expected /providers/<id>/upstream-catalog" },
+            { status: 400 },
+          );
+        }
+        const result = await fetchUpstreamCatalog(provider, { forceLive: false });
+        return Response.json(result, { status: result.ok ? 200 : 502 });
+      }
+      if (
+        url.pathname.startsWith("/providers/") &&
+        url.pathname.endsWith("/upstream-catalog/refresh") &&
+        req.method === "POST"
+      ) {
+        const provider = url.pathname.slice(
+          "/providers/".length,
+          url.pathname.length - "/upstream-catalog/refresh".length,
+        );
+        if (!provider || provider.includes("/")) {
+          return Response.json(
+            { ok: false, error: "expected /providers/<id>/upstream-catalog/refresh" },
+            { status: 400 },
+          );
+        }
+        const result = await fetchUpstreamCatalog(provider, { forceLive: true });
+        return Response.json(result, { status: result.ok ? 200 : 502 });
       }
 
       if (url.pathname === "/chat" && req.method === "POST") {

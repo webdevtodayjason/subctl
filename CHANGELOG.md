@@ -1,3 +1,30 @@
+## [2.9.1] — 2026-05-23
+
+### `feat(providers): Phase 3 — aggregator routing (OpenRouter, Bedrock, Vercel, Cloudflare)`
+
+The matrix-completion piece for Provider Model Catalog. Phase 1 (default_model) shipped in v2.8.x; Phase 2 (catalog enable/disable + chat dropdown enumeration) shipped in v2.8.17. Phase 3 adds first-class per-model UX for the aggregator providers — OpenRouter / AWS Bedrock / Vercel AI Gateway / Cloudflare AI Gateway.
+
+**New aggregator-clients module.** `components/master/aggregator-clients.ts` exports one client per aggregator. Each hits the upstream catalog endpoint (e.g., `https://openrouter.ai/api/v1/models`) and normalizes the response into a unified `UpstreamModel` shape with pricing, context length, and capability flags (`supports_tools`, `supports_vision`, `supports_reasoning`, `deprecated`).
+
+**New endpoints**:
+- `GET /providers/<id>/upstream-catalog` — returns cached if fresh (24h TTL) else live-fetches
+- `POST /providers/<id>/upstream-catalog/refresh` — explicit re-fetch, bypasses cache
+
+Both proxied transparently by the existing dashboard `/api/master/*` catch-all; browser URL becomes `/api/master/providers/<id>/upstream-catalog`. Results cache into the existing per-provider catalog file (`~/.config/subctl/catalogs/<id>.json`) in a shape that is a superset of `CatalogFile` — extra optional capability fields on `models[]` ride through `JSON.parse`/`stringify` and through the existing `setModelEnabled` spread without modification to `dashboard/lib/catalogs.ts`.
+
+**Providers-tab UI gains** "Browse Upstream Catalog" button per aggregator card. Click → modal with filters (search id/name, min ctx, max $/M in, max $/M out, capability checkboxes) + a per-model enable checkbox that flows through the existing `POST /api/catalogs/<provider>/models/<id>/enabled` endpoint from v2.8.17. Capability badges (🔧 tools, 👁 vision, 🧠 reasoning, ⚠ deprecated) render inline.
+
+**`is_aggregator` flag** on `/api/providers` entries. Hard-coded for the 4 known aggregators (openrouter, amazon-bedrock, vercel-ai-gateway, cloudflare-ai-gateway); future aggregators are added by extending the matching `AGGREGATOR_PROVIDER_IDS` sets in `dashboard/server.ts` and `components/master/aggregator-clients.ts`.
+
+**Known limitations:**
+- **Bedrock client is stubbed.** `@aws-sdk/client-bedrock` isn't bundled in `components/master/package.json`; pulling it in for catalog enumeration is too heavy for this scope. The stub returns `{ ok: false, error: "...", hint: "..." }` so the UI surfaces a clean message. Tracked for the next minor that already needs the SDK for chat dispatch.
+- **Cloudflare AI Gateway client is stubbed.** AI Gateway is a proxy layer; the actual model list lives under Workers AI at `/accounts/{account_id}/ai/models/search` which requires a `cloudflare_account_id` not yet in the secrets schema.
+- **Existing Models-panel "↻ refresh" clobbers Phase 3 capability fields.** `dashboard/lib/catalogs.ts:refreshOpenRouter()` (v2.9.0) rebuilds `models[]` from scratch and drops the `supports_*` flags. After a Models-panel refresh, capability data is lost until the next Browse Upstream Catalog modal re-fetch. Fixing it requires modifying `dashboard/lib/catalogs.ts` which is out of scope for this commit.
+
+**Tests.** `components/master/__tests__/aggregator-clients.test.ts` adds 18 cases covering normalization (captured OpenRouter response fixture), 401 / network-error / non-401 error paths, cache TTL (fresh returns cached without fetch, stale triggers live, forceLive bypasses), persistence to the existing per-provider catalog file shape, carry-forward of operator `enabled` flags across re-fetches, Bedrock + Cloudflare stub error shapes, and the aggregator registry / dispatcher contract.
+
+---
+
 ## [2.9.0] — 2026-05-23
 
 ### `feat(memory): Tier 1 candidate consolidator — LLM-driven dedup`
