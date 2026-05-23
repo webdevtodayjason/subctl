@@ -162,7 +162,10 @@
     if (opts.stale) {
       const sub = document.createElement("span");
       sub.className = "usage-stale-indicator";
-      sub.textContent = `· stale ${fmtStaleAge(opts.staleAgeMs)}`;
+      // CodeRabbit pass-7: fall back to "· stale" when fmtStaleAge returns
+      // empty/invalid (missing staleAgeMs), avoiding a trailing-space label.
+      const age = fmtStaleAge(opts.staleAgeMs);
+      sub.textContent = age ? `· stale ${age}` : "· stale";
       wrap.appendChild(sub);
     } else if (opts.errorLabel) {
       const sub = document.createElement("span");

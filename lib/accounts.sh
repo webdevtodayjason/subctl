@@ -74,8 +74,11 @@ subctl_accounts_add() {
   shopt -s nocasematch
   if [[ "$alias" =~ ^(sk-|pk-|Bearer[[:space:]]) ]]; then
     shopt -u nocasematch
-    subctl_err "alias \"${alias:0:12}...\" looks like an API key. For API-key providers, use:"
-    subctl_err "  subctl secrets set ${provider}_api_key <your-key>"
+    # CodeRabbit pass-7: generic guidance — $provider may be oauth-only
+    # (claude), where ${provider}_api_key wouldn't be the right secret.
+    subctl_err "alias \"${alias:0:12}...\" looks like an API key."
+    subctl_err "For API-key providers (OpenRouter, Groq, Cerebras, …), use:"
+    subctl_err "  subctl secrets set <provider>_api_key <your-key>"
     return 1
   fi
   shopt -u nocasematch

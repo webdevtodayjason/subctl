@@ -685,7 +685,13 @@ function subctlUsageFetchAll(now: number, opts?: { forceRefresh?: boolean }): Ac
       // hard failure — leave parsed=[], DON'T touch backoff
     } else {
       parsed = JSON.parse(r.stdout || "[]") as AccountUsageResult[];
-      fetchSucceeded = true;
+      // CodeRabbit pass-7: an empty array isn't a real success — it means
+      // the bash CLI silently returned nothing (corrupted accounts.conf,
+      // internal bash bug). Only treat non-empty as success so backoff
+      // state isn't wrongly cleared.
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        fetchSucceeded = true;
+      }
     }
   } catch {
     // parse threw — leave parsed=[], DON'T touch backoff
