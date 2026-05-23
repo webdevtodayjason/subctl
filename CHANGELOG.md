@@ -14,7 +14,9 @@ Bundle of two operator-validated bugs caught on M3 + local dashboards today.
 - **429 backoff:** the poll loop now backs off exponentially (5min → 10 → 20 → 30 cap) when responses come back 429, resetting on any success. Stops the dashboard from hammering Anthropic's rate-limited endpoint every 5 min.
 - **Error surfacing:** per-account `usage_error` is exposed in `/api/state` so the dashboard can show the actual cause (429 rate-limited, no credentials, etc.) in the table cell.
 
-**Known limitation (deferred to v2.8.19):** the 429 backoff state is currently global across all aliases — if one alias 429s, the next poll skips ALL of them. Real-world impact is minor because Anthropic typically throttles per-IP not per-token, but per-alias backoff state will land in v2.8.19 so a healthy alias keeps polling while a 429'd alias backs off independently.
+**Known limitations (deferred to v2.8.19):**
+- 429 backoff state is global across aliases — if one alias 429s, the next poll skips ALL of them. Anthropic typically throttles per-IP, so real-world impact is minor. v2.8.19 will land per-alias backoff so a healthy alias keeps polling while a 429'd alias backs off independently.
+- `_usageLastGood` cache keys by alias only. If an operator removes an alias and re-adds it with a different `config_dir`, the cached data from the deleted account could surface for one polling cycle. v2.8.19 will key the cache by `alias + config_dir` and verify the composite against current accounts.conf before serving stale data.
 
 **Manual repro for A1 (no `lib/` unit-test framework today):**
 ```bash
