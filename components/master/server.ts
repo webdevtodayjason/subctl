@@ -4196,8 +4196,18 @@ async function main() {
         // memory-kernel ticker does — prefer providers.models.reviewer,
         // fall back to the active supervisorCfg. Re-resolve at request
         // time so profile swaps and provider edits land without restart.
-        const reviewerCfgRaw = providers.models.reviewer ?? supervisorCfg;
-        const reviewerCfg = resolveRoleCfg("reviewer", reviewerCfgRaw, providers);
+        // CodeRabbit pass-3: defensively fall back to supervisorCfg if the
+        // reviewer slot is present-but-unresolvable (explicitly false, empty
+        // object, missing required keys, etc.). The memory-kernel reviewer
+        // ticker uses the same defensive pattern.
+        let reviewerCfg = supervisorCfg;
+        if (providers.models.reviewer) {
+          try {
+            reviewerCfg = resolveRoleCfg("reviewer", providers.models.reviewer, providers);
+          } catch {
+            reviewerCfg = supervisorCfg;
+          }
+        }
         // CodeRabbit pass-1/2: fall back to provider-default base URL when
         // reviewerCfg.host is empty. Mirrors the buildModel fallback chain
         // at server.ts:1078-1088 — local backends (lmstudio/ollama/omlx)
