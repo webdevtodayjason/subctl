@@ -4285,10 +4285,17 @@ async function main() {
             { status: 400 },
           );
         }
+        // CodeRabbit pass-9: snapshot pending list + memory once up-front
+        // so the LLM sees a CONSISTENT view across the empty-check,
+        // prompt-build, char-budget-math, and post-LLM validation steps.
+        // Without this, a candidate landing mid-consolidate could show up
+        // in one read and disappear in the next.
+        const pendingSnapshot = listTier1Pending();
+        const memorySnapshot = readTier1MemoryFile();
         const consolidatorDeps: Tier1ConsolidatorDeps = {
-          listPending: () => listTier1Pending(),
-          readMemoryContent: () => readTier1MemoryFile().content,
-          charBudget: () => readTier1MemoryFile().char_limit,
+          listPending: () => pendingSnapshot,
+          readMemoryContent: () => memorySnapshot.content,
+          charBudget: () => memorySnapshot.char_limit,
           configuredSupervisor: () => ({
             provider: reviewerCfg.provider,
             model: reviewerCfg.model,

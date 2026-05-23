@@ -43,7 +43,15 @@ function makeWriteTier1(
   override?: () => Tier1WriteResult,
 ): WriteTier1Fn {
   return async (text, kind, opts) => {
-    record.push({ text, kind, source_type_override: opts?.source_type_override });
+    // CodeRabbit pass-9: only include source_type_override when it's
+    // actually set so strict toEqual() against {text, kind} keeps passing
+    // for callers that don't pass the override. The optional property
+    // was being pushed as `undefined`, breaking those existing assertions.
+    const entry: { text: string; kind: string; source_type_override?: string } = { text, kind };
+    if (opts?.source_type_override !== undefined) {
+      entry.source_type_override = opts.source_type_override;
+    }
+    record.push(entry);
     return override ? override() : { ok: true, appended_index: record.length - 1 };
   };
 }
