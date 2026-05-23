@@ -322,6 +322,17 @@ export async function mount({ root: _root }) {
         // for every card on initial render.
         const modelsSection = renderModelsPanel(p.id, p.display);
         body.appendChild(modelsSection);
+        // v2.9.1 Phase 3 — Browse Upstream Catalog button for aggregator
+        // providers (OpenRouter, Bedrock, Vercel, Cloudflare). Opens a
+        // modal sourced from /api/master/providers/<id>/upstream-catalog
+        // with capability filters and a per-model enable checkbox that
+        // flows through the existing /api/catalogs/<p>/models/<id>/enabled
+        // endpoint. Non-aggregator providers (anthropic, openai, …) skip
+        // this — their full catalog is enumerated in the Models panel
+        // above and there's no upstream layer to browse.
+        if (p.is_aggregator) {
+          body.appendChild(renderUpstreamBrowseRow(p.id, p.display));
+        }
         card.appendChild(body);
         return card;
       }));
@@ -401,6 +412,259 @@ export async function mount({ root: _root }) {
       }
     });
     return wrap;
+  }
+
+  // v2.9.1 Phase 3 — Browse Upstream Catalog button for aggregator
+  // providers. Returns a div that gets appended below the Models panel
+  // on each aggregator card.
+  function renderUpstreamBrowseRow(providerId, providerDisplay) {
+    const row = document.createElement("div");
+    row.className = "provider-card-upstream";
+    row.style.cssText = "margin-top:8px;padding-top:8px;border-top:1px dashed var(--border,#333);display:flex;align-items:center;gap:8px;font-size:0.85em";
+    const label = document.createElement("span");
+    label.className = "dim";
+    label.textContent = `${providerDisplay} routes through an upstream catalog (~30 providers under namespaced ids)`;
+    const browseBtn = document.createElement("button");
+    browseBtn.type = "button";
+    browseBtn.textContent = "Browse Upstream Catalog";
+    browseBtn.style.cssText = "margin-left:auto;font-size:0.9em;padding:4px 12px;cursor:pointer";
+    browseBtn.addEventListener("click", () => openUpstreamCatalogModal(providerId, providerDisplay));
+    row.appendChild(label);
+    row.appendChild(browseBtn);
+    return row;
+  }
+
+  // v2.9.1 Phase 3 — Upstream Catalog modal. Lists every model the
+  // aggregator's catalog endpoint returns, with cost / context /
+  // capability columns plus filter controls. Per-row checkbox toggles
+  // enable/disable via the existing /api/catalogs/<p>/models/<id>/enabled
+  // endpoint shipped in v2.8.17.
+  function openUpstreamCatalogModal(providerId, providerDisplay) {
+    const overlay = document.createElement("div");
+    overlay.style.cssText =
+      "position:fixed;inset:0;background:rgba(0,0,0,0.6);" +
+      "display:flex;align-items:center;justify-content:center;z-index:1000;" +
+      "font-family:inherit";
+    const dialog = document.createElement("div");
+    dialog.style.cssText =
+      "background:var(--bg,#1a1a1a);border:1px solid var(--border,#444);" +
+      "border-radius:8px;padding:20px;max-width:1100px;width:95%;max-height:90vh;" +
+      "color:var(--fg,#ddd);box-shadow:0 10px 40px rgba(0,0,0,0.5);" +
+      "display:flex;flex-direction:column;gap:12px";
+    overlay.appendChild(dialog);
+
+    let allModels = [];   // last fetched UpstreamModel[]
+    let filterState = { q: "", minCtx: 0, maxIn: Infinity, maxOut: Infinity, tools: false, vision: false, reasoning: false };
+
+    function close() {
+      document.removeEventListener("keydown", escListener);
+      overlay.remove();
+    }
+    const escListener = (e) => { if (e.key === "Escape") close(); };
+    document.addEventListener("keydown", escListener);
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+
+    // Header.
+    const header = document.createElement("div");
+    header.style.cssText = "display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--border,#333);padding-bottom:8px";
+    header.innerHTML =
+      `<h2 style="margin:0;font-size:1.1em;flex:1">Upstream Catalog · ${escapeText(providerDisplay)}</h2>` +
+      `<span class="upstream-source dim small"></span>` +
+      `<button type="button" class="upstream-refresh" style="font-size:0.85em;padding:4px 10px">↻ refresh from upstream</button>` +
+      `<button type="button" class="upstream-close" style="font-size:0.85em;padding:4px 10px">close</button>`;
+    dialog.appendChild(header);
+    header.querySelector(".upstream-close").addEventListener("click", close);
+
+    // Filter bar.
+    const filters = document.createElement("div");
+    filters.style.cssText = "display:flex;flex-wrap:wrap;gap:12px;align-items:center;font-size:0.85em;padding-bottom:4px";
+    filters.innerHTML =
+      `<input type="text" class="f-q" placeholder="search id or name" style="padding:4px 8px;min-width:200px;flex:1" />` +
+      `<label>min ctx (k): <input type="number" class="f-ctx" min="0" step="8" value="0" style="width:70px;padding:2px 6px" /></label>` +
+      `<label>max $in/M: <input type="number" class="f-in" min="0" step="0.5" placeholder="∞" style="width:80px;padding:2px 6px" /></label>` +
+      `<label>max $out/M: <input type="number" class="f-out" min="0" step="0.5" placeholder="∞" style="width:80px;padding:2px 6px" /></label>` +
+      `<label><input type="checkbox" class="f-tools" /> tools</label>` +
+      `<label><input type="checkbox" class="f-vision" /> vision</label>` +
+      `<label><input type="checkbox" class="f-reasoning" /> reasoning</label>` +
+      `<span class="dim f-counts" style="margin-left:auto"></span>`;
+    dialog.appendChild(filters);
+
+    // Result body (scrollable).
+    const body = document.createElement("div");
+    body.style.cssText = "overflow-y:auto;flex:1;min-height:200px";
+    body.innerHTML = `<div class="dim" style="padding:24px;text-align:center">loading upstream catalog…</div>`;
+    dialog.appendChild(body);
+
+    document.body.appendChild(overlay);
+
+    function applyFilters() {
+      filterState = {
+        q: (filters.querySelector(".f-q").value || "").trim().toLowerCase(),
+        minCtx: Number(filters.querySelector(".f-ctx").value) * 1000 || 0,
+        maxIn: Number(filters.querySelector(".f-in").value) || Infinity,
+        maxOut: Number(filters.querySelector(".f-out").value) || Infinity,
+        tools: filters.querySelector(".f-tools").checked,
+        vision: filters.querySelector(".f-vision").checked,
+        reasoning: filters.querySelector(".f-reasoning").checked,
+      };
+      renderRows();
+    }
+    for (const sel of [".f-q", ".f-ctx", ".f-in", ".f-out"]) {
+      filters.querySelector(sel).addEventListener("input", applyFilters);
+    }
+    for (const sel of [".f-tools", ".f-vision", ".f-reasoning"]) {
+      filters.querySelector(sel).addEventListener("change", applyFilters);
+    }
+
+    async function loadCatalog(forceLive) {
+      body.innerHTML = `<div class="dim" style="padding:24px;text-align:center">${forceLive ? "fetching from upstream…" : "loading…"}</div>`;
+      const sourceLabel = header.querySelector(".upstream-source");
+      try {
+        const url = forceLive
+          ? `/api/master/providers/${encodeURIComponent(providerId)}/upstream-catalog/refresh`
+          : `/api/master/providers/${encodeURIComponent(providerId)}/upstream-catalog`;
+        const r = await fetch(url, { method: forceLive ? "POST" : "GET" });
+        const j = await r.json();
+        if (!j.ok) {
+          body.innerHTML =
+            `<div style="padding:24px">` +
+              `<div style="color:#c66;margin-bottom:8px">✗ ${escapeText(j.error || "unknown error")}</div>` +
+              (j.hint ? `<div class="dim small">${escapeText(j.hint)}</div>` : "") +
+            `</div>`;
+          sourceLabel.textContent = "";
+          return;
+        }
+        allModels = j.models || [];
+        sourceLabel.textContent = `${j.source} · ${relativeTime(j.fetched_at)} · ${allModels.length} models`;
+        // Also fetch the existing catalog so we know which are currently enabled.
+        try {
+          const catRes = await fetch(`/api/catalogs/${encodeURIComponent(providerId)}`);
+          const catJson = await catRes.json();
+          if (catJson.ok && Array.isArray(catJson.catalog?.models)) {
+            const enabledSet = new Set(
+              catJson.catalog.models.filter((m) => m.enabled !== false).map((m) => m.id),
+            );
+            for (const m of allModels) m._enabled = enabledSet.has(m.id);
+          }
+        } catch { /* enabled state lookup is best-effort */ }
+        renderRows();
+      } catch (err) {
+        body.innerHTML = `<div style="color:#c66;padding:24px">fetch error: ${escapeText(String(err))}</div>`;
+      }
+    }
+
+    function renderRows() {
+      const filtered = allModels.filter((m) => {
+        if (filterState.q) {
+          const hay = ((m.id || "") + " " + (m.name || "")).toLowerCase();
+          if (!hay.includes(filterState.q)) return false;
+        }
+        if (filterState.minCtx && (m.context_length || 0) < filterState.minCtx) return false;
+        if (filterState.maxIn !== Infinity && (m.pricing_per_1m_input ?? Infinity) > filterState.maxIn) return false;
+        if (filterState.maxOut !== Infinity && (m.pricing_per_1m_output ?? Infinity) > filterState.maxOut) return false;
+        if (filterState.tools && !m.supports_tools) return false;
+        if (filterState.vision && !m.supports_vision) return false;
+        if (filterState.reasoning && !m.supports_reasoning) return false;
+        return true;
+      });
+      const enabledCount = filtered.filter((m) => m._enabled).length;
+      filters.querySelector(".f-counts").textContent = `${enabledCount}/${filtered.length} enabled · ${allModels.length} total`;
+
+      if (!filtered.length) {
+        body.innerHTML = `<div class="dim" style="padding:24px;text-align:center">no models match the current filters</div>`;
+        return;
+      }
+      const parts = [];
+      parts.push(`<table style="width:100%;font-size:0.85em;border-collapse:collapse">`);
+      parts.push(`<thead><tr style="text-align:left;border-bottom:1px solid var(--border,#333);position:sticky;top:0;background:var(--bg,#1a1a1a)">`);
+      parts.push(`<th style="padding:6px 4px 6px 0;width:32px" title="enabled — appears in chat dropdown">on</th>`);
+      parts.push(`<th style="padding:6px 6px">id</th>`);
+      parts.push(`<th style="padding:6px 6px">name</th>`);
+      parts.push(`<th style="padding:6px 6px;text-align:right">ctx</th>`);
+      parts.push(`<th style="padding:6px 6px;text-align:right">$in/M</th>`);
+      parts.push(`<th style="padding:6px 6px;text-align:right">$out/M</th>`);
+      parts.push(`<th style="padding:6px 0 6px 6px">caps</th>`);
+      parts.push(`</tr></thead><tbody>`);
+      for (const m of filtered) {
+        const ctx = m.context_length ? (m.context_length / 1000).toFixed(0) + "k" : "—";
+        const inC = m.pricing_per_1m_input != null ? "$" + m.pricing_per_1m_input.toFixed(2) : "—";
+        const outC = m.pricing_per_1m_output != null ? "$" + m.pricing_per_1m_output.toFixed(2) : "—";
+        const caps = [];
+        if (m.supports_tools) caps.push(`<span title="tools" style="padding:1px 5px;background:rgba(120,180,255,0.2);border-radius:3px">🔧</span>`);
+        if (m.supports_vision) caps.push(`<span title="vision" style="padding:1px 5px;background:rgba(120,255,180,0.2);border-radius:3px">👁</span>`);
+        if (m.supports_reasoning) caps.push(`<span title="reasoning" style="padding:1px 5px;background:rgba(255,200,120,0.2);border-radius:3px">🧠</span>`);
+        if (m.deprecated) caps.push(`<span title="deprecated" style="padding:1px 5px;background:rgba(255,120,120,0.2);border-radius:3px">⚠</span>`);
+        parts.push(`<tr>`);
+        parts.push(`<td style="padding:3px 4px 3px 0;text-align:center"><input type="checkbox" class="upstream-toggle" data-model="${escapeText(m.id)}" ${m._enabled ? "checked" : ""} title="enable for chat dropdown" style="cursor:pointer" /></td>`);
+        parts.push(`<td style="padding:3px 6px;font-family:monospace">${escapeText(m.id)}</td>`);
+        parts.push(`<td style="padding:3px 6px">${escapeText(m.name || "")}</td>`);
+        parts.push(`<td style="padding:3px 6px;text-align:right">${ctx}</td>`);
+        parts.push(`<td style="padding:3px 6px;text-align:right">${inC}</td>`);
+        parts.push(`<td style="padding:3px 6px;text-align:right">${outC}</td>`);
+        parts.push(`<td style="padding:3px 0 3px 6px">${caps.join(" ")}</td>`);
+        parts.push(`</tr>`);
+      }
+      parts.push(`</tbody></table>`);
+      body.innerHTML = parts.join("");
+      // Wire enable-toggle checkboxes.
+      for (const cb of body.querySelectorAll(".upstream-toggle")) {
+        cb.addEventListener("change", async (e) => {
+          const target = e.currentTarget;
+          const modelId = target.getAttribute("data-model");
+          const enabled = target.checked;
+          target.disabled = true;
+          try {
+            const res = await fetch(
+              `/api/catalogs/${encodeURIComponent(providerId)}/models/${encodeURIComponent(modelId)}/enabled`,
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ enabled }),
+              },
+            );
+            const j = await res.json();
+            if (!j.ok) {
+              alert(`Toggle failed: ${j.error || "unknown"}`);
+              target.checked = !enabled;
+            } else {
+              const m = allModels.find((x) => x.id === modelId);
+              if (m) m._enabled = enabled;
+              // Update the counter without a full re-render.
+              const cnt = filters.querySelector(".f-counts");
+              if (cnt) {
+                const enabledCount = allModels.filter((x) => x._enabled && shouldShowInFilter(x)).length;
+                const totalFiltered = allModels.filter(shouldShowInFilter).length;
+                cnt.textContent = `${enabledCount}/${totalFiltered} enabled · ${allModels.length} total`;
+              }
+            }
+          } catch (err) {
+            alert(`Toggle error: ${String(err)}`);
+            target.checked = !enabled;
+          } finally {
+            target.disabled = false;
+          }
+        });
+      }
+    }
+
+    // Filter predicate, broken out so the post-toggle counter update can
+    // reuse the same logic without re-rendering everything.
+    function shouldShowInFilter(m) {
+      if (filterState.q) {
+        const hay = ((m.id || "") + " " + (m.name || "")).toLowerCase();
+        if (!hay.includes(filterState.q)) return false;
+      }
+      if (filterState.minCtx && (m.context_length || 0) < filterState.minCtx) return false;
+      if (filterState.maxIn !== Infinity && (m.pricing_per_1m_input ?? Infinity) > filterState.maxIn) return false;
+      if (filterState.maxOut !== Infinity && (m.pricing_per_1m_output ?? Infinity) > filterState.maxOut) return false;
+      if (filterState.tools && !m.supports_tools) return false;
+      if (filterState.vision && !m.supports_vision) return false;
+      if (filterState.reasoning && !m.supports_reasoning) return false;
+      return true;
+    }
+
+    header.querySelector(".upstream-refresh").addEventListener("click", () => loadCatalog(true));
+    loadCatalog(false);
   }
 
   function renderModelsListError(wrap, msg) {
