@@ -56,7 +56,11 @@ import { systemTools, bindToolRegistry as bindSystemToolRegistry } from "./tools
 import { projectTools } from "./tools/project";
 import { memoryTools } from "./tools/memory";
 import { context7Tools } from "./tools/context7";
-import { tier1MemoryTools, buildMemoryBlock } from "./tools/tier1-memory";
+import {
+  tier1MemoryTools,
+  buildMemoryBlock,
+  readMemory as readTier1MemoryFile,
+} from "./tools/tier1-memory";
 // ── v2.8.1 chat perf / skill router ──
 import {
   selectSkills as routerSelectSkills,
@@ -220,6 +224,10 @@ import {
   callSupervisor as memoryKernelSupervisorFetcher,
   reviewEvents as memoryKernelReviewEvents,
 } from "./memory-kernel-reviewer";
+import {
+  consolidate as tier1Consolidate,
+  type ConsolidatorDeps as Tier1ConsolidatorDeps,
+} from "./tier1-consolidator";
 import {
   classifyWorkerReply,
   runStaleTeamSweep,
@@ -4068,7 +4076,12 @@ async function main() {
         });
       }
       if (url.pathname === "/memory/tier1/approve" && req.method === "POST") {
-        let body: { candidate_id?: unknown; note?: unknown };
+        let body: {
+          candidate_id?: unknown;
+          note?: unknown;
+          text_override?: unknown;
+          source_type_override?: unknown;
+        };
         try {
           const text = await req.text();
           body = text ? (JSON.parse(text) as typeof body) : {};
@@ -4087,10 +4100,47 @@ async function main() {
           );
         }
         const note = typeof body.note === "string" ? body.note : undefined;
+        // v2.9.0 (Tier 1 Consolidator) — Apply path on the dashboard
+        // modal hands us the operator-edited consolidated text + the
+        // consolidator's chosen highest-trust source_type. Both flow
+        // through tier1-candidates → writeTier1 → memory_remember.
+        const textOverride =
+          typeof body.text_override === "string" && body.text_override.trim().length > 0
+            ? body.text_override.trim()
+            : undefined;
+        const sourceTypeOverride =
+          typeof body.source_type_override === "string" &&
+          body.source_type_override.trim().length > 0
+            ? body.source_type_override.trim()
+            : undefined;
+        // CodeRabbit pass-4: validate source_type_override against the
+        // canonical enum used by memory_remember (tools/tier1-memory.ts).
+        // Reject unknown values with 400 instead of silently letting
+        // garbage flow into the [source:<x>] provenance tag.
+        const allowedSourceTypes = new Set([
+          "operator-asserted",
+          "verified-external",
+          "self-inferred",
+          "agent-reported",
+        ]);
+        if (
+          sourceTypeOverride !== undefined &&
+          !allowedSourceTypes.has(sourceTypeOverride)
+        ) {
+          return Response.json(
+            {
+              ok: false,
+              error: `invalid source_type_override "${sourceTypeOverride}" (allowed: ${[...allowedSourceTypes].join(", ")})`,
+            },
+            { status: 400 },
+          );
+        }
         try {
           const result = await approveTier1Candidate(candidateId, {
             resolved_by: "operator",
             note,
+            text_override: textOverride,
+            source_type_override: sourceTypeOverride,
           });
           return Response.json(result, { status: result.ok ? 200 : 404 });
         } catch (err) {
@@ -4129,6 +4179,163 @@ async function main() {
         } catch (err) {
           return Response.json(
             { ok: false, error: (err as Error).message },
+            { status: 500 },
+          );
+        }
+      }
+
+      // ── /memory/tier1/consolidate — Tier 1 Consolidator (v2.9.0) ─────────
+      //
+      // LLM-driven dedup pass for the pending candidate queue. Reads the
+      // current memory.md + listTier1Pending(), sends to the supervisor
+      // model (via the same wire-format helper the memory-kernel reviewer
+      // uses), returns a structured proposal:
+      //   { ok, proposal[], dropped_candidate_ids[], dropped_reasons{},
+      //     pending_unchanged_candidate_ids[], char_total, char_budget,
+      //     char_current, headroom_after, reviewer_model, llm_raw_response? }
+      //
+      // Operator-in-the-loop required by design — this endpoint NEVER
+      // writes Tier 1. The dashboard modal renders the proposal and the
+      // operator clicks Apply, which then calls the existing approve/reject
+      // endpoints (with text_override on approve).
+      //
+      // Body: { dry_run?: boolean } — when true, the response includes the
+      // raw LLM text for debugging.
+      if (url.pathname === "/memory/tier1/consolidate" && req.method === "POST") {
+        let body: { dry_run?: unknown };
+        try {
+          const text = await req.text();
+          body = text ? (JSON.parse(text) as typeof body) : {};
+        } catch {
+          return Response.json(
+            { ok: false, error: "invalid JSON body" },
+            { status: 400 },
+          );
+        }
+        const dryRun = body.dry_run === true;
+
+        // Wire the supervisor identity + LLM transport the same way the
+        // memory-kernel ticker does — prefer providers.models.reviewer,
+        // fall back to the active supervisorCfg. Re-resolve at request
+        // time so profile swaps and provider edits land without restart.
+        // CodeRabbit pass-3/4: defensively fall back to supervisorCfg if the
+        // reviewer slot is present-but-unresolvable (explicitly false, empty
+        // object, missing required keys, throws). Pass-4 adds structural
+        // validation — a resolveRoleCfg that returns successfully but lacks
+        // provider/model would otherwise sneak through.
+        const isUsableRoleCfg = (
+          cfg: Partial<{ provider: string; model: string }>,
+        ): cfg is { provider: string; model: string } =>
+          typeof cfg?.provider === "string" &&
+          cfg.provider.trim().length > 0 &&
+          typeof cfg?.model === "string" &&
+          cfg.model.trim().length > 0;
+        let reviewerCfg = supervisorCfg;
+        if (providers.models.reviewer) {
+          try {
+            const resolved = resolveRoleCfg("reviewer", providers.models.reviewer, providers);
+            reviewerCfg = isUsableRoleCfg(resolved) ? resolved : supervisorCfg;
+          } catch {
+            reviewerCfg = supervisorCfg;
+          }
+        }
+        // CodeRabbit pass-1/2/5: fall back to provider-default base URL
+        // when reviewerCfg.host is empty. The consolidator does a DIRECT
+        // OpenAI-compat chat-completion HTTP fetch (not via pi-ai), so
+        // only providers whose canonical wire format IS OpenAI-compat
+        // make sense here. Reject non-compat providers (anthropic,
+        // google, mistral, openai-codex which talks to chatgpt.com/backend-api)
+        // early with a clear error instead of falling through to the
+        // generic "host not configured" 500.
+        // CodeRabbit pass-7: trim + treat empty-string as unset.
+        // `??` only catches null/undefined, but reviewerCfg.host = ""
+        // (operator cleared the field) should also trigger the fallback.
+        const normalizedHost =
+          typeof reviewerCfg.host === "string" && reviewerCfg.host.trim().length > 0
+            ? reviewerCfg.host.trim()
+            : undefined;
+        const resolvedHost =
+          normalizedHost
+          ?? (LOCAL_PROVIDERS.has(reviewerCfg.provider)
+            ? ((reviewerCfg.provider === "omlx"
+                || reviewerCfg.provider === "ollama"
+                || reviewerCfg.provider === "lmstudio")
+              ? getLocalBackendAdapter(reviewerCfg.provider as LocalBackendKind).defaultHost
+              : "http://localhost:1234/v1")
+            : reviewerCfg.provider === "openrouter"
+              ? "https://openrouter.ai/api/v1"
+              : reviewerCfg.provider === "xai-oauth"
+                ? getXaiOauthBaseUrl()
+                : "");
+        // CodeRabbit pass-6: openai removed from the fallback list — though
+        // api.openai.com/v1 IS OpenAI-compat, getApiKeyForProvider("openai")
+        // doesn't resolve an OPENAI_API_KEY in this flow (only lmstudio and
+        // omlx have explicit secret-resolution paths). Adding it would send
+        // unauthenticated requests. Operator can use openrouter for cloud
+        // reviewer or any local backend.
+        const baseUrl = resolvedHost.replace(/\/v1\/?$/, "");
+        if (!baseUrl) {
+          const openaiCompat = "lmstudio, ollama, omlx, openrouter, xai-oauth, mlx, vllm";
+          return Response.json(
+            {
+              ok: false,
+              error: `reviewer provider "${reviewerCfg.provider}" isn't OpenAI-compatible for the consolidator. The consolidator does a direct OpenAI chat-completions call — pick a reviewer from: ${openaiCompat}. (Set via providers.json models.reviewer or use the dashboard's chat model picker.)`,
+              reviewer_model: `${reviewerCfg.provider}/${reviewerCfg.model}`,
+            },
+            { status: 400 },
+          );
+        }
+        // CodeRabbit pass-9: snapshot pending list + memory once up-front
+        // so the LLM sees a CONSISTENT view across the empty-check,
+        // prompt-build, char-budget-math, and post-LLM validation steps.
+        // Without this, a candidate landing mid-consolidate could show up
+        // in one read and disappear in the next.
+        const pendingSnapshot = listTier1Pending();
+        const memorySnapshot = readTier1MemoryFile();
+        const consolidatorDeps: Tier1ConsolidatorDeps = {
+          listPending: () => pendingSnapshot,
+          readMemoryContent: () => memorySnapshot.content,
+          charBudget: () => memorySnapshot.char_limit,
+          configuredSupervisor: () => ({
+            provider: reviewerCfg.provider,
+            model: reviewerCfg.model,
+          }),
+          llmFetcher: async (messages, opts) => {
+            const token = getApiKeyForProvider(reviewerCfg.provider);
+            // CodeRabbit pass-8: fail fast when credentials are required
+            // but missing. openrouter and xai-oauth require real tokens;
+            // an undefined here would result in an unauthenticated request
+            // that the upstream rejects with a confusing 401. Surface a
+            // clear configuration error instead.
+            const requiresAuth =
+              reviewerCfg.provider === "openrouter" ||
+              reviewerCfg.provider === "xai-oauth";
+            if (requiresAuth && (token === undefined || token === "not-needed")) {
+              throw new Error(
+                `missing API key for reviewer provider "${reviewerCfg.provider}". ` +
+                  `Set ${reviewerCfg.provider === "openrouter" ? "openrouter_api_key" : "xai_oauth_*"} ` +
+                  `in ~/.config/subctl/secrets.json or via the dashboard Secrets panel.`,
+              );
+            }
+            return memoryKernelSupervisorFetcher(messages, {
+              ...opts,
+              baseUrl,
+              authToken: token === "not-needed" ? undefined : token,
+            });
+          },
+        };
+        try {
+          const result = await tier1Consolidate({ dry_run: dryRun }, consolidatorDeps);
+          // ok:false carries reviewer_model so the dashboard can still
+          // surface which supervisor was attempted.
+          return Response.json(result, { status: result.ok ? 200 : 500 });
+        } catch (err) {
+          return Response.json(
+            {
+              ok: false,
+              error: `consolidate threw: ${(err as Error).message}`,
+              reviewer_model: `${reviewerCfg.provider}/${reviewerCfg.model}`,
+            },
             { status: 500 },
           );
         }

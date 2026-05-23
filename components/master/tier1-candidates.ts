@@ -71,6 +71,25 @@ export interface ResolveOpts {
   /** Defaults to "operator" — the master tool layer overrides for Evy. */
   resolved_by?: Tier1CandidateResolver;
   note?: string;
+  /**
+   * v2.9.0 (Tier 1 Consolidator) — when set, the Tier 1 write uses this
+   * text instead of `candidate.memory`. The consolidator merges N
+   * candidates into a new sentence that differs from any individual
+   * candidate's text; passing the merged text here lets approve still
+   * fire from a "primary" candidate row while the override is what lands
+   * in memory.md. Empty/whitespace strings are ignored (back-compat).
+   */
+  text_override?: string;
+  /**
+   * v2.9.0 (Tier 1 Consolidator) — when set, threaded through to
+   * writeTier1 so the `[source:<type>]` provenance tag in memory.md
+   * reflects the consolidator's chosen highest-trust source amongst the
+   * merged candidates. Must match the source_type enum honored by
+   * memory_remember (operator-asserted | verified-external |
+   * self-inferred | agent-reported). When unset the wired closure picks
+   * its default (currently operator-asserted).
+   */
+  source_type_override?: string;
 }
 
 export interface Tier1WriteResult {
@@ -79,9 +98,19 @@ export interface Tier1WriteResult {
   [k: string]: unknown;
 }
 
+export interface WriteTier1Opts {
+  /**
+   * v2.9.0 — override the source_type tag emitted in memory.md. Honored
+   * by the closure in tools/tier1-memory.ts; falls back to the closure's
+   * default (currently "operator-asserted") when unset.
+   */
+  source_type_override?: string;
+}
+
 export type WriteTier1Fn = (
   text: string,
   kind: string,
+  opts?: WriteTier1Opts,
 ) => Promise<Tier1WriteResult>;
 
 export interface ApproveResult {
@@ -247,9 +276,25 @@ export async function approveCandidate(
       candidate: existing,
     };
   }
+  // v2.9.0 — consolidator may merge N candidates into a new sentence
+  // that differs from any individual `candidate.memory`. When text_override
+  // is supplied, that's what lands in memory.md; the candidate row stays
+  // the primary record. Empty/whitespace overrides are ignored (back-compat).
+  const overrideText =
+    typeof opts.text_override === "string" && opts.text_override.trim().length > 0
+      ? opts.text_override.trim()
+      : null;
+  const textToWrite = overrideText ?? existing.memory;
+  const writeOpts: WriteTier1Opts = {};
+  if (
+    typeof opts.source_type_override === "string" &&
+    opts.source_type_override.trim().length > 0
+  ) {
+    writeOpts.source_type_override = opts.source_type_override.trim();
+  }
   let tier1Result: Tier1WriteResult;
   try {
-    tier1Result = await deps.writeTier1(existing.memory, existing.kind);
+    tier1Result = await deps.writeTier1(textToWrite, existing.kind, writeOpts);
   } catch (err) {
     return {
       ok: false,

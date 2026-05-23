@@ -24,8 +24,9 @@
 //   POST   /api/master/memory/kernel/pause        — pause auto-cycle
 //   POST   /api/master/memory/kernel/resume       — resume auto-cycle
 //   GET    /api/master/memory/tier1/pending       — Tier 1 candidate queue
-//   POST   /api/master/memory/tier1/approve       — approve candidate
+//   POST   /api/master/memory/tier1/approve       — approve candidate (v2.9.0: text_override?, source_type_override?)
 //   POST   /api/master/memory/tier1/reject        — reject candidate
+//   POST   /api/master/memory/tier1/consolidate   — v2.9.0 LLM-driven dedup pass
 //   POST   /api/master/memory/backfill/evy-to-memori
 //   POST   /api/master/memory/backfill/claude-mem-to-cognee
 //   POST   /api/master/memory/backfill/obsidian-to-cognee
@@ -59,6 +60,9 @@ let mainPollTimer = null;
 let kernelPollTimer = null;
 let candidatePollTimer = null;
 let healthPollTimer = null;
+// v2.9.0 — Tier 1 Consolidator modal handle. Stashed at module scope so
+// unmount() can rip it down if the operator switches tabs mid-review.
+let consolidatorModalNode = null;
 
 // Persisted across mounts so the Cognify panel can show "last run" stats
 // without a master-side cache. /api/cognee/health doesn't expose
@@ -487,10 +491,374 @@ export async function mount({ root: _root }) {
            <span class="mem-section-meta" id="mem-candidates-meta">checking…</span>
          </summary>
          <div class="mem-section-body">
-           <p class="mem-section-doc">Memories the reviewer proposed for promotion into <code>memory.md</code>. Approve to write through the char-budget guardrails; reject to dismiss.</p>
+           <p class="mem-section-doc">Memories the reviewer proposed for promotion into <code>memory.md</code>. Approve to write through the char-budget guardrails; reject to dismiss. <strong>Consolidate (LLM)</strong> dedupes the queue against existing memory.md in one shot — operator reviews the merged proposal before Apply.</p>
+           <div class="mem-candidates-toolbar">
+             <button type="button" class="secondary-btn" id="mem-consolidate-btn" title="LLM-driven dedup pass — review proposal before Apply">⚗ Consolidate (LLM)</button>
+             <span class="memory-card-result" id="mem-consolidate-status"></span>
+           </div>
            <div id="mem-candidates-list" class="mem-candidates-list">loading…</div>
          </div>
        </details>`;
+    const btn = $("mem-consolidate-btn");
+    if (btn) btn.addEventListener("click", openConsolidatorModal);
+  }
+
+  // ─── v2.9.0 Tier 1 Consolidator modal ──────────────────────────────
+  //
+  // Self-contained: builds and tears down its own DOM, injects scoped
+  // styles once, and stashes the node in consolidatorModalNode so
+  // unmount() can rip it down if the operator leaves the tab mid-review.
+  //
+  // Flow:
+  //   1. POST /api/master/memory/tier1/consolidate, render proposal
+  //   2. Operator edits each proposed text inline + reviews dropped list
+  //   3. Apply → for each proposal: POST /memory/tier1/approve with
+  //      text_override + source_type_override (note records the merge),
+  //      then POST /memory/tier1/reject for each merged_from id (note
+  //      records what it merged into), then for each dropped_candidate_id
+  //      POST /memory/tier1/reject with dropped_reasons[id] as note.
+  //   4. Refresh the panel + close modal.
+
+  function ensureConsolidatorStyles() {
+    if (document.getElementById("mem-consolidator-styles")) return;
+    const style = document.createElement("style");
+    style.id = "mem-consolidator-styles";
+    style.textContent = [
+      ".mem-candidates-toolbar { display: flex; align-items: center; gap: 12px; margin: 8px 0 12px; }",
+      ".mem-modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 9000; display: flex; align-items: center; justify-content: center; }",
+      ".mem-modal { background: var(--bg, #1a1a1a); color: var(--fg, #eee); border: 1px solid var(--border, #333); border-radius: 8px; width: min(960px, 96vw); max-height: 92vh; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,0.5); }",
+      ".mem-modal-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--border, #333); }",
+      ".mem-modal-head h2 { margin: 0; font-size: 16px; font-weight: 600; }",
+      ".mem-modal-body { padding: 14px 18px; overflow-y: auto; }",
+      ".mem-modal-foot { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 12px 18px; border-top: 1px solid var(--border, #333); }",
+      ".mem-budget-meter { margin: 8px 0 14px; }",
+      ".mem-budget-bar { position: relative; height: 18px; background: rgba(255,255,255,0.06); border-radius: 4px; overflow: hidden; }",
+      ".mem-budget-fill { position: absolute; inset: 0 auto 0 0; transition: width 200ms ease, background-color 200ms ease; }",
+      ".mem-budget-fill.ok { background: #2c7a3e; }",
+      ".mem-budget-fill.warn { background: #b07d1a; }",
+      ".mem-budget-fill.crit { background: #b03a3a; }",
+      ".mem-budget-label { font-size: 12px; opacity: 0.8; margin-top: 4px; display: flex; gap: 12px; }",
+      ".mem-proposal-entry { border: 1px solid var(--border, #333); border-radius: 6px; padding: 10px 12px; margin-bottom: 10px; }",
+      ".mem-proposal-meta { display: flex; gap: 12px; align-items: center; font-size: 12px; opacity: 0.85; margin-bottom: 6px; }",
+      ".mem-proposal-source { padding: 1px 6px; border-radius: 3px; background: rgba(255,255,255,0.07); font-family: monospace; }",
+      ".mem-proposal-text { width: 100%; min-height: 50px; padding: 6px 8px; box-sizing: border-box; background: rgba(0,0,0,0.25); border: 1px solid rgba(255,255,255,0.08); border-radius: 4px; color: inherit; font-family: inherit; font-size: 13px; resize: vertical; }",
+      ".mem-proposal-rationale { font-size: 12px; opacity: 0.7; margin-top: 6px; font-style: italic; }",
+      ".mem-proposal-merged { font-size: 11px; opacity: 0.6; margin-top: 4px; font-family: monospace; word-break: break-all; }",
+      ".mem-dropped-list { font-size: 12px; opacity: 0.8; margin: 6px 0 0; padding-left: 18px; max-height: 200px; overflow-y: auto; }",
+      ".mem-dropped-list li { margin-bottom: 4px; font-family: monospace; word-break: break-word; }",
+      ".mem-modal-section-title { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.7; margin: 14px 0 6px; }",
+      ".mem-modal-error { color: #ff8888; padding: 14px; background: rgba(255,80,80,0.08); border: 1px solid rgba(255,80,80,0.3); border-radius: 4px; }",
+      ".mem-apply-log { font-size: 12px; max-height: 200px; overflow-y: auto; background: rgba(0,0,0,0.25); padding: 8px 10px; border-radius: 4px; font-family: monospace; }",
+      ".mem-apply-log .ok { color: #4caf50; }",
+      ".mem-apply-log .err { color: #ff7676; }",
+    ].join("\n");
+    document.head.appendChild(style);
+  }
+
+  function closeConsolidatorModal() {
+    if (consolidatorModalNode && consolidatorModalNode.parentNode) {
+      consolidatorModalNode.parentNode.removeChild(consolidatorModalNode);
+    }
+    consolidatorModalNode = null;
+  }
+
+  function budgetBarClass(charCurrent, charAdded, charBudget) {
+    const total = charCurrent + charAdded;
+    if (total > charBudget) return "crit";
+    if (total > charBudget * 0.85) return "warn";
+    return "ok";
+  }
+
+  function renderConsolidatorBody(host, data) {
+    const total = data.char_current + data.char_total;
+    const pct = data.char_budget > 0
+      ? Math.min(100, Math.round((total / data.char_budget) * 1000) / 10)
+      : 0;
+    const cls = budgetBarClass(data.char_current, data.char_total, data.char_budget);
+    const entriesHtml = (data.proposal || []).map((entry, i) =>
+      `<div class="mem-proposal-entry" data-prop-i="${i}">
+         <div class="mem-proposal-meta">
+           <span class="mem-proposal-source">[source:${esc(entry.source_type)}]</span>
+           <span>merges ${entry.merged_from_candidate_ids.length} candidate${entry.merged_from_candidate_ids.length === 1 ? "" : "s"}</span>
+         </div>
+         <textarea class="mem-proposal-text" data-prop-text="${i}" rows="3">${esc(entry.text)}</textarea>
+         <div class="mem-proposal-rationale">${esc(entry.rationale)}</div>
+         <div class="mem-proposal-merged">merged_from: ${entry.merged_from_candidate_ids.map(esc).join(", ")}</div>
+       </div>`).join("");
+    const droppedIds = data.dropped_candidate_ids || [];
+    const droppedHtml = droppedIds.length
+      ? `<details>
+           <summary>${droppedIds.length} dropped candidate${droppedIds.length === 1 ? "" : "s"} — click to review</summary>
+           <ul class="mem-dropped-list">
+             ${droppedIds.map((id) =>
+               `<li><strong>${esc(id)}</strong>: ${esc(data.dropped_reasons?.[id] || "(no reason)")}</li>`,
+             ).join("")}
+           </ul>
+         </details>`
+      : `<div class="dim small">no candidates dropped</div>`;
+    const unchanged = data.pending_unchanged_candidate_ids || [];
+    const unchangedHtml = unchanged.length
+      ? `<div class="mem-modal-section-title">Unchanged (LLM didn't touch — consider manually)</div>
+         <ul class="mem-dropped-list">
+           ${unchanged.map((id) => `<li>${esc(id)}</li>`).join("")}
+         </ul>`
+      : "";
+
+    host.innerHTML =
+      `<div class="mem-budget-meter">
+         <div class="mem-budget-bar"><div class="mem-budget-fill ${cls}" style="width: ${pct}%"></div></div>
+         <div class="mem-budget-label">
+           <span>${data.char_current.toLocaleString()} current + ${data.char_total.toLocaleString()} added = <strong>${total.toLocaleString()} / ${data.char_budget.toLocaleString()} chars</strong></span>
+           <span>headroom after: ${data.headroom_after.toLocaleString()}</span>
+           <span class="dim">reviewer: ${esc(data.reviewer_model || "—")}</span>
+         </div>
+       </div>
+       <div class="mem-modal-section-title">Proposed merged entries (${(data.proposal || []).length})</div>
+       ${entriesHtml || `<div class="dim small">no proposed entries — nothing to consolidate</div>`}
+       <div class="mem-modal-section-title">Dropped</div>
+       ${droppedHtml}
+       ${unchangedHtml}`;
+  }
+
+  // CodeRabbit pass-8: guard against backdrop-click dismissal while
+  // apply is running. Backdrop handler checks this flag.
+  let _applyInProgress = false;
+
+  async function applyConsolidatorProposal(data, logHost, applyBtn, cancelBtn) {
+    if (!data || !data.ok) return;
+    _applyInProgress = true;
+    applyBtn.disabled = true;
+    cancelBtn.disabled = true;
+    const log = (text, cls = "") => {
+      const line = document.createElement("div");
+      if (cls) line.className = cls;
+      line.textContent = text;
+      logHost.appendChild(line);
+      logHost.scrollTop = logHost.scrollHeight;
+    };
+
+    let approves = 0, mergedRejects = 0, droppedRejects = 0, failures = 0;
+
+    // Approve each proposed merged entry, using the operator-edited text.
+    for (let i = 0; i < (data.proposal || []).length; i++) {
+      const entry = data.proposal[i];
+      const ta = consolidatorModalNode?.querySelector(`[data-prop-text="${i}"]`);
+      const editedText = ta ? ta.value.trim() : entry.text;
+      if (!editedText) {
+        log(`[skip ${i}] empty text after edit`, "err");
+        continue;
+      }
+      // Primary candidate row is the first merged_from id — its row is
+      // what becomes "approved"; the rest are rejected with a "merged
+      // into ..." note below.
+      const primaryId = entry.merged_from_candidate_ids[0];
+      if (!primaryId) {
+        log(`[skip ${i}] no candidate ids to attach approval to`, "err");
+        continue;
+      }
+      // Critical: ONLY reject the merged_from peers if the approve
+      // succeeded. Otherwise a char-budget failure would silently destroy
+      // the whole candidate group (approve failed, peers still rejected as
+      // "merged into '…'" — nothing landed, operator has to wait for the
+      // kernel to re-propose). See advisor 2026-05-23.
+      let approved = false;
+      try {
+        const r = await fetch("/api/master/memory/tier1/approve", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            candidate_id: primaryId,
+            text_override: editedText,
+            source_type_override: entry.source_type,
+            note: `consolidator merged ${entry.merged_from_candidate_ids.length} candidate(s): ${entry.rationale}`,
+          }),
+        });
+        const j = await r.json();
+        if (j.ok) {
+          approved = true;
+          approves++;
+          log(`✓ approved ${primaryId} → "${editedText.slice(0, 60)}${editedText.length > 60 ? "…" : ""}"`, "ok");
+        } else {
+          failures++;
+          log(`✗ approve ${primaryId} failed: ${j.error || "unknown"} — leaving merged peers pending`, "err");
+        }
+      } catch (err) {
+        failures++;
+        log(`✗ approve ${primaryId} threw: ${err} — leaving merged peers pending`, "err");
+      }
+
+      // Reject the rest of the merged_from group with a "merged into" note
+      // ONLY when the approve actually landed text in memory.md.
+      if (approved) {
+        const snippet = editedText.slice(0, 80);
+        for (let k = 1; k < entry.merged_from_candidate_ids.length; k++) {
+          const mid = entry.merged_from_candidate_ids[k];
+          try {
+            const r = await fetch("/api/master/memory/tier1/reject", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                candidate_id: mid,
+                note: `merged into "${snippet}${editedText.length > 80 ? "…" : ""}"`,
+              }),
+            });
+            const j = await r.json();
+            if (j.ok) {
+              mergedRejects++;
+              log(`  ↳ rejected ${mid} (merged)`, "ok");
+            } else {
+              failures++;
+              log(`  ↳ reject ${mid} failed: ${j.error || "unknown"}`, "err");
+            }
+          } catch (err) {
+            failures++;
+            log(`  ↳ reject ${mid} threw: ${err}`, "err");
+          }
+        }
+      }
+    }
+
+    // Reject explicitly-dropped candidates with the LLM's reasons.
+    for (const id of (data.dropped_candidate_ids || [])) {
+      const reason = data.dropped_reasons?.[id] || "dropped by consolidator";
+      try {
+        const r = await fetch("/api/master/memory/tier1/reject", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ candidate_id: id, note: reason }),
+        });
+        const j = await r.json();
+        if (j.ok) {
+          droppedRejects++;
+          log(`✓ rejected ${id} (dropped)`, "ok");
+        } else {
+          failures++;
+          log(`✗ reject ${id} failed: ${j.error || "unknown"}`, "err");
+        }
+      } catch (err) {
+        failures++;
+        log(`✗ reject ${id} threw: ${err}`, "err");
+      }
+    }
+
+    log(`---`);
+    log(`done · ${approves} approved, ${mergedRejects} merged-rejected, ${droppedRejects} dropped-rejected, ${failures} failed`,
+      failures > 0 ? "err" : "ok");
+
+    // CodeRabbit pass-8: clear the in-progress flag so backdrop click
+    // can dismiss again. Done BEFORE re-enabling buttons + reassigning
+    // applyBtn.onclick (which is the "Close" handler).
+    _applyInProgress = false;
+    applyBtn.disabled = false;
+    cancelBtn.disabled = false;
+    applyBtn.textContent = "Close";
+    applyBtn.onclick = () => {
+      closeConsolidatorModal();
+      refreshCandidates();
+      refreshKernelStatus();
+    };
+    const statusEl = $("mem-consolidate-status");
+    if (statusEl) {
+      statusEl.className = failures === 0 ? "memory-card-result ok" : "memory-card-result err";
+      statusEl.textContent = failures === 0
+        ? `✓ applied · ${approves} merged entries written to memory.md`
+        : `partial: ${approves} ok, ${failures} failed (see modal log)`;
+      setTimeout(() => { if (statusEl) statusEl.textContent = ""; }, 8000);
+    }
+    // CodeRabbit pass-4: removed duplicate refresh — applyBtn.onclick (above)
+    // already calls refreshCandidates() + refreshKernelStatus() when the
+    // operator clicks "OK" to dismiss the modal. The prior unconditional
+    // 400ms setTimeout fired BEFORE the operator dismissed the modal and
+    // double-refreshed on successful applies.
+  }
+
+  async function openConsolidatorModal() {
+    ensureConsolidatorStyles();
+    closeConsolidatorModal();
+
+    const node = document.createElement("div");
+    node.className = "mem-modal-backdrop";
+    node.innerHTML =
+      `<div class="mem-modal" role="dialog" aria-label="Tier 1 Consolidator">
+         <div class="mem-modal-head">
+           <h2 id="mem-consolidate-title">Consolidating Tier 1 candidates…</h2>
+           <button type="button" class="secondary-btn" id="mem-consolidate-close" aria-label="Close">✕</button>
+         </div>
+         <div class="mem-modal-body" id="mem-consolidate-body">
+           <div class="dim">Calling supervisor model — this may take 10-30s for a large queue…</div>
+         </div>
+         <div class="mem-modal-foot">
+           <div class="mem-apply-log" id="mem-consolidate-log" style="display:none; flex: 1; margin-right: 12px;"></div>
+           <button type="button" class="secondary-btn" id="mem-consolidate-cancel">Cancel</button>
+           <button type="button" class="primary-btn" id="mem-consolidate-apply" disabled>Apply</button>
+         </div>
+       </div>`;
+    document.body.appendChild(node);
+    consolidatorModalNode = node;
+
+    // Click-outside-to-close (only on backdrop, not on modal itself).
+    // CodeRabbit pass-8: don't dismiss while apply is running — otherwise
+    // an accidental backdrop click mid-apply would orphan the modal state
+    // (apply continues but operator loses visibility into the log).
+    node.addEventListener("click", (e) => {
+      if (e.target === node && !_applyInProgress) closeConsolidatorModal();
+    });
+    const closeBtn = node.querySelector("#mem-consolidate-close");
+    const cancelBtn = node.querySelector("#mem-consolidate-cancel");
+    const applyBtn = node.querySelector("#mem-consolidate-apply");
+    const body = node.querySelector("#mem-consolidate-body");
+    const title = node.querySelector("#mem-consolidate-title");
+    const logHost = node.querySelector("#mem-consolidate-log");
+    if (closeBtn) closeBtn.addEventListener("click", closeConsolidatorModal);
+    if (cancelBtn) cancelBtn.addEventListener("click", closeConsolidatorModal);
+
+    const statusEl = $("mem-consolidate-status");
+    if (statusEl) {
+      statusEl.className = "memory-card-result";
+      statusEl.textContent = "fetching proposal…";
+    }
+
+    let data;
+    try {
+      const r = await fetch("/api/master/memory/tier1/consolidate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      data = await r.json();
+    } catch (err) {
+      if (body) body.innerHTML = `<div class="mem-modal-error">consolidate request failed: ${esc(err)}</div>`;
+      if (statusEl) { statusEl.className = "memory-card-result err"; statusEl.textContent = "✗ request failed"; }
+      return;
+    }
+
+    if (!data || !data.ok) {
+      if (body) {
+        body.innerHTML = `<div class="mem-modal-error">${esc(data?.error || "consolidate failed")}</div>` +
+          (data?.reviewer_model ? `<div class="dim small" style="margin-top:8px;">reviewer: ${esc(data.reviewer_model)}</div>` : "");
+      }
+      if (statusEl) { statusEl.className = "memory-card-result err"; statusEl.textContent = "✗ " + (data?.error || "failed"); }
+      return;
+    }
+
+    const proposedCount = (data.proposal || []).length;
+    const candidateCount =
+      (data.dropped_candidate_ids?.length || 0) +
+      (data.proposal || []).reduce((n, e) => n + (e.merged_from_candidate_ids?.length || 0), 0) +
+      (data.pending_unchanged_candidate_ids?.length || 0);
+    if (title) {
+      title.textContent = `Consolidation Proposal · ${candidateCount} candidate${candidateCount === 1 ? "" : "s"} → ${proposedCount} merged entr${proposedCount === 1 ? "y" : "ies"}`;
+    }
+    if (body) renderConsolidatorBody(body, data);
+    if (applyBtn) {
+      applyBtn.disabled = proposedCount === 0 && (data.dropped_candidate_ids?.length || 0) === 0;
+      applyBtn.onclick = () => {
+        if (logHost) logHost.style.display = "block";
+        if (logHost) logHost.innerHTML = "";
+        applyConsolidatorProposal(data, logHost, applyBtn, cancelBtn);
+      };
+    }
+    if (statusEl) { statusEl.className = "memory-card-result"; statusEl.textContent = ""; }
   }
 
   async function refreshCandidates() {
@@ -1076,4 +1444,10 @@ export function unmount() {
   if (kernelPollTimer) { clearInterval(kernelPollTimer); kernelPollTimer = null; }
   if (candidatePollTimer) { clearInterval(candidatePollTimer); candidatePollTimer = null; }
   if (healthPollTimer) { clearInterval(healthPollTimer); healthPollTimer = null; }
+  // v2.9.0 — rip down the Tier 1 Consolidator modal if the operator
+  // navigated away mid-review.
+  if (consolidatorModalNode && consolidatorModalNode.parentNode) {
+    consolidatorModalNode.parentNode.removeChild(consolidatorModalNode);
+  }
+  consolidatorModalNode = null;
 }

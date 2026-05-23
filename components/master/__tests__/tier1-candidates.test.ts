@@ -38,9 +38,20 @@ function baseInput(over: { id?: string; memory?: string; kind?: string; source_e
   };
 }
 
-function makeWriteTier1(record: Array<{ text: string; kind: string }>, override?: () => Tier1WriteResult): WriteTier1Fn {
-  return async (text, kind) => {
-    record.push({ text, kind });
+function makeWriteTier1(
+  record: Array<{ text: string; kind: string; source_type_override?: string }>,
+  override?: () => Tier1WriteResult,
+): WriteTier1Fn {
+  return async (text, kind, opts) => {
+    // CodeRabbit pass-9: only include source_type_override when it's
+    // actually set so strict toEqual() against {text, kind} keeps passing
+    // for callers that don't pass the override. The optional property
+    // was being pushed as `undefined`, breaking those existing assertions.
+    const entry: { text: string; kind: string; source_type_override?: string } = { text, kind };
+    if (opts?.source_type_override !== undefined) {
+      entry.source_type_override = opts.source_type_override;
+    }
+    record.push(entry);
     return override ? override() : { ok: true, appended_index: record.length - 1 };
   };
 }
@@ -94,7 +105,7 @@ describe("listPending", () => {
     const c = appendCandidate(baseInput({ memory: "fact C" }));
 
     // Reject B; approve C with a noop writeTier1.
-    const writes: Array<{ text: string; kind: string }> = [];
+    const writes: Array<{ text: string; kind: string; source_type_override?: string }> = [];
     _setDepsForTesting({ writeTier1: makeWriteTier1(writes) });
     rejectCandidate(b.id);
     await approveCandidate(c.id);
@@ -110,7 +121,7 @@ describe("listPending", () => {
 
 describe("approveCandidate", () => {
   test("invokes writeTier1 with memory + kind and appends an approved record", async () => {
-    const writes: Array<{ text: string; kind: string }> = [];
+    const writes: Array<{ text: string; kind: string; source_type_override?: string }> = [];
     _setDepsForTesting({ writeTier1: makeWriteTier1(writes) });
 
     const c = appendCandidate(baseInput({ memory: "operator likes tmux", kind: "preference" }));
@@ -138,8 +149,38 @@ describe("approveCandidate", () => {
     expect(result.error).toContain("not found");
   });
 
+  test("v2.9.0: text_override writes the override string, not candidate.memory", async () => {
+    const writes: Array<{ text: string; kind: string; source_type_override?: string }> = [];
+    _setDepsForTesting({ writeTier1: makeWriteTier1(writes) });
+
+    const c = appendCandidate(baseInput({ memory: "raw candidate text" }));
+    const result = await approveCandidate(c.id, {
+      text_override: "consolidated merged sentence",
+      source_type_override: "verified-external",
+      note: "consolidator: merged 3 dups",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(writes).toHaveLength(1);
+    expect(writes[0]!.text).toBe("consolidated merged sentence");
+    expect(writes[0]!.source_type_override).toBe("verified-external");
+    expect(result.candidate?.resolution_note).toBe("consolidator: merged 3 dups");
+  });
+
+  test("v2.9.0: empty/whitespace text_override falls back to candidate.memory", async () => {
+    const writes: Array<{ text: string; kind: string; source_type_override?: string }> = [];
+    _setDepsForTesting({ writeTier1: makeWriteTier1(writes) });
+
+    const c = appendCandidate(baseInput({ memory: "the original text" }));
+    const result = await approveCandidate(c.id, { text_override: "   " });
+
+    expect(result.ok).toBe(true);
+    expect(writes[0]!.text).toBe("the original text");
+    expect(writes[0]!.source_type_override).toBeUndefined();
+  });
+
   test("does NOT approve when writeTier1 returns ok:false (leaves pending)", async () => {
-    const writes: Array<{ text: string; kind: string }> = [];
+    const writes: Array<{ text: string; kind: string; source_type_override?: string }> = [];
     _setDepsForTesting({
       writeTier1: makeWriteTier1(writes, () => ({ ok: false, error: "char budget" })),
     });
@@ -190,7 +231,7 @@ describe("rejectCandidate", () => {
 
 describe("getCandidate", () => {
   test("returns the latest resolution for an id", async () => {
-    const writes: Array<{ text: string; kind: string }> = [];
+    const writes: Array<{ text: string; kind: string; source_type_override?: string }> = [];
     _setDepsForTesting({ writeTier1: makeWriteTier1(writes) });
 
     const c = appendCandidate(baseInput());

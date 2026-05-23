@@ -31,6 +31,7 @@ import {
   listPending as tier1CandidatesListPending,
   rejectCandidate as tier1CandidatesReject,
   type Tier1WriteResult,
+  type WriteTier1Opts,
 } from "../tier1-candidates";
 
 const MASTER_DIR = join(homedir(), ".config", "subctl", "master");
@@ -390,12 +391,32 @@ export const tier1MemoryTools = {
 // wire it once at module load — by the time approveCandidate fires, the
 // closure below resolves to the memory_remember tool defined above.
 //
-// source_type is fixed to "operator-asserted": approving a kernel-proposed
+// source_type defaults to "operator-asserted": approving a kernel-proposed
 // candidate is an explicit human decision (or Evy acting on the operator's
 // standing approval), so provenance is operator-asserted, not self-inferred.
-configureTier1CandidatesWrite(async (text: string, _kind: string): Promise<Tier1WriteResult> => {
+//
+// v2.9.0 — the Tier 1 Consolidator passes source_type_override via opts so
+// the merged entry's `[source:<type>]` tag reflects the highest-trust
+// source amongst the candidates it consolidated, instead of being flattened
+// to "operator-asserted".
+const ALLOWED_OVERRIDE_SOURCES: ReadonlySet<string> = new Set([
+  "operator-asserted",
+  "verified-external",
+  "self-inferred",
+  "agent-reported",
+]);
+configureTier1CandidatesWrite(async (
+  text: string,
+  _kind: string,
+  opts?: WriteTier1Opts,
+): Promise<Tier1WriteResult> => {
+  const override = opts?.source_type_override;
+  const source_type =
+    typeof override === "string" && ALLOWED_OVERRIDE_SOURCES.has(override)
+      ? override
+      : "operator-asserted";
   return (await tier1MemoryTools.memory_remember.invoke({
     text,
-    source_type: "operator-asserted",
+    source_type,
   })) as Tier1WriteResult;
 });
