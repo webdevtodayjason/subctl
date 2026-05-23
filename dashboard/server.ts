@@ -625,9 +625,34 @@ const USAGE_BACKOFF_CAP_MS = 30 * 60 * 1000;
 // Shells out to `subctl usage --json` once per TTL window. The bash impl has
 // its own 60s on-disk cache; this in-process cache just avoids spawning a
 // subprocess on every WebSocket tick.
-function subctlUsageFetchAll(now: number): AccountUsageResult[] {
-  if (_usageCache && now - _usageCache.fetchedAt < USAGE_CACHE_TTL_MS) {
-    return _usageCache.data;
+//
+// CodeRabbit pass-2 fixes:
+//   Fix 1: `forceRefresh: true` bypasses the backoff short-circuit so the
+//          operator's explicit /api/refresh button always attempts a live
+//          fetch (otherwise clicking Refresh during a 429 storm would
+//          silently keep showing stale data). The backoff bookkeeping
+//          (consecutive-429s, until-ms) still ticks on the forced fetch
+//          — if the forced refresh also 429s, we record the sample and
+//          extend the backoff window like any other 429.
+//   Fix 2: cache-hit branch now bumps `stale_age_ms` by
+//          `now - _usageCache.fetchedAt` so the UI indicator advances
+//          inside the 5-min in-process TTL window instead of being
+//          frozen at whatever it was when the cache was last filled.
+function subctlUsageFetchAll(now: number, opts?: { forceRefresh?: boolean }): AccountUsageResult[] {
+  const forceRefresh = opts?.forceRefresh === true;
+
+  if (!forceRefresh && _usageCache && now - _usageCache.fetchedAt < USAGE_CACHE_TTL_MS) {
+    // Fix 2 — recompute stale_age_ms on every cache-hit read so the UI
+    // doesn't show a frozen "stale 3m" for the whole 5-min cache TTL.
+    const elapsedSinceCacheFetch = now - _usageCache.fetchedAt;
+    if (elapsedSinceCacheFetch <= 0) return _usageCache.data;
+    return _usageCache.data.map((u) => {
+      if (!u.stale) return u;
+      return {
+        ...u,
+        stale_age_ms: (u.stale_age_ms ?? 0) + elapsedSinceCacheFetch,
+      };
+    });
   }
   // v2.8.18 — honour the backoff window. While backed off we don't spawn
   // a subprocess; we re-run the stale-fallback against `_usageLastGood`
@@ -636,7 +661,12 @@ function subctlUsageFetchAll(now: number): AccountUsageResult[] {
   // gets frozen at the value computed when the cache was last filled and
   // the UI shows "stale 5m" for the entire backoff window). Cheap — just
   // a Map iteration.
-  if (now < _usagePollBackoffUntil) {
+  //
+  // Fix 1 (pass-2): forceRefresh skips this; explicit /api/refresh
+  // attempts to spawn a live fetch even mid-backoff. If the forced
+  // refresh also 429s, the post-parse backoff bookkeeping (below) ticks
+  // the consecutive-429s and extends the window like normal.
+  if (!forceRefresh && now < _usagePollBackoffUntil) {
     return subctlUsageApplyFallback([], now);
   }
   let parsed: AccountUsageResult[] = [];
@@ -1841,7 +1871,7 @@ function buildOrchestrations(): Array<{
 
 // ---------- top-level state builder ----------
 
-function buildState() {
+function buildState(opts?: { forceUsageRefresh?: boolean }) {
   const now = Date.now();
   const { accounts: rawAccounts, warning } = parseAccountsConf();
 
@@ -1861,7 +1891,12 @@ function buildState() {
   );
 
   ensureUsagePoller();
-  const usageAll = subctlUsageFetchAll(now);
+  // CodeRabbit pass-2 Fix 1 — when the caller is the operator-clicked
+  // /api/refresh, bypass both the in-process TTL cache (already cleared
+  // by the handler) AND the 429 backoff so an explicit refresh always
+  // attempts a live fetch. Background pollers / regular state queries
+  // keep the default (respect backoff).
+  const usageAll = subctlUsageFetchAll(now, { forceRefresh: opts?.forceUsageRefresh === true });
   const history24h = readUsageHistory24h(now);
   const accountSummaries = buildAccountSummaries(rawAccounts, sessions, rl, usageAll, history24h, now);
 
@@ -6540,6 +6575,11 @@ const server = Bun.serve({
     // and return a fresh state snapshot. Clicked from the dashboard "↻" button
     // or invoked by scripts. Costs one API call per claude account; rest of
     // the day uses the normal 5-min auto-cadence.
+    //
+    // v2.8.18 (CodeRabbit pass-2 Fix 1) — `forceUsageRefresh: true` also
+    // skips the 429 backoff. Without it, clicking Refresh mid-backoff was
+    // a silent no-op (kept returning stale data) which is a confusing
+    // UX. The forced fetch still records 429s if Anthropic returns them.
     if (url.pathname === "/api/refresh") {
       _usageCache = null;
       _costCache = null;
@@ -6553,7 +6593,7 @@ const server = Bun.serve({
           }
         }
       } catch { /* best-effort */ }
-      const fresh = buildState();
+      const fresh = buildState({ forceUsageRefresh: true });
       for (const ws of sockets) {
         try { ws.send(JSON.stringify(fresh)); } catch { /* ignore */ }
       }
