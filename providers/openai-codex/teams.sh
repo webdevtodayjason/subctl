@@ -436,6 +436,16 @@ ${INITIAL_PROMPT}"
       while [[ $elapsed -lt 120 ]]; do  # 120 × 0.5s = 60s ceiling
         local capture
         capture=$(tmux capture-pane -t "$SESSION_NAME" -p 2>/dev/null || true)
+        # REGRESSION-WATCH (verified against codex 0.130.0 — 2026-05-23):
+        # this modal dismissal is keyed off the EXACT modal copy
+        # `Update available` + `Press enter`. If a future codex release
+        # changes either phrase, this branch silently misses and the
+        # spawn pastes into the modal instead of the input prompt.
+        # Re-probe after every codex CLI update:
+        #   tmux new-session -d -s p -x 220 -y 50 -c /tmp
+        #   tmux send-keys -t p 'codex -c projects."/tmp".trust_level="trusted"' Enter
+        #   sleep 10 && tmux capture-pane -t p -p
+        # Update the substring checks below if the modal copy drifts.
         if [[ $update_modal_dismissed -eq 0 ]] \
            && [[ "$capture" == *"Update available"* ]] \
            && [[ "$capture" == *"Press enter"* ]]; then
