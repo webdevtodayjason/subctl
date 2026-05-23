@@ -4,6 +4,44 @@ Most recent session at top. Older sessions retained below as historical record.
 
 ---
 
+## Session 2026-05-23 — v3.0 (Evy rename + multi-worker providers)
+
+**Orchestrator:** main Claude Code pane (this session)
+**Team:** `subctl-v3`
+**Protocol start:** 2026-05-23 17:30 CDT
+**Initiative:** `Subctl/Initiatives/v3.0 — Evy rename + multi-worker providers.md` in vault
+**Cut:** AGGRESSIVE (operator-authorized) — Phases 0–5 in v3.0, pi-coder as parallel spike
+
+### Task Ledger
+
+| ID | Phase | Task | Worker | State | Started |
+|----|-------|------|--------|-------|---------|
+| 1 | Phase 1 | Language rename (docs, dashboard chrome, CLI help text, CHANGELOG) | rename-lang | dispatching | 17:30 |
+| 2 | Phase 2 | Codex worker CLI integration | codex-worker | dispatching | 17:30 |
+| 3 | Phase 4 | DeepSeek-TUI worker CLI integration | deepseek-worker | dispatching | 17:30 |
+| 4 | Phase 5 | Pi-coder spike research (design doc OR de-scope memo) | picoder-spike | dispatching | 17:30 |
+| 5 | (sep) | README rewrite with new positioning + capabilities matrix | readme-relaunch | dispatching | 17:30 |
+| 6 | Phase 3 | Code rename + migration script + deploy (BLOCKED on 1–5) | code-rename | queued | — |
+
+### Decision Log
+
+- **2026-05-23 17:00** — Operator authorized AGGRESSIVE cut: Phases 0–5 all in v3.0. Pi-coder runs as parallel research spike, not a product deliverable.
+- **2026-05-23 17:15** — Spelling: **Evy** is canonical. "Eevee" in operator messages is Wispr Flow misspelling.
+- **2026-05-23 17:30** — README rewrite carved out from language rename to allow parallel dispatch. rename-lang touches docs + chrome + CLI-help; readme-relaunch owns README.md entirely.
+
+### Standing rules carried into this orchestration
+
+- Operator owns every merge button. Orchestrator stages, never auto-merges.
+- Workers may push to feature branches and open PRs. Orchestrator verifies + reports to operator.
+- All worker output verified via tool call before marked complete.
+- ORCHESTRATION.md updated after every dispatch + every synthesis pass.
+
+### Verification Evidence
+
+_(filled in as workers report back)_
+
+---
+
 ## Session 2026-05-17 — Memory Consciousness Cycle (autonomous orchestration, Opus 4.7)
 
 **Protocol start:** 2026-05-17T~03:00 CDT
