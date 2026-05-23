@@ -46,8 +46,8 @@ subctl_accounts_add() {
   }
 
   case "$provider" in
-    claude|gemini|openai) ;;
-    *) subctl_err "unknown provider: $provider (must be claude, gemini, openai)"; return 1 ;;
+    claude|gemini|openai|deepseek) ;;
+    *) subctl_err "unknown provider: $provider (must be claude, gemini, openai, deepseek)"; return 1 ;;
   esac
 
   # Default config_dir. Each provider's CLI has its own natural per-user dir
