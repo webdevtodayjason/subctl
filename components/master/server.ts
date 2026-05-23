@@ -4198,19 +4198,27 @@ async function main() {
         // time so profile swaps and provider edits land without restart.
         const reviewerCfgRaw = providers.models.reviewer ?? supervisorCfg;
         const reviewerCfg = resolveRoleCfg("reviewer", reviewerCfgRaw, providers);
-        // CodeRabbit pass-1: fall back to provider-default base URL when
-        // reviewerCfg.host is empty — matches buildModel's behavior at
-        // server.ts:1086 (openrouter, xai-oauth, and local providers all
-        // have canonical defaults). Otherwise the consolidate handler
-        // returned 500 for openrouter / xai-oauth supervisors with no
-        // explicit host set.
+        // CodeRabbit pass-1/2: fall back to provider-default base URL when
+        // reviewerCfg.host is empty. Mirrors the buildModel fallback chain
+        // at server.ts:1078-1088 — local backends (lmstudio/ollama/omlx)
+        // resolve via getLocalBackendAdapter(kind).defaultHost; mlx/vllm
+        // legacy tags ride the LM Studio default; cloud providers have
+        // their canonical bases. Without this, the consolidate endpoint
+        // returned 500 for the common case of a clean providers.json that
+        // doesn't carry explicit host values.
         const resolvedHost =
           reviewerCfg.host
-          ?? (reviewerCfg.provider === "openrouter"
-            ? "https://openrouter.ai/api/v1"
-            : reviewerCfg.provider === "xai-oauth"
-              ? getXaiOauthBaseUrl()
-              : "");
+          ?? (LOCAL_PROVIDERS.has(reviewerCfg.provider)
+            ? ((reviewerCfg.provider === "omlx"
+                || reviewerCfg.provider === "ollama"
+                || reviewerCfg.provider === "lmstudio")
+              ? getLocalBackendAdapter(reviewerCfg.provider as LocalBackendKind).defaultHost
+              : "http://localhost:1234/v1")
+            : reviewerCfg.provider === "openrouter"
+              ? "https://openrouter.ai/api/v1"
+              : reviewerCfg.provider === "xai-oauth"
+                ? getXaiOauthBaseUrl()
+                : "");
         const baseUrl = resolvedHost.replace(/\/v1\/?$/, "");
         if (!baseUrl) {
           return Response.json(
