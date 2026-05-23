@@ -1,183 +1,133 @@
-# HANDOFF.md — session 2026-05-20 (SPEC contract + WEB-216 watchdog fix)
+# HANDOFF.md — session 2026-05-22 EOD (six-release wave + infrastructure cleanup)
 
 **Operator:** Jason Brashear
-**Repo:** webdevtodayjason/subctl @ `/Users/sem/code/subctl`
-**Branch:** `feat/ctxpin-respect-loaded`
-**Branch HEAD:** `71d6766` (WEB-216 watchdog fix)
-**Branch state:** 18 commits ahead of `main`, 5 behind. **NOT pushed.**
-**Master daemon:** PID 19015, restarted 21:14:23 UTC tonight with new code loaded
-**Vault:** see `/Users/sem/Documents/Obsidian Vault/Subctl/` (handoffs, decisions, lessons all updated 2026-05-20)
+**Repo:** `webdevtodayjason/subctl` @ `/Users/sem/code/subctl`
+**Branch:** `main` (no feature branches in flight)
+**Main HEAD:** `246bbcd` (v2.8.18 squash-merge)
+**VERSION file:** `2.8.18`
+**Last tag:** `v2.8.18` (pushed to origin)
+**Vault:** `/Users/sem/Documents/Obsidian Vault/Subctl/` — refreshed 2026-05-22 21:30 CDT in this session
 
----
-
-## What shipped this session
-
-| SHA | Title | Net | Tests |
-|---|---|---|---|
-| `a6cb6e6` | feat(directives): require SPEC block in worker directives | 4 files +143/−12 | +3 trust-marker (38/38 pass) |
-| `71d6766` | fix(watchdog): WEB-216 false unresponsive alerts after worker completes | 3 files +428/−19 | +11 auto-nudge, 1 rewritten (26/26 pass) |
-
-Both commits are local-only on `feat/ctxpin-respect-loaded`. The operator's standing rule is no push without explicit OK.
-
-### SPEC directive contract (`a6cb6e6`)
-
-The HMAC-signed directive marker now requires a `SPEC:` block in the body. New helper `buildSignedDirective()` in `components/master/trust-marker.ts` wraps the body with `"SPEC:\n  <indented>"` BEFORE the HMAC is computed; dashboard `/api/orchestration/<name>/msg` is the single emitter and uses it. Worker contract template in `providers/claude/teams.sh` updated to refuse markers without SPEC with the exact reply `"directive missing SPEC block; re-send with embedded spec"`.
-
-Triggered by an in-flight observation: the `richard-dashboard-search` worker correctly refused a "submit the pasted prompt and start" directive because the paste-then-start delivery dropped the body. HMAC proves WHO; SPEC proves WHAT. A signed marker with no SPEC is a contract violation, not a hint.
-
-### WEB-216 watchdog fix (`71d6766`)
-
-Linear: https://linear.app/webdevtoday/issue/WEB-216
-
-Three bugs, one symptom — `claude-richard-dash` was answering nudges but watchdog kept firing 🚨 unresponsive alerts at 61 and 91 min idle.
-
-1. `if (sendResult.ok) state.set(...)` in `runStaleTeamSweep` — don't advance `last_nudge_at_ms` when nudge delivery fails (Claude API 529 / dashboard 5xx). Sweep cadence IS the backoff.
-2. New `classifyWorkerReply(text)` in `auto-nudge.ts` → `{ kind: "working" | "completed_idle" | "awaiting_input" | "blocked", snippet }`. Phrases: `idle by design`, `awaiting next directive`, `awaiting shutdown`, `checklist complete`, `done with the task`, etc.
-3. `decideTeamAction` short-circuits stale teams classified `completed_idle` or `awaiting_input` BEFORE the first-nudge/escalate branches. New `SweepActionKind` entries with same names. `runStaleTeamSweep` clears any prior nudge state and `logDecision`s at low severity instead of paging Telegram.
-4. Inbox tail + boot-scan + pane-bump in `components/master/server.ts` all wire classification through. `TeamSnapshot.classification?: ClassifiedReply` carries to the sweep.
-5. Alert body shows `Reply classification: <kind>` + `Last reply snippet: <snippet>` instead of `Last event: unknown`.
-
-**Live-validated.** The 22:14:23 UTC watchdog sweep on `claude-richard-dash` wrote the first `team_completed_idle` decision in production:
-
-```json
-{
-  "ts": "2026-05-20T22:14:23.247Z",
-  "project": "claude-richard-dash",
-  "action": "team_completed_idle",
-  "rationale": "team idle 39min but classified as completed_idle from reply text: \"…Not stuck, not working. Idle by design. The redeploy-prep checklist is complete; awaiting next directive or shutdown.\""
-}
-```
-
-The same team had been firing `team_unresponsive` every ~30 min for 4 hours before tonight's restart. Linear comment posted with full AC mapping; awaiting Evy review before close.
-
----
-
-## Master daemon status
-
-| Service | Status |
-|---|---|
-| `com.subctl.master` PID 19015 | up since 21:14:23 UTC, new code loaded |
-| MCP server | armed at `:8788/mcp`, discovery `/.well-known/mcp`, tools = ping + state_snapshot + notify |
-| team-staleness watchdog | armed, 30m interval, 15m threshold |
-| upstream-check watchdog | armed, 6h interval |
-| cognition-loop watchdog | armed, 60s interval (Memory Init #7, live since 2026-05-19) |
-| idle-pane watchdog | armed, 30s interval, notify-only |
-| memory-kernel reviewer | armed, 5min interval, model=lmstudio/gemma-4-26b-a4b-it-mlx |
-| cognee sidecar :8745 | reachable (v0.2.0-subctl) |
-| memori sidecar :8746 | reachable (v0.1.0-subctl, sqlite) |
-| Telegram bot | @Semfreakbot listening |
-
-Restart command for next time (already used tonight):
-
-```bash
-launchctl kickstart -k gui/$(id -u)/com.subctl.master
-```
-
----
-
-## Where to pick up next session
-
-### Immediate (operator-blocked)
-
-1. **Evy's review on WEB-216.** Once she signs off, close the Linear issue.
-2. **Push `feat/ctxpin-respect-loaded` to origin** — requires explicit operator OK per the standing "no push without auth" rule. 18 commits locally, including tonight's two.
-3. **Merge `main` into the branch.** Branch is 5 commits behind. Resolve any conflicts before PR.
-
-### Loose ends (uncommitted in the working tree)
-
-1. **xAI OAuth feature — ~1,493 LOC + 4 test files + decision doc, all uncommitted.** Files in tree:
-   - `components/master/xai-oauth.ts` (894 LOC)
-   - `components/master/xai-oauth-auth.ts` (386 LOC)
-   - `components/master/cli/xai-oauth-login.ts` (112 LOC)
-   - `providers/xai-oauth/auth.sh` (101 LOC)
-   - 4 test files in `components/master/__tests__/`
-   - `.subctl/docs/decisions/xai-supergrok-impl.md`
-
-   Already wired into `pi-ai-catalog.ts` (`SUBCTL_ONLY_PROVIDERS = ["xai-oauth"]`). Needs a dedicated commit session: probably 1-2 logical commits (feature + tests + CLI + decision doc + manifest).
-
-2. **`dashboard/public/update-modal.js` (343 LOC, untracked).** Task #17 (`be323fe`) is marked done. Either this was shipped as inline-script and the file is unrelated, or it was accidentally never staged. Verify.
-
-3. **Doc files untracked alongside their features:**
-   - `.subctl/docs/consciousness-loop/SPEC.md`
-   - `.subctl/docs/decisions/subctl-proxy-v0.1.md`
-   - `.subctl/docs/decisions/xai-supergrok-impl.md`
-   - `.subctl/docs/handoffs/2026-05-19-idle-pane-watchdog-and-29.md`
-   - `.subctl/docs/incidents/2026-05-18-hmac-directive-refusal.md`
-   - `.subctl/docs/memory-init/007-evy-cognition-loop.md`
-   - `.subctl/docs/bugs/2026-05-18-providers-icon-not-live-verified.md`
-
-4. **Modified files awaiting decision:** `HANDOFF.md` (this file — about to land), `bin/subctl`, `lib/cli.sh`, `install.sh`, `lib/dep-manifest.json`, `components/master/pi-ai-catalog.ts`, `.subctl/docs/decisions.jsonl`. Most appear xAI-related.
-
-### Open tasks (in tracker)
-
-| # | Task |
-|---|---|
-| 12 | AICTX worker continuity integration. AICTX installed globally via `pip install aictx`; `aictx install` crashed on RepoMap Tree-sitter interactive prompt with EOF. Retry interactively or find the bypass flag. |
-| 13 | Handoff CLI integration for model-switch UX |
-| 23 | Memory hygiene pass — Evy's v2.8.7 audit findings (Evy-owned) |
-| 26 | MCP-Expose #3 — resources + subscriptions (transcript, decisions, kernel cycles, teams, notifications) |
-| 27 | MCP-Expose #4 — operator setup docs (Claude Desktop + ArgentOS + dev session) |
-
-### Strategic input from Hermes/GPT-5.5
-
-The operator brought back outside positioning feedback. Captured in `/Users/sem/Documents/Obsidian Vault/Subctl/design/2026-05-20-hermes-strategic-feedback.md`. Headline: subctl is "product-shaped" now, the next move is polish over more features.
-
-Top six (Hermes's prioritization):
-1. Fix docs/version drift (site / README / CHANGELOG / install output / VERSION file all agree)
-2. Sharpen landing page (one-liner / pain / demo / install / why local-subscription-based)
-3. First-10-min magic install → auth → spawn → see worker → message
-4. Canonical "3 agents overnight" hero demo
-5. Name the primitives publicly (Master / Workers / Memory / Verifier / Watchdog / Provider accounts)
-6. Memori/Cognee internals BEHIND advanced docs, not in headlines
-
-This is a separate work track from the feature backlog. Interleave or prioritize as operator wishes.
-
----
-
-## Test status
-
-| Suite | Status |
-|---|---|
-| `components/master/__tests__/trust-marker.test.ts` | 38/38 pass |
-| `components/master/__tests__/auto-nudge.test.ts` | 26/26 pass |
-| Full master suite | 1358 pass / 11 fail / 2 skip — the 11 fails are pre-existing env-pollution (`LMSTUDIO_API_TOKEN` / `TINYFISH_API_KEY` / `LINEAR_API_KEY` / `FIRECRAWL_API_KEY` are set in shell when tests expect them unset). NOT subctl-master code bugs. |
-
----
-
-## How to refresh this handoff
+## Quick verify (run these first on next session)
 
 ```bash
 cd /Users/sem/code/subctl
-git status --short                                                  # what's modified
-git log --oneline -3                                                # last 3 commits on branch
-git log --oneline main..HEAD                                        # how far ahead of main
-launchctl print gui/$(id -u)/com.subctl.master | head -5            # daemon state
-curl -s http://127.0.0.1:8788/health | jq                           # master health
-tail -3 ~/.config/subctl/master/decisions.jsonl                     # latest watchdog decisions
+git log --oneline -1                                              # expect: 246bbcd
+git tag -l 'v*' | sort -V | tail -1                               # expect: v2.8.18
+cat VERSION                                                       # expect: 2.8.18
+curl -s http://127.0.0.1:8787/api/version                         # expect: {"version":"2.8.18"}
+curl -s http://127.0.0.1:8788/health | jq .version                # expect: "2.8.18"
+curl -s http://127.0.0.1:8745/health | jq .total_memories         # expect: 225 (or higher)
+ls ~/Library/LaunchAgents/com.subctl.claude-mem-reaper.plist 2>&1 # expect: file not found (retired)
 ```
 
-For the vault:
+If `main HEAD` doesn't match, fetch + verify before doing anything else.
 
-```bash
-cd "/Users/sem/Documents/Obsidian Vault/Subctl"
-cat "01 - Current State.md"                                         # source of truth
-ls "Daily Updates/" | tail -3                                       # most recent days
-ls "Orchestration Handoffs/" | tail -3                              # most recent handoffs
-```
+## Today's six-release wave
+
+| Tag | What | PR | Notes |
+|-----|------|-----|-------|
+| **v2.8.13** | Phase 4 local backend picker (LM Studio / Ollama / oMLX) + first-boot migration | #13 | 11 CodeRabbit passes |
+| **v2.8.14** | Watchdog re-classify on pane-hash change + observability | #14 | Fixes `claude-birdie` false alerts |
+| **v2.8.15** | Cognee write path — Tier 3 → Tier 4 promotion ticker | #15 | **Shipped broken** (silent entity_id bug) |
+| **v2.8.16** | Cognee entity_id fix | #16 | 222/222 promoted on first tick |
+| **v2.8.17** | Chat dropdown enumerates enabled models + bulk toggle | #17 | Worker stalled mid-task; salvaged + finished manually |
+| **v2.8.18** | API-key privacy guard + usage resilience | #18 | 8 CodeRabbit passes |
+
+## Infrastructure work today
+
+- **claude-mem plugin upgraded** 9.0.12 → 13.3.0 via `/plugins` slash command. Manual `bun install` required inside the 13.3.0 cache dir — upstream missing install script. New daemon PID 1317.
+- **claude-mem reaper retired** (`com.subctl.claude-mem-reaper` launchd job + scripts removed). Was load-bearing for 9.0.12's retry_count bug; 13.x drops that mechanism.
+- **Cognee promotion drained** 3 → 225 memories after v2.8.16 fix.
+- **Tier 1 memory budget raised** 2200 → 4000 chars (`SUBCTL_MEMORY_LIMIT=4000` in master plist EnvironmentVariables). Unblocks the 63 pending Tier 1 approvals.
+- **System memory recovered** 127 GB → 76 GB used (killed 545 stuck 9.0.12 claude-mem retries + a runaway `--help` loop at 99% CPU).
+
+## Fleet status
+
+| Host | Master | Dashboard | Network |
+|------|--------|-----------|---------|
+| Local | v2.8.18 ✓ | v2.8.18 ✓ | localhost |
+| M3 Ultra | v2.8.18 ✓ | v2.8.18 ✓ | 192.168.100.62 (home), 100.84.108.16 (office Tailscale) |
+
+Cognee sidecar runs LOCAL ONLY (not M3). M3's cognee-promotion stays disarmed as expected.
+
+## Open work (priority order)
+
+### 1. Tier 1 Consolidator (operator priority for next session)
+
+63 candidates pending in dashboard with semantic duplicates. LLM-driven consolidator endpoint + small dashboard modal that merges near-dups into the minimum distinct set. ~150 LOC, single worker, 60-90 min.
+
+Detailed plan: `/Users/sem/Documents/Obsidian Vault/Subctl/Initiatives/Tier 1 Consolidator.md`
+
+### 2. v2.8.19 — per-alias backoff + composite-key cache
+
+Documented in v2.8.18 CHANGELOG as deferred. Lift `_usagePollBackoffUntil` from scalar to `Map<alias, BackoffState>` so a healthy alias keeps polling while a 429'd alias backs off independently. Same for `_usageLastGood` cache key (alias → alias+config_dir composite). ~50 LOC + tests.
+
+### 3. Handoff CLI for model-switch UX
+
+Operator explicitly named this today. `subctl model set <role> <provider> <model>` shells to master `/api/master/supervisor`. ~80 LOC in `lib/cli.sh`. Single worker, 30-45 min.
+
+### 4. AICTX integration retry
+
+`pip install aictx` worked. `aictx install` crashed on RepoMap Tree-sitter EOF prompt. Try `aictx install --help` for a non-interactive flag OR wrap in `script -q /dev/null aictx install` for a real TTY.
+
+### 5. Memory cycle Phase 4 — context slimming
+
+Deferred since 2026-05-17 Memory Init #5 waiting on real reviewer telemetry. With Cognee promotion live (222 curated → graph) the telemetry signal NOW exists. Unblocks. ~200 LOC + test surface. Single worker, 90-120 min.
+
+### 6. Provider Model Catalog Phase 3 — aggregator routing
+
+OpenRouter / Bedrock / Vercel / Cloudflare. ~400 LOC. Lower urgency, matrix completion.
+
+## Known issues operator surfaced today, NOT YET fixed in code
+
+- **M3 accounts.conf has stale openrouter row** — the sk-or-v1-d0ae21be... key was pasted as the alias. v2.8.18 ships the CLI guard + UI redaction so new ones blocked + masked. **Operator said they'd handle via the dashboard** (generate a new openrouter key, add through the web UI Secrets panel).
+- **M3 usage data 429-rate-limited** — Anthropic's `/api/oauth/usage` endpoint throttles busy accounts. v2.8.18 ships stale fallback + backoff so the dashboard shows last-known data with "·stale Xm" indicator instead of blanks. Self-heals as the rate-limit lifts. Also: `claude-jason` has no `.credentials.json` on M3 — would need `subctl auth claude claude-jason` run locally on M3 to populate. Not blocking.
+
+## Operator preferences captured this session (saved to memory)
+
+- **Loud idle signal** — at end-of-turn when everything's idle, fire `🚨🚨🚨 ALL HANDS IDLE — AWAITING USER 🚨🚨🚨` so the operator can scan-for-it when returning to the window.
+- **IN FLIGHT: framing** when work is pending — surface what's running (worker ID, CodeRabbit pass, etc.) so the operator knows whether to expect a notification or jump in.
+
+## Lessons learned today (read these first if you're picking up cold)
+
+These are in the vault at `/Users/sem/Documents/Obsidian Vault/Subctl/Lessons Learned/`:
+
+1. **`2026-05-22 - Silent ticker bugs need scanned-but-empty signals`** — v2.8.15 ran "successfully" for 8 hours promoting 0 rows because `errors[]` was empty and logs gated on `scanned > 0`. Track work-attempted, not just work-succeeded.
+2. **`2026-05-22 - Salvage stalled-worker output before respawning`** — chat-dropdown-fix worker stalled mid-task. `git diff --stat HEAD` showed 4 of 6 deliverables already landed. Killed worker, committed the partial work, finished the gap manually. Saved 60-90 min vs respawn.
+3. **`2026-05-22 - Worker SendMessage race with idle notification`** — workers go idle after their first SendMessage, then process the next inbox message as a "status check" instead of new work. Pattern: explicit "NEW WORK — not a status check on your prior commit" framing in the first sentence breaks through.
+
+## Active processes worth knowing
+
+| Process | PID (last check) | Purpose |
+|---|---|---|
+| `com.subctl.master` (local) | check via `launchctl list \| grep com.subctl.master` | Master daemon (`:8788`) |
+| `com.subctl.dashboard` (local) | check via launchctl | Dashboard daemon (`:8787`) |
+| `com.subctl.cognee` (local) | check via launchctl | Cognee sidecar (`:8745`) |
+| `com.subctl.memori` (local) | check via launchctl | Memori sidecar (`:8746`) |
+| claude-mem worker-service daemon | PID 1317 | 13.3.0; auto-spawns when needed |
+
+## Where the canonical docs live
+
+- **Repo root:** this file (`HANDOFF.md`) + `CHANGELOG.md` + `VERSION` + `ORCHESTRATION.md`
+- **Vault root:** `/Users/sem/Documents/Obsidian Vault/Subctl/`
+  - `01 - Current State.md` (always read first; refreshed today)
+  - `04 - Roadmap.md` (refreshed today)
+  - `Daily Updates/2026-05-22.md` (detailed wave narrative)
+  - `Orchestration Handoffs/2026-05-22-eod.md` (this handoff's vault mirror)
+  - `Lessons Learned/2026-05-22 - *.md` (3 lessons, listed above)
+  - `Initiatives/Tier 1 Consolidator.md` (new — operator-priority next)
+
+## Memory system
+
+Auto-memory at `/Users/sem/.claude/projects/-Users-sem-code-subctl/memory/`. Includes:
+- `feedback_idle_signal.md` (today's addition — the loud idle signal rule)
+- `accounts_inventory.md`, `feedback_advisor_first.md`, `feedback_pivot_when_wrong.md`, etc.
+
+Check `MEMORY.md` for the full index.
+
+claude-mem 13.3.0 actively indexing this session's observations into the persistent cross-session memory (use `mcp__plugin_claude-mem_mcp-search__*` tools to query in future sessions).
 
 ---
 
-## Cross-references (vault)
-
-- `01 - Current State.md` — refreshed snapshot
-- `Daily Updates/2026-05-20.md` — full per-fix breakdown
-- `Orchestration Handoffs/2026-05-20-spec-contract-and-web216.md` — next-session handoff (vault copy)
-- `05 - Decisions Log.md` — two new entries for tonight
-- `07 - Initiative History.md` — wave entry added
-- `Lessons Learned/2026-05-20 - HMAC proves who SPEC proves what.md`
-- `Lessons Learned/2026-05-20 - Restart daemon to load code changes.md`
-- `design/2026-05-20-hermes-strategic-feedback.md`
-
-## Memory (claude-mem)
-
-New memory saved tonight at `/Users/sem/.claude/projects/-Users-sem-code-subctl/memory/feedback_directive_embed_spec.md` (indexed in `MEMORY.md`): Evy's HMAC-signed directives must embed the SPEC body inline, never rely on a prior paste landing.
+🚨🚨🚨 ALL HANDS IDLE — AWAITING USER 🚨🚨🚨
