@@ -1,3 +1,28 @@
+## [2.8.18] — 2026-05-22
+
+### `feat(accounts+dashboard): API-key privacy guard + usage data resilience`
+
+Bundle of two operator-validated bugs caught on M3 + local dashboards today.
+
+**API key as alias (privacy).** Someone running `subctl accounts add openrouter <key>` previously got the API key stored as the account alias, then the dashboard rendered it in plain text. Now:
+- `subctl accounts add` rejects aliases matching `^sk-`, `^pk-`, or `^Bearer ` with a hint to use `subctl secrets set` instead.
+- The dashboard defense-in-depths via `dashboard/public/lib/redact.js` — any alias rendered to the UI that matches an API-key prefix is masked to `sk-or-v1-…d13f2cf98` (12 prefix + 8 suffix). Copy-to-clipboard still uses the full alias for legitimate `subctl auth` commands.
+- Existing accounts.conf rows aren't auto-cleaned; operators should edit by hand and move the key to `secrets.json`.
+
+**Usage data disappears on Anthropic 429 (resilience).** Anthropic rate-limits `/api/oauth/usage` aggressively. Before this fix, the dashboard rendered blank dashes ("all accounts brand new") when fresh fetch failed, even with days of valid polling history available. Now:
+- **Stale fallback:** when fresh fetch errors for an alias, the server returns the last successful response wrapped with `stale: true` + `stale_age_ms`. The dashboard renders cells with a "·stale 12m" indicator instead of blanks.
+- **429 backoff:** the poll loop now backs off exponentially (5min → 10 → 20 → 30 cap) when responses come back 429, resetting on any success. Stops the dashboard from hammering Anthropic's rate-limited endpoint every 5 min.
+- **Error surfacing:** per-account `usage_error` is exposed in `/api/state` so the dashboard can show the actual cause (429 rate-limited, no credentials, etc.) in the table cell.
+
+**Manual repro for A1 (no `lib/` unit-test framework today):**
+```bash
+$ subctl accounts add claude sk-ant-api03-XXXXX me@example.com
+[err] alias "sk-ant-api0..." looks like an API key. For API-key providers, use:
+[err]   subctl secrets set claude_api_key <your-key>
+$ echo $?
+1
+```
+
 ## [2.8.17] — 2026-05-22
 
 ### `feat(dashboard): chat dropdown enumerates all catalog-enabled models`

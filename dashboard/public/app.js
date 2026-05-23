@@ -136,9 +136,47 @@
 
   // Two-line cell: utilization % on top, "resets in 2h 14m" countdown beneath.
   // The countdown auto-updates every second via the global timer.
-  function usagePctCellWithReset(pct, resetIso, [yellow, red]) {
+  // v2.8.18 — usage_error / usage_stale_age_ms surfacing.
+  // Returns a short label like "429" / "no auth" / "no data" or null when
+  // there's nothing to surface (data is fresh OR cell already shows real
+  // numbers via stale fallback).
+  function shortUsageErrorLabel(err) {
+    if (typeof err !== "string" || err.length === 0) return null;
+    if (/\b429\b/.test(err)) return "429";
+    if (/no auth|credentials|bearer|unauthor|401|403/i.test(err)) return "no auth";
+    if (/timeout|ETIMEDOUT|ENOTFOUND|network/i.test(err)) return "net err";
+    return "err";
+  }
+  function fmtStaleAge(ms) {
+    if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) return "";
+    const mins = Math.floor(ms / 60_000);
+    if (mins < 1) return "<1m";
+    if (mins < 60) return `${mins}m`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs}h`;
+    return `${Math.floor(hrs / 24)}d`;
+  }
+  // opts: { stale?: boolean, staleAgeMs?: number|null, errorLabel?: string|null }
+  function appendStaleOrErrorSub(wrap, opts) {
+    if (!opts) return;
+    if (opts.stale) {
+      const sub = document.createElement("span");
+      sub.className = "usage-stale-indicator";
+      sub.textContent = `· stale ${fmtStaleAge(opts.staleAgeMs)}`;
+      wrap.appendChild(sub);
+    } else if (opts.errorLabel) {
+      const sub = document.createElement("span");
+      sub.className = "usage-error-indicator";
+      sub.textContent = `· ${opts.errorLabel}`;
+      wrap.appendChild(sub);
+    }
+  }
+
+  function usagePctCellWithReset(pct, resetIso, [yellow, red], opts) {
     const wrap = document.createElement("span");
     wrap.className = "usage-cell-stack";
+    if (opts && opts.stale) wrap.classList.add("usage-stale");
+    else if (opts && opts.errorLabel) wrap.classList.add("usage-error");
     const top = document.createElement("span");
     if (typeof pct !== "number") {
       top.className = "usage-na";
@@ -162,12 +200,15 @@
         wrap.appendChild(sub);
       }
     }
+    appendStaleOrErrorSub(wrap, opts);
     return wrap;
   }
 
-  function usageBarCellWithReset(pctAll, pctSonnet, resetIso) {
+  function usageBarCellWithReset(pctAll, pctSonnet, resetIso, opts) {
     const wrap = document.createElement("span");
     wrap.className = "usage-cell-stack";
+    if (opts && opts.stale) wrap.classList.add("usage-stale");
+    else if (opts && opts.errorLabel) wrap.classList.add("usage-error");
     wrap.appendChild(usageBarCell(pctAll, pctSonnet));
     if (resetIso) {
       const t = Date.parse(resetIso);
@@ -180,6 +221,7 @@
         wrap.appendChild(sub);
       }
     }
+    appendStaleOrErrorSub(wrap, opts);
     return wrap;
   }
 
@@ -266,6 +308,23 @@
 
   function escapeText(s) {
     return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+
+  // v2.8.18 — defense-in-depth UI redaction for api-key-shaped aliases.
+  // Canonical implementation lives in dashboard/public/lib/redact.js
+  // (used by the tab modules); inlined here because app.js is a classic
+  // script and can't `import` from an ES module. Keep in sync with the
+  // module — both branches must apply the same mask rule.
+  // Pattern at call sites: `escapeText(redactAlias(alias))`. The COPIED
+  // text in copyAliasButton() must still be the FULL alias (only the
+  // displayed text is masked).
+  function redactAlias(s) {
+    if (typeof s !== "string" || s.length === 0) return s;
+    if (/^(sk-|pk-|Bearer\s)/i.test(s)) {
+      if (s.length <= 16) return s.slice(0, 4) + "…" + s.slice(-3);
+      return s.slice(0, 12) + "…" + s.slice(-8);
+    }
+    return s;
   }
 
   // CSS-escape (subset) — ids in our project chat logs include / : etc. and
@@ -546,14 +605,23 @@
         // Render a "no data" pill instead of the normal verdict so the
         // operator stops seeing a false green "dispatches go".
         const dataMissing = a.dispatch?.data_missing === true || (a.usage_state && a.usage_state !== "ok");
+        // v2.8.18 — surface per-row usage status. `usage_stale` → cells
+        // show real numbers + "·stale Xm" tag (rendered dim/yellow).
+        // `usage_error` + no fallback → cells dim with a short error
+        // label ("429" / "no auth" / etc.).
+        const usageOpts = {
+          stale: a.usage_stale === true,
+          staleAgeMs: a.usage_stale_age_ms ?? null,
+          errorLabel: !a.usage_stale && a.usage_error ? shortUsageErrorLabel(a.usage_error) : null,
+        };
         tr.append(
           td(acctPill(a.alias, a.color_class)),
           td(a.provider),
           td(authCell(a.auth_status)),
           td(verdictPill(a.dispatch?.verdict, a.dispatch?.reasons, { dataMissing, usageState: a.usage_state })),
           td(copyAliasButton(a.alias)),
-          td(usagePctCellWithReset(fiveH, fiveResetIso, [80, 95]), "num"),
-          td(usageBarCellWithReset(sevenD, sonnetD, weekResetIso), "num"),
+          td(usagePctCellWithReset(fiveH, fiveResetIso, [80, 95], usageOpts), "num"),
+          td(usageBarCellWithReset(sevenD, sonnetD, weekResetIso, usageOpts), "num"),
           td(String(a.active_sessions), "num"),
           td(String(a.rl_hits_today), "num"),
           td(fmtAge(a.last_activity_seconds_ago)),
@@ -1159,7 +1227,9 @@
     const dot = document.createElement("span");
     dot.className = "acct-dot";
     const name = document.createElement("span");
-    name.textContent = alias;
+    // v2.8.18 — redact api-key-shaped aliases on display. textContent
+    // is HTML-safe so no escapeText() needed; redactAlias is enough.
+    name.textContent = redactAlias(alias);
     span.append(dot, name);
     return span;
   }
@@ -1227,12 +1297,18 @@
 
   // Small "copy claude-use <alias>" button per account row. Clicking puts the
   // shell command on the clipboard so the user can paste it into a terminal.
+  //
+  // v2.8.18 — the COPIED text uses the FULL alias (legitimate `subctl auth`
+  // / `claude-use` commands need the real value). Only the title/tooltip
+  // gets the redacted form so an api-key-shaped legacy alias doesn't
+  // leak when the operator hovers the button on a screenshare.
   function copyAliasButton(alias) {
     const btn = document.createElement("button");
     btn.className = "copy-alias-btn";
     btn.type = "button";
     const cmd = `claude-use ${alias.replace(/^claude-/, "")}`;
-    btn.title = `Copy "${cmd}" to clipboard`;
+    const displayCmd = `claude-use ${redactAlias(alias).replace(/^claude-/, "")}`;
+    btn.title = `Copy "${displayCmd}" to clipboard`;
     btn.textContent = "⧉";
     btn.addEventListener("click", async (ev) => {
       ev.stopPropagation();
@@ -1246,7 +1322,7 @@
           btn.classList.remove("copied");
         }, 1200);
       } catch {
-        btn.title = "clipboard write blocked — copy manually: " + cmd;
+        btn.title = "clipboard write blocked — copy manually: " + displayCmd;
       }
     });
     return btn;
@@ -1499,7 +1575,10 @@
     all.value = ""; all.textContent = "all accounts";
     sel.appendChild(all);
     sel.appendChild(makeOpt("default", "default (~/.claude)"));
-    for (const a of accounts) sel.appendChild(makeOpt(a.alias, a.alias));
+    // v2.8.18 — option VALUE stays the full alias (backend matches on it);
+    // only the displayed label is redacted. So api-key-shaped aliases get
+    // masked in the dropdown without breaking the search filter.
+    for (const a of accounts) sel.appendChild(makeOpt(a.alias, redactAlias(a.alias)));
     sel.value = current;
   }
   function makeOpt(v, label) {

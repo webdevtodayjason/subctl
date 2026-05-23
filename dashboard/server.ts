@@ -593,12 +593,34 @@ interface AccountUsageResult {
   ok: boolean;
   usage?: UsageEntry;
   error?: string;
+  // v2.8.18 — added fields for stale-fallback rendering. Set when the
+  // fresh fetch failed and we're returning a cached last-good entry.
+  stale?: boolean;
+  stale_age_ms?: number;
+  last_good_at_ms?: number;
 }
 
 let _usageCache: { fetchedAt: number; data: AccountUsageResult[] } | null = null;
 // 5min — same cadence as the history poller. The /api/refresh endpoint
 // (POST or GET) clears this cache for an explicit on-demand fetch.
 const USAGE_CACHE_TTL_MS = 5 * 60 * 1000;
+
+// v2.8.18 — per-alias last-good cache. When a fresh fetch errors for an
+// alias (Anthropic 429, transient network, etc.) we substitute the cached
+// last-successful entry tagged `stale: true` so the dashboard shows real
+// numbers + a "·stale Xm" indicator instead of blank dashes.
+const _usageLastGood = new Map<string, { entry: AccountUsageResult; at_ms: number }>();
+
+// v2.8.18 — exponential backoff on Anthropic 429s. Anthropic rate-limits
+// /api/oauth/usage aggressively; before this fix the dashboard hammered
+// the endpoint every 5min even while being throttled. Backoff starts at
+// 5min, doubles per consecutive 429 wave, caps at 30min. Resets on any
+// successful tick. Module-level state — restart clears it, which is
+// acceptable (the next tick will simply observe whatever Anthropic says).
+let _usagePollBackoffUntil = 0;
+let _usagePollConsecutive429s = 0;
+const USAGE_BACKOFF_BASE_MS = 5 * 60 * 1000;
+const USAGE_BACKOFF_CAP_MS = 30 * 60 * 1000;
 
 // Shells out to `subctl usage --json` once per TTL window. The bash impl has
 // its own 60s on-disk cache; this in-process cache just avoids spawning a
@@ -607,27 +629,95 @@ function subctlUsageFetchAll(now: number): AccountUsageResult[] {
   if (_usageCache && now - _usageCache.fetchedAt < USAGE_CACHE_TTL_MS) {
     return _usageCache.data;
   }
+  // v2.8.18 — honour the backoff window. While backed off we return the
+  // last in-process cache (if any) without spawning a subprocess. If that
+  // cache is also empty, an empty array is returned — downstream
+  // stale-fallback logic in subctlUsageApplyFallback() still substitutes
+  // per-alias last-good entries from `_usageLastGood`.
+  if (now < _usagePollBackoffUntil) {
+    return _usageCache?.data ?? [];
+  }
+  let parsed: AccountUsageResult[] = [];
   try {
     const r = spawnSync(SUBCTL_BIN, ["usage", "--json"], {
       encoding: "utf8",
       timeout: 12_000,
     });
     if (r.error || (typeof r.status === "number" && r.status !== 0)) {
-      _usageCache = { fetchedAt: now, data: [] };
-      return [];
+      parsed = [];
+    } else {
+      parsed = JSON.parse(r.stdout || "[]") as AccountUsageResult[];
     }
-    const parsed = JSON.parse(r.stdout || "[]") as AccountUsageResult[];
-    _usageCache = { fetchedAt: now, data: parsed };
-    return parsed;
   } catch {
-    _usageCache = { fetchedAt: now, data: [] };
-    return [];
+    parsed = [];
   }
+
+  // Stale-fallback first — substitute cached entries for any failed alias
+  // BEFORE updating last-good, so a fresh failure followed by a fresh
+  // success doesn't accidentally overwrite the cache with stale data.
+  const withFallback = subctlUsageApplyFallback(parsed, now);
+
+  // Backoff bookkeeping: count 429s in the fresh response. Use the raw
+  // `parsed` (not withFallback) so substituted stale-good entries don't
+  // hide a 429 that triggered them.
+  let count429 = 0;
+  for (const u of parsed) {
+    if (!u.ok && typeof u.error === "string" && /\b429\b/.test(u.error)) count429++;
+  }
+  if (count429 > 0) {
+    _usagePollConsecutive429s++;
+    const k = _usagePollConsecutive429s - 1;
+    const backoff = Math.min(USAGE_BACKOFF_BASE_MS * Math.pow(2, k), USAGE_BACKOFF_CAP_MS);
+    _usagePollBackoffUntil = now + backoff;
+    console.warn(
+      `[usage-poll] ${count429} alias(es) returned 429 — backing off ${Math.round(backoff / 60_000)}min (consecutive=${_usagePollConsecutive429s})`,
+    );
+  } else if (_usagePollConsecutive429s > 0 || _usagePollBackoffUntil > 0) {
+    console.warn(`[usage-poll] backoff cleared (no 429s this tick)`);
+    _usagePollConsecutive429s = 0;
+    _usagePollBackoffUntil = 0;
+  }
+
+  _usageCache = { fetchedAt: now, data: withFallback };
+  return withFallback;
+}
+
+// v2.8.18 — for any alias whose fresh fetch returned ok:false, substitute
+// the cached last-good entry tagged stale. For ok:true entries, update the
+// cache.
+function subctlUsageApplyFallback(parsed: AccountUsageResult[], now: number): AccountUsageResult[] {
+  return parsed.map((u) => {
+    if (u.ok && u.usage) {
+      _usageLastGood.set(u.alias, { entry: u, at_ms: now });
+      return u;
+    }
+    const cached = _usageLastGood.get(u.alias);
+    if (!cached) return u;
+    return {
+      alias: u.alias,
+      cfg_dir: u.cfg_dir,
+      ok: true,
+      usage: cached.entry.usage,
+      error: u.error,
+      stale: true,
+      stale_age_ms: Math.max(0, now - cached.at_ms),
+      last_good_at_ms: cached.at_ms,
+    };
+  });
 }
 
 function usageForAlias(alias: string, all: AccountUsageResult[]): UsageEntry | null {
-  const hit = all.find(u => u.alias === alias && u.ok);
+  // v2.8.18 — accept stale entries too; the per-row `usage_stale` flag in
+  // /api/state tells the UI to dim/label them.
+  const hit = all.find(u => u.alias === alias && (u.ok || u.stale));
   return hit?.usage ?? null;
+}
+
+// v2.8.18 — companion lookup so /api/state can surface per-row error +
+// stale info. Returns the full entry (or null if absent) so callers can
+// pick the fields they want.
+function usageEntryForAlias(alias: string, all: AccountUsageResult[]): AccountUsageResult | null {
+  return all.find(u => u.alias === alias) ?? null;
 }
 
 // ---------- utilization history (24h sparkline) ----------
@@ -1601,6 +1691,9 @@ function buildAccountSummaries(
     const rlEntry = rl.by_account.get(acc.alias);
     const auth = authStatus(acc);
     const usage = usageForAlias(acc.alias, usageAll);
+    // v2.8.18 — pick up the raw entry so we can surface per-row error +
+    // stale info without re-running the lookup downstream.
+    const usageEntry = usageEntryForAlias(acc.alias, usageAll);
     const verdict = computeAccountVerdict({
       alias: acc.alias,
       authReady: auth === "ready",
@@ -1622,6 +1715,13 @@ function buildAccountSummaries(
       usage,
       dispatch: verdict,
       usage_history_24h: hist,
+      // v2.8.18 — per-row usage status for the dashboard. `usage_error`
+      // is the actual cause (e.g. "HTTP 429" / "no auth"); `usage_stale`
+      // tells the UI to dim the cells + show "·stale Xm"; the `_ms`
+      // field is the age of the cached fallback if any.
+      usage_error: usageEntry?.error ?? null,
+      usage_stale: !!usageEntry?.stale,
+      usage_stale_age_ms: usageEntry?.stale_age_ms ?? null,
     };
   });
 }
