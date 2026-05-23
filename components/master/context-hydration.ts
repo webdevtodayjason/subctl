@@ -437,9 +437,11 @@ export function loadContextHydrationConfig(path?: string): ContextHydrationConfi
     }
   }
   // Env override wins for the kill-switch — operator can disable
-  // without editing the JSON.
+  // without editing the JSON. Case-insensitive + whitespace-tolerant
+  // (CodeRabbit pass-3) so "FALSE", "No", " no " all flip cleanly.
   const envFlag = process.env.SUBCTL_CONTEXT_SLIMMING_ENABLED;
-  if (envFlag === "0" || envFlag === "false" || envFlag === "no") {
+  const normalized = envFlag?.toLowerCase().trim();
+  if (normalized === "0" || normalized === "false" || normalized === "no") {
     fromFile = { ...fromFile, enabled: false };
   }
   return fromFile;

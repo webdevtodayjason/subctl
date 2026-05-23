@@ -402,6 +402,38 @@ describe("loadContextHydrationConfig", () => {
     }
   });
 
+  test("env override is case-insensitive + whitespace-tolerant (CodeRabbit pass-3)", () => {
+    const prev = process.env.SUBCTL_CONTEXT_SLIMMING_ENABLED;
+    try {
+      for (const v of ["FALSE", "No", " no ", "  0  ", "False", "NO"]) {
+        process.env.SUBCTL_CONTEXT_SLIMMING_ENABLED = v;
+        const cfg = loadContextHydrationConfig(
+          "/tmp/subctl-test-nonexistent-context-hydration.json",
+        );
+        expect(cfg.enabled).toBe(false);
+      }
+    } finally {
+      if (prev === undefined) delete process.env.SUBCTL_CONTEXT_SLIMMING_ENABLED;
+      else process.env.SUBCTL_CONTEXT_SLIMMING_ENABLED = prev;
+    }
+  });
+
+  test("env override leaves enabled:true for truthy / unrelated values", () => {
+    const prev = process.env.SUBCTL_CONTEXT_SLIMMING_ENABLED;
+    try {
+      for (const v of ["1", "true", "yes", "on", "FALSEY"]) {
+        process.env.SUBCTL_CONTEXT_SLIMMING_ENABLED = v;
+        const cfg = loadContextHydrationConfig(
+          "/tmp/subctl-test-nonexistent-context-hydration.json",
+        );
+        expect(cfg.enabled).toBe(true);
+      }
+    } finally {
+      if (prev === undefined) delete process.env.SUBCTL_CONTEXT_SLIMMING_ENABLED;
+      else process.env.SUBCTL_CONTEXT_SLIMMING_ENABLED = prev;
+    }
+  });
+
   test("malformed JSON file → falls back to DEFAULT_CONFIG, doesn't throw", async () => {
     const { writeFileSync, unlinkSync } = require("node:fs") as typeof import("node:fs");
     const path = `/tmp/subctl-test-context-hydration-malformed-${Date.now()}.json`;
@@ -524,12 +556,15 @@ function mkFailureResult(err: string): HydrationResult {
 }
 
 describe("applyHydrationOutcome — success path", () => {
-  test("ok:true + not superseded → setPayload + broadcast 'context_hydration_ready'", () => {
+  test("ok:true + not superseded → setPayload + broadcast + audit 'context_hydration_ready'", () => {
     const deps = mkOutcomeDeps({
       reason: "boot",
       mySeq: 7,
       currentSeq: 7,
-      result: mkSuccessResult("[memory-context-hydration · ts · 2 curated + 0 graph hits]\n\nCURATED FACTS:\n1. [fact] hi\n\n[/memory-context-hydration]"),
+      result: mkSuccessResult(
+        "[memory-context-hydration · ts · 2 curated + 0 graph hits]\n\nCURATED FACTS:\n1. [fact] hi\n\n[/memory-context-hydration]",
+        { memori_curated_count: 2, cognee_hits_count: 0, tier1_chars: 1500 },
+      ),
     });
     const action = applyHydrationOutcome(deps);
     expect(action).toBe("applied");
@@ -537,8 +572,15 @@ describe("applyHydrationOutcome — success path", () => {
     expect(deps.__payloads[0]).toContain("[memory-context-hydration");
     expect(deps.__broadcasts).toHaveLength(1);
     expect(deps.__broadcasts[0]?.event).toBe("context_hydration_ready");
-    // No failure decisions on the success path.
-    expect(deps.__decisions).toHaveLength(0);
+    // CodeRabbit pass-3: durable success audit lands in decisions.jsonl
+    // symmetric with the failure path.
+    expect(deps.__decisions).toHaveLength(1);
+    expect(deps.__decisions[0]?.action).toBe("context_hydration_ready");
+    expect(deps.__decisions[0]?.project).toBe("_master");
+    expect(deps.__decisions[0]?.rationale).toContain("boot");
+    expect(deps.__decisions[0]?.rationale).toContain("2 curated");
+    expect(deps.__decisions[0]?.rationale).toContain("0 graph hits");
+    expect(deps.__decisions[0]?.rationale).toContain("1500 tier1_chars");
   });
 });
 
@@ -815,6 +857,30 @@ describe("applyHydrationOutcome — observational throws don't downgrade 'applie
     expect(written).toBe("COMMITTED");
     // Breakage logged for operator visibility.
     expect(logs.some((l) => l.includes("broadcast(context_hydration_ready) threw"))).toBe(true);
+  });
+
+  test("logDecision throwing on success-audit (pass-3) does NOT downgrade 'applied'", () => {
+    // CodeRabbit pass-3 added a logDecision call to the success path
+    // for symmetric audit. If that throws, state IS still committed —
+    // action remains 'applied'.
+    let written: string | null = null;
+    const logs: string[] = [];
+    const action = applyHydrationOutcome({
+      reason: "boot",
+      mySeq: 1,
+      currentSeq: 1,
+      result: mkSuccessResult("DURABLE"),
+      threwMessage: null,
+      setPayload: (p) => { written = p; },
+      logDecision: () => { throw new Error("decisions.jsonl disk full"); },
+      broadcast: () => {},
+      log: (l) => logs.push(l),
+      now: () => new Date(),
+    });
+    expect(action).toBe("applied");
+    expect(written).toBe("DURABLE");
+    // The failure of the audit channel is surfaced on stderr.
+    expect(logs.some((l) => l.includes("logDecision threw"))).toBe(true);
   });
 
   test("log channel throwing in 'applied' branch does NOT bubble", () => {

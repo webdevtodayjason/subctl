@@ -1782,8 +1782,8 @@ export function applyHydrationOutcome(deps: ApplyHydrationOutcomeDeps): Hydratio
   }
 
   // State write succeeded — anything below is observational. log +
-  // broadcast failures don't downgrade the action; "applied" reflects
-  // that the payload IS committed.
+  // broadcast + logDecision failures don't downgrade the action;
+  // "applied" reflects that the payload IS committed.
   _safeLog(
     deps,
     `[context-hydration] ${deps.reason} ready — ${deps.result.sources.memori_curated_count} curated + ${deps.result.sources.cognee_hits_count} graph hits + tier1=${deps.result.sources.tier1_chars}b; will prepend on next prompt`,
@@ -1792,6 +1792,16 @@ export function applyHydrationOutcome(deps: ApplyHydrationOutcomeDeps): Hydratio
     ts: _safeNowIso(deps),
     reason: deps.reason,
     sources: deps.result.sources,
+  });
+  // CodeRabbit pass-3: durable audit on success path, symmetric with
+  // the failure branches above. Failures already land in
+  // decisions.jsonl via `context_hydration_failed`; this row lets the
+  // operator grep for both "the hydration ATTEMPTS" and "the hydration
+  // RESULTS" in the same audit stream.
+  _safeLogDecision(deps, {
+    project: "_master",
+    action: "context_hydration_ready",
+    rationale: `${deps.reason}: ${deps.result.sources.memori_curated_count} curated + ${deps.result.sources.cognee_hits_count} graph hits + ${deps.result.sources.tier1_chars} tier1_chars`,
   });
   return "applied";
 }
