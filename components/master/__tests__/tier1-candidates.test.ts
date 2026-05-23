@@ -38,9 +38,12 @@ function baseInput(over: { id?: string; memory?: string; kind?: string; source_e
   };
 }
 
-function makeWriteTier1(record: Array<{ text: string; kind: string }>, override?: () => Tier1WriteResult): WriteTier1Fn {
-  return async (text, kind) => {
-    record.push({ text, kind });
+function makeWriteTier1(
+  record: Array<{ text: string; kind: string; source_type_override?: string }>,
+  override?: () => Tier1WriteResult,
+): WriteTier1Fn {
+  return async (text, kind, opts) => {
+    record.push({ text, kind, source_type_override: opts?.source_type_override });
     return override ? override() : { ok: true, appended_index: record.length - 1 };
   };
 }
@@ -136,6 +139,36 @@ describe("approveCandidate", () => {
     const result = await approveCandidate("c_does_not_exist");
     expect(result.ok).toBe(false);
     expect(result.error).toContain("not found");
+  });
+
+  test("v2.9.0: text_override writes the override string, not candidate.memory", async () => {
+    const writes: Array<{ text: string; kind: string; source_type_override?: string }> = [];
+    _setDepsForTesting({ writeTier1: makeWriteTier1(writes) });
+
+    const c = appendCandidate(baseInput({ memory: "raw candidate text" }));
+    const result = await approveCandidate(c.id, {
+      text_override: "consolidated merged sentence",
+      source_type_override: "verified-external",
+      note: "consolidator: merged 3 dups",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(writes).toHaveLength(1);
+    expect(writes[0]!.text).toBe("consolidated merged sentence");
+    expect(writes[0]!.source_type_override).toBe("verified-external");
+    expect(result.candidate?.resolution_note).toBe("consolidator: merged 3 dups");
+  });
+
+  test("v2.9.0: empty/whitespace text_override falls back to candidate.memory", async () => {
+    const writes: Array<{ text: string; kind: string; source_type_override?: string }> = [];
+    _setDepsForTesting({ writeTier1: makeWriteTier1(writes) });
+
+    const c = appendCandidate(baseInput({ memory: "the original text" }));
+    const result = await approveCandidate(c.id, { text_override: "   " });
+
+    expect(result.ok).toBe(true);
+    expect(writes[0]!.text).toBe("the original text");
+    expect(writes[0]!.source_type_override).toBeUndefined();
   });
 
   test("does NOT approve when writeTier1 returns ok:false (leaves pending)", async () => {

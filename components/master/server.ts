@@ -56,7 +56,11 @@ import { systemTools, bindToolRegistry as bindSystemToolRegistry } from "./tools
 import { projectTools } from "./tools/project";
 import { memoryTools } from "./tools/memory";
 import { context7Tools } from "./tools/context7";
-import { tier1MemoryTools, buildMemoryBlock } from "./tools/tier1-memory";
+import {
+  tier1MemoryTools,
+  buildMemoryBlock,
+  readMemory as readTier1MemoryFile,
+} from "./tools/tier1-memory";
 // ── v2.8.1 chat perf / skill router ──
 import {
   selectSkills as routerSelectSkills,
@@ -220,6 +224,10 @@ import {
   callSupervisor as memoryKernelSupervisorFetcher,
   reviewEvents as memoryKernelReviewEvents,
 } from "./memory-kernel-reviewer";
+import {
+  consolidate as tier1Consolidate,
+  type ConsolidatorDeps as Tier1ConsolidatorDeps,
+} from "./tier1-consolidator";
 import {
   classifyWorkerReply,
   runStaleTeamSweep,
@@ -4068,7 +4076,12 @@ async function main() {
         });
       }
       if (url.pathname === "/memory/tier1/approve" && req.method === "POST") {
-        let body: { candidate_id?: unknown; note?: unknown };
+        let body: {
+          candidate_id?: unknown;
+          note?: unknown;
+          text_override?: unknown;
+          source_type_override?: unknown;
+        };
         try {
           const text = await req.text();
           body = text ? (JSON.parse(text) as typeof body) : {};
@@ -4087,10 +4100,25 @@ async function main() {
           );
         }
         const note = typeof body.note === "string" ? body.note : undefined;
+        // v2.9.0 (Tier 1 Consolidator) — Apply path on the dashboard
+        // modal hands us the operator-edited consolidated text + the
+        // consolidator's chosen highest-trust source_type. Both flow
+        // through tier1-candidates → writeTier1 → memory_remember.
+        const textOverride =
+          typeof body.text_override === "string" && body.text_override.trim().length > 0
+            ? body.text_override.trim()
+            : undefined;
+        const sourceTypeOverride =
+          typeof body.source_type_override === "string" &&
+          body.source_type_override.trim().length > 0
+            ? body.source_type_override.trim()
+            : undefined;
         try {
           const result = await approveTier1Candidate(candidateId, {
             resolved_by: "operator",
             note,
+            text_override: textOverride,
+            source_type_override: sourceTypeOverride,
           });
           return Response.json(result, { status: result.ok ? 200 : 404 });
         } catch (err) {
@@ -4129,6 +4157,87 @@ async function main() {
         } catch (err) {
           return Response.json(
             { ok: false, error: (err as Error).message },
+            { status: 500 },
+          );
+        }
+      }
+
+      // ── /memory/tier1/consolidate — Tier 1 Consolidator (v2.9.0) ─────────
+      //
+      // LLM-driven dedup pass for the pending candidate queue. Reads the
+      // current memory.md + listTier1Pending(), sends to the supervisor
+      // model (via the same wire-format helper the memory-kernel reviewer
+      // uses), returns a structured proposal:
+      //   { ok, proposal[], dropped_candidate_ids[], dropped_reasons{},
+      //     pending_unchanged_candidate_ids[], char_total, char_budget,
+      //     char_current, headroom_after, reviewer_model, llm_raw_response? }
+      //
+      // Operator-in-the-loop required by design — this endpoint NEVER
+      // writes Tier 1. The dashboard modal renders the proposal and the
+      // operator clicks Apply, which then calls the existing approve/reject
+      // endpoints (with text_override on approve).
+      //
+      // Body: { dry_run?: boolean } — when true, the response includes the
+      // raw LLM text for debugging.
+      if (url.pathname === "/memory/tier1/consolidate" && req.method === "POST") {
+        let body: { dry_run?: unknown };
+        try {
+          const text = await req.text();
+          body = text ? (JSON.parse(text) as typeof body) : {};
+        } catch {
+          return Response.json(
+            { ok: false, error: "invalid JSON body" },
+            { status: 400 },
+          );
+        }
+        const dryRun = body.dry_run === true;
+
+        // Wire the supervisor identity + LLM transport the same way the
+        // memory-kernel ticker does — prefer providers.models.reviewer,
+        // fall back to the active supervisorCfg. Re-resolve at request
+        // time so profile swaps and provider edits land without restart.
+        const reviewerCfgRaw = providers.models.reviewer ?? supervisorCfg;
+        const reviewerCfg = resolveRoleCfg("reviewer", reviewerCfgRaw, providers);
+        const baseUrl = (reviewerCfg.host ?? "").replace(/\/v1\/?$/, "");
+        if (!baseUrl) {
+          return Response.json(
+            {
+              ok: false,
+              error: `reviewer host not configured for ${reviewerCfg.provider}/${reviewerCfg.model} — set providers.json models.reviewer.host or pick a local provider`,
+              reviewer_model: `${reviewerCfg.provider}/${reviewerCfg.model}`,
+            },
+            { status: 500 },
+          );
+        }
+        const consolidatorDeps: Tier1ConsolidatorDeps = {
+          listPending: () => listTier1Pending(),
+          readMemoryContent: () => readTier1MemoryFile().content,
+          charBudget: () => readTier1MemoryFile().char_limit,
+          configuredSupervisor: () => ({
+            provider: reviewerCfg.provider,
+            model: reviewerCfg.model,
+          }),
+          llmFetcher: async (messages, opts) => {
+            const token = getApiKeyForProvider(reviewerCfg.provider);
+            return memoryKernelSupervisorFetcher(messages, {
+              ...opts,
+              baseUrl,
+              authToken: token === "not-needed" ? undefined : token,
+            });
+          },
+        };
+        try {
+          const result = await tier1Consolidate({ dry_run: dryRun }, consolidatorDeps);
+          // ok:false carries reviewer_model so the dashboard can still
+          // surface which supervisor was attempted.
+          return Response.json(result, { status: result.ok ? 200 : 500 });
+        } catch (err) {
+          return Response.json(
+            {
+              ok: false,
+              error: `consolidate threw: ${(err as Error).message}`,
+              reviewer_model: `${reviewerCfg.provider}/${reviewerCfg.model}`,
+            },
             { status: 500 },
           );
         }

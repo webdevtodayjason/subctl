@@ -1,3 +1,48 @@
+## [2.9.0] — 2026-05-23
+
+### `feat(memory): Tier 1 candidate consolidator — LLM-driven dedup`
+
+The Tier 1 candidate queue accumulates semantic duplicates (Memori's reviewer is permissive — same fact at confidence 1.00 AND 0.90 in slightly different wording lands as two candidates). Approving linearly burns the char budget on near-dups: 63 candidates pending at v2.8.18 deploy, ~30 high-confidence ones would alone overflow the 4000-char Tier 1 budget after merging would yield ~8-15 truly unique entries.
+
+**New endpoint** `POST /memory/tier1/consolidate` reads pending candidates + current `memory.md`, sends them to the supervisor model (same wire-format helper the memory-kernel reviewer uses) with a consolidation prompt, and returns a structured proposal:
+
+```jsonc
+{
+  "ok": true,
+  "proposal": [
+    {
+      "text": "Operator prefers terse responses.",
+      "source_type": "operator-asserted",
+      "rationale": "Merged 3 candidates that all express the same brevity preference",
+      "merged_from_candidate_ids": ["c_mpc8gp_...", "c_mpc8na_...", "c_mpc8q3_..."]
+    }
+  ],
+  "dropped_candidate_ids": ["c_mpc9aa_..."],
+  "dropped_reasons": { "c_mpc9aa_...": "Low confidence (0.5) and redundant with merged entry above" },
+  "pending_unchanged_candidate_ids": [],
+  "char_current": 2212,
+  "char_total": 240,
+  "char_budget": 4000,
+  "headroom_after": 1548,
+  "reviewer_model": "lmstudio/qwen2.5-32b-instruct"
+}
+```
+
+**Dashboard UI.** The Memory tab's Tier 1 Candidates panel gains an **⚗ Consolidate (LLM)** button next to the pending count. Click → modal renders the proposal with:
+- char-budget meter (green/yellow/red based on projected total vs. budget),
+- editable textareas for each proposed merged entry (operator edits land verbatim),
+- collapsible Dropped section with per-id reasons,
+- Unchanged section for candidates the LLM didn't touch (rare, but a safety net),
+- single **Apply** button that iterates approve/reject calls in one shot with a live action log.
+
+**Operator-in-the-loop required by design.** The consolidate endpoint NEVER writes Tier 1 by itself — Tier 1 lives in every system prompt forever, a bad merge is more durable than a good one. The operator MUST review the proposal before Apply.
+
+**Schema additions to existing endpoints (backward-compatible):**
+- `POST /memory/tier1/approve` now accepts optional `text_override?: string` (the consolidator-edited merged text) and `source_type_override?: string` (the highest-trust source amongst merged candidates). Pre-existing approve calls with only `candidate_id` + `note` continue to work unchanged — overrides are inert when absent.
+- `WriteTier1Fn` (internal interface) gains an optional `opts?: { source_type_override? }` arg so the merged entry's `[source:<type>]` tag in `memory.md` reflects the consolidator's chosen source instead of being flattened to the default `operator-asserted`.
+
+**Tests:** 17 new tests in `tier1-consolidator.test.ts` (prompt building, JSON parsing, hallucinated-id filtering, over-budget headroom, dry_run echo) + 2 new tests on `tier1-candidates.test.ts` proving `text_override` writes the override and empty overrides fall back to `candidate.memory`.
+
 ## [2.8.18] — 2026-05-22
 
 ### `feat(accounts+dashboard): API-key privacy guard + usage data resilience`
