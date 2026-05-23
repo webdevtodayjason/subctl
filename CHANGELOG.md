@@ -5,7 +5,7 @@
 Bundle of two operator-validated bugs caught on M3 + local dashboards today.
 
 **API key as alias (privacy).** Someone running `subctl accounts add openrouter <key>` previously got the API key stored as the account alias, then the dashboard rendered it in plain text. Now:
-- `subctl accounts add` rejects aliases matching `^sk-`, `^pk-`, or `^Bearer ` with a hint to use `subctl secrets set` instead.
+- `subctl accounts add` rejects aliases matching `^sk-`, `^pk-`, or `^Bearer\s` with a hint to use `subctl secrets set` instead.
 - The dashboard defense-in-depths via `dashboard/public/lib/redact.js` — any alias rendered to the UI that matches an API-key prefix is masked to `sk-or-v1-…d13f2cf98` (12 prefix + 8 suffix). Copy-to-clipboard still uses the full alias for legitimate `subctl auth` commands.
 - Existing accounts.conf rows aren't auto-cleaned; operators should edit by hand and move the key to `secrets.json`.
 

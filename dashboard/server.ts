@@ -629,13 +629,15 @@ function subctlUsageFetchAll(now: number): AccountUsageResult[] {
   if (_usageCache && now - _usageCache.fetchedAt < USAGE_CACHE_TTL_MS) {
     return _usageCache.data;
   }
-  // v2.8.18 — honour the backoff window. While backed off we return the
-  // last in-process cache (if any) without spawning a subprocess. If that
-  // cache is also empty, an empty array is returned — downstream
-  // stale-fallback logic in subctlUsageApplyFallback() still substitutes
-  // per-alias last-good entries from `_usageLastGood`.
+  // v2.8.18 — honour the backoff window. While backed off we don't spawn
+  // a subprocess; we re-run the stale-fallback against `_usageLastGood`
+  // with an empty parsed[] so `stale_age_ms` is recomputed for every
+  // /api/state call (CodeRabbit pass-1 Fix 3 — without this, stale_age_ms
+  // gets frozen at the value computed when the cache was last filled and
+  // the UI shows "stale 5m" for the entire backoff window). Cheap — just
+  // a Map iteration.
   if (now < _usagePollBackoffUntil) {
-    return _usageCache?.data ?? [];
+    return subctlUsageApplyFallback([], now);
   }
   let parsed: AccountUsageResult[] = [];
   try {
@@ -685,8 +687,22 @@ function subctlUsageFetchAll(now: number): AccountUsageResult[] {
 // v2.8.18 — for any alias whose fresh fetch returned ok:false, substitute
 // the cached last-good entry tagged stale. For ok:true entries, update the
 // cache.
+//
+// CodeRabbit pass-1 fixes:
+//   Fix 2: also synthesize entries for cached aliases the fresh-fetch
+//          omitted entirely (e.g. `subctl usage --json` returned []
+//          because the bash CLI itself failed before reaching all
+//          aliases). Without this, those cached good entries silently
+//          vanish from /api/state.
+//   Fix 4: stale entries are tagged `ok: false`. The dashboard render
+//          path uses `stale` / `usage_stale` (not `ok`), so the cells
+//          still show their cached numbers + "·stale Xm". But
+//          recordUsageSnapshot() gates on `u.ok` and would otherwise
+//          append the SAME cached entry to usage-history.jsonl every
+//          5-min tick during a 429 storm — exploding the history file
+//          with synthetic samples.
 function subctlUsageApplyFallback(parsed: AccountUsageResult[], now: number): AccountUsageResult[] {
-  return parsed.map((u) => {
+  const out: AccountUsageResult[] = parsed.map((u) => {
     if (u.ok && u.usage) {
       _usageLastGood.set(u.alias, { entry: u, at_ms: now });
       return u;
@@ -696,7 +712,7 @@ function subctlUsageApplyFallback(parsed: AccountUsageResult[], now: number): Ac
     return {
       alias: u.alias,
       cfg_dir: u.cfg_dir,
-      ok: true,
+      ok: false,                            // Fix 4 — synthetic, not fresh
       usage: cached.entry.usage,
       error: u.error,
       stale: true,
@@ -704,6 +720,23 @@ function subctlUsageApplyFallback(parsed: AccountUsageResult[], now: number): Ac
       last_good_at_ms: cached.at_ms,
     };
   });
+
+  // Fix 2 — fold in cached aliases the fresh-fetch dropped entirely.
+  const seenAliases = new Set(out.map((u) => u.alias));
+  for (const [alias, cached] of _usageLastGood) {
+    if (seenAliases.has(alias)) continue;
+    out.push({
+      alias,
+      cfg_dir: cached.entry.cfg_dir,
+      ok: false,                            // Fix 4 — synthetic, not fresh
+      usage: cached.entry.usage,
+      error: "no fresh fetch result — using cached",
+      stale: true,
+      stale_age_ms: Math.max(0, now - cached.at_ms),
+      last_good_at_ms: cached.at_ms,
+    });
+  }
+  return out;
 }
 
 function usageForAlias(alias: string, all: AccountUsageResult[]): UsageEntry | null {
