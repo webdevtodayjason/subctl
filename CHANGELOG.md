@@ -6,7 +6,7 @@ Bundle of two operator-validated bugs caught on M3 + local dashboards today.
 
 **API key as alias (privacy).** Someone running `subctl accounts add openrouter <key>` previously got the API key stored as the account alias, then the dashboard rendered it in plain text. Now:
 - `subctl accounts add` rejects aliases matching `^sk-`, `^pk-`, or `^Bearer\s` with a hint to use `subctl secrets set` instead.
-- The dashboard defense-in-depths via `dashboard/public/lib/redact.js` — any alias rendered to the UI that matches an API-key prefix is masked to `sk-or-v1-…d13f2cf98` (12 prefix + 8 suffix). Copy-to-clipboard still uses the full alias for legitimate `subctl auth` commands.
+- The dashboard defense-in-depths via `dashboard/public/lib/redact.js` — any alias rendered to the UI that matches an API-key prefix is masked to `sk-or-v1-…13f2cf98` (12 prefix + 8 suffix). Copy-to-clipboard still uses the full alias for legitimate `subctl auth` commands.
 - Existing accounts.conf rows aren't auto-cleaned; operators should edit by hand and move the key to `secrets.json`.
 
 **Usage data disappears on Anthropic 429 (resilience).** Anthropic rate-limits `/api/oauth/usage` aggressively. Before this fix, the dashboard rendered blank dashes ("all accounts brand new") when fresh fetch failed, even with days of valid polling history available. Now:

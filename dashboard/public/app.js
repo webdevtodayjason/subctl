@@ -320,6 +320,9 @@
   // displayed text is masked).
   function redactAlias(s) {
     if (typeof s !== "string" || s.length === 0) return s;
+    // Match common API-key prefixes; redact to prefix(12)…suffix(8).
+    // Long enough to disambiguate, short enough that the screenshot
+    // doesn't leak credentials.
     if (/^(sk-|pk-|Bearer\s)/i.test(s)) {
       if (s.length <= 16) return s.slice(0, 4) + "…" + s.slice(-3);
       return s.slice(0, 12) + "…" + s.slice(-8);

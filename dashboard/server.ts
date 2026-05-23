@@ -669,6 +669,12 @@ function subctlUsageFetchAll(now: number, opts?: { forceRefresh?: boolean }): Ac
   if (!forceRefresh && now < _usagePollBackoffUntil) {
     return subctlUsageApplyFallback([], now);
   }
+  // CodeRabbit pass-3 Fix 4 — track whether the fetch genuinely succeeded.
+  // Hard errors (spawnSync error, non-zero exit, JSON parse throw) used to
+  // collapse `parsed = []` and downstream code treated that as a clean
+  // zero-429 sample, wrongly CLEARING the 429 backoff state. A hard error
+  // is not a successful fetch — preserve the backoff window across it.
+  let fetchSucceeded = false;
   let parsed: AccountUsageResult[] = [];
   try {
     const r = spawnSync(SUBCTL_BIN, ["usage", "--json"], {
@@ -676,12 +682,13 @@ function subctlUsageFetchAll(now: number, opts?: { forceRefresh?: boolean }): Ac
       timeout: 12_000,
     });
     if (r.error || (typeof r.status === "number" && r.status !== 0)) {
-      parsed = [];
+      // hard failure — leave parsed=[], DON'T touch backoff
     } else {
       parsed = JSON.parse(r.stdout || "[]") as AccountUsageResult[];
+      fetchSucceeded = true;
     }
   } catch {
-    parsed = [];
+    // parse threw — leave parsed=[], DON'T touch backoff
   }
 
   // Stale-fallback first — substitute cached entries for any failed alias
@@ -704,7 +711,9 @@ function subctlUsageFetchAll(now: number, opts?: { forceRefresh?: boolean }): Ac
     console.warn(
       `[usage-poll] ${count429} alias(es) returned 429 — backing off ${Math.round(backoff / 60_000)}min (consecutive=${_usagePollConsecutive429s})`,
     );
-  } else if (_usagePollConsecutive429s > 0 || _usagePollBackoffUntil > 0) {
+  } else if (fetchSucceeded && (_usagePollConsecutive429s > 0 || _usagePollBackoffUntil > 0)) {
+    // Fix 4 — only clear backoff on a real success with zero 429s.
+    // !fetchSucceeded && count429===0 → hard error: preserve backoff.
     console.warn(`[usage-poll] backoff cleared (no 429s this tick)`);
     _usagePollConsecutive429s = 0;
     _usagePollBackoffUntil = 0;
@@ -731,6 +740,12 @@ function subctlUsageFetchAll(now: number, opts?: { forceRefresh?: boolean }): Ac
 //          append the SAME cached entry to usage-history.jsonl every
 //          5-min tick during a 429 storm — exploding the history file
 //          with synthetic samples.
+// CodeRabbit pass-3 fix:
+//   Fix 3: when BOTH parsed and _usageLastGood are empty (fresh install,
+//          fresh restart with no prior good fetch), synthesize a "no
+//          data yet" row per configured claude account so the dashboard
+//          renders an error indicator instead of dropping the row
+//          silently.
 function subctlUsageApplyFallback(parsed: AccountUsageResult[], now: number): AccountUsageResult[] {
   const out: AccountUsageResult[] = parsed.map((u) => {
     if (u.ok && u.usage) {
@@ -765,7 +780,32 @@ function subctlUsageApplyFallback(parsed: AccountUsageResult[], now: number): Ac
       stale_age_ms: Math.max(0, now - cached.at_ms),
       last_good_at_ms: cached.at_ms,
     });
+    seenAliases.add(alias);
   }
+
+  // CodeRabbit pass-3 Fix 3 — when BOTH parsed and _usageLastGood produce
+  // nothing for a configured claude account (brand-new install, fresh
+  // restart with no successful fetch yet, or every fetch has been
+  // failing), synthesize a "no data yet" row so the dashboard renders
+  // a per-row error indicator instead of dropping the row silently.
+  // Only claude accounts emit usage; non-claude (gemini/openai) get
+  // null usage naturally and are intentionally omitted here.
+  try {
+    const { accounts: configured } = parseAccountsConf();
+    for (const acct of configured) {
+      if (acct.provider !== "claude") continue;
+      if (seenAliases.has(acct.alias)) continue;
+      out.push({
+        alias: acct.alias,
+        cfg_dir: acct.config_dir,
+        ok: false,
+        error: "usage fetch failed — no data yet",
+        stale: false,                       // never had good data; not stale
+      });
+      seenAliases.add(acct.alias);
+    }
+  } catch { /* best-effort — parseAccountsConf is normally pure */ }
+
   return out;
 }
 
