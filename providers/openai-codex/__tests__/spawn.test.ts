@@ -259,28 +259,37 @@ describe("teams.sh --dry-run + provider mismatch checks", () => {
     expect(r.stderr).toContain("requires -a <alias>");
   });
 
-  test("refuses -o / --orchestrator with the no-Team*-surface explanation", async () => {
+  test("accepts -o / --orchestrator as a boolean no-op with an info-warn (canonical smoke shape)", async () => {
+    // The spec's canonical smoke command is `subctl teams codex -a <a> -o -y`.
+    // Codex has no Team*/SendMessage surface, so the flag is meaningless,
+    // but the dispatcher must tolerate it so HTTP-spawn + dashboard can
+    // pass uniform argv to every provider.
     const r = await runBash(
       d,
-      `. "${TEAMS_SH}"
-       provider_openai_codex_teams -a codex-test -o --dry-run`,
+      `cd "${d.projectRoot}"
+       . "${TEAMS_SH}"
+       provider_openai_codex_teams -a codex-test -o -y --dry-run`,
     );
-    expect(r.code).not.toBe(0);
-    expect(r.stderr).toContain("does not support --orchestrator");
+    expect(r.code).toBe(0);
+    expect(r.stdout + r.stderr).toContain("--orchestrator accepted but no-op");
+    // -y still wires through to YOLO mode.
+    expect(r.stdout).toContain("Skip-perms:   true");
   });
 
-  test("refuses -c / --continue with the codex-resume hint", async () => {
+  test("accepts -c / --continue as a boolean no-op with an info-warn", async () => {
+    // Same shape as -o. -c is `--continue` (boolean), not `--cwd`.
     const r = await runBash(
       d,
-      `. "${TEAMS_SH}"
+      `cd "${d.projectRoot}"
+       . "${TEAMS_SH}"
        provider_openai_codex_teams -a codex-test -c --dry-run`,
     );
-    expect(r.code).not.toBe(0);
-    expect(r.stderr).toContain("does not support --continue");
-    expect(r.stderr).toContain("codex resume");
+    expect(r.code).toBe(0);
+    expect(r.stdout + r.stderr).toContain("--continue accepted but no-op");
+    expect(r.stdout + r.stderr).toContain("codex resume");
   });
 
-  test("refuses --template with the templates-land-later message", async () => {
+  test("refuses --template with the templates-land-later message (template TAKES a name, can't no-op)", async () => {
     const r = await runBash(
       d,
       `. "${TEAMS_SH}"

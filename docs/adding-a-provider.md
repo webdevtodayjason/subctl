@@ -223,15 +223,15 @@ Anatomy: `providers/openai-codex/`
 - **Update modal.** A periodic "Update available!" modal blocks the input prompt and requires keypress dismissal. `teams.sh` watches the pane capture for the modal copy and sends `2` + `Enter` (the "Skip" option) once per spawn.
 - **Ready marker.** Codex's TUI signals fully-booted state by rendering `Context <pct>% left` in the bottom status line. `teams.sh` polls for that substring (60s ceiling) before pasting the contract preamble + mandate. Analogous to Claude's `^❯` ready check.
 
-### Flags that DON'T translate from Claude
+### Flags that don't translate from Claude
 
-Codex CLI lacks several of Claude Code's surfaces. `teams.sh` rejects these flags loudly so HTTP-spawn callers don't silently get a stripped subset:
+Codex CLI lacks several of Claude Code's surfaces. `teams.sh` accepts the boolean flags as info-warned no-ops so HTTP-spawn callers + the dashboard can pass uniform argv to every provider; the template flag (which takes a NAMED argument) is rejected because silently eating the argument would surprise:
 
 | Claude flag | Codex behavior |
 |---|---|
-| `--orchestrator` / `-o` | Rejected. Codex has no `Team*` / `SendMessage` tool surface — workers are spec-driven single agents. |
-| `--continue` / `-c` | Rejected. Codex uses `codex resume <id>` as a subcommand (not a flag); wrap it later if needed. |
-| `--template` / `-t` | Rejected. Dev-team JSON/TOML templates encode Claude-specific skills + persona paths. Codex template support lands later. |
+| `--orchestrator` / `-o` | No-op with info-warn. Codex has no `Team*` / `SendMessage` tool surface — workers are spec-driven single agents. |
+| `--continue` / `-c` | No-op with info-warn. Codex uses `codex resume <id>` as a subcommand (not a flag); wrap it later if needed. |
+| `--template <name>` / `-t` | Rejected. Dev-team JSON/TOML templates encode Claude-specific skills + persona paths. Codex template support lands later. |
 
 ### Skip-perms mapping
 

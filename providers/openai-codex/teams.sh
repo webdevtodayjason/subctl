@@ -97,16 +97,23 @@ See providers/openai-codex/README.md for the multi-account model.
 EOF
         return 0
         ;;
-      # Flags Claude accepts but Codex CLI can't honor — fail loud so the
-      # operator (or HTTP-spawn flow) doesn't silently get a stripped subset.
+      # Flags Claude accepts but Codex CLI can't honor. The flag-set is
+      # the same shape as Claude/pi (so HTTP-spawn + dashboard send the
+      # same argv to every provider) but the semantics are absent on the
+      # Codex side. We accept the booleans silently with an info-warn so
+      # the operator sees the no-op but the spawn doesn't error.
       -c|--continue)
-        subctl_die "subctl teams codex does not support --continue. Codex CLI uses 'codex resume <id>' as a subcommand; wrap it later if needed."
+        subctl_warn "subctl teams codex: --continue accepted but no-op (Codex uses 'codex resume <id>' subcommand instead)."
+        shift
         ;;
       -o|--orchestrator)
-        subctl_die "subctl teams codex does not support --orchestrator. Codex CLI has no Team*/SendMessage tool surface; workers are spec-driven single agents."
+        subctl_warn "subctl teams codex: --orchestrator accepted but no-op (Codex has no Team*/SendMessage tool surface; workers are spec-driven single agents)."
+        shift
         ;;
       -t|--template|-T|--team-template)
-        subctl_die "subctl teams codex does not support templates yet ($1)."
+        # Templates take a NAMED argument; reject these because silently
+        # eating the template name as a positional would surprise.
+        subctl_die "subctl teams codex does not support templates yet ($1). Template support lands in a later v3.0 phase."
         ;;
       *) subctl_die "unknown teams option: $1" ;;
     esac

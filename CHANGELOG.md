@@ -15,13 +15,13 @@
 - `bin/subctl teams codex` dispatcher (also accepts `openai-codex` as alias for parity with `subctl auth openai-codex`).
 - `providers/openai-codex/__tests__/spawn.test.ts` — 18 tests covering dispatcher routing, arg parsing, HMAC secret on-disk shape (presence + 0600), idempotency (re-spawn reuses same secret), refusal of Claude-only flags (`-o`/`-c`/`--template`) with specific deprecation messages, and reporting-vocabulary presence in the contract source.
 
-**Flags that do NOT translate from Claude** — rejected loudly so HTTP-spawn callers don't silently get a stripped subset:
+**Flags that don't translate from Claude** — boolean flags are accepted as info-warned no-ops so HTTP-spawn callers can pass uniform argv to every provider without erroring; flags that take a named argument are rejected because silently eating the argument would surprise:
 
 | Claude flag | Codex behavior |
 |---|---|
-| `-o` / `--orchestrator` | Rejected. Codex has no `Team*` / `SendMessage` tool surface. |
-| `-c` / `--continue` | Rejected. Codex uses `codex resume <id>` as a subcommand. |
-| `-t` / `--template` | Rejected. Templates land in a later v3.0 phase. |
+| `-o` / `--orchestrator` | **No-op** with info-warn. Codex has no `Team*` / `SendMessage` tool surface. |
+| `-c` / `--continue` | **No-op** with info-warn. Codex uses `codex resume <id>` as a subcommand. |
+| `-t` / `--template <name>` | Rejected. Templates land in a later v3.0 phase. |
 
 **Skip-perms mapping:** `-y` / `--yes` → `--dangerously-bypass-approvals-and-sandbox` (Codex's YOLO mode equivalent of Claude's `--dangerously-skip-permissions`).
 
