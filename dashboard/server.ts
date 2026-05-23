@@ -5365,6 +5365,19 @@ const server = Bun.serve({
       // via SUBCTL_TO_PI_AI so existing profiles still attach.
       const catalog: CatalogProvider[] = listCatalogProviders();
 
+      // v2.9.1 — Provider Model Catalog Phase 3 — aggregator routing.
+      // Hard-coded set of provider ids that route through an aggregator
+      // catalog (one upstream serves ~30 downstream providers). Mirrors
+      // AGGREGATOR_PROVIDER_IDS in components/master/aggregator-clients.ts;
+      // keep the two lists in sync. The flag gates the "Browse Upstream
+      // Catalog" button in the Providers tab UI.
+      const AGGREGATOR_PROVIDER_IDS = new Set([
+        "openrouter",
+        "amazon-bedrock",
+        "vercel-ai-gateway",
+        "cloudflare-ai-gateway",
+      ]);
+
       // Build a profiles-by-pi-ai-id index that respects the alias map.
       const profilesByPiId: Record<string, Array<Record<string, unknown>>> = {};
       for (const [legacyOrCanonical, profiles] of Object.entries(profilesByProvider)) {
@@ -5382,6 +5395,9 @@ const server = Bun.serve({
           auth_method: entry.auth_method,
           model_count: entry.model_count,
           available: entry.available,
+          // v2.9.1 Phase 3 — routes through an aggregator's upstream
+          // catalog (browse-and-pick UX in Providers tab).
+          is_aggregator: AGGREGATOR_PROVIDER_IDS.has(entry.id),
           // v2.8.8 Phase 1a — surface the EFFECTIVE default model (operator
           // override if set, else shipped fallback) plus its source so the
           // UI can render "★ operator" vs "shipped" badges. The default_model
