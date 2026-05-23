@@ -620,8 +620,13 @@ export async function mount({ root: _root }) {
        ${unchangedHtml}`;
   }
 
+  // CodeRabbit pass-8: guard against backdrop-click dismissal while
+  // apply is running. Backdrop handler checks this flag.
+  let _applyInProgress = false;
+
   async function applyConsolidatorProposal(data, logHost, applyBtn, cancelBtn) {
     if (!data || !data.ok) return;
+    _applyInProgress = true;
     applyBtn.disabled = true;
     cancelBtn.disabled = true;
     const log = (text, cls = "") => {
@@ -740,6 +745,10 @@ export async function mount({ root: _root }) {
     log(`done · ${approves} approved, ${mergedRejects} merged-rejected, ${droppedRejects} dropped-rejected, ${failures} failed`,
       failures > 0 ? "err" : "ok");
 
+    // CodeRabbit pass-8: clear the in-progress flag so backdrop click
+    // can dismiss again. Done BEFORE re-enabling buttons + reassigning
+    // applyBtn.onclick (which is the "Close" handler).
+    _applyInProgress = false;
     applyBtn.disabled = false;
     cancelBtn.disabled = false;
     applyBtn.textContent = "Close";
@@ -788,8 +797,11 @@ export async function mount({ root: _root }) {
     consolidatorModalNode = node;
 
     // Click-outside-to-close (only on backdrop, not on modal itself).
+    // CodeRabbit pass-8: don't dismiss while apply is running — otherwise
+    // an accidental backdrop click mid-apply would orphan the modal state
+    // (apply continues but operator loses visibility into the log).
     node.addEventListener("click", (e) => {
-      if (e.target === node) closeConsolidatorModal();
+      if (e.target === node && !_applyInProgress) closeConsolidatorModal();
     });
     const closeBtn = node.querySelector("#mem-consolidate-close");
     const cancelBtn = node.querySelector("#mem-consolidate-cancel");

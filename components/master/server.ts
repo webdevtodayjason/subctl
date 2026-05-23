@@ -4295,6 +4295,21 @@ async function main() {
           }),
           llmFetcher: async (messages, opts) => {
             const token = getApiKeyForProvider(reviewerCfg.provider);
+            // CodeRabbit pass-8: fail fast when credentials are required
+            // but missing. openrouter and xai-oauth require real tokens;
+            // an undefined here would result in an unauthenticated request
+            // that the upstream rejects with a confusing 401. Surface a
+            // clear configuration error instead.
+            const requiresAuth =
+              reviewerCfg.provider === "openrouter" ||
+              reviewerCfg.provider === "xai-oauth";
+            if (requiresAuth && (token === undefined || token === "not-needed")) {
+              throw new Error(
+                `missing API key for reviewer provider "${reviewerCfg.provider}". ` +
+                  `Set ${reviewerCfg.provider === "openrouter" ? "openrouter_api_key" : "xai_oauth_*"} ` +
+                  `in ~/.config/subctl/secrets.json or via the dashboard Secrets panel.`,
+              );
+            }
             return memoryKernelSupervisorFetcher(messages, {
               ...opts,
               baseUrl,
