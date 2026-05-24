@@ -19,6 +19,8 @@ import { existsSync, readFileSync, appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
+import { removePendingAsk } from "../components/evy/asks-pending";
+
 const HOME = homedir();
 const NOTIFY_CONFIG = join(HOME, ".config", "subctl", "notify.json");
 const INBOX_PATH    = join(HOME, ".config", "subctl", "inbox.jsonl");
@@ -29,14 +31,26 @@ interface NotifyConfig {
   telegram_chat_id: string;
 }
 
-interface InboxEntry {
+// v3.2.0: widened to accept `source: "buddy"` and `type: "button"` for
+// externally-injected replies (subctl-buddy bridge, `subctl notify reply`,
+// `POST /api/notify/reply`). `from_id` is nullable because buddy replies
+// have no Telegram user id. See docs/asks-pending-surface.md for the
+// canonical reply schema.
+export interface InboxEntry {
   ts: string;                        // ISO8601 UTC
-  source: "message" | "callback_query";
-  type: "text" | "yesno-answer" | "choice-answer" | "text-answer" | "raw";
+  source: "message" | "callback_query" | "buddy" | string;
+  type:
+    | "text"
+    | "yesno-answer"
+    | "choice-answer"
+    | "text-answer"
+    | "raw"
+    | "button"
+    | string;
   question_id: string | null;        // tag from the original ask, if matched
   answer: string | null;             // the data payload (button id, yes/no, text)
   answer_label: string | null;       // human-readable label, e.g. "migrate-and-backfill"
-  from_id: number;
+  from_id: number | null;
   from_name: string;
   raw_text: string | null;           // user's literal text (for replies/asks-text)
   acked: boolean;                    // mark via subctl notify inbox-ack <id>
@@ -218,6 +232,13 @@ async function handleUpdate(update: any, token: string) {
       acked: false,
     };
     appendInbox(entry);
+    // v3.2.0 — text-answer with a matched question_id resolves the ask;
+    // drop the corresponding pending-asks record so consumers (the
+    // subctl-buddy bridge etc.) see the ask close. Best-effort: failure
+    // here doesn't block inbox persistence.
+    if (questionId) {
+      void removePendingAsk(questionId).catch(() => { /* swallow */ });
+    }
     return;
   }
 
@@ -255,6 +276,11 @@ async function handleUpdate(update: any, token: string) {
       acked: false,
     };
     appendInbox(entry);
+    // v3.2.0 — inline-button tap resolves the ask; drop the
+    // corresponding pending-asks record. Best-effort.
+    if (questionId) {
+      void removePendingAsk(questionId).catch(() => { /* swallow */ });
+    }
 
     // Always answer the callback so Telegram's spinner stops on the user's phone.
     try {
@@ -489,4 +515,53 @@ export function ackInboxEntry(questionId: string): boolean {
   if (e.acked) return true;
   appendInbox({ ...e, acked: true, ts: new Date().toISOString() });
   return true;
+}
+
+// ─── v3.2.0 — external reply injection ────────────────────────────────────
+//
+// The subctl-buddy bridge (M5Stack ESP32 device) reads pending asks from
+// `/api/asks/pending` and submits answers via `POST /api/notify/reply`,
+// which forwards here. This is also how the `subctl notify reply` CLI
+// verb writes its entries when the dashboard is reachable.
+//
+// Semantically identical to a Telegram tap: appends an inbox entry that
+// `_subctl_notify_inbox_wait` (the bash --wait poll loop) will see, and
+// removes the matching record from asks-pending.jsonl. Returns the new
+// entry so the HTTP handler can echo it back.
+
+export interface ExternalReplyInput {
+  question_id: string;
+  answer: string;
+  /** Display label; defaults to `answer`. */
+  answer_label?: string | null;
+  /** Source tag. Default `"buddy"`. Use any non-Telegram identifier. */
+  source?: string;
+  /** Human-readable label for who/what answered. */
+  from_name?: string | null;
+}
+
+export async function injectExternalReply(
+  input: ExternalReplyInput,
+): Promise<InboxEntry> {
+  const ts = new Date().toISOString();
+  const entry: InboxEntry = {
+    ts,
+    source: input.source ?? "buddy",
+    type: "button",
+    question_id: input.question_id,
+    answer: input.answer,
+    answer_label: input.answer_label ?? input.answer,
+    from_id: null,
+    from_name: input.from_name ?? "",
+    raw_text: input.answer,
+    acked: false,
+  };
+  appendInbox(entry);
+  try {
+    await removePendingAsk(input.question_id);
+  } catch {
+    // Best-effort — failure here doesn't invalidate the inbox entry,
+    // which is the load-bearing artifact the --wait poll loop checks.
+  }
+  return entry;
 }
