@@ -1362,6 +1362,63 @@ export async function mount({ root: _root }) {
       hideChatThinking(log);
     }
 
+    // ── v3.1.0 Kernel Fitness Phase 1: engagement reporter ─────────────────
+    // Best-effort POST to /api/evy/engagement. Never throws into the
+    // caller — engagement is a measurement layer and must not block
+    // the operator's primary interaction (replying, dismissing).
+    // The dashboard is structurally a WRITER of this ledger; there is
+    // no GET counterpart by design (negative criterion).
+    function postEvyEngagement(surfaceId, outcome, emittedAtIso) {
+      if (!surfaceId || (outcome !== "acted" && outcome !== "acked")) return;
+      let latency_ms;
+      if (emittedAtIso) {
+        const t = Date.parse(emittedAtIso);
+        if (Number.isFinite(t)) latency_ms = Math.max(0, Date.now() - t);
+      }
+      fetch("/api/evy/engagement", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          surface_id: surfaceId,
+          outcome,
+          source: "dashboard_click",
+          latency_ms,
+        }),
+      }).catch(() => { /* best-effort */ });
+    }
+
+    // Attach a small "dismiss" affordance to an assistant bubble so the
+    // operator can record `acked` without typing a reply. After click
+    // the button is removed and the bubble is marked engaged so a
+    // later reply doesn't double-fire on the same surface.
+    function attachDismissButton(bubbleEl, surfaceId, emittedAtIso) {
+      if (!bubbleEl || !surfaceId) return;
+      if (bubbleEl.dataset.engagementRecorded === "1") return;
+      const body = bubbleEl.querySelector(".master-msg-body");
+      if (!body) return;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "chat-dismiss-btn";
+      btn.title = "Mark this response as acknowledged (acked)";
+      btn.setAttribute("aria-label", "Dismiss / acknowledge this response");
+      btn.textContent = "dismiss";
+      btn.addEventListener("click", () => {
+        if (bubbleEl.dataset.engagementRecorded === "1") return;
+        bubbleEl.dataset.engagementRecorded = "1";
+        postEvyEngagement(surfaceId, "acked", emittedAtIso);
+        btn.remove();
+      });
+      // Inline tail of the bubble body. Styling is intentionally minimal
+      // (a tiny right-aligned link-like control) so existing CSS rules
+      // continue to flow normally; theme rules can target
+      // `.chat-dismiss-btn` for further styling later.
+      const wrap = document.createElement("span");
+      wrap.className = "chat-dismiss-wrap";
+      wrap.appendChild(document.createTextNode(" "));
+      wrap.appendChild(btn);
+      body.appendChild(wrap);
+    }
+
     // v2.8.0 — voice play button injected onto Evy's bubble body.
     // Click → POST /api/voice/render with the text; on success swap a
     // <audio controls autoplay> into the bubble's footer. Errors stay
@@ -1549,6 +1606,29 @@ export async function mount({ root: _root }) {
       });
       es.addEventListener("message_end", () => {
         endAssistantBubble();
+      });
+      // ── v3.1.0 Kernel Fitness Phase 1: surface_emitted ──────────────────
+      // The master emits one of these after each chat-sourced turn
+      // completes. Latch the surface_id onto the most-recent assistant
+      // bubble (the .master-msg-assistant element closest to the tail
+      // that doesn't already have one). The reply submission path and
+      // the dismiss button below read this attribute to attribute
+      // engagement back through POST /api/evy/engagement. No fitness
+      // data flows in the reverse direction.
+      es.addEventListener("surface_emitted", (e) => {
+        try {
+          const d = JSON.parse(e.data);
+          if (!d || !d.surface_id || d.surface_type !== "chat_response") return;
+          const bubbles = log.querySelectorAll(".master-msg-assistant");
+          for (let i = bubbles.length - 1; i >= 0; i--) {
+            const b = bubbles[i];
+            if (b.dataset.surfaceId) continue;
+            b.dataset.surfaceId = d.surface_id;
+            b.dataset.surfaceEmittedAt = d.ts || new Date().toISOString();
+            attachDismissButton(b, d.surface_id, d.ts);
+            break;
+          }
+        } catch { /* ignore — engagement is best-effort */ }
       });
       es.addEventListener("tool_result", (e) => {
         try {
@@ -2002,6 +2082,22 @@ export async function mount({ root: _root }) {
 
     async function sendChat(text) {
       sendBtn.disabled = true;
+      // v3.1.0 — operator is about to submit a reply. The most-recent
+      // un-engaged assistant bubble (if any) counts as `acted` —
+      // operator engaged enough to keep the conversation going. Mark
+      // it before painting the user bubble so the chronology is right
+      // in the ledger.
+      try {
+        const bubbles = log.querySelectorAll(".master-msg-assistant");
+        for (let i = bubbles.length - 1; i >= 0; i--) {
+          const b = bubbles[i];
+          const sid = b.dataset.surfaceId;
+          if (!sid || b.dataset.engagementRecorded === "1") continue;
+          b.dataset.engagementRecorded = "1";
+          postEvyEngagement(sid, "acted", b.dataset.surfaceEmittedAt);
+          break;
+        }
+      } catch { /* engagement is best-effort */ }
       // Build the visible message — include attachment names if any.
       const attachmentIds = pendingAttachments.map((a) => a.id);
       const attachLabels = pendingAttachments.map((a) => `📎 ${a.filename}`).join("  ");

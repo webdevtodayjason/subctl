@@ -11,6 +11,14 @@ import { join } from "node:path";
 
 import { renderVoice } from "./voice-render";
 import { stripReasoningChannels } from "../text-sanitize";
+// v3.1.0 — Kernel Fitness Phase 1: instrument every outbound
+// Telegram message as a surface emission so a later inbound
+// reply can be attributed as engagement. Write-only.
+import {
+  hashPayload,
+  recordSurfaceEmitted,
+} from "../engagement-tracker";
+import { notePendingTelegramSurface } from "../evy-notify-listener";
 
 const EVY_NOTIFY_CONFIG =
   process.env.SUBCTL_EVY_NOTIFY_CONFIG ??
@@ -88,7 +96,23 @@ export async function sendTelegramVoice(
     description?: string;
   };
   if (!json.ok) return { ok: false, error: json.description ?? "Telegram API error" };
-  return { ok: true, message_id: json.result?.message_id };
+  const message_id = json.result?.message_id;
+  // v3.1.0 — record this outbound voice note as a telegram_message
+  // surface emission. surface_id is Telegram's own message_id (stable
+  // and unique per chat); payload_hash covers the caption since voice
+  // bytes aren't a useful hash target.
+  if (typeof message_id === "number") {
+    try {
+      const surface_id = String(message_id);
+      recordSurfaceEmitted(
+        surface_id,
+        "telegram_message",
+        hashPayload(opts.caption ?? `voice:${audioPath}`),
+      );
+      notePendingTelegramSurface(surface_id);
+    } catch { /* best-effort */ }
+  }
+  return { ok: true, message_id };
 }
 
 async function sendMessage(
@@ -119,7 +143,22 @@ async function sendMessage(
     description?: string;
   };
   if (!json.ok) return { ok: false, error: json.description ?? "Telegram API error" };
-  return { ok: true, message_id: json.result?.message_id };
+  const message_id = json.result?.message_id;
+  // v3.1.0 — record outbound text message as a telegram_message
+  // surface. surface_id is Telegram's own message_id; payload_hash
+  // covers the sanitized text.
+  if (typeof message_id === "number") {
+    try {
+      const surface_id = String(message_id);
+      recordSurfaceEmitted(
+        surface_id,
+        "telegram_message",
+        hashPayload(sanitized),
+      );
+      notePendingTelegramSurface(surface_id);
+    } catch { /* best-effort */ }
+  }
+  return { ok: true, message_id };
 }
 
 export const telegramTools = {

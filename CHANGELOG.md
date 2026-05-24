@@ -1,3 +1,46 @@
+## [3.1.0] — 2026-05-24
+
+### `feat(fitness): engagement instrumentation (Kernel Fitness Phase 1)`
+
+First phase of the Kernel Fitness Initiative. Adds `engagement-ledger.jsonl` capturing `acted | acked | ignored` outcomes against every surface Evy emits to the operator. This is the foundation of the fitness signal Phases 2–6 will build on.
+
+**Surfaces instrumented:**
+
+- **Chat responses** (dashboard) — operator reply = `acted`; dismiss button = `acked`; 24h timeout = `ignored`.
+- **Telegram messages** — any inbound free-text reply = `acted` against the most-recent un-engaged outbound; 24h timeout = `ignored`. Inline-button (`telegram_button` source) is reserved in the types for forward compatibility; no inline keyboards are sent today.
+- **Plan-approval requests** — `approve` = `acted`; `reject` = `acked`; `expired` = `ignored`.
+
+**Files added:**
+
+- `components/evy/engagement-tracker.ts` — `recordSurfaceEmitted` / `recordEngagement` / `runTimeoutSweeper` / `makeSurfaceId` / `hashPayload`. Pure data-plane, no LLM calls, append-only JSONL at `~/.config/subctl/evy/engagement-ledger.jsonl`. The module exports **no** reader API — only the timeout sweeper reads the ledger, and the read result never leaves the function.
+- `components/evy/engagement-types.ts` — `SurfaceEmittedEntry` / `EngagementEntry` / `LedgerEntry` / `SurfaceType` / `Outcome` / `Source` type declarations.
+- `components/evy/__tests__/engagement-tracker.test.ts` — 11 tests covering emission, engagement, sweeper behaviour, idempotency, and deterministic `makeSurfaceId`.
+- `components/evy/__tests__/engagement-ledger-isolation.test.ts` — load-bearing red-team test (see below).
+
+**Files touched:**
+
+- `components/evy/server.ts` — surface emission on chat/MCP-sourced turns (broadcast new `surface_emitted` SSE event); hourly timeout-sweeper watchdog registration.
+- `components/evy/plan-approvals.ts` — surface emission on `recordApprovalRequest`; engagement entries on approve/reject/expire transitions.
+- `components/evy/evy-notify-listener.ts` — bounded in-memory ring of recently-emitted Telegram surfaces; inbound free-text dequeues the oldest and writes `acted`.
+- `components/evy/tools/telegram.ts` — surface emission on every outbound text + voice message.
+- `dashboard/server.ts` — new `POST /api/evy/engagement` endpoint. Write-only — no GET counterpart by design.
+- `dashboard/public/tabs/chat.js` — SSE listener for `surface_emitted` latches `surface_id` onto the active assistant bubble; reply submission posts `acted`; new dismiss button posts `acked`.
+
+**Negative criterion enforced.** The engagement ledger is WRITE-ONLY from Evy's perspective. No code path in `components/evy/server.ts:composeSystemPrompt`, `components/evy/tools/tier1-memory.ts:buildMemoryBlock`, `components/evy/personality.ts:buildPersonalityFragment`, `components/evy/context-hydration.ts:hydrateContext`, or `components/evy/memory-kernel-reviewer.ts:buildReviewerSystemPrompt` reads or imports the tracker. The red-team test in `engagement-ledger-isolation.test.ts` enforces this on two axes:
+
+1. The tracker module exposes no reader-shaped exports (no `read*`, `load*`, `get*` aside from the path introspector, `list*`, `scan*`, `fetch*`, `query*`, `find*`).
+2. A surgical body-grep of each named function body in the supervisor-prompt-assembly path asserts zero references to tracker symbols.
+
+If either guard regresses, the whole Kernel Fitness design is broken — back out the offending change before merging.
+
+**Forward compatibility.** Inline-button engagement for Telegram (`source: "telegram_button"`) is reserved in the types but not wired; subctl currently sends no inline keyboards. Phase 1.5 can add `callback_query` handling without schema change.
+
+Phase 2 (fitness writer + stall composite, target v3.2.0) will be the first reader of this ledger — and it runs as a separate component, not in the supervisor-prompt path.
+
+Closes Phase 1 of `Initiatives/Kernel Fitness — engagement + refiner + judge.md`.
+
+---
+
 ## [3.0.1] — 2026-05-24
 
 ### `fix(accounts): allowlist all registered providers in lib/accounts.sh validation`

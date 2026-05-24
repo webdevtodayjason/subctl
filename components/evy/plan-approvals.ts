@@ -37,6 +37,15 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 
+// v3.1.0 — Kernel Fitness Phase 1: thread plan-approval engagement
+// outcomes (approve / reject / timeout) through the engagement
+// ledger. Write-only — no read API.
+import {
+  hashPayload,
+  recordEngagement,
+  recordSurfaceEmitted,
+} from "./engagement-tracker";
+
 export type PendingApprovalStatus =
   | "pending"
   | "approved"
@@ -189,6 +198,21 @@ export function recordApprovalRequest(
   };
   _queue.set(id, entry);
   appendLog(entry);
+  // v3.1.0 — emit a `plan_approval_request` surface to the engagement
+  // ledger. Operator's later decision (approve / reject / timeout)
+  // becomes the matching engagement entry below. Best-effort: the
+  // tracker swallows its own errors and never throws.
+  try {
+    recordSurfaceEmitted(
+      id,
+      "plan_approval_request",
+      hashPayload(`${input.plan_summary}\n${input.plan_body}`),
+    );
+  } catch (err) {
+    console.error(
+      `[plan-approvals] engagement record failed: ${(err as Error).message}`,
+    );
+  }
   return { ...entry };
 }
 
@@ -262,6 +286,30 @@ function transition(
   if (feedback !== undefined) updated.feedback = feedback;
   _queue.set(id, updated);
   appendLog(updated);
+  // v3.1.0 — translate the decision into an engagement entry.
+  //   approve  → acted (operator followed through)
+  //   reject   → acked (operator engaged but didn't follow through)
+  //   expired  → ignored (timed out without engagement)
+  // Latency is the wall-clock gap between request and decision.
+  try {
+    const created = Date.parse(entry.created_at);
+    const decided = Date.parse(updated.decided_at!);
+    const latency_ms =
+      Number.isFinite(created) && Number.isFinite(decided) && decided >= created
+        ? decided - created
+        : undefined;
+    if (next === "approved") {
+      recordEngagement(id, "acted", "plan_approval_decision", latency_ms);
+    } else if (next === "rejected") {
+      recordEngagement(id, "acked", "plan_approval_decision", latency_ms);
+    } else if (next === "expired") {
+      recordEngagement(id, "ignored", "timeout_sweep", latency_ms);
+    }
+  } catch (err) {
+    console.error(
+      `[plan-approvals] engagement transition failed (${id}): ${(err as Error).message}`,
+    );
+  }
   return { ...updated };
 }
 

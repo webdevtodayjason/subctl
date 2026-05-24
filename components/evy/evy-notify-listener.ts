@@ -107,6 +107,10 @@ import {
   resetPreferences,
 } from "./preferences";
 import { redactForEgress } from "./memory";
+// v3.1.0 — Kernel Fitness Phase 1: route inbound Telegram messages
+// (operator's reply) into an engagement entry against the most-recent
+// outbound surface. Write-only.
+import { recordEngagement } from "./engagement-tracker";
 
 const HOME = homedir();
 const SUBCTL_CONFIG_DIR =
@@ -154,6 +158,43 @@ let _botUsername: string | null = null;
 
 const pendingMessages: OperatorMessage[] = [];
 const subscribers: MessageSubscriber[] = [];
+
+// v3.1.0 — small in-memory FIFO of recently-emitted Telegram surface
+// IDs that haven't been engaged yet. Outbound calls (from
+// `tools/telegram.ts`) record-and-push; an inbound message pops the
+// oldest un-engaged surface and records `acted` against it. The
+// timeout sweeper handles anything that drifts past 24h.
+//
+// Bounded to TELEGRAM_SURFACE_RING_CAP entries. Older entries are
+// dropped — the sweeper writes their `ignored` outcomes later.
+interface PendingTelegramSurface {
+  surface_id: string;
+  emitted_at: number; // epoch ms
+}
+const _pendingTelegramSurfaces: PendingTelegramSurface[] = [];
+const TELEGRAM_SURFACE_RING_CAP = 32;
+
+/**
+ * Called by `tools/telegram.ts` right after a successful outbound
+ * Telegram send. Records the Telegram `message_id` (as a string) so a
+ * later inbound from the operator can be attributed as `acted`
+ * against the most-recent un-engaged surface.
+ */
+export function notePendingTelegramSurface(message_id: string): void {
+  _pendingTelegramSurfaces.push({
+    surface_id: message_id,
+    emitted_at: Date.now(),
+  });
+  // Drop the oldest if we exceed the cap — sweeper covers timeouts.
+  while (_pendingTelegramSurfaces.length > TELEGRAM_SURFACE_RING_CAP) {
+    _pendingTelegramSurfaces.shift();
+  }
+}
+
+/** Test-only: clear the pending-telegram-surface ring. */
+export function _resetPendingTelegramSurfacesForTesting(): void {
+  _pendingTelegramSurfaces.length = 0;
+}
 
 export interface StartMasterListenerOptions {
   stateProvider?: StateProvider;
@@ -428,6 +469,29 @@ async function handleUpdate(update: any, token: string) {
     const reply = await handleBotCommand(text);
     await sendMessage(chatId, reply, token);
     return;
+  }
+
+  // v3.1.0 — operator sent a Telegram message. Attribute this as
+  // `acted` against the most-recent un-engaged Telegram surface in
+  // the in-memory ring. The Telegram API rarely sets
+  // `reply_to_message_id` for plain replies, so we treat any inbound
+  // free-text as engagement against the latest outbound. The 24h
+  // sweeper backstops anything that drifts.
+  try {
+    const pending = _pendingTelegramSurfaces.shift();
+    if (pending) {
+      const latency_ms = Date.now() - pending.emitted_at;
+      recordEngagement(
+        pending.surface_id,
+        "acted",
+        "telegram_reply",
+        latency_ms,
+      );
+    }
+  } catch (err) {
+    console.error(
+      `[master-notify] engagement attribution failed: ${(err as Error).message}`,
+    );
   }
 
   enqueueOperatorMessage({
