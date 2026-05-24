@@ -12,7 +12,7 @@
 //   Q1. RECEIVE HMAC-signed directives from Evy using subctl's EXISTING
 //       trust-marker contract (no new auth surface).
 //   Q2. EMIT pane output that subctl's EXISTING regex classifier reads
-//       (classifyWorkerReply in components/master/auto-nudge.ts).
+//       (classifyWorkerReply in components/evy/auto-nudge.ts).
 //   Q4. WRITE inbox events DIRECTLY to the team inbox.jsonl using the
 //       SAME shape Claude Code workers produce via the team_inbox tool.
 //
@@ -40,7 +40,7 @@
 //     delivery without a queue daemon.
 //   - The directives file lives under SUBCTL_STATE_DIR/teams/<team_id>/
 //     next to the existing hmac.secret — same dir, same chmod 600 perms,
-//     same GC sweep (components/master/team-gc.ts).
+//     same GC sweep (components/evy/team-gc.ts).
 
 import {
   existsSync,
@@ -61,7 +61,7 @@ import { homedir } from "node:os";
 import {
   verifyDirectiveMarker,
   parseDirectiveMarker,
-} from "../../../components/master/trust-marker";
+} from "../../../components/evy/trust-marker";
 
 // ─── env + paths ─────────────────────────────────────────────────────────
 
@@ -81,7 +81,7 @@ const INBOX_DIR =
   process.env.SUBCTL_TEAM_INBOX_DIR ??
   join(
     process.env.SUBCTL_CONFIG_DIR ?? join(homedir(), ".config", "subctl"),
-    "master",
+    "evy",
     "state",
     "inbox",
   );
@@ -97,7 +97,7 @@ if (!existsSync(DIRECTIVES_PATH)) {
 
 // ─── Q2: classifier-friendly status output ────────────────────────────────
 //
-// classifyWorkerReply (components/master/auto-nudge.ts) is a regex sweep
+// classifyWorkerReply (components/evy/auto-nudge.ts) is a regex sweep
 // over prose. The phrases that hit each kind are documented there:
 //   completed_idle: /idle by design/, /task complete/, /done with task/...
 //   blocked:        /stuck on/, /blocked on/, /can't proceed/

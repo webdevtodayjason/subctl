@@ -23,7 +23,7 @@
 //
 // Example:
 //   bun run evy-emit.ts picoder-demo investigate \
-//     "Audit token usage in components/master/server.ts and report top 3 hotspots"
+//     "Audit token usage in components/evy/server.ts and report top 3 hotspots"
 
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -31,7 +31,7 @@ import { join } from "node:path";
 import {
   ensureSecret,
   buildSignedDirective,
-} from "../../../components/master/trust-marker";
+} from "../../../components/evy/trust-marker";
 
 const [, , teamId, phase, ...bodyParts] = process.argv;
 if (!teamId || !phase || bodyParts.length === 0) {

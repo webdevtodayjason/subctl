@@ -8,7 +8,7 @@ concrete, runnable answers.
 
 | File | Purpose |
 |---|---|
-| `picoder-worker.ts` | The Bun worker. Reads HMAC-signed directives from a file, executes, writes inbox events. Reuses `components/master/trust-marker.ts` for verification. |
+| `picoder-worker.ts` | The Bun worker. Reads HMAC-signed directives from a file, executes, writes inbox events. Reuses `components/evy/trust-marker.ts` for verification. |
 | `evy-emit.ts` | Stand-in for Evy's `/api/orchestration/<team>/msg` route. Builds a signed directive and writes it to the worker's directives file. |
 | `demo.sh` | End-to-end driver — boots the worker, sends a good directive, sends a tampered directive, prints inbox + classifier output. |
 
@@ -22,7 +22,7 @@ bash demo.sh
 Last verified run (2026-05-23):
 - ✅ Good directive: HMAC verified → progress + done events written.
 - ✅ Tampered directive: HMAC verification FAILED → refused, error event written.
-- ✅ `classifyWorkerReply` (the real one from `components/master/auto-nudge.ts`) classified the worker's pane text as `completed_idle` without modification.
+- ✅ `classifyWorkerReply` (the real one from `components/evy/auto-nudge.ts`) classified the worker's pane text as `completed_idle` without modification.
 
 ## Cleanup
 
