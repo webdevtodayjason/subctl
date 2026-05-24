@@ -19,7 +19,7 @@ The active wave. Bug fixes from the bash-gate landing, the orchestrator persona 
 | 2.7.7 | system_subctl_knowledge tool (TOON breakdown) + baseUrl default fix + dashboard logo | Shipped |
 | 2.7.8 | policy floor (`preset = "generic"`) + bun path fallback + msg race fix | Shipped |
 | 2.7.9 | snapshot.project_root + trust-channel directive wrapper | In flight (pr20) |
-| 2.7.10 | team-docs master tools (`team_doc_*`, `team_decision_log`) | In flight (pr21) |
+| 2.7.10 | team-docs Evy tools (`team_doc_*`, `team_decision_log`) | In flight (pr21) |
 | 2.7.11 | chat tool-badges (neon glow) + thinking indicator | In flight (pr22) |
 | 2.7.12 | Evy persona rewrite + autonomous skills + proactive memory + eval harness | Queued |
 | 2.7.13 | Memori (BYODB sqlite) integration for Tier 3 conversational memory | Queued |
@@ -39,7 +39,7 @@ The architectural feature subctl was built for: actual multi-agent teams with de
 | Lead-side roster injection | The lead's system prompt knows its team at spawn time |
 | Developer personas | Each developer in `<project>/.claude/agents/<name>.md` with persona + skills baked in |
 | Per-developer tool scoping | Each developer constrained to their declared tools |
-| `subctl_team_dispatch` master tool | Lead dispatches by developer name, not generic Task() |
+| `subctl_team_dispatch` Evy tool | Lead dispatches by developer name, not generic Task() |
 | Stock templates | Ship 4-5: `full-stack-web`, `rust-api`, `data-pipeline`, `ml-research`, `infrastructure` |
 | Phase 3s capability bridge | Adopts Claude Code's agent-view substrate for visibility |
 

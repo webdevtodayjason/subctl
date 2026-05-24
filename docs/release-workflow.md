@@ -6,7 +6,7 @@ read from the same git history; nothing else.
 ## Source of truth
 
 - **`VERSION`** (repo root) — the version string. One line. Read by `lib/core.sh`,
-  `bin/subctl`, the dashboard, and the master daemon. Do not hardcode versions
+  `bin/subctl`, the dashboard, and Evy. Do not hardcode versions
   anywhere else.
 - **`CHANGELOG.md`** — the human-readable narrative. Every bump in `VERSION`
   needs a matching CHANGELOG section.
@@ -69,7 +69,7 @@ operator wants to remember, not for daily deltas.
 | Bump  | When                                                   | Examples                                                    |
 | ----- | ------------------------------------------------------ | ----------------------------------------------------------- |
 | patch (Z) | Bug fix, doc tweak, refactor, internal change, *adding a small file or wiring*, behavior tightening | Fix Docker check, self-heal stale hooks, copy a skill into the repo and wire its install, add a check column to the dashboard |
-| minor (Y) | A genuinely new user-visible feature that you'd announce | Master daemon ships, new CLI verb, new dashboard tab, plugin system goes live |
+| minor (Y) | A genuinely new user-visible feature that you'd announce | Evy ships, new CLI verb, new dashboard tab, plugin system goes live |
 | major (X) | Breaking change; config migration required; removal | Restructure providers.json schema, remove a CLI verb, change auth model |
 
 A patch bump is the default — most days produce 1–5 patch bumps. A
@@ -100,7 +100,7 @@ later, add `git tag v$(cat VERSION) && git push --tags` to the workflow.
 
 - `subctl version` — CLI: prints version + branch + SHA + dirty flag
 - dashboard sidebar header — `v{VERSION}` next to the brand name
-- master daemon `/health` — `version` field
+- Evy's `/health` endpoint — `version` field
 - `subctl doctor` — header line
 - launchd log lines — boot announcement
 

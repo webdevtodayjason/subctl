@@ -6,12 +6,12 @@ What started as a 90-minute Telegram hang ended ~6 hours later with the entire v
 
 ## What kicked it off
 
-Master daemon (running heavy supervisor `qwen3.6-35b-a3b`) stopped responding to operator's Telegram messages for ~90 minutes during a drive home from the office. Diagnostic showed master was in an infinite tool-call loop, calling some listener-poll tool that returned `{ entries: [], listener: { running: false } }` over and over. Reasoning-model trap: keep checking, never conclude the listener is dead. A `launchctl kickstart -k` broke the loop. Transcript preserved across the restart.
+Evy (running heavy supervisor `qwen3.6-35b-a3b`) stopped responding to operator's Telegram messages for ~90 minutes during a drive home from the office. Diagnostic showed Evy was in an infinite tool-call loop, calling some listener-poll tool that returned `{ entries: [], listener: { running: false } }` over and over. Reasoning-model trap: keep checking, never conclude the listener is dead. A `launchctl kickstart -k` broke the loop. Transcript preserved across the restart.
 
 Three architectural threads emerged from that incident, and each became its own release wave:
 
-1. **Make master operationally responsive** — supervisor profile switching (chat vs heavy), watchdog kill controls, circuit breaker for dead-listener tool loops.
-2. **Make the trust channel between master and workers cryptographic** — the plaintext directive marker was correctly identified as gameable by a worker earlier in the day (osint-cve-monitor paranoia loop). HMAC marker + web terminal escape hatch close ADR 0011.
+1. **Make Evy operationally responsive** — supervisor profile switching (chat vs heavy), watchdog kill controls, circuit breaker for dead-listener tool loops.
+2. **Make the trust channel between Evy and workers cryptographic** — the plaintext directive marker was correctly identified as gameable by a worker earlier in the day (osint-cve-monitor paranoia loop). HMAC marker + web terminal escape hatch close ADR 0011.
 3. **Build the substrate everything else stacks on** — Tier 3 conversational memory (Evy Memory), dynamic provider catalog (pi-ai upstream), 1Password-driven secret resolution, real `subctl` CLI, plan-approval workflow surfacing operator-facing.
 
 ## v2.7.x — fourteen releases
@@ -19,7 +19,7 @@ Three architectural threads emerged from that incident, and each became its own 
 ### v2.7.18 — Supervisor profiles
 **Commit:** `e6f7a3b` · **Lines:** 1,031 / 11 files
 
-Two named profiles (`chat`: gemma-4-31b · `heavy`: qwen3.6-35b-a3b) stored at `~/.config/subctl/profiles.json`. Operator switches via dashboard pill (sticky header), Telegram `/profile chat|heavy`, or by editing the file directly. Hot-swap on next prompt — no master restart, transcript continues across the swap.
+Two named profiles (`chat`: gemma-4-31b · `heavy`: qwen3.6-35b-a3b) stored at `~/.config/subctl/profiles.json`. Operator switches via dashboard pill (sticky header), Telegram `/profile chat|heavy`, or by editing the file directly. Hot-swap on next prompt — no Evy restart, transcript continues across the swap.
 
 Directly addresses tonight's incident: heavy reasoning models can deadlock; chat profile is a safe fallback.
 
@@ -27,7 +27,7 @@ Directly addresses tonight's incident: heavy reasoning models can deadlock; chat
 **Commit:** `a94954e` · **Lines:** 1,492 / 15 files
 
 Two reliability fixes:
-- **Watchdog registry**: every periodic probe (telegram-listener, inbox-poll, team-staleness, verifier-cluster, auto-compact, etc.) registers through `components/master/watchdogs.ts`. Operator and Evy can list + kill via dashboard panel, master tools (`watchdog_list` / `watchdog_kill`), or Telegram `/watchdogs [kill <id>|killall]`.
+- **Watchdog registry**: every periodic probe (telegram-listener, inbox-poll, team-staleness, verifier-cluster, auto-compact, etc.) registers through `components/master/watchdogs.ts`. Operator and Evy can list + kill via dashboard panel, Evy tools (`watchdog_list` / `watchdog_kill`), or Telegram `/watchdogs [kill <id>|killall]`.
 - **Circuit breaker**: `components/master/circuit-breaker.ts` watches every tool-call result. If a tool returns `{ entries: [], listener: { running: false } }` three times consecutively, the fourth call is refused with a synthesized error telling the model the listener is dead. Resets on the next operator turn. Direct fix for tonight's 90-min hang.
 
 ### v2.7.20 — HMAC trust marker — ADR 0011 Layer 1
@@ -40,31 +40,31 @@ Supersedes ADR 0002's plaintext marker, which a worker had correctly broken earl
 ### v2.7.21 — Web terminal escape hatch — ADR 0011 Layer 2 (complete)
 **Commit:** `46f93b6` · **Lines:** 1,531 / 18 files
 
-xterm.js + node-pty wrapping a per-team tmux attach. Operator opens an in-browser terminal from the dashboard; types directly into the worker's pane as themselves, bypassing master and HMAC entirely. Default-OFF behind `~/.config/subctl/terminal.enabled` (Telegram `/terminal on|status|off`).
+xterm.js + node-pty wrapping a per-team tmux attach. Operator opens an in-browser terminal from the dashboard; types directly into the worker's pane as themselves, bypassing Evy and HMAC entirely. Default-OFF behind `~/.config/subctl/terminal.enabled` (Telegram `/terminal on|status|off`).
 
 Closes ADR 0011 — three layers shipped (HMAC + escape hatch + style matching, which was already in the Evy persona since v2.7.15).
 
 ### Hotfix `0d3ba69` — Dashboard reads VERSION on every render
 **Lines:** 10 / 1 file
 
-The dashboard process cached VERSION at startup. Master got restarted on each deploy; dashboard didn't. Result: operator saw v2.7.17 in the UI while master correctly reported v2.7.20. Hotfix replaced the const with a function call at every render site. Deploy template updated to restart both services on every `git pull`.
+The dashboard process cached VERSION at startup. Evy got restarted on each deploy; dashboard didn't. Result: operator saw v2.7.17 in the UI while Evy correctly reported v2.7.20. Hotfix replaced the const with a function call at every render site. Deploy template updated to restart both services on every `git pull`.
 
 ### v2.7.22 — Notification channel + auto-nudge + auto-compact fix
 **Commit:** `e418467` · **Lines:** 1,721 / 14 files
 
 Three coupled fixes:
 - **Notification channel separation**. Watchdog ticks no longer wake Evy's LLM. Notifications live in their own queue (`components/master/notifications.ts`), surface via dashboard tray + Telegram push for `severity: "alert"` only.
-- **Auto-nudge**. When team-staleness detects an idle team, master first sends `subctl_orch_msg` to the team lead with an authenticated HMAC ("are you stuck?") before paging operator. Operator only gets paged when the team fails to respond within 30 min.
-- **auto-compact watchdog fix**. The watchdog had `last_tick_at: null` since boot — never fired. Was the cause of master's transcript stuck at ~19 messages despite the conversation continuing.
+- **Auto-nudge**. When team-staleness detects an idle team, Evy first sends `subctl_orch_msg` to the team lead with an authenticated HMAC ("are you stuck?") before paging operator. Operator only gets paged when the team fails to respond within 30 min.
+- **auto-compact watchdog fix**. The watchdog had `last_tick_at: null` since boot — never fired. Was the cause of Evy's transcript stuck at ~19 messages despite the conversation continuing.
 
 ### v2.7.23 — Evy Memory (Tier 3) — Memori-substrate TS port
 **Commit:** `686f168` · **Lines:** 1,983 / 16 files
 
-Persistent conversational memory. `~/.local/state/subctl/memory/evy.db` — SQLite via `bun:sqlite` + FTS5 full-text search. Master captures at turn boundaries: user messages, assistant responses, tool calls, notifications, shipped events. Evy gets `evy_recall(query)` and `evy_remember(content)` as master tools. Dashboard Memory tab, Telegram `/memory <query>` / `/memory recent` / `/remember <text>`. Egress redaction masks `sk-*`, `Bearer`, 64-hex, `hmac:*` strings when leaving via chat surfaces.
+Persistent conversational memory. `~/.local/state/subctl/memory/evy.db` — SQLite via `bun:sqlite` + FTS5 full-text search. Evy captures at turn boundaries: user messages, assistant responses, tool calls, notifications, shipped events. Evy gets `evy_recall(query)` and `evy_remember(content)` as Evy tools. Dashboard Memory tab, Telegram `/memory <query>` / `/memory recent` / `/remember <text>`. Egress redaction masks `sk-*`, `Bearer`, 64-hex, `hmac:*` strings when leaving via chat surfaces.
 
 ADR 0014 supersedes ADR 0006. Memori (Python framework) was named in the original ADR; implementation revealed Python interop with Bun would require a sidecar service, and Memori's value-add (auto-inject into LiteLLM prompts) is moot since subctl's LLM path is pi-ai, not LiteLLM. We took Memori's schema concept and ported it native to TS.
 
-Fixes the "51st date syndrome" — every master restart was a cold start before this.
+Fixes the "51st date syndrome" — every Evy restart was a cold start before this.
 
 ### v2.7.24 — pi-ai + pi-agent first-class upstreams; dynamic provider catalog
 **Commit:** `f79f87b` · **Lines:** 1,052 / 10 files
@@ -95,7 +95,7 @@ The fourth surface (operator-driven Playwright via CDP, ADR 0013) remains v2.8.0
 ### v2.7.28 — subctl CLI bootstrap
 **Commit:** `d4e83c0`
 
-First-class command-line interface. `bin/subctl` (Bun script) + `lib/cli.sh`. Subcommands: `status` (both services + active profile + telegram listener), `logs` (tail master/dashboard), `deploy` (git pull + restart both launchd services), `notif` (recent / list / mark-all-read), `memory` (search / recent / remember), `--version`, `--help`. JSON output flag for machine consumption. `docs/cli.md` reference page.
+First-class command-line interface. `bin/subctl` (Bun script) + `lib/cli.sh`. Subcommands: `status` (both services + active profile + telegram listener), `logs` (tail Evy/dashboard log streams via `--master`/`--dashboard`; flag names stay until Phase 3 code rename), `deploy` (git pull + restart both launchd services), `notif` (recent / list / mark-all-read), `memory` (search / recent / remember), `--version`, `--help`. JSON output flag for machine consumption. `docs/cli.md` reference page.
 
 Foundational; more subcommands (team mgmt, config, profile switch) can follow without re-architecting.
 
@@ -143,7 +143,7 @@ Spawn-time template system for dev-team workers. Currently a worker dispatch goe
 
 **2. TinyFish Browser API** (ADR 0013)
 
-The fourth TinyFish surface. Unlike `tinyfish_agent` (TinyFish operates the browser in their cloud), the Browser API gives subctl raw Chrome DevTools Protocol access via Playwright-over-CDP. Dev-team workers can drive Playwright locally on M3; master stays lean (doesn't embed Playwright itself). Per ADR 0013, this needs team-templates as a prerequisite — the Playwright-driving worker needs a dedicated team template type.
+The fourth TinyFish surface. Unlike `tinyfish_agent` (TinyFish operates the browser in their cloud), the Browser API gives subctl raw Chrome DevTools Protocol access via Playwright-over-CDP. Dev-team workers can drive Playwright locally on M3; Evy stays lean (doesn't embed Playwright itself). Per ADR 0013, this needs team-templates as a prerequisite — the Playwright-driving worker needs a dedicated team template type.
 
 **3. Voice layer for Evy (TTS)**
 
@@ -155,9 +155,9 @@ Per the parking-lot doc, the voice layer is **downstream of the persona**, not p
 
 Components:
 
-- **`components/master/tools/voice-render.ts`** — new master tool `voice_render({ text, voice_id })` that POSTs to a local TTS HTTP server.
-- **TTS server** — separate launchd service on M3 (`com.subctl.tts`), runs the chosen TTS model. Pattern mirrors how master + dashboard + LM Studio are separate launchd jobs.
-- **Dashboard chat panel** — "🔊 Play audio" affordance per Evy turn. Click → POST to master's `voice_render`, get back audio URL, play in browser.
+- **`components/master/tools/voice-render.ts`** — new Evy tool `voice_render({ text, voice_id })` that POSTs to a local TTS HTTP server.
+- **TTS server** — separate launchd service on M3 (`com.subctl.tts`), runs the chosen TTS model. Pattern mirrors how Evy + dashboard + LM Studio are separate launchd jobs.
+- **Dashboard chat panel** — "🔊 Play audio" affordance per Evy turn. Click → POST to Evy's `voice_render`, get back audio URL, play in browser.
 - **Telegram integration** — voice notes for routine status messages (operator's chosen async check-in mode). `severity: "alert"` notifications can ride this channel.
 - **Voice profile config** — `~/.config/subctl/voice.json` selects TTS model + voice_id. Operator can swap voices without restart (file-watch pattern from v2.7.18).
 
@@ -191,7 +191,7 @@ Recommend the former (separate ships) — it keeps the v2.8.0 PR clean and high-
 | ADRs written or closed | 4 written (0011 Layer 2, 0014, 0015, 0016) · 3 superseded/closed (0002, 0006, 0011 Layer 1+2 fully shipped) |
 | Workers dispatched | 14 (1 redispatch — `onepw-impl` declared dead at 25min, `onepw-impl-v2` shipped in 10) |
 | Peak parallel workers | 6 simultaneously |
-| Deploys to M3 | 9 (each restarted both master and dashboard) |
+| Deploys to M3 | 9 (each restarted both Evy and dashboard) |
 | Total scoped queue cleared | yes — 1Password, TinyFish Agent, Memori (as Evy Memory), CLI, plan-approval, eval refresh, Lucide, notification UX, upstream-tracker, watchdog kill, HMAC, web terminal, supervisor profiles |
 
 ## References

@@ -4,9 +4,10 @@ Canonical documentation for the subctl project. Source of truth for architecture
 
 ## Start here
 
-- [master.md](master.md) — the master daemon's architecture, tool surface, and operating model
-- [roadmap.md](roadmap.md) — what's shipping next, what's queued, what's deferred
+- [glossary.md](glossary.md) — canonical taxonomy (Evy, supervisor LLM, worker team, …)
+- [master.md](master.md) — Evy's architecture, tool surface, and operating model <!-- "master" in filename is a legacy code identifier — renamed in Phase 3 -->
 - [persona/evy.md](persona/evy.md) — Evy, the orchestrator persona
+- [roadmap.md](roadmap.md) — what's shipping next, what's queued, what's deferred
 - [memory-architecture.md](memory-architecture.md) — five-tier memory model
 
 ## Decisions (ADRs)

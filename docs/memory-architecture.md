@@ -4,7 +4,9 @@
 - **Last revised:** 2026-05-12
 - **Related ADRs:** [0005](adr/0005-five-tier-memory-architecture.md), [0006](adr/0006-memori-byodb-sqlite-for-tier-3.md), [0009](adr/0009-self-hosted-only-no-cloud-memory.md), [0010](adr/0010-claude-mem-stays-parallel.md)
 
-This document describes how subctl's master daemon stores, retrieves, and uses memory across sessions. Five tiers, each with a distinct job. Tiers are not strictly ordered by priority; they're ordered by lifetime / scope / who-writes-them.
+This document describes how subctl's Evy daemon stores, retrieves, and uses memory across sessions. Five tiers, each with a distinct job. Tiers are not strictly ordered by priority; they're ordered by lifetime / scope / who-writes-them.
+
+> **Terminology.** "Evy" is the canonical name for the persistent daemon (and her persona). Some code-level paths in this doc still use `master/` — see [glossary.md](glossary.md). Code identifier rename ships in Phase 3.
 
 ## The five tiers at a glance
 
@@ -20,7 +22,7 @@ This document describes how subctl's master daemon stores, retrieves, and uses m
 
 ### Tier 1 — MEMORY.md
 
-**Purpose.** The operator's profile and the small set of operator-asserted facts Evy needs at all times. Things like "Jason runs an MSP, partner is Richard, M3 Ultra is the master host, prefers free/open-source where quality permits."
+**Purpose.** The operator's profile and the small set of operator-asserted facts Evy needs at all times. Things like "Jason runs an MSP, partner is Richard, M3 Ultra is the primary host, prefers free/open-source where quality permits."
 
 **Substrate.** Single markdown file at `~/.config/subctl/master/MEMORY.md`.
 
@@ -44,7 +46,7 @@ This document describes how subctl's master daemon stores, retrieves, and uses m
 
 This is the cleanest constraint in the architecture and the easiest to enforce. The persona prompt pins it; the `team_doc_write` tool doesn't have a vault-write code path at all.
 
-**Permissions caveat.** macOS TCC blocks access to `~/Documents/` by default. The terminal process running master needs Full Disk Access for vault reads to work. If TCC blocks, Evy reports it cleanly and the operator decides whether to grant access.
+**Permissions caveat.** macOS TCC blocks access to `~/Documents/` by default. The terminal process running Evy needs Full Disk Access for vault reads to work. If TCC blocks, Evy reports it cleanly and the operator decides whether to grant access.
 
 ### Tier 3 — Memori
 
@@ -67,7 +69,7 @@ This is the cleanest constraint in the architecture and the easiest to enforce. 
 
 **Write pattern.** Automatic. Every operator-Evy exchange is captured. Memori extracts structured types in the background. No tool calls required.
 
-**Explicit access.** When Evy needs historical specifics outside the recall window, she calls Memori's explicit recall tools (provided by the SDK or exposed as master tools).
+**Explicit access.** When Evy needs historical specifics outside the recall window, she calls Memori's explicit recall tools (provided by the SDK or exposed as Evy tools).
 
 **Status.** Ships in v2.7.13.
 
