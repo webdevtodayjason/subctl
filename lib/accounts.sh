@@ -45,10 +45,24 @@ subctl_accounts_add() {
     return 1
   }
 
-  case "$provider" in
-    claude|gemini|openai|deepseek) ;;
-    *) subctl_err "unknown provider: $provider (must be claude, gemini, openai, deepseek)"; return 1 ;;
-  esac
+  # Validate against the actual providers/ directory layout instead of a
+  # hardcoded allowlist. Source of truth: `providers/<name>/auth.sh`.
+  # Adding a new provider dir with an auth.sh automatically makes it
+  # accountable through `subctl accounts add` — no second lib/accounts.sh
+  # edit required. Closes #24.
+  local valid=false d
+  for d in "$SUBCTL_REPO_ROOT"/providers/*/; do
+    [[ -f "$d/auth.sh" ]] || continue
+    if [[ "$(basename "$d")" == "$provider" ]]; then
+      valid=true
+      break
+    fi
+  done
+  if ! $valid; then
+    subctl_err "unknown provider: $provider"
+    subctl_err "registered providers: $(cd "$SUBCTL_REPO_ROOT/providers" && ls -d */ 2>/dev/null | sed 's:/::g' | sort | tr '\n' ' ')"
+    return 1
+  fi
 
   # Default config_dir. Each provider's CLI has its own natural per-user dir
   # (Claude uses ~/.claude, Codex uses ~/.codex), so the default mirrors that
