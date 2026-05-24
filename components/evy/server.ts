@@ -291,6 +291,18 @@ import {
   listAvailableBackends as listLocalBackendKinds,
   type LocalBackendKind,
 } from "./local-backends";
+// ── v3.1.0 Kernel Fitness Phase 1: engagement instrumentation (write-only). ──
+// Surface emission for chat responses + watchdog-registered timeout
+// sweeper for un-engaged surfaces. This module is structurally a
+// writer — no reader API is imported here or anywhere else along
+// the supervisor-prompt path. The negative-criterion red-team test
+// in `__tests__/engagement-ledger-isolation.test.ts` enforces this.
+import {
+  hashPayload,
+  makeSurfaceId,
+  recordSurfaceEmitted,
+  runTimeoutSweeper as runEngagementTimeoutSweeper,
+} from "./engagement-tracker";
 
 const HOME = homedir();
 const COMPONENT_DIR = import.meta.dir;
@@ -3977,6 +3989,55 @@ async function main() {
         }
       }
 
+      // ── v3.1.0 Kernel Fitness Phase 1: chat surface emission ─────────────
+      // Each completed dashboard/MCP turn produces exactly one
+      // `chat_response` surface in the engagement ledger. The dashboard
+      // SSE consumer latches the returned surface_id onto the just-
+      // finished assistant bubble so an operator reply → `acted` and a
+      // dismiss click → `acked` can be attributed back here. Telegram
+      // turns are surface-emitted via the outbound path
+      // (`tools/telegram.ts` → `notePendingTelegramSurface`) instead —
+      // skipping double-emission here keeps the per-surface accounting
+      // clean. Watchdog / scheduled / verifier synth prompts aren't
+      // operator surfaces and aren't recorded.
+      if (
+        !isInternalSynthPrompt &&
+        !stopped &&
+        (p.source === "chat" || p.source === "mcp")
+      ) {
+        try {
+          const turn = extractLastTurn(
+            agent.state.messages as ReadonlyArray<{ role?: string; content?: unknown }>,
+          );
+          const text = (turn.text || "").trim();
+          if (text) {
+            const ts = new Date().toISOString();
+            const surface_id = makeSurfaceId("chat_response", text, ts);
+            recordSurfaceEmitted(
+              surface_id,
+              "chat_response",
+              hashPayload(text),
+            );
+            // Surface a discrete SSE event so the dashboard chat panel
+            // can latch the surface_id onto the just-finished bubble.
+            // A new event type (rather than piggybacking on `agent_end`)
+            // keeps the contract forward-compatible: future surface
+            // types can emit the same `surface_emitted` event without
+            // disturbing existing SSE consumers.
+            broadcast("surface_emitted", {
+              ts,
+              surface_id,
+              surface_type: "chat_response",
+              source: p.source,
+            });
+          }
+        } catch (err) {
+          console.error(
+            `[engagement] chat surface emission failed: ${(err as Error).message}`,
+          );
+        }
+      }
+
       return { ok: true };
     } catch (err) {
       const msg = (err as Error).message ?? String(err);
@@ -6582,6 +6643,33 @@ async function main() {
     kill: () => clearInterval(followupTicker),
   });
   console.error(`[master] scheduled-followup ticker armed — every 60s`);
+
+  // ── v3.1.0 Kernel Fitness Phase 1: engagement timeout sweeper ──────────
+  // Every hour, walk the engagement ledger and write `ignored` outcomes
+  // for any `surface_emitted` entries older than 24h with no follow-on
+  // engagement. Pure data-plane: never reads outside the tracker
+  // module, never touches the agent state, never feeds the supervisor
+  // prompt. Disabling the watchdog has zero behavioral impact on Evy.
+  const ENGAGEMENT_SWEEP_INTERVAL_MS = 60 * 60 * 1000; // hourly
+  const engagementSweeper = setInterval(() => {
+    touchWatchdog("engagement-sweeper");
+    void runEngagementTimeoutSweeper().then((r) => {
+      if (r.swept > 0) {
+        console.error(
+          `[engagement] sweeper flipped ${r.swept} surface(s) to ignored (inspected=${r.inspected})`,
+        );
+      }
+    }).catch((err) => {
+      console.error(`[engagement] sweeper failed: ${(err as Error).message}`);
+    });
+  }, ENGAGEMENT_SWEEP_INTERVAL_MS);
+  registerWatchdog({
+    id: "engagement-sweeper",
+    kind: "engagement-sweeper",
+    expected_interval_s: Math.floor(ENGAGEMENT_SWEEP_INTERVAL_MS / 1000),
+    kill: () => clearInterval(engagementSweeper),
+  });
+  console.error(`[master] engagement sweeper armed — every 1h, 24h floor`);
 
   // ── auto-compact watchdog (v2.7.3: SAFETY NET) ─────────────────────────
   // v2.7.3 demoted this ticker from the primary gate to a safety net. The

@@ -170,6 +170,18 @@ import {
   type SkillCategory,
 } from "../components/evy/skills-registry.ts";
 // ── end v2.8.1 skills clarity ──
+// ── v3.1.0 Kernel Fitness Phase 1: engagement instrumentation (write-only). ──
+// Imported here so the dashboard can record `acted` / `acked` outcomes
+// from the chat panel's reply submission and dismiss button. No reader
+// API is imported — the dashboard is structurally a writer of this
+// ledger, never a reader.
+import {
+  recordEngagement as recordEvyEngagement,
+} from "../components/evy/engagement-tracker.ts";
+import type {
+  Outcome as EvyOutcome,
+  Source as EvySource,
+} from "../components/evy/engagement-types.ts";
 
 const PORT = Number(process.env.PORT ?? 8787);
 const STARTED_AT = Date.now();
@@ -6288,6 +6300,74 @@ const server = Bun.serve({
           { status: 502 },
         );
       }
+    }
+
+    // ── /api/evy/engagement — Kernel Fitness Phase 1 (v3.1.0) ──────────────
+    // Operator engagement signal from the dashboard chat panel.
+    //   body: {
+    //     surface_id: string,
+    //     outcome: "acted" | "acked",
+    //     source?: "dashboard_click",          // defaults to dashboard_click
+    //     latency_ms?: number,                 // optional emission→outcome ms
+    //   }
+    //
+    // Writes a single `engagement` entry to the engagement ledger via the
+    // tracker. This endpoint is WRITE-ONLY by design — there is no
+    // corresponding GET to read the ledger from the browser. The fitness
+    // signal must not leak back into Evy's supervisor prompt (negative
+    // criterion enforced by tests in
+    // components/evy/__tests__/engagement-ledger-isolation.test.ts).
+    if (url.pathname === "/api/evy/engagement" && req.method === "POST") {
+      let body: {
+        surface_id?: string;
+        outcome?: string;
+        source?: string;
+        latency_ms?: number;
+      };
+      try {
+        body = await req.json();
+      } catch {
+        return Response.json(
+          { ok: false, error: "invalid JSON body" },
+          { status: 400 },
+        );
+      }
+      const surface_id = typeof body.surface_id === "string" ? body.surface_id.trim() : "";
+      const outcome = body.outcome === "acted" || body.outcome === "acked"
+        ? (body.outcome as EvyOutcome)
+        : null;
+      // Only dashboard_click is accepted from this endpoint; other sources
+      // are recorded by the daemon directly (Telegram, plan approvals,
+      // timeout sweep) and must not be forge-able from the dashboard.
+      const source: EvySource =
+        body.source === "dashboard_click" || body.source === undefined
+          ? "dashboard_click"
+          : "dashboard_click";
+      if (!surface_id || surface_id.length > 128) {
+        return Response.json(
+          { ok: false, error: "surface_id required (1..128 chars)" },
+          { status: 400 },
+        );
+      }
+      if (!outcome) {
+        return Response.json(
+          { ok: false, error: "outcome must be 'acted' or 'acked'" },
+          { status: 400 },
+        );
+      }
+      const latency_ms =
+        typeof body.latency_ms === "number" && Number.isFinite(body.latency_ms) && body.latency_ms >= 0
+          ? Math.floor(body.latency_ms)
+          : undefined;
+      try {
+        recordEvyEngagement(surface_id, outcome, source, latency_ms);
+      } catch (err) {
+        return Response.json(
+          { ok: false, error: (err as Error).message },
+          { status: 500 },
+        );
+      }
+      return Response.json({ ok: true, surface_id, outcome, source });
     }
 
     // ── /api/master/restart — operator-triggered daemon kickstart ─────────
