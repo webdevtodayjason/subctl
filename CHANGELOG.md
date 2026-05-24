@@ -1,23 +1,60 @@
-## [3.0.0-rc1] — 2026-05-23
+## [3.0.0-rc1] — unreleased
 
-### `docs(v3.0): language rename master → Evy (Phase 1, non-breaking)`
+> **v3.0 rolling release.** Sections accrete as each Phase worker lands. Operator merges manually; this header stays `unreleased` until the full rc1 stack is ready to ship.
 
-First phase of the v3.0 cycle: the persistent daemon is now called **Evy** everywhere user-facing — docs prose, dashboard UI strings, CLI help text, this CHANGELOG. Code identifiers (paths under `components/master/`, `lib/master.sh`, the `com.subctl.master` plist label, the `~/.config/subctl/master/` state directory, the `subctl master` CLI subcommand, the `/api/master/*` dashboard routes) are unchanged in this release. Phase 3 of the v3.0 cycle will rename those, ship a migration script, and provide a `subctl master`→`subctl evy` compat shim.
+### `feat(v3.0): DeepSeek-TUI / CodeWhale as worker (Phase 4)`
 
-**Why now.** The operator relates to the daemon as Evy (persona + process are one thing in his mental model), but the codebase was inconsistent: "master daemon" in docs, "Evy" in chat. Repeated taxonomy slips this session — including the agent's own — proved tribal knowledge was failing. Fix isn't "be more careful," it's "rename systematically." See the project's Obsidian Initiative `v3.0 — Evy rename + multi-worker providers` for the full plan.
+`subctl teams deepseek -a <alias>` now spawns a [CodeWhale](https://github.com/Hmbown/CodeWhale) (`codewhale`; formerly DeepSeek-TUI) worker in a detached tmux session with per-alias HOME-shadow isolation. CodeWhale's own `auth set --provider deepseek` handles the API-key handshake inside the shadow dir, so subctl never touches the secret directly — the key lands in `~/.subctl-deepseek-aliases/<alias>/.deepseek/config.toml` (mode 0600, codewhale-managed) and the worker tmux session inherits HOME so codewhale's layered `config -> file-based secret store -> env` lookup just works.
 
-**What changed.**
+Second non-Claude worker CLI after `pi-coding-agent` — validates the multi-provider worker pattern across two **different auth shapes**: OAuth-via-`/login` for pi, **API key** for deepseek. The OpenAI Codex worker (parallel Phase 4 work) covers a third — OAuth-via-device-code.
 
-- `docs/master.md` — leads with Evy. Filename stays (legacy identifier — Phase 3 renames).
-- `docs/cli.md`, `docs/memory-architecture.md`, `docs/policy.md`, `docs/release-notes-2026-05-13.md`, `docs/release-workflow.md`, `docs/roadmap.md`, `docs/exec-migration.md`, `docs/README.md` — prose swept.
-- `docs/glossary.md` — **new file** mirroring the canonical vault taxonomy. Source of truth for code-readers who don't open the vault.
-- `dashboard/public/app.js`, `dashboard/public/tabs/*.js` — UI string literals only (button labels, empty-states, dialog text, slash-command help output in chat).
-- `dashboard/help.md` — sweep of operator-facing dashboard reference.
-- `bin/subctl` — `usage()` help text. Subcommand names (`subctl master`, `--master` flag) unchanged.
+**Project rename note.** Hunter Bown's `DeepSeek-TUI` was renamed to `CodeWhale` upstream; the GitHub repo 301s (`Hmbown/DeepSeek-TUI` → `Hmbown/CodeWhale`), the binary is now `codewhale`, but the Homebrew formula kept the old `deepseek-tui` name. subctl's provider directory keys off the model API (`providers/deepseek/`) rather than the CLI brand — same logic as `providers/claude/` keying on the Anthropic API rather than `claude-code-cli`.
 
-**Constraint.** No code-path changes. `bun test components/master/` and `bun test dashboard/` still pass.
+**v3.0.0-rc1 ships UNGATED.** No SPEC-block HMAC, no `PreToolUse` policy hook for codewhale — mirroring the pi-coding-agent v2.7.0 rollout stance. CodeWhale doesn't expose a hook surface analogous to Claude Code's PreToolUse contract yet. Trust-marker integration is roadmapped for v3.0.0-rc2, likely via interception of `codewhale exec --output-format stream-json` events.
 
-**Operator action.** None. Daily ops keep working with the same commands — `subctl master enable`, `subctl status`, `subctl logs --master`. The rename is a vocabulary shift, not a behavior shift.
+**Files added:**
+- `providers/deepseek/{auth.sh,teams.sh,signals.sh,statusline.sh,README.md}` — full provider plugin mirroring `providers/pi-coding-agent/` shape, adapted for API-key auth.
+- `providers/deepseek/__tests__/spawn.test.ts` — bun:test smoke coverage (auth flow, HOME-shadow, dry-run spawn, provider-mismatch refusal, flag set, signals JSON shape).
+- `bin/subctl` — `deepseek)` arms in both the `auth)` and `teams)` dispatchers + `provider_deepseek_auth_all` call in the `auth all)` arm.
+- `lib/accounts.sh` — `deepseek` added to the `subctl_accounts_add` provider allowlist.
+- `lib/dep-manifest.json` — `codewhale` registered as a `tier: "soft"`, `do_not_auto_install: true` dependency. `detect` accepts both `codewhale` and the legacy `deepseek-tui` Homebrew binary.
+- `docs/adding-a-provider.md` — new "DeepSeek-TUI / CodeWhale worker provider" section with a corrective note about doc-vs-code drift (the existing "Worked example: ollama" section describes the older unprefixed function-naming convention).
+
+**Spawn flags** map to CodeWhale features: `-a` (alias), `-p`/`-f` (initial prompt via tmux paste-buffer), `-m` (`codewhale --model`), `-y` (`codewhale --yolo`), `-c` (`codewhale resume --last`), `-o` (no-op in rc1, reserved for rc2). `--dry-run` and `--no-attach` mirror pi exactly.
+
+**Why no keychain shim?** Earlier design rounds considered storing keys in macOS Keychain via `security`. CodeWhale's own first-class `auth set/get/list/clear/status` commands obviate this — keys are stored in mode-0600 files codewhale already manages, and HOME-shadow gives per-alias isolation for free. Migrating to Keychain or 1Password is a v3.x follow-up if operator demand surfaces.
+
+### `feat(v3.0): Codex CLI as worker (Phase 2)`
+
+`subctl teams codex -a <alias>` now spawns an **OpenAI Codex CLI worker** in a detached tmux session, pinned to a specific `openai-codex` (ChatGPT Pro OAuth) account. First non-Claude worker CLI that speaks the SPEC-block + HMAC wire contract — establishes the multi-provider worker pattern that Phase 4 (DeepSeek-TUI) and Phase 5 (pi-coder spike) build on.
+
+**What's new:**
+
+- `providers/openai-codex/teams.sh` — `provider_openai_codex_teams()`. Mirrors `providers/pi-coding-agent/teams.sh` shape; per-alias isolation via the `CODEX_HOME` env var that the official codex binary reads (no HOME-shadow needed). Trust-modal bypass via `-c projects."<cwd>".trust_level="trusted"`. Update-modal dismissal + `Context % left` ready-marker polling.
+- HMAC team-contract preamble baked into the spawn-time prompt — same 32-byte secret + verification recipe as Claude workers (`~/.local/state/subctl/teams/<team>/hmac.secret`, chmod 600). The wire-protocol document is duplicated from `providers/claude/teams.sh` because the constraint forbids touching that file; future refactor: extract to `lib/team-contract.sh`.
+- **Reporting vocabulary** section in the contract preamble. Claude workers pick up phrases like "task complete, idle by design" emergently from team-template prompts; gpt-5.5 does not. The preamble teaches Codex the exact phrases `auto-nudge.ts:classifyWorkerReply` matches for `completed_idle` / `blocked` / `awaiting_input`, so the staleness watchdog can short-circuit nudges on a done team.
+- **Inbox reporting** preamble — workers learn `subctl team report --type <kind> --text <text>`. `SUBCTL_TEAM_NAME=$SESSION_NAME` is set in the tmux env so `--team` auto-resolves and the worker doesn't have to type the session name every turn.
+- `bin/subctl teams codex` dispatcher (also accepts `openai-codex` as alias for parity with `subctl auth openai-codex`).
+- `providers/openai-codex/__tests__/spawn.test.ts` — 18 tests covering dispatcher routing, arg parsing, HMAC secret on-disk shape (presence + 0600), idempotency (re-spawn reuses same secret), refusal of Claude-only flags (`-o`/`-c`/`--template`) with specific deprecation messages, and reporting-vocabulary presence in the contract source.
+
+**Flags that don't translate from Claude** — boolean flags are accepted as info-warned no-ops so HTTP-spawn callers can pass uniform argv to every provider without erroring; flags that take a named argument are rejected because silently eating the argument would surprise:
+
+| Claude flag | Codex behavior |
+|---|---|
+| `-o` / `--orchestrator` | **No-op** with info-warn. Codex has no `Team*` / `SendMessage` tool surface. |
+| `-c` / `--continue` | **No-op** with info-warn. Codex uses `codex resume <id>` as a subcommand. |
+| `-t` / `--template <name>` | Rejected. Templates land in a later v3.0 phase. |
+
+**Skip-perms mapping:** `-y` / `--yes` → `--dangerously-bypass-approvals-and-sandbox` (Codex's YOLO mode equivalent of Claude's `--dangerously-skip-permissions`).
+
+**Known limitations / follow-ups:**
+
+- `subctl auth openai-codex` mints `auth.json` with `{access_token, refresh_token}` but no `id_token` — the official codex CLI rejects this with "missing field `id_token`". Workaround: re-auth via `CODEX_HOME=<cfg_dir> codex login` until subctl's device-code flow learns to persist `id_token` (separate issue).
+- The contract preamble is duplicated between `providers/claude/teams.sh` and `providers/openai-codex/teams.sh`. Acceptable for the Phase 2 ship (constraint forbid touching the Claude file); extract to `lib/team-contract.sh` in a follow-up.
+- Update-modal dismissal is fragile — keyed off the exact modal copy. If Codex changes the wording, the dismissal silently misses and the spawn pastes into the modal instead of the input prompt.
+- Codex is UNGATED — no `PreToolUse` analog yet (same caveat as `pi-coding-agent` ships with). The HMAC contract is the trust-channel layer; sandbox + approval flags are the execution-time layer.
+
+**Docs:** new "Codex worker provider" section in `docs/adding-a-provider.md` documenting the spawn contract, TUI dance, and reference smoke recipe.
 
 ---
 
