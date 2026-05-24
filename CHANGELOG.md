@@ -2,6 +2,28 @@
 
 > **v3.0 rolling release.** Sections accrete as each Phase worker lands. Operator merges manually; this header stays `unreleased` until the full rc1 stack is ready to ship.
 
+### `feat(v3.0): DeepSeek-TUI / CodeWhale as worker (Phase 4)`
+
+`subctl teams deepseek -a <alias>` now spawns a [CodeWhale](https://github.com/Hmbown/CodeWhale) (`codewhale`; formerly DeepSeek-TUI) worker in a detached tmux session with per-alias HOME-shadow isolation. CodeWhale's own `auth set --provider deepseek` handles the API-key handshake inside the shadow dir, so subctl never touches the secret directly — the key lands in `~/.subctl-deepseek-aliases/<alias>/.deepseek/config.toml` (mode 0600, codewhale-managed) and the worker tmux session inherits HOME so codewhale's layered `config -> file-based secret store -> env` lookup just works.
+
+Second non-Claude worker CLI after `pi-coding-agent` — validates the multi-provider worker pattern across two **different auth shapes**: OAuth-via-`/login` for pi, **API key** for deepseek. The OpenAI Codex worker (parallel Phase 4 work) covers a third — OAuth-via-device-code.
+
+**Project rename note.** Hunter Bown's `DeepSeek-TUI` was renamed to `CodeWhale` upstream; the GitHub repo 301s (`Hmbown/DeepSeek-TUI` → `Hmbown/CodeWhale`), the binary is now `codewhale`, but the Homebrew formula kept the old `deepseek-tui` name. subctl's provider directory keys off the model API (`providers/deepseek/`) rather than the CLI brand — same logic as `providers/claude/` keying on the Anthropic API rather than `claude-code-cli`.
+
+**v3.0.0-rc1 ships UNGATED.** No SPEC-block HMAC, no `PreToolUse` policy hook for codewhale — mirroring the pi-coding-agent v2.7.0 rollout stance. CodeWhale doesn't expose a hook surface analogous to Claude Code's PreToolUse contract yet. Trust-marker integration is roadmapped for v3.0.0-rc2, likely via interception of `codewhale exec --output-format stream-json` events.
+
+**Files added:**
+- `providers/deepseek/{auth.sh,teams.sh,signals.sh,statusline.sh,README.md}` — full provider plugin mirroring `providers/pi-coding-agent/` shape, adapted for API-key auth.
+- `providers/deepseek/__tests__/spawn.test.ts` — bun:test smoke coverage (auth flow, HOME-shadow, dry-run spawn, provider-mismatch refusal, flag set, signals JSON shape).
+- `bin/subctl` — `deepseek)` arms in both the `auth)` and `teams)` dispatchers + `provider_deepseek_auth_all` call in the `auth all)` arm.
+- `lib/accounts.sh` — `deepseek` added to the `subctl_accounts_add` provider allowlist.
+- `lib/dep-manifest.json` — `codewhale` registered as a `tier: "soft"`, `do_not_auto_install: true` dependency. `detect` accepts both `codewhale` and the legacy `deepseek-tui` Homebrew binary.
+- `docs/adding-a-provider.md` — new "DeepSeek-TUI / CodeWhale worker provider" section with a corrective note about doc-vs-code drift (the existing "Worked example: ollama" section describes the older unprefixed function-naming convention).
+
+**Spawn flags** map to CodeWhale features: `-a` (alias), `-p`/`-f` (initial prompt via tmux paste-buffer), `-m` (`codewhale --model`), `-y` (`codewhale --yolo`), `-c` (`codewhale resume --last`), `-o` (no-op in rc1, reserved for rc2). `--dry-run` and `--no-attach` mirror pi exactly.
+
+**Why no keychain shim?** Earlier design rounds considered storing keys in macOS Keychain via `security`. CodeWhale's own first-class `auth set/get/list/clear/status` commands obviate this — keys are stored in mode-0600 files codewhale already manages, and HOME-shadow gives per-alias isolation for free. Migrating to Keychain or 1Password is a v3.x follow-up if operator demand surfaces.
+
 ### `feat(v3.0): Codex CLI as worker (Phase 2)`
 
 `subctl teams codex -a <alias>` now spawns an **OpenAI Codex CLI worker** in a detached tmux session, pinned to a specific `openai-codex` (ChatGPT Pro OAuth) account. First non-Claude worker CLI that speaks the SPEC-block + HMAC wire contract — establishes the multi-provider worker pattern that Phase 4 (DeepSeek-TUI) and Phase 5 (pi-coder spike) build on.

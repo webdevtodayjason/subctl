@@ -447,6 +447,23 @@
       "manual_url": "https://context7.com",
       "post_install_hint": "",
       "depends_on": []
+    },
+    {
+      "id": "codewhale",
+      "name": "CodeWhale (deepseek worker; formerly DeepSeek-TUI)",
+      "type": "CLI",
+      "tier": "soft",
+      "why": "Backs `subctl teams deepseek` workers; only needed if operator runs deepseek-provider accounts. Binary is `codewhale`; Homebrew formula kept the old `deepseek-tui` name.",
+      "detect": ["sh", "-c", "command -v codewhale >/dev/null 2>&1 || command -v deepseek-tui >/dev/null 2>&1"],
+      "fallback_paths": ["/opt/homebrew/bin/codewhale", "/usr/local/bin/codewhale", "/opt/homebrew/bin/deepseek-tui", "/usr/local/bin/deepseek-tui"],
+      "version_min": null,
+      "install_method": "manual",
+      "install_cmd": "npm install -g codewhale   (or: cargo install codewhale-cli --locked, or: brew install deepseek-tui)",
+      "auto_install": false,
+      "do_not_auto_install": true,
+      "manual_url": "https://github.com/Hmbown/CodeWhale",
+      "post_install_hint": "Then: subctl accounts add deepseek <alias> <email> && subctl auth deepseek <alias>",
+      "depends_on": []
     }
   ]
 }

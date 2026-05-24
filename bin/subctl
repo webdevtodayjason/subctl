@@ -24,14 +24,16 @@ Usage:
   subctl accounts remove <alias> [--purge]
   subctl accounts edit                Open accounts.conf in \$EDITOR
 
-  subctl auth <provider> <alias>      OAuth into the right config dir
+  subctl auth <provider> <alias>      OAuth / API-key into the right config dir
                                       Providers: claude, openai, openai-codex,
-                                      xai-oauth, pi-coding-agent, gemini.
+                                      xai-oauth, pi-coding-agent, deepseek,
+                                      gemini.
   subctl auth all                     Walk every account that needs auth
 
-  subctl teams <provider> [opts]      tmux launcher (claude, pi-coding-agent)
+  subctl teams <provider> [opts]      tmux launcher (claude, pi-coding-agent, deepseek)
   subctl teams claude -a <alias> [-y -c -o -p TEXT -f FILE --dry-run]
   subctl teams pi-coding-agent -a <alias> [-p TEXT -f FILE -m MODEL --dry-run]
+  subctl teams deepseek -a <alias> [-y -c -o -p TEXT -f FILE -m MODEL --dry-run]
 
   subctl radar                        /dispatch-check verdict + signals
   subctl radar log [--tail]           Inspect rate-limit events log
@@ -249,6 +251,8 @@ case "$cmd" in
         provider_xai_oauth_auth_all
         . "$SUBCTL_REPO_ROOT/providers/pi-coding-agent/auth.sh"
         provider_pi_coding_agent_auth_all
+        . "$SUBCTL_REPO_ROOT/providers/deepseek/auth.sh"
+        provider_deepseek_auth_all
         ;;
       claude)
         alias="${2:-}"
@@ -300,11 +304,23 @@ case "$cmd" in
         [[ -z "$cfg_dir" ]] && subctl_die "unknown alias: $alias (add it first: subctl accounts add pi-coding-agent $alias <email>)"
         provider_pi_coding_agent_auth "$alias" "$cfg_dir" "$email"
         ;;
+      deepseek)
+        # v3.0.0-rc1 — first-class CodeWhale (codewhale; formerly DeepSeek-TUI)
+        # API-key flow via codewhale's own `auth set` command inside a
+        # per-alias HOME shadow. See providers/deepseek/auth.sh.
+        alias="${2:-}"
+        [[ -z "$alias" ]] && subctl_die "usage: subctl auth deepseek <alias>"
+        . "$SUBCTL_REPO_ROOT/providers/deepseek/auth.sh"
+        cfg_dir=$(subctl_account_field "$alias" 4)
+        email=$(subctl_account_field "$alias" 3)
+        [[ -z "$cfg_dir" ]] && subctl_die "unknown alias: $alias (add it first: subctl accounts add deepseek $alias <email>)"
+        provider_deepseek_auth "$alias" "$cfg_dir" "$email"
+        ;;
       gemini)
         subctl_warn "gemini provider not yet implemented (planned for v1.2 — see ROADMAP.md)"
         exit 1
         ;;
-      *) subctl_die "usage: subctl auth <claude|openai|openai-codex|xai-oauth|pi-coding-agent|gemini|all> [alias]" ;;
+      *) subctl_die "usage: subctl auth <claude|openai|openai-codex|xai-oauth|pi-coding-agent|deepseek|gemini|all> [alias]" ;;
     esac
     ;;
 
@@ -328,11 +344,17 @@ case "$cmd" in
         . "$SUBCTL_REPO_ROOT/providers/openai-codex/teams.sh"
         provider_openai_codex_teams "$@"
         ;;
+      deepseek)
+        # v3.0.0-rc1 — CodeWhale (codewhale; formerly DeepSeek-TUI) worker
+        # via providers/deepseek/teams.sh. UNGATED in this RC.
+        . "$SUBCTL_REPO_ROOT/providers/deepseek/teams.sh"
+        provider_deepseek_teams "$@"
+        ;;
       gemini|openai)
         subctl_warn "$target teams not yet implemented (phase 2/3)"
         exit 1
         ;;
-      *) subctl_die "usage: subctl teams <claude|codex|pi-coding-agent|gemini|openai> [opts]" ;;
+      *) subctl_die "usage: subctl teams <claude|codex|deepseek|pi-coding-agent|gemini|openai> [opts]" ;;
     esac
     ;;
 
