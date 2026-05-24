@@ -13,8 +13,8 @@
 
 import process from "node:process";
 
-import { loadResolvedPolicy } from "../../components/master/tools/policy/load";
-import type { GatedMode, PolicyDocument, SealedMode } from "../../components/master/tools/policy/types";
+import { loadResolvedPolicy } from "../../components/evy/tools/policy/load";
+import type { GatedMode, PolicyDocument, SealedMode } from "../../components/evy/tools/policy/types";
 
 interface Args {
   projectRoot: string;

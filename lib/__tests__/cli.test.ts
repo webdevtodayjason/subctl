@@ -43,7 +43,7 @@ function run(
       // Default both ports to 0 → tests that don't override get a clean
       // "unreachable" path instead of accidentally hitting a real daemon
       // on someone's dev box.
-      SUBCTL_MASTER_PORT: env.SUBCTL_MASTER_PORT ?? "1",
+      SUBCTL_EVY_PORT: env.SUBCTL_EVY_PORT ?? "1",
       SUBCTL_SERVICE_PORT: env.SUBCTL_SERVICE_PORT ?? "1",
     },
     stdout: "pipe",
@@ -148,7 +148,7 @@ describe("subctl status", () => {
     });
     try {
       const r = run(["status"], {
-        SUBCTL_MASTER_PORT: String(master.port),
+        SUBCTL_EVY_PORT: String(master.port),
         SUBCTL_SERVICE_PORT: String(dash.port),
       });
       expect(r.code).toBe(0);
@@ -179,7 +179,7 @@ describe("subctl status", () => {
     });
     try {
       const r = run(["status", "--json"], {
-        SUBCTL_MASTER_PORT: String(master.port),
+        SUBCTL_EVY_PORT: String(master.port),
         SUBCTL_SERVICE_PORT: String(dash.port),
       });
       expect(r.code).toBe(0);
@@ -217,7 +217,7 @@ describe("subctl logs", () => {
 
   beforeAll(() => {
     logRoot = mkdtempSync(join(tmpdir(), "subctl-cli-logs-"));
-    writeFileSync(join(logRoot, "master.log"), "master line 1\nmaster line 2\n");
+    writeFileSync(join(logRoot, "evy.log"), "master line 1\nmaster line 2\n");
     writeFileSync(
       join(logRoot, "dashboard.out.log"),
       "dash out line 1\ndash out line 2\n",
@@ -240,7 +240,7 @@ describe("subctl logs", () => {
     expect(r.stdout).toContain("dash err line 1");
   });
 
-  test("--master only prints master.log (no dashboard content)", () => {
+  test("--master only prints evy.log (no dashboard content)", () => {
     const r = run(["logs", "--master"], { SUBCTL_LOG_DIR: logRoot });
     expect(r.code).toBe(0);
     expect(r.stdout).toContain("master line 2");
@@ -582,7 +582,7 @@ describe("subctl team (v2.7.36)", () => {
     try {
       const r = run(["team", "kill", "v2.7.36-cli"], {
         SUBCTL_SERVICE_PORT: String(dash.port),
-        SUBCTL_MASTER_INBOX: inboxDir,
+        SUBCTL_EVY_INBOX: inboxDir,
       });
       expect(r.code).toBe(0);
       expect(posted).toBe(true);
@@ -636,7 +636,7 @@ describe("subctl team (v2.7.36)", () => {
     );
     try {
       const r = run(["team", "logs", "v2.7.36-cli"], {
-        SUBCTL_MASTER_INBOX: inboxDir,
+        SUBCTL_EVY_INBOX: inboxDir,
       });
       expect(r.code).toBe(0);
       expect(r.stdout).toContain("PR open");
@@ -650,7 +650,7 @@ describe("subctl team (v2.7.36)", () => {
   test("logs for missing inbox → exit 1", () => {
     const inboxDir = mkdtempSync(join(tmpdir(), "subctl-team-logs-empty-"));
     try {
-      const r = run(["team", "logs", "nonexistent"], { SUBCTL_MASTER_INBOX: inboxDir });
+      const r = run(["team", "logs", "nonexistent"], { SUBCTL_EVY_INBOX: inboxDir });
       expect(r.code).toBe(1);
       expect(r.stderr).toMatch(/no inbox/);
     } finally {
@@ -686,9 +686,9 @@ describe("subctl config (v2.7.36)", () => {
       ),
     );
     // master/providers.json — exercise key-based redaction (api_key field).
-    mkdirSync(join(cfgDir, "master"), { recursive: true });
+    mkdirSync(join(cfgDir, "evy"), { recursive: true });
     writeFileSync(
-      join(cfgDir, "master", "providers.json"),
+      join(cfgDir, "evy", "providers.json"),
       JSON.stringify(
         {
           models: { supervisor: { model: "gpt-4o", host: "https://api.openai.com/v1" } },

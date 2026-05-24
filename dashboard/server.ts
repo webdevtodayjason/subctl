@@ -71,7 +71,7 @@ import { spawnSync } from "node:child_process";
 import { aggregateAll as aggregateCostAll, type AccountCostSummary } from "./lib/cost.ts";
 // PR 8.5 (v2.7.0): central exec helper. Coexists with the legacy `spawnSync`
 // imports; migrations land incrementally. Tracked in docs/exec-migration.md.
-import { execCommand } from "../components/master/policy/exec.ts";
+import { execCommand } from "../components/evy/policy/exec.ts";
 import { classifySpawnError } from "./lib/spawn-errors.ts";
 // PR 11 (v2.7.0): policy-audit dashboard surface. Pure request handlers live
 // in dashboard/lib/audit-api.ts so they're testable without booting the
@@ -84,7 +84,7 @@ import {
   isValidTeamId,
   readNewAuditEntries,
 } from "./lib/audit-api.ts";
-import { loadResolvedPolicy } from "../components/master/tools/policy/load.ts";
+import { loadResolvedPolicy } from "../components/evy/tools/policy/load.ts";
 import {
   resolveSecret,
   loadSecret,
@@ -92,7 +92,7 @@ import {
   listSecrets,
   SECRET_KEYS,
   envVarFor,
-} from "../components/master/secrets.ts";
+} from "../components/evy/secrets.ts";
 // v2.7.20 (ADR 0011 Layer 1): HMAC-authenticated trust marker. The
 // per-team secret lives at ~/.local/state/subctl/teams/<team_id>/hmac.secret
 // (chmod 600), generated at spawn time by providers/claude/teams.sh and
@@ -102,7 +102,7 @@ import {
 // first 16 hex chars into the marker as `hmac:<16hex>`. Missing secret
 // fails LOUD (refuses to send) — falling back to an unauthenticated
 // marker would teach workers to ignore the auth field.
-import { buildSignedDirective } from "../components/master/trust-marker.ts";
+import { buildSignedDirective } from "../components/evy/trust-marker.ts";
 // v2.7.24: pi-ai provider catalog — replaces the hand-curated dropdown
 // at /api/providers with the full pi-ai enumeration so new providers
 // (groq, cerebras, openrouter, bedrock, xai, ...) light up automatically.
@@ -120,7 +120,7 @@ import {
   clearProviderDefault,
   isObviouslyInvalidModel,
   type CatalogProvider,
-} from "../components/master/pi-ai-catalog.ts";
+} from "../components/evy/pi-ai-catalog.ts";
 import {
   getCatalog,
   listCachedCatalogs,
@@ -133,16 +133,16 @@ import {
 import {
   completeCodexLogin,
   type DeviceCodePrompt,
-} from "../components/master/codex-oauth.ts";
-import { loadAccountsConf } from "../components/master/openai-codex-auth.ts";
+} from "../components/evy/codex-oauth.ts";
+import { loadAccountsConf } from "../components/evy/openai-codex-auth.ts";
 // v2.8.7 — supervisor dropdown sync. POST /api/master/supervisor edits
 // providers.json AND profiles.json so the operator's dropdown pick survives
 // the next master restart (master overrides supervisor.model + host from
-// profiles.json[active] at boot — see components/master/server.ts:931).
+// profiles.json[active] at boot — see components/evy/server.ts:931).
 import {
   loadProfiles,
   setProfileEntry,
-} from "../components/master/profiles.ts";
+} from "../components/evy/profiles.ts";
 // v2.7.21 (ADR 0011 Layer 2): web terminal escape hatch. Routes are gated
 // by a flag file at ~/.config/subctl/terminal.enabled; absent = OFF (the
 // default). When enabled, the dashboard upgrades a WebSocket to a node
@@ -168,7 +168,7 @@ import {
   templatesUsingSkill,
   type Skill,
   type SkillCategory,
-} from "../components/master/skills-registry.ts";
+} from "../components/evy/skills-registry.ts";
 // ── end v2.8.1 skills clarity ──
 
 const PORT = Number(process.env.PORT ?? 8787);
@@ -237,7 +237,7 @@ function classifyCtx(p: number): "green" | "yellow" | "orange" | "red" {
 // /api/providers); when the operator has enabled the toggle, those
 // queries must carry `Authorization: Bearer <token>` or LM Studio 401s.
 // Token resolved via the v2.7.4 priority chain (env > secrets.json >
-// absent — see components/master/secrets.ts). Returns {} when neither
+// absent — see components/evy/secrets.ts). Returns {} when neither
 // is configured so callers can spread it unconditionally — back-compat
 // with LM Studio servers that don't have the toggle on (the default).
 function lmstudioAuthHeader(): Record<string, string> {
@@ -257,7 +257,7 @@ function lmstudioAuthHeader(): Record<string, string> {
 // its own per-team `tmux has-session` safety net that will catch the
 // same case on the next interval.
 async function notifyMasterTeamPruned(name: string): Promise<void> {
-  const masterPort = process.env.SUBCTL_MASTER_PORT ?? "8788";
+  const masterPort = process.env.SUBCTL_EVY_PORT ?? "8788";
   const url = `http://127.0.0.1:${masterPort}/teams/${encodeURIComponent(name)}/prune`;
   try {
     const r = await fetch(url, {
@@ -1858,7 +1858,7 @@ let _masterTeamsLastSyncMs: number | null = null;
 
 async function refreshMasterTeams(): Promise<void> {
   try {
-    const port = process.env.SUBCTL_MASTER_PORT ?? "8788";
+    const port = process.env.SUBCTL_EVY_PORT ?? "8788";
     const r = await fetch(`http://127.0.0.1:${port}/teams`, {
       signal: AbortSignal.timeout(1500),
     });
@@ -2308,15 +2308,15 @@ function renderCheatsheetPage(): string {
     {
       title: "Master daemon (the conversational orchestrator)",
       rows: [
-        ["subctl master enable", "Install + load launchd plist (auto-starts at login)"],
-        ["subctl master disable", "Unload + remove the plist (state preserved)"],
-        ["subctl master status", "Daemon state, PID, uptime, supervisor model, tools loaded"],
-        ["subctl master logs [-f]", "Tail ~/Library/Logs/subctl/master.log"],
-        ["subctl master prompt \"text\"", "Inject a one-shot prompt into the running daemon"],
-        ["subctl master restart", "disable + enable (full reload)"],
-        ["subctl master kick", "Force-recover when launchd is throttled (local TTY only)"],
-        ["subctl master providers", "cat ~/.config/subctl/master/providers.json"],
-        ["subctl master policy", "cat ~/.config/subctl/master/policy.json"],
+        ["subctl evy enable", "Install + load launchd plist (auto-starts at login)"],
+        ["subctl evy disable", "Unload + remove the plist (state preserved)"],
+        ["subctl evy status", "Daemon state, PID, uptime, supervisor model, tools loaded"],
+        ["subctl evy logs [-f]", "Tail ~/Library/Logs/subctl/evy.log"],
+        ["subctl evy prompt \"text\"", "Inject a one-shot prompt into the running daemon"],
+        ["subctl evy restart", "disable + enable (full reload)"],
+        ["subctl evy kick", "Force-recover when launchd is throttled (local TTY only)"],
+        ["subctl evy providers", "cat ~/.config/subctl/evy/providers.json"],
+        ["subctl evy policy", "cat ~/.config/subctl/evy/policy.json"],
         ["http://<host>:8787 → Chat tab", "Talk to master from the dashboard (SSE-streamed)"],
         ["Telegram bot", "Bidirectional — master auto-relays responses to the channel you used"],
       ],
@@ -2324,12 +2324,12 @@ function renderCheatsheetPage(): string {
     {
       title: "Master personality presets (Phase 3k)",
       rows: [
-        ["subctl master personality list", "List all built-in presets with previews"],
-        ["subctl master personality show", "Print the currently-active preset"],
-        ["subctl master personality set <preset>", "Hot-swap voice — takes effect on next prompt"],
+        ["subctl evy personality list", "List all built-in presets with previews"],
+        ["subctl evy personality show", "Print the currently-active preset"],
+        ["subctl evy personality set <preset>", "Hot-swap voice — takes effect on next prompt"],
         ["Built-ins", "straight-shooter (default), witty, sarcastic, robotic, arnold, elon, hilarious"],
         ["Settings → Master personality", "Dashboard tile with dropdown + Apply"],
-        ["~/.config/subctl/master/personality.json", "Persisted state — single 'preset' key"],
+        ["~/.config/subctl/evy/personality.json", "Persisted state — single 'preset' key"],
       ],
     },
     {
@@ -2419,7 +2419,7 @@ function renderCheatsheetPage(): string {
         ["Paste >4 KB into chat input", "Auto-converted to attachment with pill chip"],
         ["× on pill chip", "Remove an attachment before send"],
         ["Visible chat: 📎 filename instead of inline content", "Model still sees full inline content"],
-        ["~/.config/subctl/master/attachments/", "On-disk storage (date-bucketed) + index.jsonl"],
+        ["~/.config/subctl/evy/attachments/", "On-disk storage (date-bucketed) + index.jsonl"],
         ["master tool: read_attachment(id, range?)", "Re-fetch after auto-compaction"],
         ["master tool: list_attachments(filter?, limit?)", "Find an attachment id by filename substring"],
         ["Mime allowlist", "text/* + JSON/YAML/TOML/XML/script families; 5 MiB cap"],
@@ -2584,7 +2584,7 @@ function renderCheatsheetPage(): string {
     {
       title: "Web dashboard sidebar tabs",
       rows: [
-        ["Chat", "Conversational front door to subctl master — SSE-streamed, attachments, personality picker via Settings"],
+        ["Chat", "Conversational front door to subctl evy — SSE-streamed, attachments, personality picker via Settings"],
         ["Orchestration", "Camera grid (every dev-team tmux pane) + Active Dev Teams + Watchdog + Live Activity + Diagnostics"],
         ["Dashboard", "Verdict + accounts + active tmux + active conversations + cost + util + RL events"],
         ["Projects", "~/code scan + policy state + per-project chat + Open in Vault Viewer + Spawn dev team"],
@@ -3092,7 +3092,7 @@ const server = Bun.serve({
       const codeRoot = process.env.SUBCTL_CODE_ROOT ?? `${process.env.HOME}/code`;
       let policyProjects: Array<{ path: string; autonomy_level?: string }> = [];
       try {
-        const policyPath = join(SUBCTL_CONFIG_DIR, "master", "policy.json");
+        const policyPath = join(SUBCTL_CONFIG_DIR, "evy", "policy.json");
         if (existsSync(policyPath)) {
           const raw = readFileSync(policyPath, "utf8");
           const stripped = raw.split("\n").filter((l) => !/^\s*"_comment[^"]*"\s*:/.test(l)).join("\n").replace(/,(\s*[}\]])/g, "$1");
@@ -3154,10 +3154,10 @@ const server = Bun.serve({
       const home = process.env.HOME ?? "";
       const logsDir = `${home}/Library/Logs/subctl`;
       const sources = [
-        { id: "master",        path: `${logsDir}/master.log`,         label: "master daemon (com.subctl.master)" },
+        { id: "master",        path: `${logsDir}/evy.log`,         label: "master daemon (com.subctl.evy)" },
         { id: "dashboard-out", path: `${logsDir}/dashboard.out.log`,  label: "dashboard stdout (com.subctl.dashboard)" },
         { id: "dashboard-err", path: `${logsDir}/dashboard.err.log`,  label: "dashboard stderr" },
-        { id: "decisions",     path: `${home}/.config/subctl/master/decisions.jsonl`, label: "master decisions log (JSONL)" },
+        { id: "decisions",     path: `${home}/.config/subctl/evy/decisions.jsonl`, label: "Evy decisions log (JSONL)" },
       ];
       const enriched = sources.map((s) => {
         try {
@@ -3178,10 +3178,10 @@ const server = Bun.serve({
         const isStream = url.pathname.endsWith("/stream");
         const home = process.env.HOME ?? "";
         const map: Record<string, string> = {
-          "master":         `${home}/Library/Logs/subctl/master.log`,
+          "master":         `${home}/Library/Logs/subctl/evy.log`,
           "dashboard-out":  `${home}/Library/Logs/subctl/dashboard.out.log`,
           "dashboard-err":  `${home}/Library/Logs/subctl/dashboard.err.log`,
-          "decisions":      `${home}/.config/subctl/master/decisions.jsonl`,
+          "decisions":      `${home}/.config/subctl/evy/decisions.jsonl`,
         };
         const path = map[id];
         if (!path) return Response.json({ ok: false, error: "unknown log id" }, { status: 404 });
@@ -3424,7 +3424,7 @@ const server = Bun.serve({
     // POST   /api/teams         create a new template
     // PUT    /api/teams/:name   update a template in place
     // DELETE /api/teams/:name   remove a template
-    const TEAMS_DIR = process.env.SUBCTL_TEAM_TEMPLATES_DIR ?? `${process.env.HOME}/.config/subctl/master/team-templates`;
+    const TEAMS_DIR = process.env.SUBCTL_TEAM_TEMPLATES_DIR ?? `${process.env.HOME}/.config/subctl/evy/team-templates`;
 
     // /api/teams/tools — list available tool families. MUST come BEFORE
     // the /api/teams/:name regex below or the regex eats "tools" as a
@@ -3720,7 +3720,7 @@ const server = Bun.serve({
         // listTemplates() that seeds + caches, so this is cheap.
         let templates: { name: string; lead: { skills: string[] }; developers: { name: string; skills: string[] }[] }[] = [];
         try {
-          const mod = await import("../components/master/team-templates.ts");
+          const mod = await import("../components/evy/team-templates.ts");
           const r = mod.listTemplates();
           templates = r.templates.map((t) => ({
             name: t.name,
@@ -3951,7 +3951,7 @@ const server = Bun.serve({
 
     // /api/settings/obsidian — get/set the configured Obsidian vault root path
     if (url.pathname === "/api/settings/obsidian" && req.method === "GET") {
-      const cfgPath = join(SUBCTL_CONFIG_DIR, "master", "obsidian.json");
+      const cfgPath = join(SUBCTL_CONFIG_DIR, "evy", "obsidian.json");
       let vaultRoot = `${process.env.HOME}/Documents/Obsidian Vault`;
       let configured = false;
       try {
@@ -3982,10 +3982,10 @@ const server = Bun.serve({
       // {bootstrap:false} skips the structure creation.
       const bootstrap = body.bootstrap !== false;
       const expanded = path.replace(/^~/, process.env.HOME ?? "");
-      const cfgPath = join(SUBCTL_CONFIG_DIR, "master", "obsidian.json");
+      const cfgPath = join(SUBCTL_CONFIG_DIR, "evy", "obsidian.json");
       try {
         const { mkdirSync, writeFileSync } = require("node:fs") as typeof import("node:fs");
-        mkdirSync(join(SUBCTL_CONFIG_DIR, "master"), { recursive: true });
+        mkdirSync(join(SUBCTL_CONFIG_DIR, "evy"), { recursive: true });
         writeFileSync(cfgPath, JSON.stringify({ vault_root: path, _comment: `set via dashboard ${new Date().toISOString()}` }, null, 2));
 
         // Auto-bootstrap the vault structure. The master's vault_append tool
@@ -4004,7 +4004,7 @@ const server = Bun.serve({
               mkdirSync(expanded + "/master/.obsidian", { recursive: true });
               writeFileSync(
                 expanded + "/master/welcome.md",
-                "# subctl master vault\n\n" +
+                "# subctl evy vault\n\n" +
                 "This vault is the master daemon's long-term memory store (tier 3).\n\n" +
                 "Per-project notes land here as the master records decisions, drafts " +
                 "specs, and tracks dev-team progress. Each spawned dev team gets a " +
@@ -4077,7 +4077,7 @@ const server = Bun.serve({
       return Response.json({
         ok: true,
         keys: results,
-        note: "v2.7.4 priority: process env beats ~/.config/subctl/secrets.json beats absent. Edit secrets via the Settings → API Tokens panel (chmod 600 file, never echoed back). Env vars set in your shell ~/.zshrc are NOT inherited by launchd services; set them in ~/Library/LaunchAgents/com.subctl.master.plist EnvironmentVariables.",
+        note: "v2.7.4 priority: process env beats ~/.config/subctl/secrets.json beats absent. Edit secrets via the Settings → API Tokens panel (chmod 600 file, never echoed back). Env vars set in your shell ~/.zshrc are NOT inherited by launchd services; set them in ~/Library/LaunchAgents/com.subctl.evy.plist EnvironmentVariables.",
       });
     }
 
@@ -4204,12 +4204,12 @@ const server = Bun.serve({
       return Response.json({ ok: true, accounts });
     }
 
-    // /api/settings/telegram — update bot_token / chat_id in master-notify.json
+    // /api/settings/telegram — update bot_token / chat_id in evy-notify.json
     if (url.pathname === "/api/settings/telegram" && req.method === "POST") {
       let body: { bot_token?: string; chat_id?: string };
       try { body = await req.json(); }
       catch { return Response.json({ ok: false, error: "invalid JSON body" }, { status: 400 }); }
-      const notifyPath = join(SUBCTL_CONFIG_DIR, "master-notify.json");
+      const notifyPath = join(SUBCTL_CONFIG_DIR, "evy-notify.json");
       let cur: Record<string, unknown> = {};
       try {
         if (existsSync(notifyPath)) cur = JSON.parse(readFileSync(notifyPath, "utf8"));
@@ -4235,7 +4235,7 @@ const server = Bun.serve({
         const { writeFileSync } = require("node:fs") as typeof import("node:fs");
         writeFileSync(notifyPath, JSON.stringify(cur, null, 2));
         // Bounce master so the listener picks up new config
-        const label = "com.subctl.master";
+        const label = "com.subctl.evy";
         const plist = `${process.env.HOME}/Library/LaunchAgents/${label}.plist`;
         if (existsSync(plist)) {
           spawnSync("launchctl", ["unload", plist], { encoding: "utf8", timeout: 5000 });
@@ -4259,12 +4259,12 @@ const server = Bun.serve({
 
     // /api/settings/telegram/test — test the CURRENT config without changing
     if (url.pathname === "/api/settings/telegram/test" && req.method === "POST") {
-      const notifyPath = join(SUBCTL_CONFIG_DIR, "master-notify.json");
-      if (!existsSync(notifyPath)) return Response.json({ ok: false, error: "master-notify.json missing" }, { status: 404 });
+      const notifyPath = join(SUBCTL_CONFIG_DIR, "evy-notify.json");
+      if (!existsSync(notifyPath)) return Response.json({ ok: false, error: "evy-notify.json missing" }, { status: 404 });
       try {
         const cfg = JSON.parse(readFileSync(notifyPath, "utf8")) as { bot_token?: string; chat_id?: string };
         const token = cfg.bot_token;
-        if (!token) return Response.json({ ok: false, error: "no bot_token in master-notify.json" }, { status: 400 });
+        if (!token) return Response.json({ ok: false, error: "no bot_token in evy-notify.json" }, { status: 400 });
         const r = await fetch(`https://api.telegram.org/bot${token}/getMe`, { signal: AbortSignal.timeout(4000) });
         const j = (await r.json()) as { ok: boolean; result?: { username?: string }; description?: string };
         return Response.json({
@@ -4284,9 +4284,9 @@ const server = Bun.serve({
       if (m && req.method === "GET") {
         const name = m[1]!;
         const map: Record<string, string> = {
-          policy:    join(SUBCTL_CONFIG_DIR, "master", "policy.json"),
-          providers: join(SUBCTL_CONFIG_DIR, "master", "providers.json"),
-          notify:    join(SUBCTL_CONFIG_DIR, "master-notify.json"),
+          policy:    join(SUBCTL_CONFIG_DIR, "evy", "policy.json"),
+          providers: join(SUBCTL_CONFIG_DIR, "evy", "providers.json"),
+          notify:    join(SUBCTL_CONFIG_DIR, "evy-notify.json"),
         };
         const path = map[name];
         if (!path) return Response.json({ ok: false, error: "unknown config" }, { status: 400 });
@@ -4310,7 +4310,7 @@ const server = Bun.serve({
     //   2. Either git clone or mkdir into ~/code/<name>
     //   3. If create_vault: mkdir ~/Documents/Obsidian Vault/<name>/{,design,reviews,postmortems}
     //      and seed RESUME.md with a tiny template
-    //   4. If add_to_policy: append entry to ~/.config/subctl/master/policy.json
+    //   4. If add_to_policy: append entry to ~/.config/subctl/evy/policy.json
     //   5. Return success + path + vault_path so the UI can refresh and select it
     if (url.pathname === "/api/projects/create" && req.method === "POST") {
       let body: {
@@ -4482,7 +4482,7 @@ const server = Bun.serve({
       // 3. policy.json append
       if (addToPolicy) {
         try {
-          const policyPath = join(SUBCTL_CONFIG_DIR, "master", "policy.json");
+          const policyPath = join(SUBCTL_CONFIG_DIR, "evy", "policy.json");
           if (existsSync(policyPath)) {
             const raw = readFileSync(policyPath, "utf8");
             const stripped = raw.split("\n").filter((l) => !/^\s*"_comment[^"]*"\s*:/.test(l)).join("\n").replace(/,(\s*[}\]])/g, "$1");
@@ -4497,7 +4497,7 @@ const server = Bun.serve({
             writeFileSync(policyPath, JSON.stringify(policy, null, 2));
             steps.push({ step: "policy", ok: true, detail: `appended ${name} (autonomy=${autonomy})` });
             // Restart master so it picks up the new project
-            const label = "com.subctl.master";
+            const label = "com.subctl.evy";
             const plist = `${process.env.HOME}/Library/LaunchAgents/${label}.plist`;
             if (existsSync(plist)) {
               spawnSync("launchctl", ["unload", plist], { encoding: "utf8", timeout: 5000 });
@@ -4560,7 +4560,7 @@ const server = Bun.serve({
         // Policy lookup
         let policyEntry: Record<string, unknown> | null = null;
         try {
-          const policyPath = join(SUBCTL_CONFIG_DIR, "master", "policy.json");
+          const policyPath = join(SUBCTL_CONFIG_DIR, "evy", "policy.json");
           if (existsSync(policyPath)) {
             const raw = readFileSync(policyPath, "utf8");
             const stripped = raw.split("\n").filter((l) => !/^\s*"_comment[^"]*"\s*:/.test(l)).join("\n").replace(/,(\s*[}\]])/g, "$1");
@@ -4576,7 +4576,7 @@ const server = Bun.serve({
         // Pull recent decisions from master decisions log, filtered by project
         const decisions: Array<Record<string, unknown>> = [];
         try {
-          const decPath = join(SUBCTL_CONFIG_DIR, "master", "decisions.jsonl");
+          const decPath = join(SUBCTL_CONFIG_DIR, "evy", "decisions.jsonl");
           if (existsSync(decPath)) {
             const raw = readFileSync(decPath, "utf8");
             const lines = raw.split("\n").filter(Boolean).slice(-200); // last 200 lines
@@ -4671,8 +4671,8 @@ const server = Bun.serve({
     // master restart.
     if (url.pathname === "/api/memory/tier1" && req.method === "GET") {
       const home = process.env.HOME ?? "";
-      const memPath = join(home, ".config/subctl/master/memory.md");
-      const userPath = join(home, ".config/subctl/master/user.md");
+      const memPath = join(home, ".config/subctl/evy/memory.md");
+      const userPath = join(home, ".config/subctl/evy/user.md");
       const readSafe = (p: string, limit: number) => {
         if (!existsSync(p)) return { exists: false, content: "", char_count: 0, char_limit: limit };
         try {
@@ -4696,8 +4696,8 @@ const server = Bun.serve({
       }
       const home = process.env.HOME ?? "";
       const path = body.which === "memory"
-        ? join(home, ".config/subctl/master/memory.md")
-        : join(home, ".config/subctl/master/user.md");
+        ? join(home, ".config/subctl/evy/memory.md")
+        : join(home, ".config/subctl/evy/user.md");
       const limit = body.which === "memory" ? 2200 : 1375;
       const content = (body.content ?? "").trim();
       if (content.length > limit) {
@@ -4705,7 +4705,7 @@ const server = Bun.serve({
       }
       try {
         const { mkdirSync, writeFileSync } = require("node:fs") as typeof import("node:fs");
-        mkdirSync(join(home, ".config/subctl/master"), { recursive: true });
+        mkdirSync(join(home, ".config/subctl/evy"), { recursive: true });
         writeFileSync(path, content);
         return Response.json({ ok: true, path, char_count: content.length, char_limit: limit, message: "next agent prompt will pick up the new content" });
       } catch (err) {
@@ -4730,7 +4730,7 @@ const server = Bun.serve({
       // Resolve the configured root from obsidian.json (or default).
       let vaultRoot = `${process.env.HOME}/Documents/Obsidian Vault`;
       try {
-        const cfgPath = join(SUBCTL_CONFIG_DIR, "master", "obsidian.json");
+        const cfgPath = join(SUBCTL_CONFIG_DIR, "evy", "obsidian.json");
         if (existsSync(cfgPath)) {
           const j = JSON.parse(readFileSync(cfgPath, "utf8")) as { vault_root?: string };
           if (j.vault_root) vaultRoot = j.vault_root.replace(/^~/, process.env.HOME ?? "");
@@ -4951,7 +4951,7 @@ const server = Bun.serve({
       // Configured vault root (from dashboard Settings) takes precedence
       let configuredRoot: string | null = null;
       try {
-        const cfgPath = join(SUBCTL_CONFIG_DIR, "master", "obsidian.json");
+        const cfgPath = join(SUBCTL_CONFIG_DIR, "evy", "obsidian.json");
         if (existsSync(cfgPath)) {
           const j = JSON.parse(readFileSync(cfgPath, "utf8")) as { vault_root?: string };
           if (j.vault_root) configuredRoot = j.vault_root.replace(/^~/, process.env.HOME ?? "");
@@ -5368,7 +5368,7 @@ const server = Bun.serve({
       // v2.9.1 — Provider Model Catalog Phase 3 — aggregator routing.
       // Hard-coded set of provider ids that route through an aggregator
       // catalog (one upstream serves ~30 downstream providers). Mirrors
-      // AGGREGATOR_PROVIDER_IDS in components/master/aggregator-clients.ts;
+      // AGGREGATOR_PROVIDER_IDS in components/evy/aggregator-clients.ts;
       // keep the two lists in sync. The flag gates the "Browse Upstream
       // Catalog" button in the Providers tab UI.
       const AGGREGATOR_PROVIDER_IDS = new Set([
@@ -6016,7 +6016,7 @@ const server = Bun.serve({
     }
 
     // ── /api/master/supervisor — switch the master's supervisor model ────
-    // Edits ~/.config/subctl/master/providers.json (writes the picked id
+    // Edits ~/.config/subctl/evy/providers.json (writes the picked id
     // into models.supervisor.model and models.reviewer.model — they share
     // a model in our setup) and bounces the master launchd job. The
     // master's transcript persists across restart, so the switch is
@@ -6058,7 +6058,7 @@ const server = Bun.serve({
       }
 
       // Guard: refuse to set a provider that pi-ai can't actually call.
-      // Mirror of components/master/server.ts PROVIDER_API table — must stay
+      // Mirror of components/evy/server.ts PROVIDER_API table — must stay
       // in sync. If a provider isn't here, master will silently return empty
       // assistant content because pi-ai's stream factory has no api factory
       // for it. Diagnosed 2026-05-10 after openai-codex was selected and
@@ -6067,7 +6067,7 @@ const server = Bun.serve({
       const WIRED_PROVIDERS = new Set([
         "anthropic",
         "openai",          // API-key-based; works
-        "openai-codex",    // v2.8.7 — ChatGPT Pro OAuth via components/master/openai-codex-auth.ts
+        "openai-codex",    // v2.8.7 — ChatGPT Pro OAuth via components/evy/openai-codex-auth.ts
         "google",
         "google-vertex",
         "amazon-bedrock",
@@ -6100,7 +6100,7 @@ const server = Bun.serve({
         );
       }
 
-      const providersPath = join(SUBCTL_CONFIG_DIR, "master", "providers.json");
+      const providersPath = join(SUBCTL_CONFIG_DIR, "evy", "providers.json");
       if (!existsSync(providersPath)) {
         return Response.json({ ok: false, error: "providers.json missing" }, { status: 404 });
       }
@@ -6147,7 +6147,7 @@ const server = Bun.serve({
 
         // v2.8.7 — sync profiles.json so the operator's pick survives a
         // master restart. Master overrides supervisorCfg.model + .host
-        // from profiles.json[active] at boot (components/master/server.ts
+        // from profiles.json[active] at boot (components/evy/server.ts
         // around the let supervisorCfg block); without this sync the
         // restart silently reverts to whatever stale value profiles.json
         // already had. Non-fatal on failure — providers.json was already
@@ -6182,7 +6182,7 @@ const server = Bun.serve({
         // ensureModelLoaded() will re-pin the LM Studio context for the
         // supervisor (and reviewer) using the freshly-written providers.json,
         // so the new model lands at the right context window automatically.
-        const label = "com.subctl.master";
+        const label = "com.subctl.evy";
         const plist = `${process.env.HOME}/Library/LaunchAgents/${label}.plist`;
         spawnSync("launchctl", ["unload", plist], { encoding: "utf8", timeout: 5000 });
         for (let i = 0; i < 5; i++) {
@@ -6212,7 +6212,7 @@ const server = Bun.serve({
     // The dashboard's Watchdogs panel polls the GET every 10s while
     // open. Master owns the registry; the dashboard just renders it.
     if (url.pathname === "/api/watchdogs" && req.method === "GET") {
-      const masterPort = process.env.SUBCTL_MASTER_PORT ?? "8788";
+      const masterPort = process.env.SUBCTL_EVY_PORT ?? "8788";
       const masterUrl = `http://127.0.0.1:${masterPort}/watchdogs`;
       try {
         const upstream = await fetch(masterUrl, { method: "GET" });
@@ -6232,7 +6232,7 @@ const server = Bun.serve({
       const m = url.pathname.match(/^\/api\/watchdogs\/([A-Za-z0-9_.-]+)\/kill\/?$/);
       if (m && req.method === "POST") {
         const id = m[1]!;
-        const masterPort = process.env.SUBCTL_MASTER_PORT ?? "8788";
+        const masterPort = process.env.SUBCTL_EVY_PORT ?? "8788";
         const masterUrl = `http://127.0.0.1:${masterPort}/watchdogs/${encodeURIComponent(id)}/kill`;
         try {
           const upstream = await fetch(masterUrl, {
@@ -6264,7 +6264,7 @@ const server = Bun.serve({
       if (req.method !== "GET" && req.method !== "POST") {
         return Response.json({ ok: false, error: "method not allowed" }, { status: 405 });
       }
-      const masterPort = process.env.SUBCTL_MASTER_PORT ?? "8788";
+      const masterPort = process.env.SUBCTL_EVY_PORT ?? "8788";
       const masterUrl = `http://127.0.0.1:${masterPort}/profile`;
       try {
         const init: RequestInit = {
@@ -6303,7 +6303,7 @@ const server = Bun.serve({
         const uid = process.getuid?.() ?? 0;
         const r = spawnSync(
           "launchctl",
-          ["kickstart", "-k", `gui/${uid}/com.subctl.master`],
+          ["kickstart", "-k", `gui/${uid}/com.subctl.evy`],
           { encoding: "utf8", timeout: 10_000 },
         );
         if (r.status !== 0) {
@@ -6342,7 +6342,7 @@ const server = Bun.serve({
     // forwards REST + SSE so the dashboard tray + xtab readers don't have
     // to know the master's port. Mirrors /api/master/events SSE handling.
     if (url.pathname.startsWith("/api/notifications")) {
-      const masterPort = process.env.SUBCTL_MASTER_PORT ?? "8788";
+      const masterPort = process.env.SUBCTL_EVY_PORT ?? "8788";
       const masterUrl = `http://127.0.0.1:${masterPort}${url.pathname.replace(/^\/api\/notifications/, "/notifications")}${url.search}`;
       try {
         if (url.pathname === "/api/notifications/stream" && req.method === "GET") {
@@ -6393,7 +6393,7 @@ const server = Bun.serve({
     // /api/voice/audio is the one that streams binary audio back; the
     // others are JSON.
     if (url.pathname.startsWith("/api/voice")) {
-      const masterPort = process.env.SUBCTL_MASTER_PORT ?? "8788";
+      const masterPort = process.env.SUBCTL_EVY_PORT ?? "8788";
       const masterUrl = `http://127.0.0.1:${masterPort}${url.pathname.replace(/^\/api\/voice/, "/voice")}${url.search}`;
       try {
         if (url.pathname.startsWith("/api/voice/audio/") && req.method === "GET") {
@@ -6434,7 +6434,7 @@ const server = Bun.serve({
     // Preferences tab read + edit without knowing master's port. Routes
     // mirror master's /preferences/* exactly. Reset gates on `{confirm: true}`.
     if (url.pathname === "/api/preferences" || url.pathname.startsWith("/api/preferences/")) {
-      const masterPort = process.env.SUBCTL_MASTER_PORT ?? "8788";
+      const masterPort = process.env.SUBCTL_EVY_PORT ?? "8788";
       const masterUrl = `http://127.0.0.1:${masterPort}${url.pathname.replace(/^\/api\/preferences/, "/preferences")}${url.search}`;
       try {
         const init: RequestInit = {
@@ -6475,7 +6475,7 @@ const server = Bun.serve({
       url.pathname === "/api/upstreams/update" ||
       url.pathname === "/api/upstreams/auto-update/toggle"
     ) {
-      const masterPort = process.env.SUBCTL_MASTER_PORT ?? "8788";
+      const masterPort = process.env.SUBCTL_EVY_PORT ?? "8788";
       const masterUrl = `http://127.0.0.1:${masterPort}${url.pathname.replace(/^\/api\/upstreams/, "/upstreams")}${url.search}`;
       try {
         const init: RequestInit = {
@@ -6504,7 +6504,7 @@ const server = Bun.serve({
     // Cognee HTTP daemon on 127.0.0.1:8745 (default). Used by the Memory
     // tab's Tier-health strip + Graph Extraction panel to call /health and
     // /cognify without going through the master. Ports follow the defaults
-    // in components/master/cognee-client.ts:100.
+    // in components/evy/cognee-client.ts:100.
     if (url.pathname.startsWith("/api/cognee/")) {
       const port = process.env.SUBCTL_COGNEE_PORT ?? "8745";
       const upstreamUrl = `http://127.0.0.1:${port}${url.pathname.replace(/^\/api\/cognee/, "")}${url.search}`;
@@ -6534,7 +6534,7 @@ const server = Bun.serve({
     // Mirrors the cognee block above. Hits 127.0.0.1:8746 by default; used
     // by the Memory tab's Tier-health strip + Curated Tier 3 browser to
     // call /health and /recall directly. Port follows the default in
-    // components/master/memori-client.ts:185.
+    // components/evy/memori-client.ts:185.
     if (url.pathname.startsWith("/api/memori/")) {
       const port = process.env.SUBCTL_MEMORI_PORT ?? "8746";
       const upstreamUrl = `http://127.0.0.1:${port}${url.pathname.replace(/^\/api\/memori/, "")}${url.search}`;
@@ -6571,7 +6571,7 @@ const server = Bun.serve({
     // Obsidian vault status endpoint farther up. We only proxy when there's
     // a real subpath ("/search", "/recent", "/stats", "/entries", …).
     if (url.pathname.startsWith("/api/memory/")) {
-      const masterPort = process.env.SUBCTL_MASTER_PORT ?? "8788";
+      const masterPort = process.env.SUBCTL_EVY_PORT ?? "8788";
       const masterUrl = `http://127.0.0.1:${masterPort}${url.pathname.replace(/^\/api\/memory/, "/memory")}${url.search}`;
       try {
         const init: RequestInit = {
@@ -6596,7 +6596,7 @@ const server = Bun.serve({
     }
 
     if (url.pathname.startsWith("/api/master/")) {
-      const masterPort = process.env.SUBCTL_MASTER_PORT ?? "8788";
+      const masterPort = process.env.SUBCTL_EVY_PORT ?? "8788";
       const masterUrl = `http://127.0.0.1:${masterPort}${url.pathname.replace(/^\/api\/master/, "")}${url.search}`;
       try {
         if (url.pathname === "/api/master/events" && req.method === "GET") {

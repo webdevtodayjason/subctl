@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  subctl evy (Evy daemon) launchd template.
+
+  Template — placeholders are substituted at install time by
+  lib/evy.sh:subctl_evy_enable():
+    __OWNER__      reverse-DNS prefix (e.g. com.subctl)
+    __BUN__        absolute path to the bun binary
+    __SERVER_TS__  absolute path to components/evy/server.ts
+    __HOME__       absolute path to user's $HOME
+
+  Boot expectations from the daemon (server.ts):
+    - emit a heartbeat log line within 30s of boot. server.ts logs
+      `[master] booting subctl ...` immediately and a heartbeat every
+      60s thereafter; ThrottleInterval=10 keeps successive crash-restarts
+      from runaway-detecting. (NOTE: the `[master]` log prefix is preserved
+      pending a separate v3.x cosmetic sweep; see CHANGELOG 3.0.0-rc1.)
+
+  Both stdout and stderr stream to the SAME file
+  (~/Library/Logs/subctl/evy.log) — server.ts uses console.error
+  for all structured logs (so a single file gives you the full picture
+  without merging streams).
+
+  v3.0 rename note: this template was previously com.subctl.master.plist
+  with StandardOutPath/StandardErrorPath pointing at evy.log. Old
+  install.sh migration in v3.0 unloads com.subctl.master, renames the
+  state dir, and loads com.subctl.evy. See Phase 3 CHANGELOG entry.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>__OWNER__.evy</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__BUN__</string>
+        <string>run</string>
+        <string>__SERVER_TS__</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>WorkingDirectory</key>
+    <string>__HOME__</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Conditional KeepAlive — restart on crash (Crashed:true) or non-zero
+         exit (SuccessfulExit:false), but DO NOT restart after a clean
+         operator-initiated stop. Without this, `subctl evy disable`
+         (which sends SIGTERM and exits 0) would still get respawned.
+         Matches the dashboard plist's pattern. -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+        <key>Crashed</key>
+        <true/>
+    </dict>
+
+    <!-- ThrottleInterval 30s (was 10). Today's death spiral 2026-05-10: LM
+         Studio crashed, ctx-pin hung 60s, daemon exited, launchd
+         relaunched within 10s, hung 60s again, repeat. macOS's
+         internal respawn-limit detector flagged the job as failing and
+         refused further restarts. 30s gives the environment more breathing
+         room between crash-attempts and resets launchd's failure counter
+         more aggressively. Combined with v2.5.3's 2s LM Studio reachability
+         probe, the daemon now boots fast even when LM Studio is dead. -->
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <!-- ExitTimeOut 20s: launchd sends SIGTERM, waits up to 20s for graceful
+         shutdown (transcript flush, SSE drain), then SIGKILL. Prevents
+         zombie processes if a daemon's shutdown path hangs. -->
+    <key>ExitTimeOut</key>
+    <integer>20</integer>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/Library/Logs/subctl/evy.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Library/Logs/subctl/evy.log</string>
+</dict>
+</plist>

@@ -1,0 +1,26 @@
+{
+  "name": "subctl-evy",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Evy (the subctl persistent daemon) — the dev-team conductor. Drives subctl orchestrators via pi-agent-core, routes across local + remote LLMs, and keeps the operator in the loop via a dedicated Telegram bot.",
+  "main": "./server.ts",
+  "scripts": {
+    "start": "bun run server.ts",
+    "dev": "bun run --watch server.ts"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "^0.74.0",
+    "@earendil-works/pi-ai": "^0.74.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "shell-quote": "^1.8.3",
+    "smol-toml": "^1.6.1",
+    "typebox": "^1.1.24"
+  },
+  "engines": {
+    "bun": ">=1.2"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.13"
+  }
+}

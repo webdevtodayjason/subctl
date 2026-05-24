@@ -30,7 +30,7 @@ import {
   getBundledModels,
   listAllProviderIds,
   getDefaultModel,
-} from "../../components/master/pi-ai-catalog.ts";
+} from "../../components/evy/pi-ai-catalog.ts";
 
 const HOME = homedir();
 // v2.8.9 — Lazy-eval SUBCTL_CONFIG_DIR like the pi-ai-catalog fix in b9bd182.
@@ -283,7 +283,7 @@ const SECRETS_PATH = process.env.SUBCTL_CONFIG_DIR
 
 /** Read a credential, env var first then secrets.json. Returns undefined
  *  when neither source has a non-empty value. Mirrors the pattern used by
- *  components/master/secrets.ts resolveSecret() but doesn't pull in the
+ *  components/evy/secrets.ts resolveSecret() but doesn't pull in the
  *  full caching layer — refresh is a rare, operator-initiated action. */
 function readSecret(envName: string, secretKey: string): string | undefined {
   const envVal = process.env[envName];

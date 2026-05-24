@@ -4,7 +4,7 @@
 # Implements the five "operator from anywhere" subcommands shipped in v2.7.28:
 #
 #   subctl status   one-shot health probe of master (:8788) + dashboard (:8787)
-#   subctl logs     tail master.log / dashboard.{out,err}.log
+#   subctl logs     tail evy.log / dashboard.{out,err}.log
 #   subctl deploy   git pull + launchctl kickstart -k for both services
 #   subctl notif    REST wrapper around /api/notifications
 #   subctl memory   REST wrapper around /api/memory/*  (Evy Tier 3)
@@ -29,13 +29,13 @@ _SUBCTL_CLI_LOADED=1
 
 . "$(dirname "${BASH_SOURCE[0]}")/core.sh"
 
-SUBCTL_MASTER_PORT="${SUBCTL_MASTER_PORT:-8788}"
+SUBCTL_EVY_PORT="${SUBCTL_EVY_PORT:-8788}"
 SUBCTL_DASHBOARD_PORT_DEFAULT="${SUBCTL_SERVICE_PORT:-8787}"
 
 # Resolve `http://127.0.0.1:<port>` bases. Kept as functions so SUBCTL_*_PORT
 # env overrides at call-time are honored (test harnesses lean on this).
 _subctl_cli_master_base() {
-  printf "http://127.0.0.1:%s" "${SUBCTL_MASTER_PORT:-8788}"
+  printf "http://127.0.0.1:%s" "${SUBCTL_EVY_PORT:-8788}"
 }
 _subctl_cli_dashboard_base() {
   printf "http://127.0.0.1:%s" "${SUBCTL_SERVICE_PORT:-8787}"
@@ -150,7 +150,8 @@ EOF
 
 # ── subctl logs ──────────────────────────────────────────────────────────────
 # Tails the launchd log files. Default: last 50 lines of all three. Flags:
-#   --master         only master.log
+#   --evy            only evy.log (preferred from v3.0)
+#   --master         alias for --evy (compat through v3.x; removed later)
 #   --dashboard      only dashboard.out.log + dashboard.err.log
 #   --tail N         number of trailing lines (default 50)
 #   --follow / -f    tail -f
@@ -158,19 +159,21 @@ subctl_cli_logs() {
   local master_only=false dashboard_only=false follow=false n=50
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --master)        master_only=true; shift ;;
+      --evy)           master_only=true; shift ;;
+      --master)        master_only=true; shift ;;  # v3.x compat alias for --evy
       --dashboard)     dashboard_only=true; shift ;;
       --tail)          n="$2"; shift 2 ;;
       --follow|-f)     follow=true; shift ;;
       -h|--help)
         cat <<EOF
-subctl logs [--master | --dashboard] [--tail N] [--follow]
+subctl logs [--evy | --master | --dashboard] [--tail N] [--follow]
 
   Tail the launchd log files at ~/Library/Logs/subctl/. Default: last 50
-  lines of master.log + dashboard.out.log + dashboard.err.log.
+  lines of evy.log + dashboard.out.log + dashboard.err.log.
 
   Options:
-    --master      Only master.log
+    --evy         Only evy.log (preferred from v3.0)
+    --master      Alias for --evy (kept through v3.x for compat)
     --dashboard   Only dashboard.out.log + dashboard.err.log
     --tail N      Lines (default 50)
     --follow, -f  Stream new lines (tail -f). Ctrl-C to exit.
@@ -185,17 +188,17 @@ EOF
     return 1
   fi
 
-  local master_log="$SUBCTL_LOG_DIR/master.log"
+  local evy_log="$SUBCTL_LOG_DIR/evy.log"
   local dash_out="$SUBCTL_LOG_DIR/dashboard.out.log"
   local dash_err="$SUBCTL_LOG_DIR/dashboard.err.log"
 
   local -a files=()
   if $master_only; then
-    files+=("$master_log")
+    files+=("$evy_log")
   elif $dashboard_only; then
     files+=("$dash_out" "$dash_err")
   else
-    files+=("$master_log" "$dash_out" "$dash_err")
+    files+=("$evy_log" "$dash_out" "$dash_err")
   fi
 
   # Filter to existing files. If none exist, that's an error (helps the
@@ -328,7 +331,7 @@ EOF
 
   local uid label
   uid="$(id -u)"
-  for label in com.subctl.master com.subctl.dashboard; do
+  for label in com.subctl.evy com.subctl.dashboard; do
     local plist="$HOME/Library/LaunchAgents/${label}.plist"
     if [[ ! -f "$plist" ]]; then
       subctl_warn "$label plist not installed — skipping ($plist)"
@@ -539,7 +542,7 @@ subctl memory tier1 [pending | approve <id> [note] | reject <id> [note]]
   Operator surface for the Tier 1 candidate queue. When the memory
   consciousness cycle's reviewer flags a fact for promotion, it lands
   here for human review before it's durably committed to Tier 1
-  (~/.config/subctl/master/memory.md).
+  (~/.config/subctl/evy/memory.md).
 
   Verbs:
     pending             List candidates awaiting review (default)
@@ -729,7 +732,7 @@ subctl_cli_memori() {
 subctl memori [status | install [on|off] | uninstall]
 
   Local Memori sidecar (Memory Init #3 Phase 3b). Stores Tier 3 turns
-  in SQLite at ~/.config/subctl/master/memori.db. Master daemon talks
+  in SQLite at ~/.config/subctl/evy/memori.db. Master daemon talks
   to it over HTTP at 127.0.0.1:8746.
 
   Verbs:
@@ -881,7 +884,7 @@ _subctl_cli_memory_render() {
 #   subctl team list                       /api/orchestration
 #   subctl team kill <name>                /api/orchestration/<name>/kill + archive inbox
 #   subctl team exec <name> <cmd>          /api/orchestration/<name>/msg (HMAC-marker via dashboard)
-#   subctl team logs <name>                tail ~/.config/subctl/master/inbox/<name>.jsonl
+#   subctl team logs <name>                tail ~/.config/subctl/evy/inbox/<name>.jsonl
 #
 #   subctl config show [section]           pretty-print + redact secrets
 #   subctl config edit  [file]             $EDITOR on a specific config file
@@ -896,7 +899,7 @@ _subctl_cli_memory_render() {
 # any JSON value whose KEY name matches the secret-pattern (token/secret/
 # password/key/credential/bearer/apikey). See the function for the regex set.
 
-SUBCTL_MASTER_INBOX_DEFAULT="$HOME/.config/subctl/master/inbox"
+SUBCTL_EVY_INBOX_DEFAULT="$HOME/.config/subctl/evy/inbox"
 
 # ── subctl team {list, kill, exec, logs} ─────────────────────────────────────
 subctl_cli_team() {
@@ -915,7 +918,7 @@ subctl team <verb> [args]
 Verbs:
   list                       List active orchestrator sessions
   kill <name>                Kill the tmux session + archive its inbox to
-                             ~/.config/subctl/master/inbox/.killed/
+                             ~/.config/subctl/evy/inbox/.killed/
   exec <name> <command...>   Inject a one-off subctl_orch_msg (HMAC-signed)
   logs <name> [--tail N]     Tail the team's inbox JSONL (default 20 lines)
   report  ...                Append a status event   (see 'subctl team report --help')
@@ -958,8 +961,8 @@ subctl_cli_team_list() {
     # Dashboard down → fall back to inbox-file listing so the operator
     # still sees *something* useful. Mirrors the v2.7.27 fallback for
     # 'subctl orch list'.
-    subctl_warn "dashboard unreachable — falling back to inbox listing ($SUBCTL_MASTER_INBOX_DEFAULT)"
-    local inbox="${SUBCTL_MASTER_INBOX:-$SUBCTL_MASTER_INBOX_DEFAULT}"
+    subctl_warn "dashboard unreachable — falling back to inbox listing ($SUBCTL_EVY_INBOX_DEFAULT)"
+    local inbox="${SUBCTL_EVY_INBOX:-$SUBCTL_EVY_INBOX_DEFAULT}"
     if [[ ! -d "$inbox" ]]; then
       echo "(no teams — inbox dir does not exist yet: $inbox)"
       return 0
@@ -1033,7 +1036,7 @@ subctl_cli_team_kill() {
   # we own the on-disk cleanup so a re-spawn under the same name doesn't
   # inherit stale events. .killed/ stays under the inbox dir to keep the
   # archive auditable from one place.
-  local inbox_dir="${SUBCTL_MASTER_INBOX:-$SUBCTL_MASTER_INBOX_DEFAULT}"
+  local inbox_dir="${SUBCTL_EVY_INBOX:-$SUBCTL_EVY_INBOX_DEFAULT}"
   local inbox="$inbox_dir/${name}.jsonl"
   local archived="(no inbox file to archive)"
   if [[ -f "$inbox" ]]; then
@@ -1116,7 +1119,7 @@ EOF
     subctl_err "--tail N must be a positive integer (got: $tail_n)"
     return 1
   fi
-  local inbox_dir="${SUBCTL_MASTER_INBOX:-$SUBCTL_MASTER_INBOX_DEFAULT}"
+  local inbox_dir="${SUBCTL_EVY_INBOX:-$SUBCTL_EVY_INBOX_DEFAULT}"
   local inbox="$inbox_dir/${name}.jsonl"
   if [[ ! -f "$inbox" ]]; then
     subctl_err "no inbox for team '$name' at $inbox"
@@ -1335,12 +1338,12 @@ accounts:$SUBCTL_CONFIG_DIR/accounts.conf:text
 projects:$SUBCTL_CONFIG_DIR/projects.conf:text
 config:$SUBCTL_CONFIG_DIR/config.toml:toml
 notify:$SUBCTL_CONFIG_DIR/notify.json:json
-master-notify:$SUBCTL_CONFIG_DIR/master-notify.json:json
+evy-notify:$SUBCTL_CONFIG_DIR/evy-notify.json:json
 profiles:$SUBCTL_CONFIG_DIR/profiles.json:json
-providers:$SUBCTL_CONFIG_DIR/master/providers.json:json
-secrets:$SUBCTL_CONFIG_DIR/master/secrets.json:json
+providers:$SUBCTL_CONFIG_DIR/evy/providers.json:json
+secrets:$SUBCTL_CONFIG_DIR/evy/secrets.json:json
 secrets-backends:$SUBCTL_CONFIG_DIR/secrets-backends.json:json
-policy:$SUBCTL_CONFIG_DIR/master/policy.json:json
+policy:$SUBCTL_CONFIG_DIR/evy/policy.json:json
 EOF
 }
 
@@ -1423,7 +1426,7 @@ subctl config <verb> [args]
 
 Verbs:
   show [section]      Print one or all config files. Secrets are redacted.
-                      Sections: accounts, projects, config, notify, master-notify,
+                      Sections: accounts, projects, config, notify, evy-notify,
                       profiles, providers, secrets, secrets-backends, policy.
   edit [file]         Open \$EDITOR (or vim) on a config file. Defaults to
                       accounts.conf. 'file' may be a section name or a path.

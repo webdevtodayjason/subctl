@@ -165,7 +165,7 @@ describe("_subctl_update_is_lockfile", () => {
     "package-lock.json",
     "yarn.lock",
     "pnpm-lock.yaml",
-    "components/master/bun.lock",
+    "components/evy/bun.lock",
     "deeply/nested/path/yarn.lock",
     "./bun.lock",
   ]) {
@@ -177,7 +177,7 @@ describe("_subctl_update_is_lockfile", () => {
 
   for (const path of [
     "package.json",
-    "components/master/server.ts",
+    "components/evy/server.ts",
     "lib/update.sh",
     "VERSION",
     "Cargo.lock",       // intentionally NOT in our allow list
@@ -205,10 +205,10 @@ describe("_subctl_update_classify_dirty", () => {
   });
 
   test("multiple lockfiles → lockfile-only|<csv>", () => {
-    const porcelain = " M bun.lock\n M components/master/bun.lock\n M dashboard/package-lock.json";
+    const porcelain = " M bun.lock\n M components/evy/bun.lock\n M dashboard/package-lock.json";
     const r = callHelper(`_subctl_update_classify_dirty "$2"`, porcelain);
     expect(r.stdout).toBe(
-      "lockfile-only|bun.lock|components/master/bun.lock|dashboard/package-lock.json",
+      "lockfile-only|bun.lock|components/evy/bun.lock|dashboard/package-lock.json",
     );
   });
 
@@ -223,7 +223,7 @@ describe("_subctl_update_classify_dirty", () => {
   });
 
   test("lockfile + source mix → mixed|<non-lock-count>", () => {
-    const porcelain = " M bun.lock\n M lib/update.sh\n M components/master/server.ts";
+    const porcelain = " M bun.lock\n M lib/update.sh\n M components/evy/server.ts";
     const r = callHelper(`_subctl_update_classify_dirty "$2"`, porcelain);
     expect(r.stdout).toBe("mixed|2");
   });
@@ -400,24 +400,24 @@ describe("subctl_update — lockfile auto-stash carve-out", () => {
     expect(r.stderr).toContain("uncommitted changes");
   });
 
-  test("nested lockfile (components/master/bun.lock) auto-stashes correctly", () => {
+  test("nested lockfile (components/evy/bun.lock) auto-stashes correctly", () => {
     // Create a nested lockfile and commit it (so it becomes a tracked file
     // we can then drift).
-    mkdirSync(join(pair.localRepo, "components/master"), { recursive: true });
-    writeFileSync(join(pair.localRepo, "components/master/bun.lock"), "v1\n");
-    git(pair.localRepo, "add", "components/master/bun.lock");
+    mkdirSync(join(pair.localRepo, "components/evy"), { recursive: true });
+    writeFileSync(join(pair.localRepo, "components/evy/bun.lock"), "v1\n");
+    git(pair.localRepo, "add", "components/evy/bun.lock");
     git(pair.localRepo, "commit", "-q", "-m", "add nested lockfile");
     git(pair.localRepo, "push", "-q", "origin", "main");
 
     pushRemoteBump(pair.bareRepo, "2.7.5");
     // Drift the nested lockfile.
-    writeFileSync(join(pair.localRepo, "components/master/bun.lock"), "v1\nplatform = darwin\n");
+    writeFileSync(join(pair.localRepo, "components/evy/bun.lock"), "v1\nplatform = darwin\n");
 
     const r = runUpdate(pair.localRepo);
     expect(r.code).toBe(0);
-    expect(r.stdout).toContain("auto-stashing: components/master/bun.lock");
+    expect(r.stdout).toContain("auto-stashing: components/evy/bun.lock");
     expect(r.stdout).toContain("auto-stashed lockfile restored");
-    expect(execSync(`cat "${join(pair.localRepo, "components/master/bun.lock")}"`, { encoding: "utf8" })).toContain("platform = darwin");
+    expect(execSync(`cat "${join(pair.localRepo, "components/evy/bun.lock")}"`, { encoding: "utf8" })).toContain("platform = darwin");
   });
 });
 

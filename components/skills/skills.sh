@@ -199,7 +199,7 @@ subctl_skills_remove() {
 # ── v2.8.1 skills clarity ──
 
 # Resolve the dashboard URL once; reuse for the categorized endpoints.
-# Default mirrors components/master/server.ts SUBCTL_API.
+# Default mirrors components/evy/server.ts SUBCTL_API.
 _subctl_skills_api_base() {
   echo "${SUBCTL_API:-http://127.0.0.1:8787}"
 }

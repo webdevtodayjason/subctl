@@ -4,7 +4,7 @@
 # Dev teams are tmux sessions spawned by the master orchestrator. The lead
 # Claude Code in pane 0 appends status events to a per-team JSONL file:
 #
-#   ~/.config/subctl/master/inbox/{team}.jsonl
+#   ~/.config/subctl/evy/inbox/{team}.jsonl
 #
 # The master daemon tails these files, broadcasts new lines as `team_event`
 # SSE events to the dashboard, surfaces "blocked"/"error" events to its own
@@ -17,7 +17,7 @@ set -uo pipefail
 
 . "$(dirname "${BASH_SOURCE[0]}")/../../lib/core.sh"
 
-SUBCTL_MASTER_INBOX="${SUBCTL_MASTER_INBOX:-$HOME/.config/subctl/master/inbox}"
+SUBCTL_EVY_INBOX="${SUBCTL_EVY_INBOX:-$HOME/.config/subctl/evy/inbox}"
 
 subctl_team() {
   local sub="${1:-}"; shift || true
@@ -145,8 +145,8 @@ subctl_team_report() {
     *) subctl_warn "unknown event type '$type' — accepted but master may not act on it" ;;
   esac
 
-  mkdir -p "$SUBCTL_MASTER_INBOX"
-  local inbox="$SUBCTL_MASTER_INBOX/${team}.jsonl"
+  mkdir -p "$SUBCTL_EVY_INBOX"
+  local inbox="$SUBCTL_EVY_INBOX/${team}.jsonl"
 
   # Build JSON line via jq for safe escaping. Extra --kv args become top-level fields.
   local jq_args=(-nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg type "$type" --arg text "$text")
@@ -180,7 +180,7 @@ subctl_team_inbox() {
   if [[ -z "$team" ]]; then
     subctl_die "usage: subctl team inbox <team> [--tail N]   (or: subctl team list)"
   fi
-  local inbox="$SUBCTL_MASTER_INBOX/${team}.jsonl"
+  local inbox="$SUBCTL_EVY_INBOX/${team}.jsonl"
   if [[ ! -f "$inbox" ]]; then
     subctl_warn "no inbox for team '$team' (looking in $inbox)"
     return 1
@@ -189,12 +189,12 @@ subctl_team_inbox() {
 }
 
 subctl_team_list() {
-  if [[ ! -d "$SUBCTL_MASTER_INBOX" ]]; then
-    echo "(no inbox dir at $SUBCTL_MASTER_INBOX — no teams have reported yet)"
+  if [[ ! -d "$SUBCTL_EVY_INBOX" ]]; then
+    echo "(no inbox dir at $SUBCTL_EVY_INBOX — no teams have reported yet)"
     return 0
   fi
   local found=0
-  for f in "$SUBCTL_MASTER_INBOX"/*.jsonl; do
+  for f in "$SUBCTL_EVY_INBOX"/*.jsonl; do
     [[ -e "$f" ]] || continue
     found=1
     local team mtime size lines

@@ -18,7 +18,7 @@ import { classifySpawnError } from "../lib/spawn-errors";
 describe("classifySpawnError", () => {
   test("template not found → 404 template_not_found", () => {
     const c = classifySpawnError({
-      stderr: " ✗ team template not found: /Users/sem/.config/subctl/master/team-templates/code-review.json\n",
+      stderr: " ✗ team template not found: /Users/sem/.config/subctl/evy/team-templates/code-review.json\n",
       stdout: "",
     });
     expect(c.status).toBe(404);

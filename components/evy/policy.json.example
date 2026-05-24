@@ -1,0 +1,76 @@
+{
+  "_comment": "Per-project autonomy policy for the subctl master daemon. Tells the master what it can drive autonomously vs what it must escalate. Restart the master after edits: launchctl unload ~/Library/LaunchAgents/com.subctl.evy.plist && launchctl load ~/Library/LaunchAgents/com.subctl.evy.plist",
+
+  "operator": {
+    "name": "Jason",
+    "telegram_chat_id": "YOUR_TELEGRAM_CHAT_ID",
+    "office_hours": "08:00-23:00 CDT",
+    "_comment_office_hours": "Outside office hours, master defaults to drive (skip non-blocking pings) for `drive`-tier projects. Always escalates blockers regardless of hour."
+  },
+
+  "global_defaults": {
+    "autonomy_level": "ask",
+    "require_coderabbit_pre_push": true,
+    "max_concurrent_workers": 3,
+    "review_interval_minutes": 30,
+    "_comment_review_interval_minutes": "Watchdog tick interval. The master is reactive (responds to chat + lead-report inbox events) rather than running an autonomous portfolio walk; this interval controls how often the watchdog scans for stale dev teams.",
+    "stall_detection_minutes": 15,
+    "_comment_stall_detection_minutes": "A dev team whose inbox has not received a new event within this many minutes is flagged stale. The watchdog fires a synthetic prompt so the master can decide: ping the lead via subctl_orch_msg, escalate to Jason via telegram_send, or take corrective action.",
+    "stall_action": "escalate"
+  },
+
+  "projects": [
+    {
+      "path": "/Users/sem/code/ampcortex.ai",
+      "autonomy_level": "ask",
+      "_comment_autonomy": "AMP Cortex has hard ops contract, regulatory exposure (HIPAA), real money. Master proposes; operator approves every action.",
+      "watch_branches": ["feat/tenant-stub-killer", "feat/admin-fix-pack"],
+      "ci_required": true,
+      "coderabbit_config": "./coderabbit.yaml",
+      "must_escalate": ["push_to_main", "merge_pr", "apply_migration", "deploy", "modify_ops_directory"]
+    },
+    {
+      "path": "/Users/sem/code/subctl",
+      "autonomy_level": "drive",
+      "_comment_autonomy": "Master can drive most subctl work — bug fixes, doc updates, version bumps, even merging. Still escalates breaking-change PRs and infra config.",
+      "watch_branches": ["main", "feat/codex-provider"],
+      "ci_required": true,
+      "must_escalate": ["push_to_main", "merge_breaking_change_pr", "release_tag"]
+    },
+    {
+      "path": "/Users/sem/code/subctl.com",
+      "autonomy_level": "drive",
+      "watch_branches": ["main"],
+      "ci_required": false,
+      "must_escalate": ["change_pricing_copy", "change_install_url"]
+    },
+    {
+      "path": "/Users/sem/code/argent-core",
+      "autonomy_level": "shadow",
+      "_comment_autonomy": "Master observes only. Reports state and surfaces blockers to operator. Never spawns workers here without explicit instruction.",
+      "watch_branches": ["dev", "feat/aos-subctl"]
+    }
+  ],
+
+  "escalation_triggers": {
+    "ci_red_for_pr_jason_opened": true,
+    "worker_stalled_over_15min": true,
+    "rate_limit_imminent_on_active_account": true,
+    "openai_codex_oauth_failure": true,
+    "deadline_within_24h": true
+  },
+
+  "silence_triggers": {
+    "_comment": "Things the master should NOT ping about. Default to silence; escalate only on explicit triggers above.",
+    "lint_warnings_only": true,
+    "dependabot_minor_bumps": true,
+    "successful_runs": true,
+    "routine_builds_passing": true
+  },
+
+  "_notes": [
+    "autonomy_level options: 'drive' (full autonomy, master decides + acts), 'ask' (master proposes + waits for operator yes), 'shadow' (master observes + reports, never acts)",
+    "must_escalate is additive on top of autonomy_level — even drive-tier projects can require escalation for specific actions",
+    "If a project is missing from this list, global_defaults apply (which defaults to 'ask' — safe baseline)"
+  ]
+}

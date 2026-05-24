@@ -909,7 +909,7 @@ export async function mount({ root: _root }) {
       const j = await r.json();
       if (!j.ok) {
         lbSetStatus("master unreachable", "err");
-        lbShowBanner("Master daemon did not respond. Confirm `subctl master status`.", "err");
+        lbShowBanner("Master daemon did not respond. Confirm `subctl evy status`.", "err");
         return;
       }
       // First-boot: no config yet → render with LM Studio default.

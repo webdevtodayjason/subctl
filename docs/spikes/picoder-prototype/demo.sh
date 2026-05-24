@@ -4,7 +4,7 @@
 # SPIKE PROTOTYPE — end-to-end demo of the pi-coder pattern.
 # NOT PRODUCT CODE. Lives under docs/spikes/, not destined to ship.
 #
-# Wires up picoder-worker.ts + master-emit.ts in a temp dir, sends one
+# Wires up picoder-worker.ts + evy-emit.ts in a temp dir, sends one
 # signed directive, and shows that:
 #
 #   Q1. The worker verified the HMAC and processed the SPEC body.
@@ -47,7 +47,7 @@ echo "==> TEAM_ID=$TEAM_ID"
 echo
 echo "==> seeding HMAC secret via ensureSecret(\"$TEAM_ID\")"
 bun -e "
-import { ensureSecret } from '$HERE/../../../components/master/trust-marker';
+import { ensureSecret } from '$HERE/../../../components/evy/trust-marker';
 const s = ensureSecret('$TEAM_ID');
 console.log('  secret length =', s.length, '(64 hex chars expected)');
 "
@@ -66,8 +66,8 @@ sleep 0.5
 
 echo
 echo "==> Q1 + Q2 + Q4: emit one good directive and watch what happens"
-bun run "$HERE/master-emit.ts" "$TEAM_ID" "investigate" \
-  "Audit token usage in components/master/server.ts and report top 3 hotspots"
+bun run "$HERE/evy-emit.ts" "$TEAM_ID" "investigate" \
+  "Audit token usage in components/evy/server.ts and report top 3 hotspots"
 
 # Wait for the worker to process. 1.5s is enough for the 200ms simulated
 # work + the inbox write + a heartbeat tick or two.
@@ -79,7 +79,7 @@ echo "==> Q1 negative case: emit a TAMPERED directive and prove the worker refus
 # HMAC no longer covers what arrived. This is the canonical man-in-the-middle
 # attack the trust-marker exists to defeat.
 bun -e "
-import { ensureSecret, buildSignedDirective } from '$HERE/../../../components/master/trust-marker';
+import { ensureSecret, buildSignedDirective } from '$HERE/../../../components/evy/trust-marker';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 ensureSecret('$TEAM_ID');
@@ -110,7 +110,7 @@ cat "$SUBCTL_TEAM_INBOX_DIR/$TEAM_ID.jsonl"
 echo
 echo "==> classifier sanity check (run the real classifier over the pane text)"
 bun -e "
-import { classifyWorkerReply } from '$HERE/../../../components/master/auto-nudge';
+import { classifyWorkerReply } from '$HERE/../../../components/evy/auto-nudge';
 import { readFileSync } from 'node:fs';
 const text = readFileSync('$DEMO_DIR/worker.log', 'utf8');
 // Take last 50 lines (mirror master's capture-pane window).

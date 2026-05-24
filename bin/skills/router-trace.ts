@@ -15,7 +15,7 @@ import {
   selectSkills,
   isRouterEnabled,
   _clearCacheForTesting,
-} from "../../components/master/skill-router";
+} from "../../components/evy/skill-router";
 
 const args = process.argv.slice(2);
 if (args.length === 0 || args[0] === "-h" || args[0] === "--help") {

@@ -3,13 +3,13 @@
 # v2.8.10 — Memory Init #3 (Phase 3b). Mirrors lib/voice.sh exactly,
 # but for services/memori/server.py. Renders the launchd plist with
 # the operator's local python + paths, loads it, and seeds env vars.
-# Database lives at ~/.config/subctl/master/memori.db per Knot #2.
+# Database lives at ~/.config/subctl/evy/memori.db per Knot #2.
 
 SUBCTL_MEMORI_PLIST_TPL="$SUBCTL_REPO_ROOT/services/memori/launchd/com.subctl.memori.plist"
 SUBCTL_MEMORI_SERVER_PY="$SUBCTL_REPO_ROOT/services/memori/server.py"
 SUBCTL_MEMORI_PLIST="$HOME/Library/LaunchAgents/com.subctl.memori.plist"
 SUBCTL_MEMORI_LOG="$HOME/Library/Logs/subctl/memori.log"
-SUBCTL_MEMORI_DB_DEFAULT="$HOME/.config/subctl/master/memori.db"
+SUBCTL_MEMORI_DB_DEFAULT="$HOME/.config/subctl/evy/memori.db"
 SUBCTL_MEMORI_LABEL="com.subctl.memori"
 
 # Pick the first python3 in PATH that's >= 3.10.

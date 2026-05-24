@@ -19,7 +19,7 @@ _SUBCTL_CLAUDE_TEAMS_LOADED=1
 # refreshes the copies.
 _provider_claude_apply_template() {
   local template_name="$1" cfg_dir="$2"
-  local templates_dir="${SUBCTL_TEAM_TEMPLATES_DIR:-$HOME/.config/subctl/master/team-templates}"
+  local templates_dir="${SUBCTL_TEAM_TEMPLATES_DIR:-$HOME/.config/subctl/evy/team-templates}"
   local skills_root="${SUBCTL_SKILLS_DIR:-$HOME/.config/subctl/skills}"
   local template_file="$templates_dir/$template_name.json"
   if [[ ! -f "$template_file" ]]; then

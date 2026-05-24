@@ -57,8 +57,8 @@ subctl_settings_install_claude_dir() {
   fi
 
   # Skills: symlink every repo-built skill into the cfg_dir's skills/.
-  # Excludes "master" — that's the master daemon's own system prompt,
-  # loaded at boot by components/master/server.ts; workers must not have
+  # Excludes "evy" — that's the Evy daemon's own system prompt,
+  # loaded at boot by components/evy/server.ts; workers must not have
   # it (would confuse them about their role). Operator-personal skills
   # in <cfg_dir>/skills/ are untouched (only directories matching repo
   # skill names get symlinked).
@@ -67,7 +67,7 @@ subctl_settings_install_claude_dir() {
       [[ -d "$skill_dir" ]] || continue
       local skill_name
       skill_name=$(basename "$skill_dir")
-      [[ "$skill_name" == "master" ]] && continue
+      [[ "$skill_name" == "evy" ]] && continue
       [[ -f "$skill_dir/SKILL.md" ]] || continue
       mkdir -p "$skills/$skill_name"
       ln -sfn "$skill_dir/SKILL.md" "$skills/$skill_name/SKILL.md"
@@ -312,14 +312,14 @@ subctl_settings_install_mcp() {
   subctl_ok "MCP server registered → settings.json (mcpServers.subctl)"
 }
 
-# Install the subctl master daemon. Two steps:
-#   1. Sanity-check components/master/server.ts is present (stage 1 scaffold)
-#   2. bun install in components/master/ if node_modules is missing
+# Install the subctl evy daemon. Two steps:
+#   1. Sanity-check components/evy/server.ts is present (stage 1 scaffold)
+#   2. bun install in components/evy/ if node_modules is missing
 #
-# Does NOT register the launchd plist — that's `subctl master enable`'s job.
+# Does NOT register the launchd plist — that's `subctl evy enable`'s job.
 # Idempotent. Re-running upgrades deps only when node_modules is absent.
-subctl_settings_install_master() {
-  local master_dir="$SUBCTL_REPO_ROOT/components/master"
+subctl_settings_install_evy() {
+  local master_dir="$SUBCTL_REPO_ROOT/components/evy"
   local server_ts="$master_dir/server.ts"
   [[ ! -f "$server_ts" ]] && { subctl_warn "master server.ts missing at $server_ts"; return 1; }
 
@@ -334,7 +334,7 @@ subctl_settings_install_master() {
       || { subctl_err "bun install failed in $master_dir"; return 1; }
   fi
 
-  subctl_ok "master daemon installed (components/master/). Run 'subctl master enable' to start."
+  subctl_ok "master daemon installed (components/evy/). Run 'subctl evy enable' to start."
 }
 
 # v2.7.21 (ADR 0011 L2): dashboard now has its own package.json (xterm.js +
