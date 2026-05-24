@@ -290,7 +290,7 @@ Anatomy: `providers/openai-codex/`
 
 3. **Reporting vocabulary.** Claude workers pick up phrases like "task complete, idle by design" emergently from team-template prompts; gpt-5.5 does not. The preamble teaches Codex EXACTLY the words `auto-nudge.ts:classifyWorkerReply` matches for `completed_idle` / `blocked` / `awaiting_input` so the staleness watchdog can short-circuit nudges on a done team. Without this, the operator gets paged every 30 minutes on a worker that already said it was done.
 
-4. **Inbox events.** The contract preamble teaches the worker to append progress / blocked / done / error events via `subctl team report --type <kind> --text <text>`. `SUBCTL_TEAM_NAME=$SESSION_NAME` is set in the tmux session env so the worker doesn't have to type `--team` every time. Events land at `~/.config/subctl/master/inbox/<team>.jsonl`, which the master daemon tails for SSE → dashboard + Telegram surface.
+4. **Inbox events.** The contract preamble teaches the worker to append progress / blocked / done / error events via `subctl team report --type <kind> --text <text>`. `SUBCTL_TEAM_NAME=$SESSION_NAME` is set in the tmux session env so the worker doesn't have to type `--team` every time. Events land at `~/.config/subctl/master/inbox/<team>.jsonl`, which Evy tails for SSE → dashboard + Telegram surface.
 
 5. **Watchdog classification.** No code changes — the watchdog is content-based on text patterns. Teaching the vocabulary in step 3 is what makes classification work.
 

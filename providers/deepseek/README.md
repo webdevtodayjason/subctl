@@ -88,7 +88,7 @@ The long-term fix is **upstream**: get CodeWhale to honor a `CODEWHALE_HOME` (or
 
 - **v3.0.0-rc1** (this PR): UNGATED scaffolding. Operator can spawn codewhale workers via `subctl teams deepseek`; no SPEC-block HMAC enforcement.
 - **v3.0.0-rc2**: SPEC-block HMAC + trust-marker integration. Either an upstream CodeWhale `PreToolUse`-style hook or a wrapper that intercepts `codewhale exec --output-format stream-json` events and pipes them through subctl's trust-marker verifier (`components/master/trust-marker.ts`).
-- **v3.x+**: Headless / `--mode rpc` worker variant via `codewhale exec --auto --output-format stream-json` — strong candidate for direct master-daemon orchestration, no tmux required.
+- **v3.x+**: Headless / `--mode rpc` worker variant via `codewhale exec --auto --output-format stream-json` — strong candidate for direct Evy orchestration, no tmux required.
 - **v3.x+**: Migrate API-key at-rest storage from codewhale's file-based secret store to macOS Keychain or 1Password if operator demand surfaces.
 
 ## Why "deepseek" and not "codewhale"
