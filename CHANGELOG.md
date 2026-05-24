@@ -1,4 +1,6 @@
-## [3.0.0-rc1] — Unreleased
+## [3.0.0-rc1] — unreleased
+
+> **v3.0 rolling release.** Sections accrete as each Phase worker lands. Operator merges manually; this header stays `unreleased` until the full rc1 stack is ready to ship.
 
 ### `feat(v3.0): DeepSeek-TUI / CodeWhale as worker (Phase 4)`
 
@@ -21,6 +23,38 @@ Second non-Claude worker CLI after `pi-coding-agent` — validates the multi-pro
 **Spawn flags** map to CodeWhale features: `-a` (alias), `-p`/`-f` (initial prompt via tmux paste-buffer), `-m` (`codewhale --model`), `-y` (`codewhale --yolo`), `-c` (`codewhale resume --last`), `-o` (no-op in rc1, reserved for rc2). `--dry-run` and `--no-attach` mirror pi exactly.
 
 **Why no keychain shim?** Earlier design rounds considered storing keys in macOS Keychain via `security`. CodeWhale's own first-class `auth set/get/list/clear/status` commands obviate this — keys are stored in mode-0600 files codewhale already manages, and HOME-shadow gives per-alias isolation for free. Migrating to Keychain or 1Password is a v3.x follow-up if operator demand surfaces.
+
+### `feat(v3.0): Codex CLI as worker (Phase 2)`
+
+`subctl teams codex -a <alias>` now spawns an **OpenAI Codex CLI worker** in a detached tmux session, pinned to a specific `openai-codex` (ChatGPT Pro OAuth) account. First non-Claude worker CLI that speaks the SPEC-block + HMAC wire contract — establishes the multi-provider worker pattern that Phase 4 (DeepSeek-TUI) and Phase 5 (pi-coder spike) build on.
+
+**What's new:**
+
+- `providers/openai-codex/teams.sh` — `provider_openai_codex_teams()`. Mirrors `providers/pi-coding-agent/teams.sh` shape; per-alias isolation via the `CODEX_HOME` env var that the official codex binary reads (no HOME-shadow needed). Trust-modal bypass via `-c projects."<cwd>".trust_level="trusted"`. Update-modal dismissal + `Context % left` ready-marker polling.
+- HMAC team-contract preamble baked into the spawn-time prompt — same 32-byte secret + verification recipe as Claude workers (`~/.local/state/subctl/teams/<team>/hmac.secret`, chmod 600). The wire-protocol document is duplicated from `providers/claude/teams.sh` because the constraint forbids touching that file; future refactor: extract to `lib/team-contract.sh`.
+- **Reporting vocabulary** section in the contract preamble. Claude workers pick up phrases like "task complete, idle by design" emergently from team-template prompts; gpt-5.5 does not. The preamble teaches Codex the exact phrases `auto-nudge.ts:classifyWorkerReply` matches for `completed_idle` / `blocked` / `awaiting_input`, so the staleness watchdog can short-circuit nudges on a done team.
+- **Inbox reporting** preamble — workers learn `subctl team report --type <kind> --text <text>`. `SUBCTL_TEAM_NAME=$SESSION_NAME` is set in the tmux env so `--team` auto-resolves and the worker doesn't have to type the session name every turn.
+- `bin/subctl teams codex` dispatcher (also accepts `openai-codex` as alias for parity with `subctl auth openai-codex`).
+- `providers/openai-codex/__tests__/spawn.test.ts` — 18 tests covering dispatcher routing, arg parsing, HMAC secret on-disk shape (presence + 0600), idempotency (re-spawn reuses same secret), refusal of Claude-only flags (`-o`/`-c`/`--template`) with specific deprecation messages, and reporting-vocabulary presence in the contract source.
+
+**Flags that don't translate from Claude** — boolean flags are accepted as info-warned no-ops so HTTP-spawn callers can pass uniform argv to every provider without erroring; flags that take a named argument are rejected because silently eating the argument would surprise:
+
+| Claude flag | Codex behavior |
+|---|---|
+| `-o` / `--orchestrator` | **No-op** with info-warn. Codex has no `Team*` / `SendMessage` tool surface. |
+| `-c` / `--continue` | **No-op** with info-warn. Codex uses `codex resume <id>` as a subcommand. |
+| `-t` / `--template <name>` | Rejected. Templates land in a later v3.0 phase. |
+
+**Skip-perms mapping:** `-y` / `--yes` → `--dangerously-bypass-approvals-and-sandbox` (Codex's YOLO mode equivalent of Claude's `--dangerously-skip-permissions`).
+
+**Known limitations / follow-ups:**
+
+- `subctl auth openai-codex` mints `auth.json` with `{access_token, refresh_token}` but no `id_token` — the official codex CLI rejects this with "missing field `id_token`". Workaround: re-auth via `CODEX_HOME=<cfg_dir> codex login` until subctl's device-code flow learns to persist `id_token` (separate issue).
+- The contract preamble is duplicated between `providers/claude/teams.sh` and `providers/openai-codex/teams.sh`. Acceptable for the Phase 2 ship (constraint forbid touching the Claude file); extract to `lib/team-contract.sh` in a follow-up.
+- Update-modal dismissal is fragile — keyed off the exact modal copy. If Codex changes the wording, the dismissal silently misses and the spawn pastes into the modal instead of the input prompt.
+- Codex is UNGATED — no `PreToolUse` analog yet (same caveat as `pi-coding-agent` ships with). The HMAC contract is the trust-channel layer; sandbox + approval flags are the execution-time layer.
+
+**Docs:** new "Codex worker provider" section in `docs/adding-a-provider.md` documenting the spawn contract, TUI dance, and reference smoke recipe.
 
 ---
 
