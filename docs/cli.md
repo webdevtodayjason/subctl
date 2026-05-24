@@ -2,7 +2,7 @@
 
 `bin/subctl` is the bash dispatcher shipped at `/usr/local/bin/subctl` (or
 `~/.local/bin/subctl` if `/usr/local/bin` isn't writable). It's how the
-operator drives the master + dashboard daemons from any terminal. The TUI
+operator drives Evy + the dashboard daemon from any terminal. (Some CLI subcommands still use the word `master` — e.g. `subctl master`, `subctl logs --master` — these are legacy code-level identifiers; future: `subctl evy`.) The TUI
 you get by running `subctl` with no arguments is the same dispatcher with
 a different default branch.
 
@@ -42,7 +42,7 @@ when `NO_COLOR=1` is set. No spinners or progress bars.
 
 | Variable | Default | What it does |
 |----------|---------|--------------|
-| `SUBCTL_MASTER_PORT` | `8788` | Where `subctl status` looks for the master daemon. |
+| `SUBCTL_MASTER_PORT` | `8788` | Where `subctl status` looks for Evy. <!-- env var name is a legacy code identifier — renamed in Phase 3 --> |
 | `SUBCTL_SERVICE_PORT` | `8787` | Where `subctl status` / `notif` / `memory` look for the dashboard. |
 | `SUBCTL_LOG_DIR` | `~/Library/Logs/subctl` | What `subctl logs` tails. |
 | `NO_COLOR` | unset | Set to `1` to strip ANSI escapes. |
@@ -115,7 +115,7 @@ update`. `deploy` is the bash-and-go alternative.
 
 ## `subctl notif`
 
-Reads the master's operator notification ring buffer via the
+Reads Evy's operator notification ring buffer via the
 dashboard's `/api/notifications` proxy. The ring buffer holds
 team-staleness auto-nudges, auto-compact errors, and anything else
 written by `notifications.ts`.
@@ -137,9 +137,9 @@ $ subctl notif mark-all-read      # POST /api/notifications/read-all
 ## `subctl memory`
 
 Operator-facing surface on Evy's Tier 3 memory store. Goes through
-the dashboard's `/api/memory/*` proxy → master's SQLite-backed
-`recallMemoryEntries` / append path. Egress is redacted by the
-master (HMAC marks, `sk-*`, bearer tokens are stripped) before the
+the dashboard's `/api/memory/*` proxy → Evy's SQLite-backed
+`recallMemoryEntries` / append path. Egress is redacted by Evy
+(HMAC marks, `sk-*`, bearer tokens are stripped) before the
 CLI ever sees the body.
 
 ```
@@ -190,7 +190,7 @@ a timestamp suffix. The on-disk archive means a future team spawned
 under the same name doesn't inherit stale events.
 
 `exec` is the one-off equivalent of `subctl orch msg` — the payload
-gets wrapped in the master's HMAC trust marker (ADR 0011 L1) before the
+gets wrapped in Evy's HMAC trust marker (ADR 0011 L1) before the
 tmux paste, so workers refuse it unless their spawn-time secret on disk
 matches. **Do not** use `exec` to ferry untrusted prompts; the worker
 contract treats anything inside the marker as authorized operator input.
@@ -252,8 +252,8 @@ is "never print a usable token to stdout." Reach a redacted field via
 
 ## `subctl profile`
 
-Read / switch the master's active supervisor profile (v2.7.18). The
-source of truth is `~/.config/subctl/profiles.json`; the master
+Read / switch Evy's active supervisor profile (v2.7.18). The
+source of truth is `~/.config/subctl/profiles.json`; Evy
 `fs.watch`es it and applies the swap on the start of the next prompt
 (no daemon restart needed).
 
@@ -280,7 +280,7 @@ with the daemon off.
 
 ## Auth in v1
 
-There is no auth. The master and dashboard listen on `127.0.0.1`
+There is no auth. Evy and the dashboard listen on `127.0.0.1`
 only; reaching them requires shell access on the host. If we ever
 expose the dashboard to LAN or Tailscale, the CLI will grow a
 `~/.config/subctl/cli-token` reader and the dashboard will enforce
@@ -329,6 +329,6 @@ bun test lib/__tests__/cli.test.ts
 
 45 tests as of v2.7.36 (25 v2.7.28 + 20 v2.7.36), each spawning the bash
 dispatcher as a subprocess. Network tests stand up `Bun.serve` fakes on
-ephemeral ports — the suite runs green without a live master or
+ephemeral ports — the suite runs green without a live Evy or
 dashboard. Config tests use `mkdtempSync`-scoped `$SUBCTL_CONFIG_DIR`
 fixtures so no real `~/.config/subctl` files are touched.

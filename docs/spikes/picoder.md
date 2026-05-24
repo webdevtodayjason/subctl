@@ -46,7 +46,7 @@ v3.1 territory, not "don't do it" territory.
 
 **Decision: file-based directives queue at
 `$SUBCTL_STATE_DIR/teams/<team_id>/directives.jsonl`. The worker
-fs.watches + tails it; master writes JSONL lines of
+fs.watches + tails it; Evy writes JSONL lines of
 `{marker, body}`. Verification reuses
 `verifyDirectiveMarker({teamId, marker, body})` from
 `components/master/trust-marker.ts` byte-identically.**
@@ -57,8 +57,8 @@ fs.watches + tails it; master writes JSONL lines of
 |---|---|---|
 | Pipe-to-stdin | ✗ | tmux owns the pane's stdin. A control pipe competes with the operator's attached debug session and gets lost on detach/reattach. |
 | Polling a directory of `<ts>.json` files | ✗ | Race conditions on partial writes, harder GC, ordering surprises when the FS reorders inode birth times. |
-| Watching an inbox file | ✗ | Inbox is worker → master. Reusing it for the reverse direction conflates traffic the watchdog already classifies. |
-| **JSONL file with offset tracking** | ✓ | Same dir as `hmac.secret`, observable from outside the pane (`cat`), survives restarts because the offset lives in worker memory + the next-line discipline. Mirrors master's own inbox tail logic at `server.ts:2720`. |
+| Watching an inbox file | ✗ | Inbox is worker → Evy. Reusing it for the reverse direction conflates traffic the watchdog already classifies. |
+| **JSONL file with offset tracking** | ✓ | Same dir as `hmac.secret`, observable from outside the pane (`cat`), survives restarts because the offset lives in worker memory + the next-line discipline. Mirrors Evy's own inbox tail logic at `server.ts:2720`. |
 
 ### Wire format
 
@@ -70,7 +70,7 @@ Each line is a single JSON object:
 ```
 
 `marker` and `body` are passed verbatim to `verifyDirectiveMarker` — the
-bytes are exactly what `buildSignedDirective` produced master-side. The
+bytes are exactly what `buildSignedDirective` produced Evy-side. The
 existing SPEC-block contract from `providers/claude/teams.sh:451` applies
 unchanged: a verified marker with no SPEC block (or SPEC without the
 two-space indent) is refused.
@@ -92,7 +92,7 @@ lives only on disk (chmod 600) and in the worker's spawn-time environment.
 
 - **fs.watch on macOS APFS can drop events.** Mitigation: the prototype
   pairs `fs.watch` with a 2s `setInterval` poll, mirroring `server.ts:2895`.
-- **At-least-once delivery is implicit.** If master writes the same line
+- **At-least-once delivery is implicit.** If Evy writes the same line
   twice (network retry path), the worker processes it twice. Mitigation:
   the directive ts is monotonic and can dedupe via an in-memory ring. Not
   done in the prototype — flag for the production implementation.
@@ -323,9 +323,9 @@ shape. Writing directly is the path of least resistance.
 ```
 
 The `type` values (`note`, `progress`, `done`, `error`, `blocked`)
-match what master's `TeamEvent` consumer expects (see `server.ts:1874`
+match what Evy's `TeamEvent` consumer expects (see `server.ts:1874`
 and `mcp/tools.ts:151`). Extra fields (`phase`, `team`, `body_chars`,
-`ts_of_refused`) ride through master's `[k: string]: unknown` extension
+`ts_of_refused`) ride through Evy's `[k: string]: unknown` extension
 slot — the prototype validates the round-trip.
 
 ### The proposed helper API
@@ -387,7 +387,7 @@ breaking callers — additive.
    via `TeamCreate + Agent(team_name)`. Pi-coder has no equivalent.
    For v3.1 a single pi-coder worker == single pane is sufficient;
    if/when we want pi-coder teams of N, the team coordinator has to
-   be the master itself (which it already is via the orch tools).
+   be Evy herself (which she already is via the orch tools).
 4. **Provider rate-limit awareness.** Subctl's `radar` tracks Claude
    per-account utilization via specific upstreams. Pi-coder providers
    are diverse; some have no rate-limit metadata at all. Either degrade

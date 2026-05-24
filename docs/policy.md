@@ -112,15 +112,15 @@ Sealed mode replaces bash with an explicit MCP tool set served by a subctl-inter
 | `git_log` | Read commit history | No |
 | `test_run` | Run the project's test command (declared in policy) | Yes (subprocess) — but constrained to declared command |
 | `pkg_list` | List installed packages (node/python/etc.) | No |
-| `policy_request` | Ask the master for permission to run a one-off shell command | Yes (escalation) |
+| `policy_request` | Ask Evy for permission to run a one-off shell command | Yes (escalation) |
 
-Notable absences: no `npm install`, no `pip install`, no `git push`, no network calls of any kind, no arbitrary script execution. Sealed workers can read, write, search, diff, commit. Anything else requires the worker to call `policy_request`, which escalates to the master and ultimately to the operator via the dashboard / Telegram.
+Notable absences: no `npm install`, no `pip install`, no `git push`, no network calls of any kind, no arbitrary script execution. Sealed workers can read, write, search, diff, commit. Anything else requires the worker to call `policy_request`, which escalates to Evy and ultimately to the operator via the dashboard / Telegram.
 
 `test_run` is the one exception that allows subprocess execution, and only because tests are how a worker validates its own work. The test command is declared in the project's `policy.toml` (e.g. `test_command = "npm test"`); the worker can't override it.
 
 ## 6. The audit log
 
-Audit log format ships alongside the master audit writer (see `components/master/tools/policy/audit.ts`). Summary:
+Audit log format ships alongside Evy's audit writer (see `components/master/tools/policy/audit.ts` <!-- legacy code identifier — renamed in Phase 3 -->). Summary:
 
 - Path: `~/.local/state/subctl/audit/<team_id>.jsonl`
 - One JSON object per line
@@ -129,15 +129,15 @@ Audit log format ships alongside the master audit writer (see `components/master
 
 The dashboard's existing Live Logs tab gets a "Policy" filter chip. Denials are color-coded. Clicking a denial expands to show the matching rule and a "Suggest allowlist addition" button that opens a PR-style review against the team's `policy.toml`.
 
-## 7. Master integration
+## 7. Evy integration
 
-The master daemon gets a new tool family at `components/master/tools/policy/` exposing three tools to the master itself:
+Evy gets a new tool family at `components/master/tools/policy/` exposing three tools to Evy herself:
 
-- `policy_check(command, mode, project_root)` — same logic the hook uses, callable from the master
+- `policy_check(command, mode, project_root)` — same logic the hook uses, callable from Evy
 - `policy_list(project_root)` — shows the three resolved modes and their allowlists for a project
 - `policy_audit_tail(team_id, n)` — returns the last N audit lines for a team
 
-The master can now answer questions like "what mode is foothold-v3 in?" and "show me the last 10 denials on foothold-v3" in chat. More importantly: the runtime verifier (already shipped) can be extended to treat a *cluster of denials in a short window* as a signal that the worker is fighting the gate, and fire a `[verifier]` correction telling the worker to ask for help instead of trying workarounds. That cross-cutting capability is **only possible in subctl** because subctl is the only harness with a persistent supervising process.
+Evy can now answer questions like "what mode is foothold-v3 in?" and "show me the last 10 denials on foothold-v3" in chat. More importantly: the runtime verifier (already shipped) can be extended to treat a *cluster of denials in a short window* as a signal that the worker is fighting the gate, and fire a `[verifier]` correction telling the worker to ask for help instead of trying workarounds. That cross-cutting capability is **only possible in subctl** because subctl is the only harness with a persistent supervising process.
 
 ## 8. The npm-test problem
 
@@ -183,7 +183,7 @@ Gated mode does not prevent:
 ❌ A worker overwriting a file with destructive content (this is reversible via git, which is why we accept it)
 ❌ A worker committing and pushing damaging code (mitigation: `git push` is not in the default node preset; opt-in)
 ❌ A compromised CLI binary (if `npm` itself is hostile, we have a bigger problem)
-❌ A prompt injection that convinces the master to spawn a worker in Trusted mode (separate concern)
+❌ A prompt injection that convinces Evy to spawn a worker in Trusted mode (separate concern)
 
 The honest framing: Gated mode reduces blast radius to "things git can undo." Sealed mode reduces it to "things git can undo, minus most ways the worker could surprise you."
 
@@ -193,7 +193,7 @@ The default mode flip is a breaking change for anyone who has scripted `subctl t
 
 - v2.7.0 release notes call this out at the top
 - Anyone who runs `subctl teams claude` without `--mode` and hits a denial gets a clear stderr message pointing at `docs/policy.md` and the `--mode=trusted` opt-out
-- The first time a user is denied by Gated, the master daemon (if running) posts a one-time notification to the dashboard chat panel: *"Worker `<team>` had a command denied by Gated mode. This is expected. See `subctl policy explain` for details."*
+- The first time a user is denied by Gated, Evy (if running) posts a one-time notification to the dashboard chat panel: *"Worker `<team>` had a command denied by Gated mode. This is expected. See `subctl policy explain` for details."*
 
 ## 11. Operator UI (v2.7.34)
 
@@ -206,7 +206,7 @@ The dashboard's **Policy** tab carries four panels:
 1. **Active teams** — every team with a snapshot under `~/.local/state/subctl/teams/<team_id>/`. One row per team showing the mode (Trusted/Gated/Sealed pill), the preset, the allowlist sha, and the project root from the snapshot header.
 2. **Resolved policy** — the chip-list view (v2.7.34) for whichever team is selected in the dropdown. Five chip groups: Allowed commands, Allowed patterns, Ecosystem allowlists, Deny substrings, Deny regex. Each chip carries an origin tag (`project` / `user` / `preset:<name>` / `defaults`) — these come from the snapshot's `source_paths` and are best-effort. A `view: chips`/`view: json` toggle reveals the raw resolved doc for the power-user case.
 3. **Recent denials** — top-10 denial buckets across all teams, grouped by `rule_path`, last 24h.
-4. **Verifier interventions** — denial-cluster corrections fired by the master verifier.
+4. **Verifier interventions** — denial-cluster corrections fired by Evy's verifier.
 
 ### 11.2 The Policy editor panel
 

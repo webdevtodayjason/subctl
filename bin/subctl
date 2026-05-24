@@ -177,17 +177,18 @@ Usage:
                                       doctor on the way out (no manual ssh+rsync)
   subctl deploy [--no-pull] [--dry-run]
                                       Fast-path deploy — git pull + launchctl
-                                      kickstart -k for master + dashboard. See
+                                      kickstart -k for Evy + dashboard. See
                                       'subctl update' for the careful path.
 
-  subctl status [--json]              One-shot health probe across master
+  subctl status [--json]              One-shot health probe across Evy
                                       (:8788) + dashboard (:8787) — versions,
                                       uptime, telegram listener, profile.
   subctl logs [--master|--dashboard] [--tail N] [--follow]
                                       Tail launchd log files in
-                                      ~/Library/Logs/subctl/.
+                                      ~/Library/Logs/subctl/ (Evy / dashboard;
+                                      flag names stay until Phase 3 code rename).
   subctl notif [recent|list <N>|mark-all-read]
-                                      Read operator notifications (master ring
+                                      Read operator notifications (Evy's ring
                                       buffer via dashboard proxy).
   subctl memory [recent <N>|search <query>|remember <text>]
                                       Query / append Evy Tier 3 memory via

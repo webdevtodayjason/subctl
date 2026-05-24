@@ -3,18 +3,18 @@
 Reference for the `localhost:8787` dashboard. Read top-down — sections
 are ordered for mid-flight skimming.
 
-> **What this dashboard actually is.** A web front-end for **subctl
-> master** — a persistent agentic harness that runs on this machine,
-> talks to you via the Chat tab or Telegram, spawns Claude Code dev-
-> team tmux sessions on demand, and pushes projects forward. The
-> classic dispatch-readiness view (the verdict banner) is one tab of
-> twelve.
+> **What this dashboard actually is.** A web front-end for **Evy**
+> (CLI: `subctl master`, future: `subctl evy`) — a persistent agentic
+> harness that runs on this machine, talks to you via the Chat tab
+> or Telegram, spawns Claude Code dev-team tmux sessions on demand,
+> and pushes projects forward. The classic dispatch-readiness view
+> (the verdict banner) is one tab of twelve.
 
 ## The twelve sidebar tabs
 
 | Tab | What it does |
 |---|---|
-| **Chat** | Conversational front door to the master daemon. SSE-streamed responses, attachment paperclip + drag-drop + paste-as-attach for >4 KB, personality picker via Settings. |
+| **Chat** | Conversational front door to Evy. SSE-streamed responses, attachment paperclip + drag-drop + paste-as-attach for >4 KB, personality picker via Settings. |
 | **Orchestration** | NVR-style camera grid of every active dev-team tmux pane (polls 2 Hz), Active Dev Teams card, Watchdog tick history, Live Activity feed, Diagnostics. |
 | **Dashboard** | The classic verdict banner + accounts table + active tmux + cost + utilization + RL events. |
 | **Projects** | `~/code` scan + per-project policy state + per-project chat + Open in Vault Viewer + Spawn dev team. |
@@ -25,8 +25,8 @@ are ordered for mid-flight skimming.
 | **Memory** | Tier-1 `user.md` + `memory.md` editors + claude-mem worker health + Obsidian vault status. |
 | **Vault** | In-page Obsidian viewer. Tree + rendered note + wikilink navigation. Deep-linkable via `#vault?root=&path=`. |
 | **Skills** | 3-pane catalog browser with import modal. |
-| **Live Logs** | SSE-streamed tail of master / dashboard / launchd logs. |
-| **Settings** | System health (install-checks) + Master personality picker + Telegram + API keys + OAuth profiles + Obsidian config. |
+| **Live Logs** | SSE-streamed tail of Evy / dashboard / launchd logs. |
+| **Settings** | System health (install-checks) + Evy personality picker + Telegram + API keys + OAuth profiles + Obsidian config. |
 
 The dashboard answers one question on every glance: **can I dispatch
 another agent right now?** The big banner verdict on the Dashboard tab
@@ -137,16 +137,16 @@ explicit `account` field from the hook.
 account is rate-limited; switch with `subctl teams claude -a
 <other-alias>`.
 
-## Chat with the master
+## Chat with Evy
 
-The **Chat** sidebar tab is the conversational front door to the
-master daemon. Everything you can do via CLI verbs the master can do
-on your behalf if you describe it in chat. The master also operates
-proactively — watchdog ticks every 3 min, watches dev teams for
-staleness, escalates to Telegram if needed.
+The **Chat** sidebar tab is the conversational front door to Evy.
+Everything you can do via CLI verbs Evy can do on your behalf if
+you describe it in chat. Evy also operates proactively — watchdog
+ticks every 3 min, watches dev teams for staleness, escalates to
+Telegram if needed.
 
 **Toolbar:** model selector (LM Studio + cloud providers, ●/○ for
-loaded state) + Apply (swap supervisor, restarts master) + Compact
+loaded state) + Apply (swap supervisor, restarts Evy) + Compact
 (force transcript compaction) + + New Chat (archive transcript +
 start fresh) + ⛶ fullscreen.
 
@@ -159,15 +159,15 @@ start fresh) + ⛶ fullscreen.
 - × on pill chip → remove before send
 - Visible chat shows `📎 filename` lines; the model still sees full
   inline `<attachment>…</attachment>` blocks. After auto-compaction
-  drops the inline content, the master can re-fetch via
+  drops the inline content, Evy can re-fetch via
   `read_attachment(id)`.
 - Mime allowlist: text/* + JSON/YAML/TOML/XML/script families. PDF
   + images deferred to Phase 2 (vision-capable supervisor required).
 - 5 MiB cap per attachment — anything larger should go to the vault
   via `vault_append` instead.
 
-**Personality (Phase 3k):** hot-swap the master's voice via Settings
-→ Master personality. Seven built-ins: `straight-shooter` (default),
+**Personality (Phase 3k):** hot-swap Evy's voice via Settings
+→ Evy personality. Seven built-ins: `straight-shooter` (default),
 `witty`, `sarcastic`, `robotic`, `arnold-inspired`, `elon-inspired`,
 `hilarious`. Takes effect on the next prompt; no daemon restart.
 Anti-hallucination rules + behavioral SKILL apply across every
@@ -175,7 +175,7 @@ preset — switching changes delivery, not behavior.
 
 **Telegram bidirectional:** messages arriving from Telegram render
 with a purple left-border + `✈ you · telegram` label in the chat
-panel. The master's response auto-relays back to the same Telegram
+panel. Evy's response auto-relays back to the same Telegram
 chat (no tool call required by the model). Truncates at 3900 chars
 with a "see dashboard for full reply" footer if longer.
 
@@ -228,9 +228,10 @@ file tree (left, auto-expanded 2 levels deep) + rendered note
 **Deep-link URL pattern:**
 `/dashboard#vault?root=<vault-slug>&path=<rel-path>`
 
-**Master integration:** the master can drop you straight into a
+**Evy integration:** Evy can drop you straight into a
 specific note via the `vault_link` tool — chat URLs look like
-`http://<host>:8787/dashboard#vault?root=master&path=Down-Time-Arena/decisions.md`.
+`http://<host>:8787/dashboard#vault?root=master&path=Down-Time-Arena/decisions.md`
+(URL `root=master` is a code-level identifier; future: `root=evy`).
 The Projects tab's **Open in Vault Viewer** button does the same
 for any tracked project.
 

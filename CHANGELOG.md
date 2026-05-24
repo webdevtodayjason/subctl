@@ -2,6 +2,26 @@
 
 > **v3.0 rolling release.** Sections accrete as each Phase worker lands. Operator merges manually; this header stays `unreleased` until the full rc1 stack is ready to ship.
 
+### `docs(v3.0): language rename master → Evy (Phase 1, non-breaking)`
+
+First phase of the v3.0 cycle: the persistent daemon is now called **Evy** everywhere user-facing — docs prose, dashboard UI strings, CLI help text, this CHANGELOG. Code identifiers (paths under `components/master/`, `lib/master.sh`, the `com.subctl.master` plist label, the `~/.config/subctl/master/` state directory, the `subctl master` CLI subcommand, the `/api/master/*` dashboard routes, the `--master` log flag) are unchanged in this release. Phase 3 of the v3.0 cycle renames those, ships a migration script, and provides a `subctl master` → `subctl evy` compat shim.
+
+**Why now.** The operator relates to the daemon as Evy (persona + process are one thing in his mental model), but the codebase was inconsistent: "master daemon" in docs, "Evy" in chat. Repeated taxonomy slips this session — including the agent's own — proved tribal knowledge was failing. Fix isn't "be more careful," it's "rename systematically." See the project's Obsidian Initiative `v3.0 — Evy rename + multi-worker providers` for the full plan.
+
+**What changed.**
+
+- `docs/master.md` — leads with Evy. Filename stays (legacy identifier — Phase 3 renames).
+- `docs/cli.md`, `docs/memory-architecture.md`, `docs/policy.md`, `docs/release-notes-2026-05-13.md`, `docs/release-workflow.md`, `docs/roadmap.md`, `docs/exec-migration.md`, `docs/README.md`, `docs/adding-a-provider.md`, `docs/spikes/picoder.md`, `providers/deepseek/README.md` — prose swept.
+- `docs/glossary.md` — **new file** mirroring the canonical vault taxonomy. Source of truth for code-readers who don't open the vault. Lists every Phase-3 rename target so PR reviewers don't need to flip to the vault.
+- `dashboard/public/app.js`, `dashboard/public/tabs/*.js` — UI string literals only (button labels, empty-states, dialog text, slash-command help output in chat).
+- `dashboard/help.md` — sweep of operator-facing dashboard reference.
+- `bin/subctl` — `usage()` help text. Subcommand names (`subctl master`, `--master` flag) unchanged.
+- `README.md` — top-of-file terminology callout above the relaunched (PR #26) tagline.
+
+**Constraint honored.** No code-path changes. `bun test components/master/` and `bun test dashboard/` show no regressions caused by this PR.
+
+**Operator action.** None. Daily ops keep working with the same commands — `subctl master enable`, `subctl status`, `subctl logs --master`. The rename is a vocabulary shift, not a behavior shift.
+
 ### `feat(v3.0): DeepSeek-TUI / CodeWhale as worker (Phase 4)`
 
 `subctl teams deepseek -a <alias>` now spawns a [CodeWhale](https://github.com/Hmbown/CodeWhale) (`codewhale`; formerly DeepSeek-TUI) worker in a detached tmux session with per-alias HOME-shadow isolation. CodeWhale's own `auth set --provider deepseek` handles the API-key handshake inside the shadow dir, so subctl never touches the secret directly — the key lands in `~/.subctl-deepseek-aliases/<alias>/.deepseek/config.toml` (mode 0600, codewhale-managed) and the worker tmux session inherits HOME so codewhale's layered `config -> file-based secret store -> env` lookup just works.

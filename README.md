@@ -26,7 +26,7 @@ The persistent Bun daemon AND the persona are one thing. The persona's name is *
 | **Worker session** | A single tmux pane inside a team. One agent per pane. |
 | **Dashboard** | Web UI at `http://127.0.0.1:8787`. 17 sidebar tabs. Bun-served, no build step. |
 
-A `docs/glossary.md` mirror of the full taxonomy is being staged in a parallel PR.
+See [`docs/glossary.md`](docs/glossary.md) for the full taxonomy + the complete list of Phase-3 code-rename targets.
 
 ---
 

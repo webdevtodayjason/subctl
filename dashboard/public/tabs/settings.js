@@ -584,7 +584,7 @@ export async function mount({ root: _root }) {
       const r = await fetch("/api/master/personality");
       const j = await r.json();
       if (!j.ok) {
-        sel.innerHTML = "<option value=''>master unreachable</option>";
+        sel.innerHTML = "<option value=''>Evy unreachable</option>";
         if (active) active.textContent = "—";
         return;
       }
@@ -630,7 +630,7 @@ export async function mount({ root: _root }) {
         }
         await loadPersonality();
         if (window.notice) {
-          window.notice("Personality applied", `Master voice → ${j.active}. Takes effect on the next prompt.`);
+          window.notice("Personality applied", `Evy's voice → ${j.active}. Takes effect on the next prompt.`);
         }
       } finally {
         personalityApply.disabled = false;
