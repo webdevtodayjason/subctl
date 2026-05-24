@@ -1,3 +1,17 @@
+## [3.0.1] — 2026-05-24
+
+### `fix(accounts): allowlist all registered providers in lib/accounts.sh validation`
+
+`subctl_accounts_add` previously refused 5 of 9 registered providers (`openai-codex`, `xai-oauth`, `pi-coding-agent`, `minimax`, `zai`) because the validation case had drifted away from the actual `providers/` directory contents. Operators worked around this by editing `accounts.conf` by hand — which is exactly what `subctl accounts add` exists to prevent.
+
+**Fix:** replaced the static case-based allowlist with filesystem discovery — `providers/*/auth.sh` is now the source of truth. Adding a new provider directory automatically makes it accountable through `subctl accounts add` without a separate lib/accounts.sh edit.
+
+Filed by deepseek-worker during the v3.0 release wave (PR #23) as the minimal-scope add was being made.
+
+Closes #24.
+
+---
+
 ## [3.0.0-rc1] — unreleased
 
 > **v3.0 rolling release.** Sections accrete as each Phase worker lands. Operator merges manually; this header stays `unreleased` until the full rc1 stack is ready to ship.
