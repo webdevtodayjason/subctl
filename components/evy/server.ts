@@ -1,4 +1,4 @@
-// subctl master — the master daemon entry point.
+// subctl evy — the master daemon entry point.
 //
 // A persistent, conversational orchestrator running on the M3 Ultra:
 //   1. Loads providers.json + policy.json + the master SKILL prompt
@@ -12,10 +12,10 @@
 //      lead, escalate to Jason, or take corrective action. Master is reactive
 //      to user chat AND proactive about keeping projects moving — that's the KPI.
 //
-// Lives at: /Users/sem/code/subctl/components/master/
-// Started by: launchd plist (com.subctl.master.plist) at boot
-// Logs to:    /Users/sem/Library/Logs/subctl/master.log
-// HTTP at:    127.0.0.1:8788 (configurable via SUBCTL_MASTER_PORT) — kept on
+// Lives at: /Users/sem/code/subctl/components/evy/
+// Started by: launchd plist (com.subctl.evy.plist) at boot
+// Logs to:    /Users/sem/Library/Logs/subctl/evy.log
+// HTTP at:    127.0.0.1:8788 (configurable via SUBCTL_EVY_PORT) — kept on
 //             localhost on purpose; dashboard server proxies the public surface.
 
 import {
@@ -127,7 +127,7 @@ import {
   startMasterNotifyListener,
   stopMasterNotifyListener,
   masterNotifyListenerStatus,
-} from "./master-notify-listener";
+} from "./evy-notify-listener";
 import { startClusterTicker } from "./tools/policy/verifier-cluster";
 import {
   decideCompactAction,
@@ -296,8 +296,8 @@ const HOME = homedir();
 const COMPONENT_DIR = import.meta.dir;
 const SUBCTL_CONFIG_DIR =
   process.env.SUBCTL_CONFIG_DIR ?? join(HOME, ".config", "subctl");
-const MASTER_STATE_DIR = join(SUBCTL_CONFIG_DIR, "master");
-const MASTER_LOG = join(HOME, "Library", "Logs", "subctl", "master.log");
+const EVY_STATE_DIR = join(SUBCTL_CONFIG_DIR, "evy");
+const MASTER_LOG = join(HOME, "Library", "Logs", "subctl", "evy.log");
 
 // Single source of truth: VERSION file at repo root. lib/core.sh reads the
 // same file so bash + dashboard + master daemon all agree on the version.
@@ -313,15 +313,15 @@ const SUBCTL_VERSION = (() => {
 // Dashboard API base for outbound calls FROM master (auto-nudge → /api/orchestration/:name/msg).
 // The dashboard owns the tmux paste-buffer + HMAC-signed marker, so the
 // auto-nudge path POSTs through the dashboard rather than duplicating that
-// logic here. Mirrors components/master/tools/subctl-orch.ts.
+// logic here. Mirrors components/evy/tools/subctl-orch.ts.
 const SUBCTL_API = process.env.SUBCTL_API ?? "http://127.0.0.1:8787";
 
-const PROVIDERS_PATH = join(MASTER_STATE_DIR, "providers.json");
-const POLICY_PATH = join(MASTER_STATE_DIR, "policy.json");
-const STATE_PATH = join(MASTER_STATE_DIR, "state.json");
-const AGENT_STATE_PATH = join(MASTER_STATE_DIR, "agent-state.json");
-const DECISIONS_LOG = join(MASTER_STATE_DIR, "decisions.jsonl");
-const SKILL_PATH = join(COMPONENT_DIR, "..", "skills", "master", "SKILL.md");
+const PROVIDERS_PATH = join(EVY_STATE_DIR, "providers.json");
+const POLICY_PATH = join(EVY_STATE_DIR, "policy.json");
+const STATE_PATH = join(EVY_STATE_DIR, "state.json");
+const AGENT_STATE_PATH = join(EVY_STATE_DIR, "agent-state.json");
+const DECISIONS_LOG = join(EVY_STATE_DIR, "decisions.jsonl");
+const SKILL_PATH = join(COMPONENT_DIR, "..", "skills", "evy", "SKILL.md");
 
 // ─── boot probe ─────────────────────────────────────────────────────────────
 
@@ -329,7 +329,7 @@ function ensureConfigFiles(): { ok: boolean; warnings: string[] } {
   const warnings: string[] = [];
 
   // Ensure state dir exists
-  mkdirSync(MASTER_STATE_DIR, { recursive: true });
+  mkdirSync(EVY_STATE_DIR, { recursive: true });
 
   // Seed providers.json from .example if absent
   if (!existsSync(PROVIDERS_PATH)) {
@@ -771,7 +771,7 @@ export const toolRegistry: Record<string, InternalTool> = {
   ...(spreadIf(TOOL_GATES.linear, undefined, linearTools) as Record<string, InternalTool>),
   // knowledge family: key already fully-qualified `system_subctl_knowledge`.
   // Self-introspection over a TOON-formatted breakdown of the entire subctl
-  // system at components/master/knowledge/subctl.toon. Operator uses TOON
+  // system at components/evy/knowledge/subctl.toon. Operator uses TOON
   // heavily in Argent and asked for the same pattern here. v2.7.7.
   ...Object.fromEntries(
     Object.entries(knowledgeTools).map(([k, v]) => [k, v as unknown as InternalTool]),
@@ -867,9 +867,9 @@ function adaptTool(name: string, tool: InternalTool): AgentTool {
       // empty-and-dead-listener returns for THIS exact tool name, we
       // refuse the 4th call within the same turn-window. Returns a
       // synthesized error to the model in place of invoking the tool;
-      // see components/master/circuit-breaker.ts for the trigger
+      // see components/evy/circuit-breaker.ts for the trigger
       // condition + reset semantics. Logs to stderr at warn level so
-      // the operator can grep master.log for circuit-breaker trips.
+      // the operator can grep evy.log for circuit-breaker trips.
       if (shouldRefuseToolCall(name)) {
         const refusal = synthesizeRefusal(name);
         console.error(
@@ -1189,7 +1189,7 @@ export function getApiKeyForProvider(provider: string): string | undefined {
     //
     // Returns undefined when no codex profile is configured, the JWT is
     // missing/malformed, or the token is past `exp` — pi-ai will surface
-    // "No API key for provider: openai-codex" with a clear master.log
+    // "No API key for provider: openai-codex" with a clear evy.log
     // breadcrumb from openai-codex-auth.ts above it.
     //
     // Refresh-on-near-expiry / refresh-on-401 is a tracked follow-up.
@@ -1994,7 +1994,7 @@ export function mergeActivityUpdate(
   };
 }
 
-// v2.8.9 — strip helpers moved to components/master/text-sanitize.ts so the
+// v2.8.9 — strip helpers moved to components/evy/text-sanitize.ts so the
 // Telegram outgoing path (tools/telegram.ts) and any future surface can
 // import the same regex without duplicating it. Existing call sites in
 // scrubMessageContent below are unchanged.
@@ -2113,7 +2113,7 @@ function updateLastReviewTs() {
 // ─── main ───────────────────────────────────────────────────────────────────
 
 async function main() {
-  console.error(`[master] booting subctl master v${SUBCTL_VERSION}`);
+  console.error(`[master] booting subctl evy v${SUBCTL_VERSION}`);
 
   const probe = ensureConfigFiles();
   if (!probe.ok) {
@@ -2625,7 +2625,7 @@ async function main() {
   // voice.json hot-reload. The voice_render tool reads the config on every
   // call (no in-memory cache; same "VERSION is the canonical source" rule
   // the operator pinned 2026-05-11), so the watcher's only job is logging
-  // the change so the operator can see in master.log that the toggle took
+  // the change so the operator can see in evy.log that the toggle took
   // effect immediately. SSE bus also notifies the dashboard so the chat
   // panel's 🔊 button can hide itself live.
   const voiceConfigInitial = loadVoiceConfig();
@@ -2676,7 +2676,7 @@ async function main() {
   });
 
   // ── lead-report inbox ──────────────────────────────────────────────────
-  // Each running dev team gets a JSONL file at $MASTER_STATE_DIR/inbox/{team}.jsonl.
+  // Each running dev team gets a JSONL file at $EVY_STATE_DIR/inbox/{team}.jsonl.
   // The team lead (claude in tmux pane 0) appends one JSON line per status event:
   //
   //   {"ts":"…","type":"progress|blocked|done|error|note","text":"…", …}
@@ -2686,7 +2686,7 @@ async function main() {
   // the watchdog (so it can decide if a team's gone stale), and surface
   // "blocked"/"error" events to the agent so it can decide whether to ping
   // the lead or escalate to Jason.
-  const INBOX_DIR = join(MASTER_STATE_DIR, "inbox");
+  const INBOX_DIR = join(EVY_STATE_DIR, "inbox");
   mkdirSync(INBOX_DIR, { recursive: true });
 
   // TeamEvent + TeamActivity types are declared at module scope so the
@@ -3286,7 +3286,7 @@ async function main() {
   // /v1/chat/completions logs (SKILL.md + ~70 tool descriptors). Kept in
   // sync with the value in /context's response so dashboard + JIT agree.
   const FIXED_PROMPT_OVERHEAD_TOKENS = 2500;
-  const COMPACT_CFG_PATH = join(MASTER_STATE_DIR, "compact.json");
+  const COMPACT_CFG_PATH = join(EVY_STATE_DIR, "compact.json");
 
   async function getSupervisorLoadedCtx(timeoutMs = 1500): Promise<number | null> {
     // Phase 4: probe through the LocalBackendAdapter so the loaded-context
@@ -4014,10 +4014,10 @@ async function main() {
   }
 
   // ── HTTP server: chat in, events out ───────────────────────────────────
-  const masterPort = Number(process.env.SUBCTL_MASTER_PORT ?? 8788);
+  const masterPort = Number(process.env.SUBCTL_EVY_PORT ?? 8788);
   // Default 127.0.0.1 — master is the brain; the dashboard server proxies
   // public traffic. Keeps the agent off the open LAN by default.
-  const masterHost = process.env.SUBCTL_MASTER_HOST ?? "127.0.0.1";
+  const masterHost = process.env.SUBCTL_EVY_HOST ?? "127.0.0.1";
 
   // Forward-declared so the fetch handler can capture it; assignment
   // happens after the watchdog ticker block below. The /upstreams/check
@@ -4238,7 +4238,7 @@ async function main() {
       // These endpoints never return a secret VALUE. Only chain
       // configuration + per-key existence/origin metadata. Dashboard proxies
       // these under /api/secrets/*; Telegram's /secrets command reads
-      // describeBackendChain() directly via master-notify-listener.
+      // describeBackendChain() directly via evy-notify-listener.
       //
       //   GET  /secrets/backends        → chain config + 1Password CLI status
       //   POST /secrets/test {key}      → { ok, key, exists, found_via }
@@ -4273,7 +4273,7 @@ async function main() {
       // ── /upstreams — pi-ai + pi-agent-core tracker (v2.7.25 Scope C) ────
       // ADR 0015 "always-latest" policy. The dashboard proxies these under
       // /api/upstreams; Telegram's /upstreams reads describeUpstreamState()
-      // directly via master-notify-listener. Routes:
+      // directly via evy-notify-listener. Routes:
       //
       //   GET  /upstreams        → { ok, checked_at, results[], auto_update_enabled, auto_update_flag_path }
       //   POST /upstreams/check  → runs the watchdog once, returns the same shape
@@ -5584,9 +5584,9 @@ async function main() {
           // 2. Telegram bot reachable + listener actively polling
           (async () => {
             try {
-              const notifyPath = join(SUBCTL_CONFIG_DIR, "master-notify.json");
+              const notifyPath = join(SUBCTL_CONFIG_DIR, "evy-notify.json");
               if (!existsSync(notifyPath)) {
-                return { name: "telegram", ok: false, detail: "master-notify.json missing" };
+                return { name: "telegram", ok: false, detail: "evy-notify.json missing" };
               }
               const cfg = JSON.parse(readFileSync(notifyPath, "utf8")) as {
                 bot_token?: string;
@@ -5597,7 +5597,7 @@ async function main() {
                 return {
                   name: "telegram",
                   ok: false,
-                  detail: "no bot_token (or telegram_bot_token) in master-notify.json",
+                  detail: "no bot_token (or telegram_bot_token) in evy-notify.json",
                 };
               }
               const r = await fetch(`https://api.telegram.org/bot${token}/getMe`, {
@@ -6108,7 +6108,7 @@ async function main() {
 
   console.error(`[master] http listening on http://${masterHost}:${httpServer.port} — POST /chat, GET /events, GET /health`);
 
-  // ── Telegram poll loop (master-notify-listener) ────────────────────────
+  // ── Telegram poll loop (evy-notify-listener) ────────────────────────
   // Each operator message arrives via the listener's onOperatorMessage
   // callback; we feed it into the same dispatchToAgent funnel that handles
   // dashboard-chat and watchdog-synthesized prompts. Source="telegram" so
@@ -6130,7 +6130,7 @@ async function main() {
   // warn stay in the dashboard tray only — the goal is to make the alert
   // surface itself selective so the operator can trust a Telegram buzz to
   // mean "you actually need to look at this". Subscribe AFTER the
-  // listener arms; if master-notify.json isn't configured, sendTelegramOutbound
+  // listener arms; if evy-notify.json isn't configured, sendTelegramOutbound
   // throws and we swallow it.
   subscribeNotifications((n: Notification) => {
     if (n.severity !== "alert") return;
@@ -6689,7 +6689,7 @@ async function main() {
   // Scans each team's recent audit entries every 30s. If a Gated worker is
   // hitting policy denials in clusters (>5 in 60s OR >3 of the same
   // rule_path in 5min), fire a synthetic [verifier] correction prompt at
-  // the worker. See components/master/tools/policy/verifier-cluster.ts.
+  // the worker. See components/evy/tools/policy/verifier-cluster.ts.
   const clusterTicker = startClusterTicker({
     onTick: () => touchWatchdog("verifier-cluster"),
   });
@@ -6706,7 +6706,7 @@ async function main() {
   // notifications when a newer version is available, and (when the
   // ~/.config/subctl/auto-update-upstreams.enabled flag is set)
   // attempts the upgrade itself with a bun install + bun test gate.
-  // See components/master/upstream-check.ts.
+  // See components/evy/upstream-check.ts.
   upstreamWatchdog = startUpstreamWatchdog({
     packageJsonPath: join(COMPONENT_DIR, "package.json"),
   });
@@ -6714,7 +6714,7 @@ async function main() {
 
   // ── Evy cognition loop (Memory Init #7, v0.1) ──────────────────────────
   // Disabled-by-default bounded cognition loop. Config gate lives at
-  // ~/.config/subctl/master/consciousness-loop.json — if the file is
+  // ~/.config/subctl/evy/consciousness-loop.json — if the file is
   // missing or { enabled: false }, start() registers NO watchdog and
   // arms NO interval. When enabled it ticks on its own interval,
   // gathers compact signals, runs a rule-based planner, and routes
@@ -6789,7 +6789,7 @@ async function main() {
       `[master] cognition-loop armed — interval=${cognitionLoop.config.tick_interval_ms}ms, id=${COGNITION_LOOP_WATCHDOG_ID}`,
     );
   } else {
-    console.error("[master] cognition-loop disabled by config (enable via ~/.config/subctl/master/consciousness-loop.json)");
+    console.error("[master] cognition-loop disabled by config (enable via ~/.config/subctl/evy/consciousness-loop.json)");
   }
 
   // ── idle-pane watchdog (2026-05-19 transport reliability fix) ──────────
@@ -6798,7 +6798,7 @@ async function main() {
   // (sending Enter) is gated behind both (a) config.auto_retry_enabled
   // AND (b) buffered text exactly matching a recently-sent directive.
   // Disabled-by-default config gate at
-  // ~/.config/subctl/master/idle-pane-watchdog.json.
+  // ~/.config/subctl/evy/idle-pane-watchdog.json.
   const idlePaneWatchdog: IdlePaneStartResult = startIdlePaneWatchdog({
     registry: {
       register: (entry) => registerWatchdog({ id: entry.id, kind: entry.kind, kill: entry.kill }),
@@ -6817,14 +6817,14 @@ async function main() {
       `[master] idle-pane watchdog armed — interval=${idlePaneWatchdog.config.interval_ms}ms, threshold=${idlePaneWatchdog.config.idle_threshold_ticks} ticks, auto_retry=${idlePaneWatchdog.config.auto_retry_enabled}, id=${IDLE_PANE_WATCHDOG_ID}`,
     );
   } else {
-    console.error("[master] idle-pane watchdog disabled by config (enable via ~/.config/subctl/master/idle-pane-watchdog.json)");
+    console.error("[master] idle-pane watchdog disabled by config (enable via ~/.config/subctl/evy/idle-pane-watchdog.json)");
   }
 
   // ── MCP server (MCP-Expose #1 mount, follow-up to f3a8e7a) ─────────────
   // Mount the in-process MCP server under /mcp/* plus the unauthenticated
   // /.well-known/mcp discovery endpoint. Boots disabled if
   // secrets.json#subctl_mcp_token is missing — no auto-generation, the
-  // operator manages this credential. See components/master/mcp/README.md
+  // operator manages this credential. See components/evy/mcp/README.md
   // for the design summary and wave-2 tool-surface plan.
   // (The mcpHandle binding itself is forward-declared above Bun.serve so
   //  the fetch handler can route /mcp/* without TDZ trouble.)
@@ -6834,7 +6834,7 @@ async function main() {
     log: (line) => console.error(`[mcp] ${line}`),
     // Wave-2 (#25) tool surface: ping / state_snapshot / notify.
     // Tools must register before mcp.connect(transport) — see the
-    // registerCapabilities contract in components/master/mcp/server.ts.
+    // registerCapabilities contract in components/evy/mcp/server.ts.
     registerCapabilities: (mcp) => {
       registerMcpTools(mcp, {
         serverVersion: SUBCTL_VERSION,
@@ -6914,7 +6914,7 @@ async function main() {
 
         getRecentDecisions: (limit) => {
           try {
-            const path = join(MASTER_STATE_DIR, "decisions.jsonl");
+            const path = join(EVY_STATE_DIR, "decisions.jsonl");
             const raw = require("node:fs").readFileSync(path, "utf8") as string;
             const lines = raw.trimEnd().split("\n").filter((l: string) => l.trim());
             const tail = lines.slice(-limit);
@@ -7006,7 +7006,7 @@ async function main() {
         getTeamInbox: (team, limit) => {
           try {
             const safeTeam = team.replace(/[^A-Za-z0-9._-]/g, "_");
-            const path = join(MASTER_STATE_DIR, "inbox", `${safeTeam}.jsonl`);
+            const path = join(EVY_STATE_DIR, "inbox", `${safeTeam}.jsonl`);
             const raw = require("node:fs").readFileSync(path, "utf8") as string;
             const lines = raw.trimEnd().split("\n").filter((l: string) => l.trim());
             const tail = lines.slice(-limit);
@@ -7184,7 +7184,7 @@ async function main() {
 }
 
 // Only auto-boot when this file is the entrypoint (i.e. launched by
-// launchd / `subctl master start`). Skipping this when imported lets the
+// launchd / `subctl evy start`). Skipping this when imported lets the
 // test suite pull in helpers like `getApiKeyForProvider` and
 // `ensureModelLoaded` without spinning up the full daemon.
 if (import.meta.main) {

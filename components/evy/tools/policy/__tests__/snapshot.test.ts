@@ -1,4 +1,4 @@
-// components/master/tools/policy/__tests__/snapshot.test.ts
+// components/evy/tools/policy/__tests__/snapshot.test.ts
 //
 // Tests for PR 7's snapshot writer/reader. Exercises the public surface
 // (writePolicySnapshot / readPolicySnapshot / getSnapshotPath) against

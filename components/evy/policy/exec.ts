@@ -1,6 +1,6 @@
-// components/master/policy/exec.ts
+// components/evy/policy/exec.ts
 //
-// Centralized exec helper for the subctl master daemon, dashboard, and any
+// Centralized exec helper for the subctl evy daemon, dashboard, and any
 // other TS surface inside the repo (v2.7.0 / PR 8.5). Sits one layer above
 // `Bun.spawn` and provides:
 //
@@ -11,7 +11,7 @@
 //     `shell: true`.
 //
 //   - `execCommandGated(cmd, args, opts)` — calls the in-process policy
-//     check (`components/master/tools/policy/check.ts`) BEFORE spawning. If
+//     check (`components/evy/tools/policy/check.ts`) BEFORE spawning. If
 //     the resolved policy denies the command, throws `PolicyDenied` with the
 //     rule + rule_path that fired. Use this at callsites where the
 //     command — or a major component of it — comes from operator/agent
@@ -25,9 +25,9 @@
 //   internal probes. Forcing nothing through a helper leaves no clean
 //   chokepoint for future policy work. Two functions split the difference.
 //
-// - This helper is intentionally placed at `components/master/policy/exec.ts`
-//   (NOT `components/master/tools/policy/`) for two reasons:
-//   1. It fills the empty `components/master/policy/` directory that the
+// - This helper is intentionally placed at `components/evy/policy/exec.ts`
+//   (NOT `components/evy/tools/policy/`) for two reasons:
+//   1. It fills the empty `components/evy/policy/` directory that the
 //      safety-model worker flagged as a Chekhov's-gun dead-code path.
 //   2. It is consumed by callsites OUTSIDE the master tool family
 //      (dashboard, future provider scaffolding), so it cannot live under

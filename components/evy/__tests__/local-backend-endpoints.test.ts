@@ -1,4 +1,4 @@
-// components/master/__tests__/local-backend-endpoints.test.ts
+// components/evy/__tests__/local-backend-endpoints.test.ts
 //
 // Phase 4 — pin the GET / POST /local-backend shape contracts.
 //

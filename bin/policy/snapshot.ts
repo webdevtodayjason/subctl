@@ -11,18 +11,18 @@
 //              and rewrites the snapshot. Rare; useful after a policy edit
 //              when re-spawning the worker is undesirable.
 //
-// We use the existing writers/readers in `components/master/tools/policy/snapshot.ts`
+// We use the existing writers/readers in `components/evy/tools/policy/snapshot.ts`
 // so the path resolution + header format stay in lockstep.
 
 import { existsSync, readFileSync } from "node:fs";
 import process from "node:process";
 
-import { computeAllowlistSha } from "../../components/master/tools/policy/load";
+import { computeAllowlistSha } from "../../components/evy/tools/policy/load";
 import {
   getSnapshotPath,
   readPolicySnapshot,
   writePolicySnapshot,
-} from "../../components/master/tools/policy/snapshot";
+} from "../../components/evy/tools/policy/snapshot";
 
 type Action = "show" | "verify" | "rewrite";
 

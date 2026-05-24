@@ -1,4 +1,4 @@
-// components/master/__tests__/plan-approvals.test.ts
+// components/evy/__tests__/plan-approvals.test.ts
 //
 // v2.7.29 — plan-approval queue.
 //

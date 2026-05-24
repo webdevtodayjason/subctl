@@ -1,4 +1,4 @@
-// components/master/trust-marker.ts
+// components/evy/trust-marker.ts
 //
 // v2.7.20 — HMAC-authenticated trust marker (ADR 0011 Layer 1).
 //
@@ -74,7 +74,7 @@ import { dirname, join } from "node:path";
 
 // ─── path resolution ─────────────────────────────────────────────────────
 //
-// Same convention as components/master/tools/policy/snapshot.ts —
+// Same convention as components/evy/tools/policy/snapshot.ts —
 // SUBCTL_STATE_DIR env override wins, otherwise ~/.local/state/subctl.
 // Tests inject a tmpdir-scoped path via _setStateDirForTesting().
 
@@ -309,6 +309,13 @@ export function buildSignedDirective(
  *   - the `phase=…` middle is optional (matches the no-phase form)
  *   - the `ts:` field comes before `hmac:` (matches buildDirectiveMarker output)
  *   - the `hmac:` field is exactly 16 lowercase hex chars (truncated form)
+ *
+ * Wire protocol identifier — DO NOT rename `subctl-master` without
+ * version negotiation. Workers in-flight when the daemon restarts
+ * would reject new directives if this string changes. The v3.0
+ * master → Evy rename deliberately keeps this prefix as legacy
+ * wire identity; a future PR can introduce a `subctl-evy` variant
+ * with version-negotiated rollout.
  */
 const MARKER_RE =
   /^\[subctl-master directive(?: · phase=([^·\]]+?))? · ts:([^ ·\]]+) · hmac:([0-9a-f]{16})\]$/;

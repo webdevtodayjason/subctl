@@ -1,4 +1,4 @@
-// components/master/tools/policy/audit.ts
+// components/evy/tools/policy/audit.ts
 //
 // JSONL audit-log appender + size-based rotator for the policy engine.
 // Pack 09 §2/§3/§4/§5 + HANDOFF_DIGEST D7 Q5.

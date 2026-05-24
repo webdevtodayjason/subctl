@@ -1,7 +1,7 @@
-// components/master/policy/index.ts
+// components/evy/policy/index.ts
 //
 // Public surface of the master daemon's `policy` module. Distinct from
-// `components/master/tools/policy/` (which is the master-tool-family
+// `components/evy/tools/policy/` (which is the master-tool-family
 // namespace exposing `policy_check`, `policy_list`, `policy_audit_tail` to
 // the LLM). This module ships the in-process helpers the daemon + dashboard
 // + any other TS surface inside subctl uses directly.

@@ -1,4 +1,4 @@
-// components/master/templates-loader.ts — in-tree team-template registry.
+// components/evy/templates-loader.ts — in-tree team-template registry.
 //
 // A "team template" here is a folder under components/templates/<name>/
 // containing two files:
@@ -9,10 +9,10 @@
 // This is the registry consulted by `subctl_orch_spawn_template`. It is
 // distinct from the two legacy registries:
 //
-//   - ~/.config/subctl/master/team-templates/<name>.json  (v2.7.x persona JSON,
+//   - ~/.config/subctl/evy/team-templates/<name>.json  (v2.7.x persona JSON,
 //     loaded by providers/claude/teams.sh _provider_claude_apply_template)
 //   - ~/.config/subctl/team-templates/<name>.toml         (v2.8.0 multi-developer
-//     rosters, loaded by components/master/team-templates.ts)
+//     rosters, loaded by components/evy/team-templates.ts)
 //
 // The in-tree registry is versioned with the repo and ships baseline templates
 // out of the box, so `subctl_orch_spawn_template feature-dev` works on a fresh
@@ -95,7 +95,7 @@ export function templatesRegistryDir(): string {
   if (override) return override;
   // __dirname equivalent for ES modules under Bun.
   const here = dirname(fileURLToPath(import.meta.url));
-  // components/master/templates-loader.ts → components/templates
+  // components/evy/templates-loader.ts → components/templates
   return join(here, "..", "templates");
 }
 

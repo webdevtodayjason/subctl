@@ -2,7 +2,7 @@
 // check in 15 minutes" promises with actual timer state instead of
 // hallucinated cadence.
 //
-// State lives at ~/.config/subctl/master/followups.jsonl (append-only).
+// State lives at ~/.config/subctl/evy/followups.jsonl (append-only).
 // Each entry is one followup:
 //
 //   { "id": "fu_1715380000000_a1b2c3", "fire_at": "2026-05-10T20:30:00Z",
@@ -31,7 +31,7 @@ import {
 
 const SUBCTL_CONFIG_DIR =
   process.env.SUBCTL_CONFIG_DIR ?? join(homedir(), ".config", "subctl");
-const FOLLOWUPS_PATH = join(SUBCTL_CONFIG_DIR, "master", "followups.jsonl");
+const FOLLOWUPS_PATH = join(SUBCTL_CONFIG_DIR, "evy", "followups.jsonl");
 
 export interface Followup {
   id: string;
@@ -43,7 +43,7 @@ export interface Followup {
 }
 
 function ensureFile(): void {
-  const dir = join(SUBCTL_CONFIG_DIR, "master");
+  const dir = join(SUBCTL_CONFIG_DIR, "evy");
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   if (!existsSync(FOLLOWUPS_PATH)) writeFileSync(FOLLOWUPS_PATH, "");
 }

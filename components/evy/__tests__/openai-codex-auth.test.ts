@@ -1,4 +1,4 @@
-// components/master/__tests__/openai-codex-auth.test.ts
+// components/evy/__tests__/openai-codex-auth.test.ts
 //
 // v2.8.7 — Unit coverage for the openai-codex OAuth credential resolver.
 //

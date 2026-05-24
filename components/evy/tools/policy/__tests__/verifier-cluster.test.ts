@@ -1,4 +1,4 @@
-// components/master/tools/policy/__tests__/verifier-cluster.test.ts
+// components/evy/tools/policy/__tests__/verifier-cluster.test.ts
 //
 // Tests for PR 6.5's denial-cluster detector + correction firer.
 // Pack 06 §7 + HANDOFF_DIGEST D8.

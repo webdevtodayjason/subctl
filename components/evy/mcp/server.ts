@@ -1,4 +1,4 @@
-// components/master/mcp/server.ts
+// components/evy/mcp/server.ts
 //
 // MCP-Expose (#24, wave 1) — server skeleton. Builds an `McpServer`
 // from the official @modelcontextprotocol/sdk and bridges it to a Bun
@@ -16,7 +16,7 @@
 //     the daemon then never mounts the routes. Auto-generation is a
 //     deliberate non-feature: secrets are operator-owned.
 //
-// NOT wired here: any actual mount onto components/master/server.ts.
+// NOT wired here: any actual mount onto components/evy/server.ts.
 // The integration commit follows in a separate wave-1 PR after this
 // skeleton lands. See README.md alongside this file.
 

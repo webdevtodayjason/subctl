@@ -4,7 +4,7 @@
 # SPIKE PROTOTYPE — end-to-end demo of the pi-coder pattern.
 # NOT PRODUCT CODE. Lives under docs/spikes/, not destined to ship.
 #
-# Wires up picoder-worker.ts + master-emit.ts in a temp dir, sends one
+# Wires up picoder-worker.ts + evy-emit.ts in a temp dir, sends one
 # signed directive, and shows that:
 #
 #   Q1. The worker verified the HMAC and processed the SPEC body.
@@ -66,7 +66,7 @@ sleep 0.5
 
 echo
 echo "==> Q1 + Q2 + Q4: emit one good directive and watch what happens"
-bun run "$HERE/master-emit.ts" "$TEAM_ID" "investigate" \
+bun run "$HERE/evy-emit.ts" "$TEAM_ID" "investigate" \
   "Audit token usage in components/master/server.ts and report top 3 hotspots"
 
 # Wait for the worker to process. 1.5s is enough for the 200ms simulated

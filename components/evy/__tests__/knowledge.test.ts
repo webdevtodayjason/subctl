@@ -1,4 +1,4 @@
-// components/master/__tests__/knowledge.test.ts
+// components/evy/__tests__/knowledge.test.ts
 //
 // v2.7.7 — system_subctl_knowledge tool tests.
 //
@@ -18,7 +18,7 @@
 //     first call and verifying the second call still works (it'd
 //     throw if it tried to re-read with the stub).
 //
-// These tests run from components/master via `bun test __tests__/`,
+// These tests run from components/evy via `bun test __tests__/`,
 // matching the existing secrets.test.ts + compact-policy.test.ts pattern.
 
 import { describe, expect, test, beforeAll } from "bun:test";

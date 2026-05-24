@@ -1,4 +1,4 @@
-// components/master/text-sanitize.ts
+// components/evy/text-sanitize.ts
 //
 // v2.8.9 — Shared text-sanitisation helpers. Centralised so every outbound
 // path (transcript persistence, Telegram send, voice TTS, dashboard SSE

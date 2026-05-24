@@ -1,4 +1,4 @@
-// components/master/consciousness-loop/state.ts
+// components/evy/consciousness-loop/state.ts
 //
 // Memory Init #7 — persistent state + audit log.
 //

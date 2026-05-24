@@ -1,4 +1,4 @@
-// components/master/__tests__/xai-oauth-auth.test.ts
+// components/evy/__tests__/xai-oauth-auth.test.ts
 //
 // Phase B coverage for xai-oauth-auth.ts. The four scenarios from the impl
 // plan (§3 Phase B "Done when"):

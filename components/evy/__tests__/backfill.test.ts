@@ -1,4 +1,4 @@
-// components/master/__tests__/backfill.test.ts
+// components/evy/__tests__/backfill.test.ts
 //
 // Tests for the operator-invoked backfill scripts. Every external surface
 // (Memori sidecar, Cognee, evy.db, claude-mem HTTP, Obsidian filesystem)

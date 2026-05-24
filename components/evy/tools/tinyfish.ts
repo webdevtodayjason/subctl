@@ -1,4 +1,4 @@
-// components/master/tools/tinyfish.ts
+// components/evy/tools/tinyfish.ts
 //
 // TinyFish web toolkit integration — three tools across the
 // free + paid tiers:
@@ -52,7 +52,7 @@
 // operator's responsibility to mandate appropriately via the `goal`.)
 // HTTP errors (network, 4xx, 5xx, timeout, rate limit) all surface as
 // `{ ok: false, error: "..." }` — tools never throw to the caller.
-// Pattern mirrors components/master/tools/web.ts.
+// Pattern mirrors components/evy/tools/web.ts.
 
 // ─── injectable side-effect surface (for tests) ────────────────────────────
 
@@ -138,7 +138,7 @@ export function _resetDepsForTesting(): void {
 import { resolveSecret } from "../secrets";
 
 const KEY_MISSING_HINT =
-  "Sign up at https://agent.tinyfish.ai to mint an API key (free tier — search + fetch don't use credits), then paste it via the dashboard Settings → API Tokens panel (writes ~/.config/subctl/secrets.json, chmod 600) OR set TINYFISH_API_KEY in ~/Library/LaunchAgents/com.subctl.master.plist EnvironmentVariables followed by `launchctl kickstart -k gui/$UID/com.subctl.master`.";
+  "Sign up at https://agent.tinyfish.ai to mint an API key (free tier — search + fetch don't use credits), then paste it via the dashboard Settings → API Tokens panel (writes ~/.config/subctl/secrets.json, chmod 600) OR set TINYFISH_API_KEY in ~/Library/LaunchAgents/com.subctl.evy.plist EnvironmentVariables followed by `launchctl kickstart -k gui/$UID/com.subctl.evy`.";
 
 /** Cap a response body excerpt so a 5MB error page doesn't flood the agent context. */
 function bodyExcerpt(text: string, max = 400): string {
@@ -863,7 +863,7 @@ const tinyfish_agent = {
 // the agent runs on TinyFish's cloud. On completion the result is
 // surfaced (a) via tray notification and (b) prepended to the
 // operator's NEXT chat/telegram prompt — see
-// components/master/background-runs.ts for the surfacing mechanism.
+// components/evy/background-runs.ts for the surfacing mechanism.
 //
 // Limitation: this run does NOT survive a master restart. The underlying
 // fetch terminates with the process. For restart-durable runs against

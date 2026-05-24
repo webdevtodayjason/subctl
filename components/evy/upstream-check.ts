@@ -1,4 +1,4 @@
-// components/master/upstream-check.ts
+// components/evy/upstream-check.ts
 //
 // v2.7.25 — Upstream-tracking watchdog.
 // v2.7.37 — Auto-update automation (worktree + bun test/build/typecheck
@@ -8,14 +8,14 @@
 // @earendil-works/pi-agent-core first-class upstreams under an
 // "always-latest" policy: every minor/patch subctl release must refresh
 // both packages to the most-recent published version. The `^` pin in
-// components/master/package.json gets us close, but `bun install` only
+// components/evy/package.json gets us close, but `bun install` only
 // re-resolves when something asks it to. Drift accumulates silently
 // between releases — exactly the failure mode ADR 0015 calls out under
 // "Negative consequences."
 //
 // This module closes that gap. Every 6 hours it asks npm for the
 // `dist-tags.latest` of both packages, compares against what's pinned
-// in components/master/package.json, and emits a notification when a
+// in components/evy/package.json, and emits a notification when a
 // newer version is available. The operator decides whether to upgrade.
 //
 // Manual-mode-by-default is on purpose. The default behavior is a
@@ -23,7 +23,7 @@
 // Setting the gate file ~/.config/subctl/auto-update-upstreams.enabled
 // promotes the watchdog to ATTEMPT the upgrade itself in a FRESH GIT
 // WORKTREE under /tmp/subctl-upstream-update-<ts>/:
-//   1. `bun install <package>@latest` in components/master/
+//   1. `bun install <package>@latest` in components/evy/
 //   2. `bun test`, `bun build`, typecheck — all must be clean
 //   3. Commit + push to `chore/upstream-<package>-<ts>` (NEVER main)
 //   4. Emit info notification (operator reviews + merges by hand)
@@ -266,7 +266,7 @@ export async function fetchLatestVersion(
 }
 
 export interface RunCheckOptions {
-  /** Absolute path to components/master/package.json. */
+  /** Absolute path to components/evy/package.json. */
   packageJsonPath: string;
   /** Packages to check. Defaults to TRACKED_UPSTREAMS. */
   packages?: ReadonlyArray<string>;
@@ -421,7 +421,7 @@ export async function runUpstreamCheck(
           pkg +
           ". This is a " +
           bump +
-          " bump.\n\nUpdate path:\n  1. bump components/master/package.json\n  2. cd components/master && bun install\n  3. bun test\n  4. commit + push\n\nThe auto-update gate file at " +
+          " bump.\n\nUpdate path:\n  1. bump components/evy/package.json\n  2. cd components/evy && bun install\n  3. bun test\n  4. commit + push\n\nThe auto-update gate file at " +
           flagPath +
           " can run steps 1–3 unattended (without commit + push) the next time this watchdog ticks.",
         metadata: { package: pkg, from: pinned, to: latest, bump_kind: bump },

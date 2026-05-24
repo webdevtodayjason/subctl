@@ -1,4 +1,4 @@
-// components/master/__tests__/text-sanitize.test.ts
+// components/evy/__tests__/text-sanitize.test.ts
 //
 // v2.8.9 — Pins the channel-marker strip behaviour shared across all
 // outbound text surfaces (transcript persistence, Telegram send, dashboard

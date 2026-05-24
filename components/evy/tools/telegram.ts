@@ -1,9 +1,9 @@
-// Telegram outbound for subctl master. Uses a SEPARATE bot from subctl's
+// Telegram outbound for subctl evy. Uses a SEPARATE bot from subctl's
 // notify-listener bot. Two-bot model is intentional:
 //   - notify-bot: tactical worker escalations (existing, in components/notify/)
-//   - master-bot: strategic conversation with the operator (this file + master-notify-listener.ts)
+//   - master-bot: strategic conversation with the operator (this file + evy-notify-listener.ts)
 //
-// Bot token + chat ID stored at ~/.config/subctl/master-notify.json:
+// Bot token + chat ID stored at ~/.config/subctl/evy-notify.json:
 //   { "bot_token": "...", "chat_id": "..." }
 
 import { readFileSync } from "node:fs";
@@ -12,9 +12,9 @@ import { join } from "node:path";
 import { renderVoice } from "./voice-render";
 import { stripReasoningChannels } from "../text-sanitize";
 
-const MASTER_NOTIFY_CONFIG =
-  process.env.SUBCTL_MASTER_NOTIFY_CONFIG ??
-  join(process.env.HOME ?? "", ".config", "subctl", "master-notify.json");
+const EVY_NOTIFY_CONFIG =
+  process.env.SUBCTL_EVY_NOTIFY_CONFIG ??
+  join(process.env.HOME ?? "", ".config", "subctl", "evy-notify.json");
 
 interface MasterNotifyCreds {
   bot_token: string;
@@ -25,11 +25,11 @@ let _creds: MasterNotifyCreds | null = null;
 
 function getCreds(): MasterNotifyCreds {
   if (_creds) return _creds;
-  const raw = readFileSync(MASTER_NOTIFY_CONFIG, "utf8");
+  const raw = readFileSync(EVY_NOTIFY_CONFIG, "utf8");
   const parsed = JSON.parse(raw) as MasterNotifyCreds;
   if (!parsed.bot_token || !parsed.chat_id) {
     throw new Error(
-      `${MASTER_NOTIFY_CONFIG} missing bot_token or chat_id`,
+      `${EVY_NOTIFY_CONFIG} missing bot_token or chat_id`,
     );
   }
   _creds = parsed;
@@ -48,7 +48,7 @@ export async function sendTelegramOutbound(
 }
 
 // v2.8.0 — exported helper to ship a rendered voice note to Telegram.
-// Used by the /say command in master-notify-listener.ts AND by the
+// Used by the /say command in evy-notify-listener.ts AND by the
 // telegram_send_voice tool below. The audio bytes are uploaded via
 // multipart sendVoice rather than streamed from the master's HTTP
 // surface (Telegram needs to fetch the file itself, and we don't
@@ -125,7 +125,7 @@ async function sendMessage(
 export const telegramTools = {
   send: {
     description:
-      "Send a message to the operator via subctl master's dedicated Telegram bot. Default to plain text — Markdown only when needed (and only with parse_mode='MarkdownV2', escape carefully). Keep messages under 200 words.",
+      "Send a message to the operator via subctl evy's dedicated Telegram bot. Default to plain text — Markdown only when needed (and only with parse_mode='MarkdownV2', escape carefully). Keep messages under 200 words.",
     schema: {
       type: "object",
       properties: {

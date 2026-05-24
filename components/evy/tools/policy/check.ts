@@ -1,4 +1,4 @@
-// components/master/tools/policy/check.ts
+// components/evy/tools/policy/check.ts
 //
 // Hot-path policy check. The decision function the `PreToolUse` hook calls
 // before every Bash invocation in a Gated worker. Pack 06 §4 is the reference

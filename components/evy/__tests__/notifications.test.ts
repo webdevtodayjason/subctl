@@ -1,4 +1,4 @@
-// components/master/__tests__/notifications.test.ts
+// components/evy/__tests__/notifications.test.ts
 //
 // v2.7.22 — operator notification channel.
 //

@@ -1,4 +1,4 @@
-// components/master/__tests__/verifier.test.ts
+// components/evy/__tests__/verifier.test.ts
 //
 // Tests for the post-turn claim verifier. Covers:
 //   - The original name-match rules (back-compat).

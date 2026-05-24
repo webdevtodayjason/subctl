@@ -1,4 +1,4 @@
-// components/master/__tests__/evy-eval/types.ts
+// components/evy/__tests__/evy-eval/types.ts
 //
 // Shared types for the Evy persona eval harness. The pipeline shape
 // (regex fast-fail → LLM judge → bun assertion) is documented verbatim
@@ -121,7 +121,7 @@ export interface BaselineComponents {
 }
 
 /**
- * One line in `~/.config/subctl/master/state/eval-scores.jsonl`.
+ * One line in `~/.config/subctl/evy/state/eval-scores.jsonl`.
  * Append-only — each test run that completes a phase appends one
  * entry. `result` is the most-specific outcome the test reached:
  *

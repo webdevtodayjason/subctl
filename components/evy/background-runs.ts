@@ -1,4 +1,4 @@
-// components/master/background-runs.ts
+// components/evy/background-runs.ts
 //
 // v2.8.10 — Background-task runtime.
 //
@@ -85,7 +85,7 @@ interface Deps {
   saveSidecar: (s: SidecarShape) => Promise<void>;
   /** Load the sidecar JSON if present, else null. */
   loadSidecar: () => Promise<SidecarShape | null>;
-  /** Notification emitter — wired to components/master/notifications.ts in prod. */
+  /** Notification emitter — wired to components/evy/notifications.ts in prod. */
   emitNotification?: (input: {
     kind: string;
     severity: "info" | "warn" | "alert";
@@ -98,7 +98,7 @@ interface Deps {
 function defaultSidecarPath(): string {
   const home = process.env.HOME ?? "/tmp";
   const cfg = process.env.SUBCTL_CONFIG_DIR ?? join(home, ".config", "subctl");
-  return join(cfg, "master", "background-runs.json");
+  return join(cfg, "evy", "background-runs.json");
 }
 
 const realDeps: Deps = {

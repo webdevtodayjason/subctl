@@ -1,4 +1,4 @@
-// components/master/policy/__tests__/exec.test.ts
+// components/evy/policy/__tests__/exec.test.ts
 //
 // Unit tests for the central exec helper. Covers:
 //   - execCommand: happy-path spawn, stdout/stderr capture, exit codes
@@ -10,7 +10,7 @@
 //   - PolicyDenied: rule + rulePath surface intact
 //
 // These tests intentionally do NOT exercise the policy engine's correctness
-// itself — that's the job of `components/master/tools/policy/__tests__/`.
+// itself — that's the job of `components/evy/tools/policy/__tests__/`.
 // Here we only verify the wiring: that execCommandGated calls the engine,
 // honors its decisions, and that PolicyDenied carries the data callsites
 // will route into audit logs.

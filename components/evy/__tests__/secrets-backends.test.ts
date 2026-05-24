@@ -1,4 +1,4 @@
-// components/master/__tests__/secrets-backends.test.ts
+// components/evy/__tests__/secrets-backends.test.ts
 //
 // v2.7.31 — multi-backend secret resolution chain (ADR 0012).
 //
@@ -68,7 +68,7 @@ beforeEach(() => {
   workDir = mkdtempSync(join(tmpdir(), "subctl-secrets-backends-"));
   secretsPath = join(workDir, "secrets.json");
   backendsPath = join(workDir, "secrets-backends.json");
-  auditPath = join(workDir, "master", "secrets-audit.jsonl");
+  auditPath = join(workDir, "evy", "secrets-audit.jsonl");
   _setPathForTesting(secretsPath);
   _setConfigPathForTesting(backendsPath);
   _setAuditPathForTesting(auditPath);

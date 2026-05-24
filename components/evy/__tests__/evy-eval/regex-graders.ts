@@ -1,4 +1,4 @@
-// components/master/__tests__/evy-eval/regex-graders.ts
+// components/evy/__tests__/evy-eval/regex-graders.ts
 //
 // Phase 1 of the Evy eval pipeline: regex fast-fail patterns. Cheap,
 // deterministic, runs before any API call. Six base patterns come from

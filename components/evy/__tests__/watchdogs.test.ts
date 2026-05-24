@@ -1,4 +1,4 @@
-// components/master/__tests__/watchdogs.test.ts
+// components/evy/__tests__/watchdogs.test.ts
 //
 // v2.7.19 — Watchdog registry contracts. The registry backs three
 // surfaces (Evy tools, dashboard, Telegram) so the public API is small

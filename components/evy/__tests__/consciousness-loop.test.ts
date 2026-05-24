@@ -1,4 +1,4 @@
-// components/master/__tests__/consciousness-loop.test.ts
+// components/evy/__tests__/consciousness-loop.test.ts
 //
 // Memory Init #7 — Evy Cognition Loop v0.1 acceptance suite.
 //
@@ -503,9 +503,9 @@ describe("status surface", () => {
       // no state_path / audit_path → status + tick use the resolved defaults.
     };
     const fs = require("node:fs") as typeof import("node:fs");
-    fs.mkdirSync(join(tmpRoot, "master"), { recursive: true });
+    fs.mkdirSync(join(tmpRoot, "evy"), { recursive: true });
     fs.writeFileSync(
-      join(tmpRoot, "master", "consciousness-loop.json"),
+      join(tmpRoot, "evy", "consciousness-loop.json"),
       JSON.stringify(configOnDisk),
     );
 

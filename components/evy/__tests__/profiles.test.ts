@@ -1,4 +1,4 @@
-// components/master/__tests__/profiles.test.ts
+// components/evy/__tests__/profiles.test.ts
 //
 // v2.7.18 — Supervisor profiles. Two named profiles ("chat" and "heavy")
 // the operator switches between at the start of the next prompt without
@@ -40,7 +40,7 @@ beforeEach(() => {
   _setPathForTesting(profilesPath);
   // Point SUBCTL_CONFIG_DIR at the tmpdir so the seeder's
   // providers.json sniff misses cleanly. Without this, the real
-  // ~/.config/subctl/master/providers.json contaminates the "seed
+  // ~/.config/subctl/evy/providers.json contaminates the "seed
   // from defaults" tests on a developer machine.
   savedConfigDir = process.env.SUBCTL_CONFIG_DIR;
   process.env.SUBCTL_CONFIG_DIR = tmpDir;

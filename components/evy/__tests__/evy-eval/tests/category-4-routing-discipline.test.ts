@@ -1,4 +1,4 @@
-// components/master/__tests__/evy-eval/tests/category-4-routing-discipline.test.ts
+// components/evy/__tests__/evy-eval/tests/category-4-routing-discipline.test.ts
 //
 // Evy Eval — Category 4: Routing Discipline (4 tests)
 //

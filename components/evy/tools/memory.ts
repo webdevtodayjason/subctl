@@ -1,4 +1,4 @@
-// components/master/tools/memory.ts
+// components/evy/tools/memory.ts
 //
 // v2.8.10 — Tier 4 with Cognee primary + claude-mem fallback.
 //

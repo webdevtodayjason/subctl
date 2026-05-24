@@ -1,4 +1,4 @@
-// components/master/cognee-client.ts
+// components/evy/cognee-client.ts
 //
 // v2.8.10 — Cognee HTTP client.
 //

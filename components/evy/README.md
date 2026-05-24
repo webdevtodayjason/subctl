@@ -39,10 +39,10 @@ The "master orchestrator" sitting above subctl's worker layer. While `subctl orc
 | Daemon entry | Boot, config load, heartbeat, signal handling | `server.ts` |
 | Master SKILL | The CEO/CFO mandate (system prompt for the agent) | `../skills/master/SKILL.md` |
 | Tool registry | What subctl master can invoke | `tools/{subctl-orch,gh,coderabbit,telegram}.ts` |
-| Multi-model routing | Operator-editable provider config | `providers.json.example` → `~/.config/subctl/master/providers.json` |
-| Per-project autonomy | What subctl master can drive vs. ask vs. shadow | `policy.json.example` → `~/.config/subctl/master/policy.json` |
-| State / decisions | Persistent working memory + audit trail | `~/.config/subctl/master/{state.json,decisions.jsonl}` |
-| Master Telegram bot | Strategic conversation channel | `master-notify-listener.ts` (TODO stage 2) |
+| Multi-model routing | Operator-editable provider config | `providers.json.example` → `~/.config/subctl/evy/providers.json` |
+| Per-project autonomy | What subctl master can drive vs. ask vs. shadow | `policy.json.example` → `~/.config/subctl/evy/policy.json` |
+| State / decisions | Persistent working memory + audit trail | `~/.config/subctl/evy/{state.json,decisions.jsonl}` |
+| Master Telegram bot | Strategic conversation channel | `evy-notify-listener.ts` (TODO stage 2) |
 | Worker notify bot | Tactical escalation (existing subctl notify) | `../../dashboard/notify-listener.ts` |
 
 ---
@@ -86,12 +86,12 @@ cd ~/code/subctl/components/master
 bun install
 
 # 2. Configure routing + policy (seeded from .example on first boot)
-$EDITOR ~/.config/subctl/master/providers.json
-$EDITOR ~/.config/subctl/master/policy.json
+$EDITOR ~/.config/subctl/evy/providers.json
+$EDITOR ~/.config/subctl/evy/policy.json
 
 # 3. Configure subctl master's Telegram bot (separate from notify-bot)
-echo '{"bot_token": "YOUR_NEW_BOT_TOKEN", "chat_id": "YOUR_TELEGRAM_CHAT_ID"}' > ~/.config/subctl/master-notify.json
-chmod 600 ~/.config/subctl/master-notify.json
+echo '{"bot_token": "YOUR_NEW_BOT_TOKEN", "chat_id": "YOUR_TELEGRAM_CHAT_ID"}' > ~/.config/subctl/evy-notify.json
+chmod 600 ~/.config/subctl/evy-notify.json
 
 # 4. Enable the launchd service
 subctl master enable
@@ -145,7 +145,7 @@ Built into the master SKILL:
 
 **Stage 2 (next):**
 - Wire pi-agent-core SDK (replace TODO in `server.ts`)
-- Master Telegram bot listener (`master-notify-listener.ts`)
+- Master Telegram bot listener (`evy-notify-listener.ts`)
 - launchd plist + `subctl master {enable,disable,status,logs,prompt}` CLI verbs
 - Drift / stall detection
 

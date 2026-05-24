@@ -1,4 +1,4 @@
-// components/master/consciousness-loop/watchdog.ts
+// components/evy/consciousness-loop/watchdog.ts
 //
 // Memory Init #7 — disabled-by-default watchdog wiring.
 //
@@ -34,7 +34,7 @@ export interface WatchdogRegistryHooks {
 }
 
 export interface StartOptions {
-  /** Path to the config JSON; default → ~/.config/subctl/master/consciousness-loop.json. */
+  /** Path to the config JSON; default → ~/.config/subctl/evy/consciousness-loop.json. */
   configPath?: string;
   /** Pre-loaded config (skips loadConfig). Used by tests + by callers who already have it. */
   configOverride?: CognitionLoopConfig;
@@ -100,7 +100,7 @@ export function start(opts: StartOptions): StartResult {
     } catch (err) {
       // The tick already attempts to record errors via execution_result.
       // If runTick itself throws (defensive), surface to stderr so
-      // master.log captures it but don't crash the daemon.
+      // evy.log captures it but don't crash the daemon.
       console.error(
         `[consciousness-loop] tick threw: ${(err as Error).message ?? err}`,
       );

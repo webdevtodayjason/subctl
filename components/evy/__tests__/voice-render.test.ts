@@ -1,4 +1,4 @@
-// components/master/__tests__/voice-render.test.ts
+// components/evy/__tests__/voice-render.test.ts
 //
 // v2.8.0 — Voice render tool. Pins:
 //   - returns "voice disabled" when voice.json#enabled=false

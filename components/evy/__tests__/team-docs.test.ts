@@ -1,4 +1,4 @@
-// components/master/__tests__/team-docs.test.ts
+// components/evy/__tests__/team-docs.test.ts
 //
 // v2.7.10 — tests for the team-docs tool family. The four tools manage
 // project-local docs at <project_root>/.subctl/docs/:

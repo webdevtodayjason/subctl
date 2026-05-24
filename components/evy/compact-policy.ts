@@ -1,4 +1,4 @@
-// components/master/compact-policy.ts
+// components/evy/compact-policy.ts
 //
 // Pure compaction-decision module for the supervisor daemon (v2.7.3).
 //

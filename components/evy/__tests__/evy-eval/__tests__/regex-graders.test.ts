@@ -1,4 +1,4 @@
-// components/master/__tests__/evy-eval/__tests__/regex-graders.test.ts
+// components/evy/__tests__/evy-eval/__tests__/regex-graders.test.ts
 //
 // Calibration tests for the Phase-1 regex fast-fail patterns. Two
 // kinds of assertions per pattern:

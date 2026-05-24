@@ -1,4 +1,4 @@
-// subctl orchestration control plane — exposed to subctl master as tools.
+// subctl orchestration control plane — exposed to subctl evy as tools.
 // All calls go via the dashboard HTTP API at SUBCTL_API (default
 // http://127.0.0.1:8787). The dashboard service must be running.
 
@@ -190,14 +190,14 @@ export const subctlOrchTools = {
 
   /**
    * Spawn a worker orchestrator using a saved team template. Same as
-   * spawn() but reads ~/.config/subctl/master/team-templates/<name>.json
+   * spawn() but reads ~/.config/subctl/evy/team-templates/<name>.json
    * to get the persona, skills, autonomy, and boot prompt — no need to
    * pass a freeform prompt. Use this when a template fits the work; use
    * raw spawn() only for one-offs that don't match any template.
    */
   spawn_template: {
     description:
-      "Spawn a worker orchestrator using a saved team template. Reads ~/.config/subctl/master/team-templates/<template>.json for persona + skills + autonomy + boot prompt and applies them automatically. Prefer this over raw spawn() when a template fits — it codifies the role and skill set so dev-team behavior is consistent. Costs rate-limit on the chosen account just like spawn(). Always confirm with Jason before invoking — this is irreversible-ish (creates a tmux session, may push to git via the lead's work).",
+      "Spawn a worker orchestrator using a saved team template. Reads ~/.config/subctl/evy/team-templates/<template>.json for persona + skills + autonomy + boot prompt and applies them automatically. Prefer this over raw spawn() when a template fits — it codifies the role and skill set so dev-team behavior is consistent. Costs rate-limit on the chosen account just like spawn(). Always confirm with Jason before invoking — this is irreversible-ish (creates a tmux session, may push to git via the lead's work).",
     schema: {
       type: "object",
       properties: {
@@ -251,7 +251,7 @@ export const subctlOrchTools = {
       }
       // Post the rendered prompt directly. We deliberately do NOT forward
       // `template: args.template` to the spawn endpoint — that would invoke
-      // the legacy `~/.config/subctl/master/team-templates/<name>.json` path
+      // the legacy `~/.config/subctl/evy/team-templates/<name>.json` path
       // in providers/claude/teams.sh, which is a different registry and is
       // empty on fresh installs. The in-tree registry is the source of
       // truth from this point.

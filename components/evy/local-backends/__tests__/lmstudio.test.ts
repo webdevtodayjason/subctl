@@ -1,4 +1,4 @@
-// components/master/local-backends/__tests__/lmstudio.test.ts
+// components/evy/local-backends/__tests__/lmstudio.test.ts
 //
 // Phase 4 — LM Studio adapter contract.
 

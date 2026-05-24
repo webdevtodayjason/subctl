@@ -1,4 +1,4 @@
-// components/master/__tests__/anthropic-provider-guard.test.ts
+// components/evy/__tests__/anthropic-provider-guard.test.ts
 //
 // ADR 0019 (2026-05-14) — Anthropic provider guard.
 //
@@ -18,7 +18,7 @@
 // External side effects (Telegram push + decisions.jsonl append) are
 // suppressed via SUBCTL_GUARD_SKIP_EXTERNAL_EFFECTS=1, set in beforeEach.
 // CRITICAL: without that env var, running this test file on a machine
-// where ~/.config/subctl/master-notify.json is configured will fire real
+// where ~/.config/subctl/evy-notify.json is configured will fire real
 // Telegram messages to the operator and pollute the operator's real
 // decisions.jsonl. Don't remove the gate.
 

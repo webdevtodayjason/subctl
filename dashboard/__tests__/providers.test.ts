@@ -3,7 +3,7 @@
 // v2.7.24 — tests for the pi-ai provider catalog adapter and the
 // `/api/providers` dashboard surface that exposes it.
 //
-// We hit the adapter (`components/master/pi-ai-catalog.ts`) and a
+// We hit the adapter (`components/evy/pi-ai-catalog.ts`) and a
 // fetch handler stub for the POST path directly. No HTTP server is
 // spun up; we exercise the same code paths the route handlers run.
 
@@ -19,7 +19,7 @@ import {
   legacyAliasFor,
   SUBCTL_TO_PI_AI,
   type CatalogProvider,
-} from "../../components/master/pi-ai-catalog";
+} from "../../components/evy/pi-ai-catalog";
 
 describe("pi-ai-catalog adapter", () => {
   test("listCatalogProviders returns a non-trivial number of providers", () => {

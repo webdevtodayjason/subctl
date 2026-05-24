@@ -1,4 +1,4 @@
-// components/master/tools/policy/__tests__/audit.test.ts
+// components/evy/tools/policy/__tests__/audit.test.ts
 //
 // Tests for PR 7's audit-log appender + rotator. Exercises the public
 // surface (appendAuditEntry, writeAuditHeader, writeVerifierCorrection,

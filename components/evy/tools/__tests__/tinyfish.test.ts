@@ -1,4 +1,4 @@
-// components/master/tools/__tests__/tinyfish.test.ts
+// components/evy/tools/__tests__/tinyfish.test.ts
 //
 // Tests for the v2.7.16 tinyfish-tool family (tinyfish_search +
 // tinyfish_fetch). Every path is hermetic — the injectable `fetchHttp`

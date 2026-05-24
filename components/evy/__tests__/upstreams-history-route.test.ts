@@ -1,4 +1,4 @@
-// components/master/__tests__/upstreams-history-route.test.ts
+// components/evy/__tests__/upstreams-history-route.test.ts
 //
 // v2.7.37 — pins for the three new manual-update HTTP surfaces wired
 // into server.ts:

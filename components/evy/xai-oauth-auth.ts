@@ -1,4 +1,4 @@
-// components/master/xai-oauth-auth.ts
+// components/evy/xai-oauth-auth.ts
 //
 // v2.x — pi-ai resolver shim for xAI Grok OAuth (SuperGrok Subscription).
 //
@@ -20,7 +20,7 @@
 // Storage. Subctl owns its own auth.json under either:
 //   1. `<accounts.conf row's configDir>/auth.json` when a row with
 //      provider="xai-oauth" exists, OR
-//   2. `~/.config/subctl/master/oauth/xai-oauth/auth.json` as the fallback.
+//   2. `~/.config/subctl/evy/oauth/xai-oauth/auth.json` as the fallback.
 // Do NOT read Hermes's `~/.hermes/auth.json` from here — that bypasses
 // Hermes's _auth_store_lock and races with concurrent refreshes.
 //
@@ -61,7 +61,7 @@ const FALLBACK_XAI_OAUTH_HOME = join(
  *  Resolution order, matching the codex pattern:
  *    1. First accounts.conf row with `provider === "xai-oauth"` wins; its
  *       `configDir` field is the directory containing auth.json.
- *    2. Fallback: `~/.config/subctl/master/oauth/xai-oauth/auth.json`.
+ *    2. Fallback: `~/.config/subctl/evy/oauth/xai-oauth/auth.json`.
  *
  *  Returns null only if neither path can be derived (no accounts.conf row
  *  AND the fallback dir does not exist). The caller treats null as
@@ -189,7 +189,7 @@ export interface ResolveOptions {
  *    - auth.json is missing / malformed / has no tokens.access_token
  *    - the access_token JWT is past its `exp` claim
  *
- *  Logs loudly in every failure branch so master.log shows WHY the chat
+ *  Logs loudly in every failure branch so evy.log shows WHY the chat
  *  turn is about to fail before pi-ai itself throws. Log strings echo
  *  Hermes's error-message conventions where practical — operators
  *  grepping both logs see the same string for the same condition.

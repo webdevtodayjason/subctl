@@ -1,4 +1,4 @@
-// components/master/__tests__/handoff-directive.test.ts
+// components/evy/__tests__/handoff-directive.test.ts
 //
 // Acceptance suite for #29 — handoff-file directive transport.
 //

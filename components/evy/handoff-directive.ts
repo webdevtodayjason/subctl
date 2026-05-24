@@ -1,4 +1,4 @@
-// components/master/handoff-directive.ts
+// components/evy/handoff-directive.ts
 //
 // #29 — Handoff-file directive transport (control-plane reliability fix).
 //

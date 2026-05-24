@@ -1,4 +1,4 @@
-// components/master/codex-oauth.ts
+// components/evy/codex-oauth.ts
 //
 // v2.8.9 — first-class OpenAI Codex OAuth for subctl.
 //
@@ -59,7 +59,7 @@ export const REFRESH_SKEW_SECONDS = 300;
  *  cross-dependency on master/server.ts. */
 function readSubctlVersion(): string {
   try {
-    // codex-oauth.ts lives in components/master/ — repo root is two parents up.
+    // codex-oauth.ts lives in components/evy/ — repo root is two parents up.
     const versionPath = join(import.meta.dir, "..", "..", "VERSION");
     return readFileSync(versionPath, "utf8").trim();
   } catch {
@@ -84,7 +84,7 @@ export function buildAuthHeaders(contentType: string): Record<string, string> {
 
 /** Strip ANSI CSI escapes, OSC8 hyperlinks, and C0/C1 control chars from
  *  text the OpenAI auth backend returns in error bodies. Some failure modes
- *  include terminal control sequences that would corrupt master.log. */
+ *  include terminal control sequences that would corrupt evy.log. */
 function sanitizeErrorText(value: string): string {
   const esc = String.fromCharCode(0x1b);
   const ansiCsiRegex = new RegExp(`${esc}\\[[\\u0020-\\u003f]*[\\u0040-\\u007e]`, "g");
@@ -535,7 +535,7 @@ export async function completeCodexLogin(
     }
   } catch { /* best-effort */ }
   // Mirror the codex CLI's auth.json shape so existing readers
-  // (components/master/openai-codex-auth.ts, pi-ai's openai-codex-responses
+  // (components/evy/openai-codex-auth.ts, pi-ai's openai-codex-responses
   // transport) accept our output without change.
   const authJson = {
     OPENAI_API_KEY: null,

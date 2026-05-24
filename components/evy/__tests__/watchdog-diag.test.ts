@@ -1,4 +1,4 @@
-// components/master/__tests__/watchdog-diag.test.ts
+// components/evy/__tests__/watchdog-diag.test.ts
 //
 // v2.7.35 — Tests for the rich watchdog diagnostic surface.
 //

@@ -1,4 +1,4 @@
-// components/master/openai-codex-auth.ts
+// components/evy/openai-codex-auth.ts
 //
 // v2.8.7 — OAuth (ChatGPT Pro subscription) credential plumbing for the
 // `openai-codex` pi-ai provider.
@@ -127,7 +127,7 @@ export function loadAccountsConf(path?: string): AccountRow[] {
  * If accounts.conf has no openai-codex row, fall back to `~/.codex` (the
  * Codex CLI's default per-user dir). Returns null only if neither path
  * resolves to a directory that exists. Logs the choice so the operator
- * can see in master.log which profile is being used.
+ * can see in evy.log which profile is being used.
  */
 export function resolveActiveCodexConfigDir(): string | null {
   const rows = loadAccountsConf();
@@ -249,7 +249,7 @@ export interface ResolveOptions {
  *   - auth.json is missing / malformed / has no tokens.access_token
  *   - the access_token JWT is past its `exp` claim
  *
- * Logs loudly in every failure branch so master.log shows WHY the chat turn
+ * Logs loudly in every failure branch so evy.log shows WHY the chat turn
  * is about to fail before pi-ai itself throws.
  */
 export function getCodexAccessToken(opts: ResolveOptions = {}): string | undefined {
@@ -281,7 +281,7 @@ export function getCodexAccessToken(opts: ResolveOptions = {}): string | undefin
   const payload = decodeJwtPayload(token);
   if (!payload) {
     // Pi-ai's `extractAccountId` will throw on the same input; surface the
-    // diagnostic in master.log so the operator doesn't see a generic
+    // diagnostic in evy.log so the operator doesn't see a generic
     // pi-ai error.
     console.error(
       `[codex-auth] tokens.access_token in ${configDir} is not a valid JWT — ` +

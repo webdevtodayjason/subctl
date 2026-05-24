@@ -1,4 +1,4 @@
-// components/master/memori-client.ts
+// components/evy/memori-client.ts
 //
 // v2.8.10 — Memori HTTP client (Memory Init #3, Phase 3a).
 //

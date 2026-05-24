@@ -1,4 +1,4 @@
-// components/master/__tests__/memory-kernel-reviewer.test.ts
+// components/evy/__tests__/memory-kernel-reviewer.test.ts
 //
 // Tests for the memory consciousness cycle reviewer module. All tests
 // inject the LLM seam via deps so we never hit a real provider.

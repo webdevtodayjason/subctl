@@ -1,4 +1,4 @@
-// components/master/memory.ts
+// components/evy/memory.ts
 //
 // v2.7.23 — Evy Memory (Tier 3 conversational memory).
 //
@@ -47,7 +47,7 @@ import { Database } from "bun:sqlite";
 
 // ─── path resolution ─────────────────────────────────────────────────────
 //
-// Mirrors components/master/trust-marker.ts — SUBCTL_STATE_DIR env override
+// Mirrors components/evy/trust-marker.ts — SUBCTL_STATE_DIR env override
 // wins so tests can land in tmpdir, otherwise ~/.local/state/subctl. We keep
 // memory data under a `memory/` subdir to leave room for future per-team
 // databases without renaming.

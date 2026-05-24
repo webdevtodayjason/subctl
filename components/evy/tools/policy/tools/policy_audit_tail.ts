@@ -1,4 +1,4 @@
-// components/master/tools/policy/tools/policy_audit_tail.ts
+// components/evy/tools/policy/tools/policy_audit_tail.ts
 //
 // `policy_audit_tail` — read recent entries from a team's policy audit JSONL.
 // Pack 06 §6.3 + pack 09 §2/§3. Returns most-recent-first, optionally filtered

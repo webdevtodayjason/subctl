@@ -1,4 +1,4 @@
-// components/master/memory-kernel.ts
+// components/evy/memory-kernel.ts
 //
 // Memory Consciousness Cycle — orchestration / watchdog glue (Worker C).
 //
@@ -13,7 +13,7 @@
 //                            action is promote_tier3 + confidence >= 0.7)
 //                            call /promote
 //   4. persist state      — record cycle counters to
-//                            ~/.config/subctl/master/memory-kernel-state.json
+//                            ~/.config/subctl/evy/memory-kernel-state.json
 //                            and append a decisions.jsonl row
 //
 // This file is the ONLY new module touching state on disk. It depends on

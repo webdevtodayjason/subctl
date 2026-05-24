@@ -1,4 +1,4 @@
-// components/master/__tests__/evy-eval/tests/category-6-error-recovery.test.ts
+// components/evy/__tests__/evy-eval/tests/category-6-error-recovery.test.ts
 //
 // Evy Eval — Category 6: Error Recovery (3 tests)
 //

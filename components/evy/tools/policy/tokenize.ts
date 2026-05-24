@@ -1,4 +1,4 @@
-// components/master/tools/policy/tokenize.ts
+// components/evy/tools/policy/tokenize.ts
 //
 // Deterministic shell-aware tokenizer for the subctl policy engine (v2.7.0).
 //

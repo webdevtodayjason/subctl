@@ -1,4 +1,4 @@
-// components/master/tools/policy/load.ts
+// components/evy/tools/policy/load.ts
 //
 // TOML loader + four-source merger for the subctl policy engine (v2.7.0 / PR 4).
 //
@@ -52,14 +52,14 @@ import type { GatedMode, PolicyDocument } from "./types";
  * Resolve the subctl install root from this file's location.
  *
  * `import.meta.dir` for this module is
- * `<subctl>/components/master/tools/policy/`, so four `..` segments take us
+ * `<subctl>/components/evy/tools/policy/`, so four `..` segments take us
  * back to `<subctl>/`. We verify by checking for `config/policy/defaults.toml`
  * existence — if that's missing, throw a clear error rather than silently
  * resolving against the wrong tree.
  *
  * Other components in the master daemon resolve in the same style: see
- * `components/master/server.ts:90` (`join(COMPONENT_DIR, "..", "..", "VERSION")`)
- * — that's two levels up from `components/master/`; this file is two levels
+ * `components/evy/server.ts:90` (`join(COMPONENT_DIR, "..", "..", "VERSION")`)
+ * — that's two levels up from `components/evy/`; this file is two levels
  * deeper, so four levels up lands at the same root.
  */
 export function resolveSubctlInstall(): string {
@@ -80,7 +80,7 @@ export function resolveSubctlInstall(): string {
 }
 
 function userConfigPath(): string {
-  // Same convention as `components/master/server.ts:84-85`.
+  // Same convention as `components/evy/server.ts:84-85`.
   const cfg = process.env.SUBCTL_CONFIG_DIR ?? join(homedir(), ".config", "subctl");
   return join(cfg, "policy.toml");
 }

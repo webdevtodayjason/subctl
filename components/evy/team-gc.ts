@@ -1,4 +1,4 @@
-// components/master/team-gc.ts
+// components/evy/team-gc.ts
 //
 // v2.7.32 — Startup-time garbage collection for stale team registry dirs.
 //

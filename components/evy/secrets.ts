@@ -1,4 +1,4 @@
-// components/master/secrets.ts
+// components/evy/secrets.ts
 //
 // v2.7.4 — small secrets-on-disk layer.
 //

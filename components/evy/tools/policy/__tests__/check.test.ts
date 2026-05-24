@@ -1,4 +1,4 @@
-// components/master/tools/policy/__tests__/check.test.ts
+// components/evy/tools/policy/__tests__/check.test.ts
 //
 // Unit tests for `checkCommand` covering every rule type, every precedence
 // edge, and every ecosystem-specific branch. Aim: 100% branch coverage on

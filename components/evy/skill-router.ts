@@ -1,4 +1,4 @@
-// components/master/skill-router.ts
+// components/evy/skill-router.ts
 //
 // v2.8.1 — Lightweight skill router. On every operator turn, score the
 // installed skill catalog against the inbound message and choose the
@@ -49,9 +49,11 @@ const FLAG_PATH = join(
   "skill-router.enabled",
 );
 
-// The master's own SKILL.md (Evy persona) is loaded separately upstream
-// in composeSystemPrompt — don't double-load.
-const EXCLUDED_FROM_CATALOG = new Set(["subctl-master"]);
+// Evy's own SKILL.md (Evy persona) is loaded separately upstream
+// in composeSystemPrompt — don't double-load. v3.0 rename: the
+// skill frontmatter `name` field flipped from "subctl-master" to
+// "subctl-evy" alongside this constant. Keep both in sync.
+const EXCLUDED_FROM_CATALOG = new Set(["subctl-evy"]);
 
 // Always-loaded skill names (when router enabled). These are
 // foundational and the cost of carrying them on every turn is

@@ -1,4 +1,4 @@
-// components/master/team-templates.ts — v2.8.0 team-template foundation.
+// components/evy/team-templates.ts — v2.8.0 team-template foundation.
 //
 // A team template is a TOML document declaring a multi-developer dev team:
 // the lead persona + skills, plus a roster of developers, each with their
@@ -17,7 +17,7 @@
 //                 can render the failure clearly.
 //
 // Distinct from the v2.7.x single-persona JSON templates at
-// ~/.config/subctl/master/team-templates/<name>.json (still consumed by
+// ~/.config/subctl/evy/team-templates/<name>.json (still consumed by
 // subctl_orch_spawn_template). The TOML format here is roster-shaped
 // and consumed by the new subctl_team_dispatch flow.
 
@@ -94,7 +94,7 @@ export interface TemplateValidation {
  * tests can scope to a tmpdir.
  *
  * NOTE: distinct from the v2.7.x single-persona JSON dir
- * (~/.config/subctl/master/team-templates/) — that one is consumed by the
+ * (~/.config/subctl/evy/team-templates/) — that one is consumed by the
  * legacy `subctl_orch_spawn_template` flow and stays for backward compat.
  */
 export function teamTemplatesDir(): string {

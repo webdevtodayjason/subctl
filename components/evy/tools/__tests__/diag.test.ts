@@ -1,4 +1,4 @@
-// components/master/tools/__tests__/diag.test.ts
+// components/evy/tools/__tests__/diag.test.ts
 //
 // Tests for the v2.7.1 self-diagnostic tool family. Each tool is exercised
 // with at least one happy path and (where the tool depends on external
@@ -648,7 +648,7 @@ describe("system_supervisor_info", () => {
     );
     expect(r.ok).toBe(false);
     expect(r.error).toContain("providers.json missing");
-    expect(r.error).toContain("subctl master enable");
+    expect(r.error).toContain("subctl evy enable");
     expect(r.providers_path).toContain("providers.json");
   });
 

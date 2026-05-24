@@ -1,4 +1,4 @@
-// components/master/__tests__/mcp-handshake.test.ts
+// components/evy/__tests__/mcp-handshake.test.ts
 //
 // MCP-Expose (#24, wave 1) — transport handshake. Pins:
 //

@@ -29,15 +29,20 @@ import { homedir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import process from "node:process";
 
-// smol-toml is installed under components/master/node_modules (master is the
-// only TS workspace at v2.7.0; the bin/ tree has no node_modules of its own).
+// smol-toml is installed under components/evy/node_modules (Evy is the
+// only TS workspace at v3.0; the bin/ tree has no node_modules of its own).
 // Resolving "smol-toml" via the standard node_modules walk fails from this
-// file's location, so we import via the master's installed copy. Pinned to
-// the same version as components/master/package.json so the parser stays in
-// lockstep with what the master daemon uses.
-import { parse as parseToml } from "../../components/master/node_modules/smol-toml/dist/index.js";
+// file's location, so we import via Evy's installed copy. Pinned to
+// the same version as components/evy/package.json so the parser stays in
+// lockstep with what the Evy daemon uses.
+//
+// IMPORTANT v3.0 rename: this path was previously components/master/...;
+// after the Phase 3 rename + first install (bun install in components/evy/),
+// the dir is regenerated. If you see a "Cannot find module" error here
+// during upgrade, run `cd components/evy && bun install` to re-vendor.
+import { parse as parseToml } from "../../components/evy/node_modules/smol-toml/dist/index.js";
 
-import { resolveSubctlInstall } from "../../components/master/tools/policy/load";
+import { resolveSubctlInstall } from "../../components/evy/tools/policy/load";
 
 interface Args {
   path: string | null;

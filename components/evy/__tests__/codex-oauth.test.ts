@@ -1,4 +1,4 @@
-// components/master/__tests__/codex-oauth.test.ts
+// components/evy/__tests__/codex-oauth.test.ts
 //
 // v2.8.9 — Pure-function coverage for the OpenAI Codex OAuth module.
 // Network-dependent paths (loginCodexDeviceCode, refreshCodexTokens,

@@ -1,4 +1,4 @@
-// components/master/consciousness-loop/signals.ts
+// components/evy/consciousness-loop/signals.ts
 //
 // Memory Init #7 — compact signal gathering + canonical hashing.
 //

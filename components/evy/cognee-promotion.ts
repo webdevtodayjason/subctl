@@ -1,4 +1,4 @@
-// components/master/cognee-promotion.ts
+// components/evy/cognee-promotion.ts
 //
 // v2.8.15 — Tier 3 → Tier 4 promotion ticker (Cognee WRITE path).
 //
@@ -25,7 +25,7 @@
 //      failure, record the error (capped at the last 50) and SKIP — never
 //      block the rest of the batch on one bad row.
 //   4. Persist the watermark + counters to
-//      `~/.config/subctl/master/cognee-promotion.json` atomically (tmp +
+//      `~/.config/subctl/evy/cognee-promotion.json` atomically (tmp +
 //      rename) so a master restart does not re-ingest the same curated
 //      rows.
 //
@@ -34,7 +34,7 @@
 // The Memori sidecar doesn't expose a list-curated-by-watermark endpoint.
 // Adding one would mean a Python change (out of scope per the dispatch
 // constraints). The curated table lives at a known path
-// (~/.config/subctl/master/memori.db); we open it READ-ONLY so we can't
+// (~/.config/subctl/evy/memori.db); we open it READ-ONLY so we can't
 // contend with the sidecar's write transactions. The schema is documented
 // inline below and matches `services/memori/server.py`'s fallback CREATE.
 //

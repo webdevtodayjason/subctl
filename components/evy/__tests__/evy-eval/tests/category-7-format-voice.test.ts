@@ -1,4 +1,4 @@
-// components/master/__tests__/evy-eval/tests/category-7-format-voice.test.ts
+// components/evy/__tests__/evy-eval/tests/category-7-format-voice.test.ts
 //
 // Evy Eval — Category 7: Format and Voice (3 tests)
 //

@@ -89,14 +89,14 @@ run() { $DRY_RUN && echo "[dry-run] $*" || eval "$@"; }
 # operator-override contract is preserved exactly as before. Re-running
 # is idempotent.
 subctl_install_seed_operator_configs() {
-  local master_cfg="${SUBCTL_CONFIG_DIR:-$HOME/.config/subctl}/master"
+  local evy_cfg="${SUBCTL_CONFIG_DIR:-$HOME/.config/subctl}/evy"
   local secrets_file="${SUBCTL_CONFIG_DIR:-$HOME/.config/subctl}/secrets.json"
-  mkdir -p "$master_cfg" 2>/dev/null || true
+  mkdir -p "$evy_cfg" 2>/dev/null || true
 
   # 1) Cognition loop — Memory Init #7. Enabled-by-default so Evy starts
   # observing immediately. Operator can disable by editing this file or
   # setting "enabled": false.
-  local cl_cfg="$master_cfg/consciousness-loop.json"
+  local cl_cfg="$evy_cfg/consciousness-loop.json"
   if [[ ! -f "$cl_cfg" ]]; then
     cat > "$cl_cfg" <<'CL_EOF'
 {
@@ -111,7 +111,7 @@ CL_EOF
   # 2) Idle-pane watchdog — notify-only by default (auto_retry off). Catches
   # worker panes where typed-but-unsubmitted directives sit at the prompt
   # without triggering tmux paste-buffer mutation safeguards.
-  local ip_cfg="$master_cfg/idle-pane-watchdog.json"
+  local ip_cfg="$evy_cfg/idle-pane-watchdog.json"
   if [[ ! -f "$ip_cfg" ]]; then
     cat > "$ip_cfg" <<'IP_EOF'
 {
@@ -188,7 +188,7 @@ ensure_install_tree() {
   run mkdir -p "$(dirname "$install_tree")" || return 1
   if $DRY_RUN; then
     echo "[dry-run] git -C $SUBCTL_REPO_ROOT worktree add $install_tree main"
-    for sub in dashboard components/master components/mcp; do
+    for sub in dashboard components/evy components/mcp; do
       echo "[dry-run] (cd $install_tree/$sub && bun install)"
     done
     return 0
@@ -201,12 +201,12 @@ ensure_install_tree() {
 
   # Vendor deps for every workspace that has a package.json. The master
   # daemon's policy snapshot bridge resolves smol-toml etc. relative to
-  # components/master/, so a missing node_modules there blocks every
+  # components/evy/, so a missing node_modules there blocks every
   # team spawn with an opaque HTTP 500 ("policy snapshot bridge failed:
   # Cannot find package 'smol-toml'") — diagnosed 2026-05-18 when Evy
   # could not spawn subctl-proxy-team.
   if command -v bun >/dev/null 2>&1; then
-    for sub in dashboard components/master components/mcp; do
+    for sub in dashboard components/evy components/mcp; do
       if [[ -f "$install_tree/$sub/package.json" ]]; then
         subctl_info "vendoring $sub deps in install tree"
         if ! (cd "$install_tree/$sub" && bun install >/dev/null 2>&1); then
@@ -365,13 +365,13 @@ print_status_table() {
 # ── BotFather walkthrough (callable standalone via --botfather) ──────────────
 run_botfather_walkthrough() {
   local cfg_dir="${SUBCTL_CONFIG_DIR:-$HOME/.config/subctl}"
-  local notify="$cfg_dir/master-notify.json"
+  local notify="$cfg_dir/evy-notify.json"
 
   echo
   printf "%s== Telegram BotFather walkthrough ==%s\n" "$C_BLD" "$C_RST"
   echo
   if [[ -f "$notify" ]]; then
-    subctl_ok "master-notify.json already exists at $notify"
+    subctl_ok "evy-notify.json already exists at $notify"
     if ! _confirm "Overwrite with new credentials?" "N"; then
       subctl_info "leaving existing config in place"
       return 0
@@ -379,7 +379,7 @@ run_botfather_walkthrough() {
   fi
 
   cat <<'EOF'
-subctl master uses a SEPARATE Telegram bot from `subctl notify` (the worker-
+subctl evy uses a SEPARATE Telegram bot from `subctl notify` (the worker-
 escalation bot). Walk through these steps in another window:
 
   1. Open Telegram and message @BotFather: https://t.me/BotFather
@@ -419,7 +419,7 @@ EOF
 JSON
   chmod 600 "$notify"
   subctl_ok "wrote $notify (chmod 600)"
-  subctl_info "you can now run: subctl master enable"
+  subctl_info "you can now run: subctl evy enable"
 }
 
 # ── install one dep ──────────────────────────────────────────────────────────
@@ -456,7 +456,7 @@ install_dep() {
   # 3. Walkthrough deps (Telegram bot)
   if [[ "$method" == "walkthrough" ]]; then
     if [[ "$id" == "telegram-bot" ]]; then
-      if _confirm "Run BotFather walkthrough now to set up master-notify.json?" "Y"; then
+      if _confirm "Run BotFather walkthrough now to set up evy-notify.json?" "Y"; then
         run_botfather_walkthrough
       else
         subctl_info "skipping — run later with: bash install.sh --botfather"
@@ -738,8 +738,8 @@ component_install() {
   subctl_info "installing MCP server (~/.claude/settings.json mcpServers.subctl)"
   $DRY_RUN || subctl_settings_install_mcp
 
-  subctl_info "installing master daemon (components/master/)"
-  $DRY_RUN || subctl_settings_install_master
+  subctl_info "installing master daemon (components/evy/)"
+  $DRY_RUN || subctl_settings_install_evy
 
   # v2.8.9 — seed operator configs with sane defaults on fresh installs.
   # These three config artifacts WERE operator-owned-only in v2.8.7-v2.8.8,
@@ -883,8 +883,8 @@ final_summary() {
 
   if ! _dep_detect "telegram-bot"; then
     echo
-    subctl_warn "Telegram master-notify.json not configured."
-    echo "  Run: bash $0 --botfather   (before: subctl master enable)"
+    subctl_warn "Telegram evy-notify.json not configured."
+    echo "  Run: bash $0 --botfather   (before: subctl evy enable)"
   fi
 
   echo

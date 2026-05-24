@@ -1,6 +1,6 @@
 // v2.8.10 — Tier 4 routing: Cognee primary, claude-mem fallback.
 //
-// Phase 2 tests for components/master/tools/memory.ts after the
+// Phase 2 tests for components/evy/tools/memory.ts after the
 // substrate swap. Verifies:
 //   1. When Cognee is available, memory_search/timeline/observations
 //      route through cogneeRecall and surface source="cognee".

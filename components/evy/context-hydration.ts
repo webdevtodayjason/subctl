@@ -1,10 +1,10 @@
-// components/master/context-hydration.ts
+// components/evy/context-hydration.ts
 //
 // v2.10.0 — Memory Cycle Phase 4: context slimming on boot + post-compact.
 //
 // Why this module exists
 // ----------------------
-// The master used to replay `~/.config/subctl/master/agent-state.json` (the
+// The master used to replay `~/.config/subctl/evy/agent-state.json` (the
 // raw transcript) into `agent.state.messages` at every boot and again after
 // `/compact` chopped the tail off. That worked while transcripts were short.
 // Once Cognee + Memori landed and the curated Tier 3 layer grew past a
@@ -123,7 +123,7 @@ export interface HydrationInput {
   cognee_limit: number;
   /**
    * Optional Tier 1 path for the informational byte counter. When
-   * omitted we resolve from SUBCTL_CONFIG_DIR or ~/.config/subctl/master/memory.md.
+   * omitted we resolve from SUBCTL_CONFIG_DIR or ~/.config/subctl/evy/memory.md.
    * Tier 1 is NOT rendered into the payload — composeSystemPrompt
    * already injects it. We just report its size for audit.
    */
@@ -267,7 +267,7 @@ export function formatHydrationPayload(args: {
 function resolveDefaultTier1Path(): string {
   const cfg =
     process.env.SUBCTL_CONFIG_DIR ?? join(homedir(), ".config", "subctl");
-  return join(cfg, "master", "memory.md");
+  return join(cfg, "evy", "memory.md");
 }
 
 /**
@@ -341,7 +341,7 @@ export async function hydrateContext(
       // Swallow — Cognee outage must NOT abort hydration. We log only
       // through the count: cognee_hits_count: 0 is the signal.
       const message = err instanceof Error ? err.message : String(err);
-      // Best-effort stderr so operators tailing master.log see the cause
+      // Best-effort stderr so operators tailing evy.log see the cause
       // without us having to wire a callback through deps.
       console.error(
         `[context-hydration] cognee query failed (continuing without graph hits): ${message}`,
@@ -386,7 +386,7 @@ export const DEFAULT_CONFIG: ContextHydrationConfig = {
 };
 
 /**
- * Resolve `~/.config/subctl/master/context-hydration.json`. Returns
+ * Resolve `~/.config/subctl/evy/context-hydration.json`. Returns
  * DEFAULT_CONFIG when the file is missing or malformed.
  *
  * Env override `SUBCTL_CONTEXT_SLIMMING_ENABLED=0` forces enabled:false

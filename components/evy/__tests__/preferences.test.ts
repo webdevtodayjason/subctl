@@ -1,4 +1,4 @@
-// components/master/__tests__/preferences.test.ts
+// components/evy/__tests__/preferences.test.ts
 //
 // v2.8.1 — Operator preferences. Bilateral-maintenance config store at
 // ~/.config/subctl/preferences.toml that both the operator (direct edit,

@@ -1,4 +1,4 @@
-// components/master/watchdog-diag.ts
+// components/evy/watchdog-diag.ts
 //
 // v2.7.35 — Rich diagnostic surface for the watchdog registry.
 //
@@ -60,7 +60,7 @@ import {
 
 const EXPECTED_INTERVAL_SECONDS: Record<string, number> = {
   "telegram-listener": -1, // long-poll
-  "cli-prompt-poll": 5, // master-notify-listener.ts cli-prompts.jsonl bridge
+  "cli-prompt-poll": 5, // evy-notify-listener.ts cli-prompts.jsonl bridge
   "inbox-poll": 2, // server.ts lead-report inbox tailer
   "team-staleness": 180, // server.ts 3-min ticker
   "followup-scheduler": 60, // server.ts 60s scheduler

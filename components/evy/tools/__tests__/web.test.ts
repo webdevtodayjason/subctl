@@ -1,4 +1,4 @@
-// components/master/tools/__tests__/web.test.ts
+// components/evy/tools/__tests__/web.test.ts
 //
 // Tests for the v2.7.2 web-tool family (web_search + web_fetch).
 // Every path is hermetic — the injectable `fetchHttp` dep takes the
@@ -145,7 +145,7 @@ describe("web_search", () => {
     });
     expect(r.ok).toBe(false);
     expect(r.error).toContain("BRAVE_API_KEY");
-    expect(r.error).toContain("com.subctl.master.plist");
+    expect(r.error).toContain("com.subctl.evy.plist");
     expect(r.error).toContain("launchctl");
   });
 
@@ -332,7 +332,7 @@ describe("web_fetch", () => {
     });
     expect(r.ok).toBe(false);
     expect(r.error).toContain("FIRECRAWL_API_KEY");
-    expect(r.error).toContain("com.subctl.master.plist");
+    expect(r.error).toContain("com.subctl.evy.plist");
   });
 
   test("invalid URL returns ok=false (no HTTP call)", async () => {

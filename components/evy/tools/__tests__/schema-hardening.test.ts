@@ -1,4 +1,4 @@
-// components/master/tools/__tests__/schema-hardening.test.ts
+// components/evy/tools/__tests__/schema-hardening.test.ts
 //
 // Schema-hardening tests for v2.7.15. Three tools gained required
 // confirmation/provenance fields that the runtime enforces in the
@@ -30,7 +30,7 @@ let savedMemoryPathEnv: string | undefined;
 let tmp: string;
 
 beforeEach(() => {
-  // tier1-memory.ts hardcodes ~/.config/subctl/master/memory.md at module
+  // tier1-memory.ts hardcodes ~/.config/subctl/evy/memory.md at module
   // load time (it reads homedir() once). To get test isolation we cannot
   // re-route via env, but we CAN poke the actual file directly through
   // memory_remember + memory_forget — they read + write the same path,

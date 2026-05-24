@@ -41,7 +41,7 @@ const LMSTUDIO_HOST =
 // the operator enables it, every request — including the diag tools'
 // reachability probes — must carry `Authorization: Bearer <token>` or
 // the server 401s. Token resolved via the v2.7.4 priority chain (env
-// var beats secrets.json beats absent — see components/master/secrets.ts).
+// var beats secrets.json beats absent — see components/evy/secrets.ts).
 // Absent → empty headers map (back-compat for LM Studio servers without
 // the toggle enabled, which is the default).
 export function lmstudioAuthHeader(): Record<string, string> {
@@ -446,7 +446,7 @@ const system_lmstudio_health = {
 type LogName = "master" | "tmux" | "lmstudio" | "dashboard";
 
 const LOG_PATHS: Record<LogName, string> = {
-  master: join(HOME, "Library", "Logs", "subctl", "master.log"),
+  master: join(HOME, "Library", "Logs", "subctl", "evy.log"),
   dashboard: join(HOME, "Library", "Logs", "subctl", "dashboard.out.log"),
   tmux: "/tmp/tmux-server.log", // best-effort; tmux doesn't log by default
   lmstudio: join(HOME, ".lmstudio", "server-logs", "server.log"),
@@ -877,14 +877,14 @@ const system_version_status = {
 // Operator pulled the trigger same morning along with the web tools.
 //
 // Reads three sources:
-//   1. ~/.config/subctl/master/providers.json — configured supervisor
+//   1. ~/.config/subctl/evy/providers.json — configured supervisor
 //      role (provider, model, host).
 //   2. LM Studio's /api/v0/models — loaded state of THAT specific
 //      model (state, loaded_context_length, max_context_length,
 //      quantization, arch). This is the LM-Studio-specific extension
 //      to OpenAI's /v1/models; the v2.7.1 auto-compact tick already
 //      uses it.
-//   3. ~/.config/subctl/master/compact.json — auto-compact policy
+//   3. ~/.config/subctl/evy/compact.json — auto-compact policy
 //      (threshold_pct, target_tokens, keep_recent). Missing file
 //      falls back to the daemon's documented defaults — that's
 //      treated as a healthy state, not an error.
@@ -892,7 +892,7 @@ const system_version_status = {
 // Read-only. No transcript snooping (the daemon-side msg/util numbers
 // aren't bound through here yet — keep this PR additive).
 
-const MASTER_STATE_DIR_FOR_INFO = join(SUBCTL_CONFIG_DIR, "master");
+const EVY_STATE_DIR_FOR_INFO = join(SUBCTL_CONFIG_DIR, "evy");
 
 interface ProvidersJson {
   models?: {
@@ -936,11 +936,11 @@ const system_supervisor_info = {
   schema: { type: "object", properties: {}, required: [] },
   invoke: async () => {
     // 1. Configured supervisor from providers.json.
-    const providersPath = join(MASTER_STATE_DIR_FOR_INFO, "providers.json");
+    const providersPath = join(EVY_STATE_DIR_FOR_INFO, "providers.json");
     if (!deps.fileExists(providersPath)) {
       return {
         ok: false,
-        error: `providers.json missing at ${providersPath}. Master daemon hasn't been initialized — run \`subctl master enable\` to seed it from providers.json.example.`,
+        error: `providers.json missing at ${providersPath}. Master daemon hasn't been initialized — run \`subctl evy enable\` to seed it from providers.json.example.`,
         providers_path: providersPath,
       };
     }
@@ -966,7 +966,7 @@ const system_supervisor_info = {
       };
     }
     // 2. Auto-compact policy (always returns something — defaults are healthy).
-    const compactPath = join(MASTER_STATE_DIR_FOR_INFO, "compact.json");
+    const compactPath = join(EVY_STATE_DIR_FOR_INFO, "compact.json");
     let compact: Required<CompactJson> = { ...COMPACT_DEFAULTS };
     let compact_source: "file" | "defaults" = "defaults";
     if (deps.fileExists(compactPath)) {

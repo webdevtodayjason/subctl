@@ -4,7 +4,7 @@
 // `subctl policy audit <team>` — read a team's policy audit log.
 //
 // Per pack 07 §7. The log itself is written by the Go binary (PR 8 `audit.go`)
-// and by `components/master/tools/policy/audit.ts` (PR 7). This reader honors
+// and by `components/evy/tools/policy/audit.ts` (PR 7). This reader honors
 // the same SUBCTL_STATE_DIR convention so dev environments and tests can point
 // at fixture directories.
 //
@@ -126,7 +126,7 @@ Flags:
 }
 
 // ---------------------------------------------------------------------------
-// State dir resolution — mirrors components/master/tools/policy/audit.ts
+// State dir resolution — mirrors components/evy/tools/policy/audit.ts
 // ---------------------------------------------------------------------------
 
 function resolveStateDir(): string {

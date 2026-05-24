@@ -1,4 +1,4 @@
-// components/master/__tests__/openrouter-provider.test.ts
+// components/evy/__tests__/openrouter-provider.test.ts
 //
 // v2.7.17 — OpenRouter as a first-class model provider.
 //

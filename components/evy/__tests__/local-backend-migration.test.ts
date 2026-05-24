@@ -1,4 +1,4 @@
-// components/master/__tests__/local-backend-migration.test.ts
+// components/evy/__tests__/local-backend-migration.test.ts
 //
 // Phase 4 — first-boot migration. The operator's providers.json from
 // before this release has roles still pointing at lmstudio / ollama /

@@ -1,4 +1,4 @@
-// components/master/tools/evy-memory.ts
+// components/evy/tools/evy-memory.ts
 //
 // v2.7.23 — Evy-callable Tier 3 memory tools.
 //

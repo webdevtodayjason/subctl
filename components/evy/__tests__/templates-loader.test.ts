@@ -1,4 +1,4 @@
-// components/master/__tests__/templates-loader.test.ts
+// components/evy/__tests__/templates-loader.test.ts
 //
 // Covers the in-tree team-template registry loader. Two-layered coverage:
 //

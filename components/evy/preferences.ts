@@ -1,4 +1,4 @@
-// components/master/preferences.ts
+// components/evy/preferences.ts
 //
 // v2.8.1 — Operator preferences. Bilateral-maintenance config that both
 // the operator AND Evy can update. Distinct from profiles.json (model

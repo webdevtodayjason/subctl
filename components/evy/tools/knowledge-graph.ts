@@ -1,4 +1,4 @@
-// components/master/tools/knowledge-graph.ts
+// components/evy/tools/knowledge-graph.ts
 //
 // v2.8.10 Memory Init #4 — multi-hop reasoning over the Cognee graph.
 //

@@ -1,4 +1,4 @@
-// components/master/mcp/tools.ts
+// components/evy/mcp/tools.ts
 //
 // MCP-Expose (#25, wave 2) — minimum-viable tool surface.
 //

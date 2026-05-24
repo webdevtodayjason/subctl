@@ -1,4 +1,4 @@
-// components/master/__tests__/voice-config.test.ts
+// components/evy/__tests__/voice-config.test.ts
 //
 // v2.8.0 — Voice layer config. Pins loadVoiceConfig / saveVoiceConfig /
 // watchVoiceConfig contracts against an isolated tmpdir. Mirrors

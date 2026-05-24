@@ -1,4 +1,4 @@
-// components/master/__tests__/lmstudio-token.test.ts
+// components/evy/__tests__/lmstudio-token.test.ts
 //
 // v2.7.4 — LM Studio's optional "Require API Token" server setting.
 // These tests pin down the contract: when LMSTUDIO_API_TOKEN is set,

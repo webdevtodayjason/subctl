@@ -9,7 +9,7 @@ concrete, runnable answers.
 | File | Purpose |
 |---|---|
 | `picoder-worker.ts` | The Bun worker. Reads HMAC-signed directives from a file, executes, writes inbox events. Reuses `components/master/trust-marker.ts` for verification. |
-| `master-emit.ts` | Stand-in for Evy's `/api/orchestration/<team>/msg` route. Builds a signed directive and writes it to the worker's directives file. |
+| `evy-emit.ts` | Stand-in for Evy's `/api/orchestration/<team>/msg` route. Builds a signed directive and writes it to the worker's directives file. |
 | `demo.sh` | End-to-end driver — boots the worker, sends a good directive, sends a tampered directive, prints inbox + classifier output. |
 
 ## Run it

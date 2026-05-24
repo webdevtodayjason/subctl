@@ -1,4 +1,4 @@
-// components/master/__tests__/evy-eval/tests/category-8-supervisor-profiles.test.ts
+// components/evy/__tests__/evy-eval/tests/category-8-supervisor-profiles.test.ts
 //
 // Evy Eval — Category 8: Supervisor Profiles (v2.7.18) (3 tests)
 //

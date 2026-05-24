@@ -1,4 +1,4 @@
-// components/master/tools/policy/snapshot.ts
+// components/evy/tools/policy/snapshot.ts
 //
 // Per-team policy snapshot writer + reader. Pack 02 §8 + HANDOFF_DIGEST D7.
 //

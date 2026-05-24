@@ -1,4 +1,4 @@
-// components/master/__tests__/idle-pane-watchdog.test.ts
+// components/evy/__tests__/idle-pane-watchdog.test.ts
 //
 // Acceptance suite for the idle-pane watchdog. Real tmux is replaced
 // with a fake PaneProviders implementation; tests drive the watchdog

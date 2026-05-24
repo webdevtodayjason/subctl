@@ -1,4 +1,4 @@
-// components/master/__tests__/evy-eval/tests/category-13-evy-memory.test.ts
+// components/evy/__tests__/evy-eval/tests/category-13-evy-memory.test.ts
 //
 // Evy Eval — Category 13: Evy Memory (Tier 3) (v2.7.23) (3 tests)
 //

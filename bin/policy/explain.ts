@@ -38,13 +38,13 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import process from "node:process";
 
-import { loadResolvedPolicy } from "../../components/master/tools/policy/load";
-import { tokenize } from "../../components/master/tools/policy/tokenize";
+import { loadResolvedPolicy } from "../../components/evy/tools/policy/load";
+import { tokenize } from "../../components/evy/tools/policy/tokenize";
 import type {
   AllowPattern,
   GatedMode,
   PolicyDocument,
-} from "../../components/master/tools/policy/types";
+} from "../../components/evy/tools/policy/types";
 
 interface Args {
   command: string | null;

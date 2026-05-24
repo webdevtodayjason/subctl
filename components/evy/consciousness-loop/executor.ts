@@ -1,4 +1,4 @@
-// components/master/consciousness-loop/executor.ts
+// components/evy/consciousness-loop/executor.ts
 //
 // Memory Init #7 — safe-action executor (v0.1).
 //

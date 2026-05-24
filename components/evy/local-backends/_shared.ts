@@ -1,4 +1,4 @@
-// components/master/local-backends/_shared.ts
+// components/evy/local-backends/_shared.ts
 //
 // Adapter-local utilities. Lives in its own file so adapter modules can
 // import these without going through `./index.ts` — that would cause a

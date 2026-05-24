@@ -1,4 +1,4 @@
-// components/master/__tests__/evy-eval/tests/category-2-verification.test.ts
+// components/evy/__tests__/evy-eval/tests/category-2-verification.test.ts
 //
 // Evy Eval — Category 2: Verification (3 tests)
 //

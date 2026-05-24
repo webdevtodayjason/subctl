@@ -1,4 +1,4 @@
-// components/master/__tests__/evy-eval/__tests__/judge.test.ts
+// components/evy/__tests__/evy-eval/__tests__/judge.test.ts
 //
 // Tests for the LLM-judge layer. Two surface areas:
 //

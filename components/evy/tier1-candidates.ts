@@ -1,4 +1,4 @@
-// components/master/tier1-candidates.ts
+// components/evy/tier1-candidates.ts
 //
 // Memory Consciousness Cycle — Phase 3 Tier 1 candidate queue.
 //
@@ -8,7 +8,7 @@
 // (memory_remember, which honors the char-budget guardrails); rejection
 // just resolves the record.
 //
-// Storage: ~/.config/subctl/master/tier1-candidates.jsonl — append-only.
+// Storage: ~/.config/subctl/evy/tier1-candidates.jsonl — append-only.
 // Resolution is recorded by appending a NEW line with resolution set; the
 // original "pending" line stays in the file. Read paths dedupe by id and
 // keep the latest line, so the most recent resolution wins.
@@ -147,7 +147,7 @@ const DEFAULT_PATH = join(
 const realDeps: Tier1CandidatesDeps = {
   candidatesPath: DEFAULT_PATH,
   // Default is a tripwire — production wires this at module load via
-  // configureWriteTier1() from components/master/tools/tier1-memory.ts. If
+  // configureWriteTier1() from components/evy/tools/tier1-memory.ts. If
   // approve fires before that wiring, this surfaces a clear error instead
   // of silently dropping the approval.
   writeTier1: async () => ({

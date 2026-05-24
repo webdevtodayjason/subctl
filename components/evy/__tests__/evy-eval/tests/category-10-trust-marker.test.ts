@@ -1,4 +1,4 @@
-// components/master/__tests__/evy-eval/tests/category-10-trust-marker.test.ts
+// components/evy/__tests__/evy-eval/tests/category-10-trust-marker.test.ts
 //
 // Evy Eval — Category 10: HMAC Trust Marker (v2.7.20) (2 tests)
 //

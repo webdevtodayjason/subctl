@@ -1,4 +1,4 @@
-// docs/spikes/picoder-prototype/master-emit.ts
+// docs/spikes/picoder-prototype/evy-emit.ts
 //
 // SPIKE PROTOTYPE — synthetic master-side emitter for the pi-coder demo.
 // NOT PRODUCT CODE. Throwaway companion to picoder-worker.ts.
@@ -19,10 +19,10 @@
 //
 // USAGE:
 //   SUBCTL_STATE_DIR=/tmp/picoder-demo \
-//   bun run master-emit.ts <team_id> <phase> <body...>
+//   bun run evy-emit.ts <team_id> <phase> <body...>
 //
 // Example:
-//   bun run master-emit.ts picoder-demo investigate \
+//   bun run evy-emit.ts picoder-demo investigate \
 //     "Audit token usage in components/master/server.ts and report top 3 hotspots"
 
 import { appendFileSync, mkdirSync } from "node:fs";
@@ -35,7 +35,7 @@ import {
 
 const [, , teamId, phase, ...bodyParts] = process.argv;
 if (!teamId || !phase || bodyParts.length === 0) {
-  console.error("usage: bun run master-emit.ts <team_id> <phase> <body...>");
+  console.error("usage: bun run evy-emit.ts <team_id> <phase> <body...>");
   process.exit(2);
 }
 

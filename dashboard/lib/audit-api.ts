@@ -11,7 +11,7 @@
 //   GET /api/policy/list?project_root=<dir>          ← `subctl policy list --json` for the Policy tab
 //   GET /api/policy/teams                            ← per-team mode/preset/allowlist_sha (live)
 //
-// Path resolution honors SUBCTL_STATE_DIR per components/master/tools/policy/audit.ts
+// Path resolution honors SUBCTL_STATE_DIR per components/evy/tools/policy/audit.ts
 // and snapshot.ts conventions.
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";

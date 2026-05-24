@@ -1,4 +1,4 @@
-// components/master/__tests__/mcp-auth.test.ts
+// components/evy/__tests__/mcp-auth.test.ts
 //
 // MCP-Expose (#24, wave 1) — auth rejection + acceptance matrix.
 //

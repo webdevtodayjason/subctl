@@ -1,4 +1,4 @@
-// components/master/__tests__/skill-router.test.ts
+// components/evy/__tests__/skill-router.test.ts
 //
 // v2.8.1 — Pin the skill-router contract. Tests cover:
 //   1. Frontmatter parsing (folded scalars, inline arrays, hyphen lists)
@@ -278,12 +278,12 @@ describe("catalog cache", () => {
     );
   });
 
-  test("excludes subctl-master from catalog (master loads its own SKILL.md)", () => {
+  test("excludes subctl-evy from catalog (Evy loads its own SKILL.md)", () => {
     writeSkill(
-      "master",
-      "name: subctl-master\ndescription: evy persona loaded separately",
+      "evy",
+      "name: subctl-evy\ndescription: evy persona loaded separately",
     );
     const entries = loadCatalog(skillsRoot);
-    expect(entries.find((e) => e.name === "subctl-master")).toBeUndefined();
+    expect(entries.find((e) => e.name === "subctl-evy")).toBeUndefined();
   });
 });

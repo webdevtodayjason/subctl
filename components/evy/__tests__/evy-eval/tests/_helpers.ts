@@ -1,4 +1,4 @@
-// components/master/__tests__/evy-eval/tests/_helpers.ts
+// components/evy/__tests__/evy-eval/tests/_helpers.ts
 //
 // Shared per-test runner: glues harness + regex grader + LLM judge into
 // the bun-test shape laid out in the rubric (docs/persona/evy-eval-

@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// components/master/cli/xai-oauth-login.ts
+// components/evy/cli/xai-oauth-login.ts
 //
 // CLI entry point for `subctl auth xai-oauth <alias>`. Runs the
 // PKCE-loopback OAuth flow in-process (no dependency on any external
@@ -8,7 +8,7 @@
 // and writes the resulting auth.json atomically (mode 0o600).
 //
 // Designed to be invoked from providers/xai-oauth/auth.sh:
-//   bun run components/master/cli/xai-oauth-login.ts <alias> <configDir> [<email>]
+//   bun run components/evy/cli/xai-oauth-login.ts <alias> <configDir> [<email>]
 //
 // `configDir` here is the same accounts.conf field codex uses — the
 // directory that will hold `auth.json`. Passed in by the dispatcher so
@@ -96,7 +96,7 @@ async function main(): Promise<void> {
     console.log(`✓ signed in. tokens written to ${result.authPath} (mode 0o600)`);
     console.log(`  base_url: ${result.base_url}`);
     console.log(
-      `  last_refresh: ${result.last_refresh} — subctl master refreshes ` +
+      `  last_refresh: ${result.last_refresh} — subctl evy refreshes ` +
         "automatically when the JWT is near expiry.",
     );
   } catch (err) {

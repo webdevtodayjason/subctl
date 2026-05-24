@@ -29,7 +29,7 @@ import { homedir } from "node:os";
 import { join, normalize, resolve, dirname } from "node:path";
 
 const SKILLS_ROOT = process.env.SUBCTL_SKILLS_DIR ?? join(homedir(), ".config", "subctl", "skills");
-const MASTER_SKILLS_DIR = join(SKILLS_ROOT, "master", "skills");
+const EVY_SKILLS_DIR = join(SKILLS_ROOT, "evy", "skills");
 const DECISIONS_LOG = join(homedir(), ".config", "subctl", "master", "decisions.jsonl");
 
 // Category allow-list — keeps master in its operational lane.
@@ -126,9 +126,9 @@ export const skillAuthorTools = {
           error: `description must mention at least one orchestration-related term (orchestration, dev-team, team-lead, escalation, review, watchdog, etc.). This is a guardrail against role drift — if your skill genuinely doesn't relate to your orchestration role, you probably shouldn't be authoring it.`,
         };
       }
-      const targetDir = join(MASTER_SKILLS_DIR, category, name);
+      const targetDir = join(EVY_SKILLS_DIR, category, name);
       const targetFile = join(targetDir, "SKILL.md");
-      if (pathEscapesRoot(targetDir, MASTER_SKILLS_DIR)) {
+      if (pathEscapesRoot(targetDir, EVY_SKILLS_DIR)) {
         return { ok: false, error: "path escapes master skills root" };
       }
       if (existsSync(targetFile)) {
@@ -173,7 +173,7 @@ export const skillAuthorTools = {
       if (!ALLOWED_CATEGORIES.has(category)) {
         return { ok: false, error: `category '${category}' not in allow-list` };
       }
-      const targetFile = join(MASTER_SKILLS_DIR, category, name, "SKILL.md");
+      const targetFile = join(EVY_SKILLS_DIR, category, name, "SKILL.md");
       if (!existsSync(targetFile)) {
         return { ok: false, error: `skill not found: ${targetFile}` };
       }
@@ -213,7 +213,7 @@ export const skillAuthorTools = {
       if (!ALLOWED_CATEGORIES.has(category)) {
         return { ok: false, error: `category '${category}' not in allow-list` };
       }
-      const targetDir = join(MASTER_SKILLS_DIR, category, name);
+      const targetDir = join(EVY_SKILLS_DIR, category, name);
       if (!existsSync(targetDir)) {
         return { ok: false, error: `skill not found: ${targetDir}` };
       }
@@ -241,14 +241,14 @@ export const skillAuthorTools = {
       "List the skills you've authored under master's own source. Returns a list of {category, name, description, char_count}. Use to see what you've already captured before authoring something new (avoid duplicates) and to introspect what you can revise.",
     schema: { type: "object", properties: {}, required: [] },
     invoke: async () => {
-      if (!existsSync(MASTER_SKILLS_DIR)) {
-        return { ok: true, root: MASTER_SKILLS_DIR, count: 0, skills: [] };
+      if (!existsSync(EVY_SKILLS_DIR)) {
+        return { ok: true, root: EVY_SKILLS_DIR, count: 0, skills: [] };
       }
       const skills: Array<Record<string, unknown>> = [];
       try {
-        for (const cat of readdirSync(MASTER_SKILLS_DIR, { withFileTypes: true })) {
+        for (const cat of readdirSync(EVY_SKILLS_DIR, { withFileTypes: true })) {
           if (!cat.isDirectory()) continue;
-          const catDir = join(MASTER_SKILLS_DIR, cat.name);
+          const catDir = join(EVY_SKILLS_DIR, cat.name);
           for (const skill of readdirSync(catDir, { withFileTypes: true })) {
             if (!skill.isDirectory()) continue;
             const skillFile = join(catDir, skill.name, "SKILL.md");
@@ -273,7 +273,7 @@ export const skillAuthorTools = {
       } catch (err) {
         return { ok: false, error: (err as Error).message };
       }
-      return { ok: true, root: MASTER_SKILLS_DIR, count: skills.length, skills };
+      return { ok: true, root: EVY_SKILLS_DIR, count: skills.length, skills };
     },
   },
 };

@@ -1,8 +1,8 @@
-// components/master/tools/watchdogs.ts
+// components/evy/tools/watchdogs.ts
 //
 // v2.7.19 — Evy-callable watchdog list + kill tools.
 //
-// Backs the watchdog registry in components/master/watchdogs.ts. Evy gets
+// Backs the watchdog registry in components/evy/watchdogs.ts. Evy gets
 // these without any persona / SKILL.md edits — the tool list surfaces
 // automatically. Use cases the operator described on 2026-05-13:
 //

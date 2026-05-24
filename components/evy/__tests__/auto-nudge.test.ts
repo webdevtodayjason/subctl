@@ -1,4 +1,4 @@
-// components/master/__tests__/auto-nudge.test.ts
+// components/evy/__tests__/auto-nudge.test.ts
 //
 // v2.7.22 — Auto-nudge state machine for the team-staleness watchdog.
 //
@@ -366,7 +366,7 @@ describe("runStaleTeamSweep — vanished team reconciliation (v2.7.32)", () => {
 });
 
 describe("runStaleTeamSweep — server.ts integration pattern (v2.8.1)", () => {
-  // These tests mirror the wiring added to components/master/server.ts in
+  // These tests mirror the wiring added to components/evy/server.ts in
   // v2.8.1 — a stateful `vanishedTeams` Set memoizes "we already alerted
   // on this team" so the alert is one-shot across ticks, even if the
   // caller's tracker (teamLastActivity) somehow re-seeds the team between

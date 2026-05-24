@@ -1,4 +1,4 @@
-// components/master/__tests__/memory-kernel.test.ts
+// components/evy/__tests__/memory-kernel.test.ts
 //
 // Tests for Worker C's memory-kernel orchestration glue. Every external
 // surface (sidecar HTTP, reviewer LLM, notifications, decisions.jsonl,

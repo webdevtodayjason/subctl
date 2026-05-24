@@ -1,6 +1,6 @@
-// components/master/master-notify-listener.ts
+// components/evy/evy-notify-listener.ts
 //
-// subctl master's dedicated Telegram listener. NOT a separate process — runs IN
+// subctl evy's dedicated Telegram listener. NOT a separate process — runs IN
 // the master daemon (server.ts imports startMasterNotifyListener and
 // calls it from main()). One Bun process, one launchd plist, one
 // lifecycle.
@@ -9,7 +9,7 @@
 //   This is the MASTER bot — completely separate from the worker
 //   notify-bot driven by dashboard/notify-listener.ts. Telegram serves
 //   getUpdates to the first caller per bot, so each bot must have
-//   exactly ONE poller. Use a different bot token in master-notify.json
+//   exactly ONE poller. Use a different bot token in evy-notify.json
 //   than the one in ~/.config/subctl/notify.json. Don't share.
 //
 // Inbound flow:
@@ -17,13 +17,13 @@
 //     • bot commands (/start /help /status /pause /resume) handled inline
 //     • free-text queued in pendingMessages, drained by the agent loop
 //
-// Outbound is NOT this file's job — components/master/tools/telegram.ts
+// Outbound is NOT this file's job — components/evy/tools/telegram.ts
 // already wraps the Telegram sendMessage API for the agent's tool surface.
 // We only call sendMessage here for the small set of inline command echoes.
 //
 // CLI-prompt bridge:
-//   `subctl master prompt "..."` (lib/master.sh) appends a JSON line to
-//   ~/.config/subctl/master/cli-prompts.jsonl. This listener polls that
+//   `subctl evy prompt "..."` (lib/evy.sh) appends a JSON line to
+//   ~/.config/subctl/evy/cli-prompts.jsonl. This listener polls that
 //   file (offset-tracked) and pushes lines into the SAME pendingMessages
 //   queue, so server.ts has ONE source of operator input regardless of
 //   channel.
@@ -33,7 +33,7 @@
 //     startMasterNotifyListener,
 //     drainOperatorInbox,
 //     subscribeOperatorMessages,
-//   } from "./master-notify-listener";
+//   } from "./evy-notify-listener";
 //
 //   const listener = startMasterNotifyListener({
 //     stateProvider: () => buildLiveDaemonState(),
@@ -111,17 +111,17 @@ import { redactForEgress } from "./memory";
 const HOME = homedir();
 const SUBCTL_CONFIG_DIR =
   process.env.SUBCTL_CONFIG_DIR ?? join(HOME, ".config", "subctl");
-const MASTER_STATE_DIR = join(SUBCTL_CONFIG_DIR, "master");
-const MASTER_NOTIFY_CONFIG =
-  process.env.SUBCTL_MASTER_NOTIFY_CONFIG ??
-  join(SUBCTL_CONFIG_DIR, "master-notify.json");
-const OFFSET_PATH = join(MASTER_STATE_DIR, "master-notify-listener.offset");
-const PAUSED_FLAG = join(MASTER_STATE_DIR, "PAUSED");
-const CLI_PROMPTS_PATH = join(MASTER_STATE_DIR, "cli-prompts.jsonl");
-const CLI_PROMPTS_OFFSET = join(MASTER_STATE_DIR, "cli-prompts.offset");
-const DECISIONS_LOG = join(MASTER_STATE_DIR, "decisions.jsonl");
+const EVY_STATE_DIR = join(SUBCTL_CONFIG_DIR, "evy");
+const EVY_NOTIFY_CONFIG =
+  process.env.SUBCTL_EVY_NOTIFY_CONFIG ??
+  join(SUBCTL_CONFIG_DIR, "evy-notify.json");
+const OFFSET_PATH = join(EVY_STATE_DIR, "evy-notify-listener.offset");
+const PAUSED_FLAG = join(EVY_STATE_DIR, "PAUSED");
+const CLI_PROMPTS_PATH = join(EVY_STATE_DIR, "cli-prompts.jsonl");
+const CLI_PROMPTS_OFFSET = join(EVY_STATE_DIR, "cli-prompts.offset");
+const DECISIONS_LOG = join(EVY_STATE_DIR, "decisions.jsonl");
 
-// master-notify.json field names settled on `bot_token` / `chat_id` after
+// evy-notify.json field names settled on `bot_token` / `chat_id` after
 // the dashboard's notify-listener used those, while early drafts of this
 // listener used the `telegram_*` prefix. Accept either to avoid forcing a
 // migration. See loadConfig() below for the merge.
@@ -165,18 +165,18 @@ export function startMasterNotifyListener(
 ): { running: boolean; reason?: string } {
   if (_running) return { running: true, reason: "already running" };
 
-  if (!existsSync(MASTER_NOTIFY_CONFIG)) {
+  if (!existsSync(EVY_NOTIFY_CONFIG)) {
     return {
       running: false,
-      reason: `no master-notify.json at ${MASTER_NOTIFY_CONFIG} — see components/master/README.md`,
+      reason: `no evy-notify.json at ${EVY_NOTIFY_CONFIG} — see components/evy/README.md`,
     };
   }
 
   let cfg: MasterNotifyConfig;
   try {
-    cfg = JSON.parse(readFileSync(MASTER_NOTIFY_CONFIG, "utf8"));
+    cfg = JSON.parse(readFileSync(EVY_NOTIFY_CONFIG, "utf8"));
   } catch {
-    return { running: false, reason: "master-notify.json unreadable / not JSON" };
+    return { running: false, reason: "evy-notify.json unreadable / not JSON" };
   }
   // Accept either `bot_token`/`chat_id` (canonical) or `telegram_*` (legacy).
   const botToken = cfg.bot_token ?? cfg.telegram_bot_token;
@@ -184,11 +184,11 @@ export function startMasterNotifyListener(
   if (!botToken) {
     return {
       running: false,
-      reason: "no bot_token (or telegram_bot_token) in master-notify.json",
+      reason: "no bot_token (or telegram_bot_token) in evy-notify.json",
     };
   }
 
-  mkdirSync(MASTER_STATE_DIR, { recursive: true });
+  mkdirSync(EVY_STATE_DIR, { recursive: true });
 
   _stateProvider = opts.stateProvider ?? null;
   _allowedChatId = chatId ? String(chatId) : null;
@@ -414,7 +414,7 @@ async function handleUpdate(update: any, token: string) {
   const chatId: string = String(msg.chat?.id ?? "");
   const ts = new Date().toISOString();
 
-  // Auth: subctl master's tool surface can take real action (spawn workers, run gh
+  // Auth: subctl evy's tool surface can take real action (spawn workers, run gh
   // commands). Drop messages from any chat other than the configured one
   // — strangers must not have a path in.
   if (_allowedChatId && chatId !== _allowedChatId) {
@@ -451,9 +451,9 @@ async function handleBotCommand(text: string): Promise<string> {
       return formatStatus();
     case "/pause": {
       try {
-        mkdirSync(MASTER_STATE_DIR, { recursive: true });
+        mkdirSync(EVY_STATE_DIR, { recursive: true });
         writeFileSync(PAUSED_FLAG, new Date().toISOString());
-        return "⏸  subctl master review loop PAUSED.\n\nThe daemon checks this flag each tick — already-running tools will complete. Resume with /resume.";
+        return "⏸  subctl evy review loop PAUSED.\n\nThe daemon checks this flag each tick — already-running tools will complete. Resume with /resume.";
       } catch (e: any) {
         return `pause failed: ${e?.message || e}`;
       }
@@ -462,9 +462,9 @@ async function handleBotCommand(text: string): Promise<string> {
       try {
         if (existsSync(PAUSED_FLAG)) {
           unlinkSync(PAUSED_FLAG);
-          return "▶️  subctl master review loop RESUMED.";
+          return "▶️  subctl evy review loop RESUMED.";
         }
-        return "ℹ️  subctl master was not paused.";
+        return "ℹ️  subctl evy was not paused.";
       } catch (e: any) {
         return `resume failed: ${e?.message || e}`;
       }
@@ -475,7 +475,7 @@ async function handleBotCommand(text: string): Promise<string> {
       // `/profile chat|heavy` → swap to that profile (master picks it up on
       //                          the next prompt via the profiles.json watcher)
       // Anything else         → usage help. We don't bounce master; the
-      // fs.watch in components/master/profiles.ts handles propagation.
+      // fs.watch in components/evy/profiles.ts handles propagation.
       return handleProfileCommand(parts.slice(1));
     case "/watchdogs":
       // v2.7.19 — operator's emergency kill path for stuck periodic
@@ -483,7 +483,7 @@ async function handleBotCommand(text: string): Promise<string> {
       // `/watchdogs killall` nukes everything except the telegram
       // listener itself (since we need it alive to hear the next
       // command). The looping-tool incident on 2026-05-13 is the
-      // motivating bug; see components/master/watchdogs.ts header.
+      // motivating bug; see components/evy/watchdogs.ts header.
       return handleWatchdogsCommand(parts.slice(1));
     case "/terminal":
       // v2.7.21 (ADR 0011 Layer 2) — operator-facing on/off control for
@@ -503,7 +503,7 @@ async function handleBotCommand(text: string): Promise<string> {
       // v2.7.25 — pi-ai + pi-agent-core watchdog state. `/upstreams`
       // returns the most recent check; the watchdog ticks every 6h on
       // its own. See ADR 0015 (always-latest policy) +
-      // components/master/upstream-check.ts.
+      // components/evy/upstream-check.ts.
       return handleUpstreamsCommand();
     case "/secrets":
       // v2.7.31 — ADR 0012 backend chain status. Lists the configured
@@ -1184,7 +1184,7 @@ function formatProfileList(): string {
 
 function formatHelp(): string {
   return [
-    "🤖 subctl master — the dev-team conductor",
+    "🤖 subctl evy — the dev-team conductor",
     "",
     "/start, /help          this message",
     "/status                current daemon state + recent activity",
@@ -1218,7 +1218,7 @@ function formatHelp(): string {
     "/skills                show skill catalog summary (v2.8.3)",
     "/skills evy            review Evy-authored drafts (promote/delete)",
     "",
-    "Free-text messages are queued for the next agent turn — subctl master",
+    "Free-text messages are queued for the next agent turn — subctl evy",
     "will act on them per its policy and report back.",
   ].join("\n");
 }
@@ -1226,7 +1226,7 @@ function formatHelp(): string {
 function formatStatus(): string {
   const lines: string[] = [];
   lines.push(
-    `📊 subctl master · ${new Date().toISOString().slice(0, 19).replace("T", " ")}Z`,
+    `📊 subctl evy · ${new Date().toISOString().slice(0, 19).replace("T", " ")}Z`,
   );
   lines.push("");
   lines.push(`Loop: ${existsSync(PAUSED_FLAG) ? "⏸ PAUSED" : "▶️ running"}`);
@@ -1295,7 +1295,7 @@ async function sendMessage(chatId: string, text: string, token: string) {
 }
 
 // CLI-prompt bridge: poll the cli-prompts.jsonl file written by
-// `subctl master prompt "..."`. Byte-offset-tracked so a daemon
+// `subctl evy prompt "..."`. Byte-offset-tracked so a daemon
 // restart doesn't replay history. On first start (no offset file),
 // we skip whatever's already in the file — we only consume prompts
 // queued AFTER boot.

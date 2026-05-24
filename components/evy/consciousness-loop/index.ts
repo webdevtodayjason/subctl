@@ -1,4 +1,4 @@
-// components/master/consciousness-loop/index.ts
+// components/evy/consciousness-loop/index.ts
 //
 // Memory Init #7 — public barrel for the Evy cognition loop v0.1.
 //

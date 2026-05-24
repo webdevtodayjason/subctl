@@ -1,5 +1,5 @@
 {
-  "_comment": "Per-project autonomy policy for the subctl master daemon. Tells the master what it can drive autonomously vs what it must escalate. Restart the master after edits: launchctl unload ~/Library/LaunchAgents/com.subctl.master.plist && launchctl load ~/Library/LaunchAgents/com.subctl.master.plist",
+  "_comment": "Per-project autonomy policy for the subctl master daemon. Tells the master what it can drive autonomously vs what it must escalate. Restart the master after edits: launchctl unload ~/Library/LaunchAgents/com.subctl.evy.plist && launchctl load ~/Library/LaunchAgents/com.subctl.evy.plist",
 
   "operator": {
     "name": "Jason",

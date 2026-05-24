@@ -1,10 +1,10 @@
-// components/master/xai-oauth.ts
+// components/evy/xai-oauth.ts
 //
 // v2.x — xAI Grok OAuth (SuperGrok Subscription) plumbing for subctl.
 //
 // This module ports Hermes Agent's PKCE-loopback flow from
 // `hermes-agent/hermes_cli/auth.py` (Python; ~6298 LOC) into a self-contained
-// TypeScript module that the subctl master daemon owns. Both projects use
+// TypeScript module that the subctl evy daemon owns. Both projects use
 // xAI's public Grok-CLI OAuth client id (`b1a00492-073a-47ea-816f-4c329264a828`)
 // because xAI has not yet minted per-tool client ids. We forward the same
 // `plan=generic` consent-screen param Hermes uses (the upstream `accounts.x.ai`
@@ -23,7 +23,7 @@
 //
 // What this module deliberately does NOT do:
 //   - Read/write Hermes's `~/.hermes/auth.json`. Subctl owns its own auth
-//     store under `~/.config/subctl/master/oauth/xai-oauth.json`. Reading
+//     store under `~/.config/subctl/evy/oauth/xai-oauth.json`. Reading
 //     Hermes's store directly would bypass Hermes's _auth_store_lock and
 //     race with concurrent refreshes.
 //   - Multi-account routing. xAI only ships one SuperGrok seat per user
@@ -83,7 +83,7 @@ const XAI_CALLBACK_ALLOWED_ORIGINS = new Set<string>([
 
 /** Strongly-typed code surface. The string values are stable across
  *  Hermes (Python) and subctl (TypeScript) on purpose — operators
- *  grepping master.log + hermes.log see the same string for the same
+ *  grepping evy.log + hermes.log see the same string for the same
  *  condition. Do not rename without updating both projects. */
 export type XaiAuthErrorCode =
   | "xai_redirect_invalid"
@@ -849,7 +849,7 @@ export async function loopbackLogin(opts: LoopbackLoginOptions): Promise<Loopbac
 
 export interface CompleteXaiOauthLoginOptions extends LoopbackLoginOptions {
   /** Where to write the auth.json. Caller passes the absolute path — typically
-   *  `~/.config/subctl/master/oauth/xai-oauth.json` (or under the alias's
+   *  `~/.config/subctl/evy/oauth/xai-oauth.json` (or under the alias's
    *  configDir if subctl ever adds per-account routing for xAI). */
   authJsonPath: string;
   /** Optional alias label baked into the file for provenance. */

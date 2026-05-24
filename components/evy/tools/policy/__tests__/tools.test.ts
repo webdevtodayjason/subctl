@@ -1,4 +1,4 @@
-// components/master/tools/policy/__tests__/tools.test.ts
+// components/evy/tools/policy/__tests__/tools.test.ts
 //
 // Tests for the master daemon's `policy` tool family (PR 6):
 //   - policy_check  — allow / deny / mode-override

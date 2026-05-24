@@ -1,4 +1,4 @@
-// components/master/__tests__/pi-ai-catalog.test.ts
+// components/evy/__tests__/pi-ai-catalog.test.ts
 //
 // Phase C coverage for the pi-ai-catalog xAI-OAuth synthetic provider.
 //

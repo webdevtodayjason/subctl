@@ -1,4 +1,4 @@
-// components/master/idle-pane-watchdog.ts
+// components/evy/idle-pane-watchdog.ts
 //
 // Memory Init #7 follow-up — Idle-Pane Watchdog (control-plane reliability fix).
 //
@@ -24,7 +24,7 @@
 //      `registerSentDirective`). Without that exact match the
 //      watchdog defaults to notify-only.
 //   3. Disabled by default. Config gate at
-//      ~/.config/subctl/master/idle-pane-watchdog.json — missing /
+//      ~/.config/subctl/evy/idle-pane-watchdog.json — missing /
 //      malformed file → defaults (disabled).
 //
 // The detection is intentionally CHEAP: one `tmux capture-pane` per
@@ -79,11 +79,11 @@ function subctlConfigDir(): string {
 }
 
 export function defaultIdlePaneConfigPath(): string {
-  return join(subctlConfigDir(), "master", "idle-pane-watchdog.json");
+  return join(subctlConfigDir(), "evy", "idle-pane-watchdog.json");
 }
 
 export function defaultIdlePaneAuditPath(): string {
-  return join(subctlConfigDir(), "master", "idle-pane-watchdog.audit.jsonl");
+  return join(subctlConfigDir(), "evy", "idle-pane-watchdog.audit.jsonl");
 }
 
 export function loadIdlePaneConfig(path?: string): IdlePaneWatchdogConfig {

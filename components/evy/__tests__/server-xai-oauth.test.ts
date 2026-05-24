@@ -1,4 +1,4 @@
-// components/master/__tests__/server-xai-oauth.test.ts
+// components/evy/__tests__/server-xai-oauth.test.ts
 //
 // Phase C coverage for the server.ts wiring of the xai-oauth provider:
 //   1. PROVIDER_API maps "xai-oauth" → "openai-completions"
@@ -154,7 +154,7 @@ describe("server.ts getApiKeyForProvider('xai-oauth')", () => {
     // Point accounts.conf at an empty file in our tmpdir so the resolver
     // doesn't walk to the real ~/.config/subctl/accounts.conf and pick up
     // an operator's row. The fallback file at
-    // ~/.config/subctl/master/oauth/xai-oauth/auth.json may or may not
+    // ~/.config/subctl/evy/oauth/xai-oauth/auth.json may or may not
     // exist on this dev machine — we accept either undefined OR a string
     // (in which case the fallback file existed); the test confirms the
     // function returned without throwing.

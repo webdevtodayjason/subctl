@@ -1,4 +1,4 @@
-// components/master/consciousness-loop/config.ts
+// components/evy/consciousness-loop/config.ts
 //
 // Memory Init #7 — config loader for the Evy cognition loop.
 //
@@ -21,15 +21,15 @@ function subctlConfigDir(): string {
 }
 
 export function defaultConfigPath(): string {
-  return join(subctlConfigDir(), "master", "consciousness-loop.json");
+  return join(subctlConfigDir(), "evy", "consciousness-loop.json");
 }
 
 export function defaultStatePath(): string {
-  return join(subctlConfigDir(), "master", "consciousness-loop", "state.json");
+  return join(subctlConfigDir(), "evy", "consciousness-loop", "state.json");
 }
 
 export function defaultAuditPath(): string {
-  return join(subctlConfigDir(), "master", "consciousness-loop", "audit.jsonl");
+  return join(subctlConfigDir(), "evy", "consciousness-loop", "audit.jsonl");
 }
 
 /**

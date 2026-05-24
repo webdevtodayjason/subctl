@@ -1001,7 +1001,7 @@ export async function mount({ root: _root }) {
   }
 
   // Curated memories are keyed by the master's `policy.operator.name`
-  // lowercased (components/master/server.ts:3181). The dashboard doesn't
+  // lowercased (components/evy/server.ts:3181). The dashboard doesn't
   // expose that name today, so default to "jason" (the operator's actual
   // name on this install — see CLAUDE.md) and fall back to "operator" if
   // empty. Operators on other installs can override by typing

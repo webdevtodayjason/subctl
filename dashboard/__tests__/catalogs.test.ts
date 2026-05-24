@@ -28,7 +28,7 @@ import {
   setModelEnabled,
   type CatalogFile,
 } from "../lib/catalogs.ts";
-import { getDefaultModel } from "../../components/master/pi-ai-catalog.ts";
+import { getDefaultModel } from "../../components/evy/pi-ai-catalog.ts";
 
 let scratchDir: string;
 

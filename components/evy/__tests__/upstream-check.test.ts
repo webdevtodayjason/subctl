@@ -1,4 +1,4 @@
-// components/master/__tests__/upstream-check.test.ts
+// components/evy/__tests__/upstream-check.test.ts
 //
 // v2.7.25 — pins for the upstream-check watchdog.
 // v2.7.37 — extended for auto-update worktree flow + throttle + audit.
@@ -538,10 +538,10 @@ describe("v2.7.37 worktreeAutoUpdateRunner", () => {
 
   test("success path commits + pushes a chore/upstream-<pkg>-<ts> branch", async () => {
     // Make the worktree dir match the layout the runner expects:
-    //   <repoRoot>/components/master/package.json
+    //   <repoRoot>/components/evy/package.json
     const repoRoot = mkdtempSync(join(tmpdir(), "wt-repo-"));
-    mkdirSync(join(repoRoot, "components", "master"), { recursive: true });
-    const wtPkg = join(repoRoot, "components", "master", "package.json");
+    mkdirSync(join(repoRoot, "components", "evy"), { recursive: true });
+    const wtPkg = join(repoRoot, "components", "evy", "package.json");
     writeFileSync(
       wtPkg,
       JSON.stringify(
@@ -579,9 +579,9 @@ describe("v2.7.37 worktreeAutoUpdateRunner", () => {
     // the target dirs by intercepting the now() and pre-mkdir'ing.
     const fixedNow = 1700000000000;
     const expectedWorktree = join(worktreeBase, "subctl-upstream-update-" + fixedNow);
-    mkdirSync(join(expectedWorktree, "components", "master"), { recursive: true });
+    mkdirSync(join(expectedWorktree, "components", "evy"), { recursive: true });
     writeFileSync(
-      join(expectedWorktree, "components", "master", "package.json"),
+      join(expectedWorktree, "components", "evy", "package.json"),
       JSON.stringify(
         { name: "wt", dependencies: { "@earendil-works/pi-ai": "^0.74.0" } },
         null,
@@ -628,8 +628,8 @@ describe("v2.7.37 worktreeAutoUpdateRunner", () => {
 
   test("failure during bun test reverts the worktree + propagates stderr_excerpt", async () => {
     const repoRoot = mkdtempSync(join(tmpdir(), "wt-repo-fail-"));
-    mkdirSync(join(repoRoot, "components", "master"), { recursive: true });
-    const wtPkg = join(repoRoot, "components", "master", "package.json");
+    mkdirSync(join(repoRoot, "components", "evy"), { recursive: true });
+    const wtPkg = join(repoRoot, "components", "evy", "package.json");
     writeFileSync(
       wtPkg,
       JSON.stringify(
@@ -644,9 +644,9 @@ describe("v2.7.37 worktreeAutoUpdateRunner", () => {
     const worktreeBase = mkdtempSync(join(tmpdir(), "wt-base-fail-"));
     const fixedNow = 1700000000001;
     const expectedWorktree = join(worktreeBase, "subctl-upstream-update-" + fixedNow);
-    mkdirSync(join(expectedWorktree, "components", "master"), { recursive: true });
+    mkdirSync(join(expectedWorktree, "components", "evy"), { recursive: true });
     writeFileSync(
-      join(expectedWorktree, "components", "master", "package.json"),
+      join(expectedWorktree, "components", "evy", "package.json"),
       JSON.stringify(
         { name: "wt", dependencies: { "@earendil-works/pi-ai": "^0.74.0" } },
         null,
@@ -661,7 +661,7 @@ describe("v2.7.37 worktreeAutoUpdateRunner", () => {
       {
         match: (c) => c[0] === "bun" && c[1] === "test",
         code: 1,
-        stderr: "FAIL components/master/__tests__/upstream-check.test.ts\n  expected 0.75.0, received 0.74.0\n",
+        stderr: "FAIL components/evy/__tests__/upstream-check.test.ts\n  expected 0.75.0, received 0.74.0\n",
       },
       { match: (c) => c[0] === "git" && c[1] === "worktree" && c[2] === "remove", code: 0 },
       { match: (c) => c[0] === "git" && c[1] === "branch" && c[2] === "-D", code: 0 },

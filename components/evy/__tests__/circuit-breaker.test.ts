@@ -1,9 +1,9 @@
-// components/master/__tests__/circuit-breaker.test.ts
+// components/evy/__tests__/circuit-breaker.test.ts
 //
 // v2.7.19 — Empty-listener circuit breaker. Pins the trigger condition,
 // the reset semantics (different tool / non-empty result / new turn),
 // and the synthesized refusal payload. Background and motivating
-// incident in components/master/circuit-breaker.ts header.
+// incident in components/evy/circuit-breaker.ts header.
 //
 // What we test:
 //   1. The trigger predicate is tight — only matches { entries: [], listener: { running: false, ... } }.

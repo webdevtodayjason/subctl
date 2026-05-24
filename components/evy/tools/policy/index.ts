@@ -1,4 +1,4 @@
-// components/master/tools/policy/index.ts
+// components/evy/tools/policy/index.ts
 //
 // Aggregator for the `policy` master tool family. Pack 06 §5 specifies the
 // design intent (`policyToolFamily = {name, tools, description}`); the actual

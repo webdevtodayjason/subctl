@@ -1676,14 +1676,14 @@ export async function mount({ root: _root }) {
       "How dev teams work:",
       `  • Evy spawns tmux sessions on ${HOST_LABEL} via subctl_orch_spawn`,
       "  • The lead Claude Code in pane 0 uses TeamCreate + Agent(team_name=\"…\") to make workers",
-      "  • Each lead writes status to ~/.config/subctl/master/inbox/<team>.jsonl",
+      "  • Each lead writes status to ~/.config/subctl/evy/inbox/<team>.jsonl",
       "  • Evy tails inboxes (2s poll), reacts to blocked/error events, watchdog at 30min",
       `  • Attach manually with: ssh ${SSH_HOST_ALIAS} tmux attach -t <team>`,
       "",
       `Config (all on ${HOST_LABEL}):`,
-      "  ~/.config/subctl/master/policy.json     operator + projects + autonomy + intervals",
-      "  ~/.config/subctl/master/providers.json  model routing (router/supervisor/reviewer/embeddings/escalate/fallback)",
-      "  ~/.config/subctl/master-notify.json     Telegram bot token + chat_id",
+      "  ~/.config/subctl/evy/policy.json     operator + projects + autonomy + intervals",
+      "  ~/.config/subctl/evy/providers.json  model routing (router/supervisor/reviewer/embeddings/escalate/fallback)",
+      "  ~/.config/subctl/evy-notify.json     Telegram bot token + chat_id",
     ].join("\n");
 
     function appendSystemBlock(text) {
@@ -1806,7 +1806,7 @@ export async function mount({ root: _root }) {
 
         case "config":
           appendSystemBlock([
-            `config files (all on ${HOST_LABEL} at ~/.config/subctl/master/):`,
+            `config files (all on ${HOST_LABEL} at ~/.config/subctl/evy/):`,
             "",
             "  policy.json",
             "    operator info, project portfolio, autonomy levels (drive/ask/shadow),",
@@ -1818,15 +1818,15 @@ export async function mount({ root: _root }) {
             "    reviewer (PR review), embeddings, escalate (cloud), fallback. switch via",
             "    .models.<role>.{provider, model, host} fields.",
             "",
-            "  master-notify.json (one level up at ~/.config/subctl/master-notify.json)",
+            "  evy-notify.json (one level up at ~/.config/subctl/evy-notify.json)",
             "    bot_token + chat_id for Evy's Telegram bot.",
             "",
             "  inbox/ (auto-created)",
             "    one .jsonl per dev team. Evy tails for status events.",
             "",
             `edit the file directly on ${HOST_LABEL}, then restart with:`,
-            "  launchctl unload  ~/Library/LaunchAgents/com.subctl.master.plist",
-            "  launchctl load    ~/Library/LaunchAgents/com.subctl.master.plist",
+            "  launchctl unload  ~/Library/LaunchAgents/com.subctl.evy.plist",
+            "  launchctl load    ~/Library/LaunchAgents/com.subctl.evy.plist",
           ].join("\n"));
           return;
 

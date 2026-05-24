@@ -1,4 +1,4 @@
-// components/master/mcp/index.ts
+// components/evy/mcp/index.ts
 //
 // Public surface of the master daemon's MCP server. Wave-1 scope:
 // auth + identity + transport handshake. Tool/resource registration

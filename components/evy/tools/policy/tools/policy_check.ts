@@ -1,11 +1,11 @@
-// components/master/tools/policy/tools/policy_check.ts
+// components/evy/tools/policy/tools/policy_check.ts
 //
 // `policy_check` — master-callable introspection tool. Wraps the PR 4 loader
 // and the PR 5 hot-path check so the master can answer "would this command be
 // allowed?" from chat without spawning a worker. Pack 06 §6.1.
 //
 // Shape matches the existing tool-family convention used across
-// components/master/tools/*.ts: `{ description, schema, invoke }`. The pack's
+// components/evy/tools/*.ts: `{ description, schema, invoke }`. The pack's
 // `{ name, parameters, handler }` design intent is reshaped into the codebase's
 // actual contract. server.ts namespaces this as `policy_check` via the
 // family prefix.

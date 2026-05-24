@@ -3,7 +3,7 @@
 // v2.7.7 — operator already uses TOON heavily in Argent and asked for
 // the same pattern here. The master answers "how does X work in subctl?"
 // or "what's in the secrets file?" by reading from a single canonical
-// TOON file (components/master/knowledge/subctl.toon) instead of either
+// TOON file (components/evy/knowledge/subctl.toon) instead of either
 // (a) hallucinating from training data or (b) doing a sub-agent file
 // crawl every time.
 //
@@ -28,8 +28,8 @@ import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 // Resolve relative to this module so the path is stable whether the
-// daemon is launched via `bun run`, launchd, or `subctl master` — all
-// three execute server.ts at the same components/master/ root, but a
+// daemon is launched via `bun run`, launchd, or `subctl evy` — all
+// three execute server.ts at the same components/evy/ root, but a
 // process.cwd()-relative path would break if a future launchctl entry
 // set a different working directory.
 const KNOWLEDGE_PATH = resolve(

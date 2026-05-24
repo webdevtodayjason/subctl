@@ -1,4 +1,4 @@
-// components/master/profiles.ts
+// components/evy/profiles.ts
 //
 // v2.7.18 — Supervisor profiles. Two named bundles of {supervisor model,
 // host} the operator switches between without editing providers.json or
@@ -80,7 +80,7 @@ export interface ProfilesFile {
 // ─── path overrides for tests ────────────────────────────────────────────
 // Tests inject a tmpdir-scoped path via _setPathForTesting() so they don't
 // stomp the real ~/.config/subctl/profiles.json. Mirrors the pattern in
-// components/master/secrets.ts.
+// components/evy/secrets.ts.
 
 let _pathOverride: string | null = null;
 
@@ -112,7 +112,7 @@ interface MaybeProvidersJson {
 }
 
 function readProvidersSupervisor(): { model: string; host: string } | null {
-  const providersPath = join(subctlConfigDir(), "master", "providers.json");
+  const providersPath = join(subctlConfigDir(), "evy", "providers.json");
   if (!existsSync(providersPath)) return null;
   try {
     const raw = readFileSync(providersPath, "utf8");

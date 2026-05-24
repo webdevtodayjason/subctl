@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// components/master/cli/codex-login.ts
+// components/evy/cli/codex-login.ts
 //
 // CLI entry point for `subctl auth openai-codex <alias>`. Runs the
 // device-code OAuth flow in-process (no dependency on the external
@@ -9,7 +9,7 @@
 // <configDir>/auth.json (mode 0o600).
 //
 // Designed to be invoked from providers/openai-codex/auth.sh:
-//   bun run components/master/cli/codex-login.ts <alias> <configDir> [<email>]
+//   bun run components/evy/cli/codex-login.ts <alias> <configDir> [<email>]
 //
 // Exit codes:
 //   0  success — auth.json written
@@ -93,7 +93,7 @@ async function main(): Promise<void> {
     console.log(`✓ signed in. tokens written to ${result.authPath} (mode 0o600)`);
     console.log(
       `  expires at ${new Date(result.expires_at_ms).toISOString()} — ` +
-        "subctl master refreshes automatically when the token is near expiry.",
+        "subctl evy refreshes automatically when the token is near expiry.",
     );
     if (result.chatgpt_account_id) {
       console.log(`  chatgpt account: ${result.chatgpt_account_id}`);

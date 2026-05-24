@@ -1,4 +1,4 @@
-// components/master/mcp/identity.ts
+// components/evy/mcp/identity.ts
 //
 // MCP-Expose (#24, wave 1) — caller_id → DecisionProvenance adapter.
 //

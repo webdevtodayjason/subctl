@@ -1,4 +1,4 @@
-// components/master/tools/policy/__tests__/perf.test.ts
+// components/evy/tools/policy/__tests__/perf.test.ts
 //
 // Hot-path latency budget. Pack 11 §6: "1000 checks complete in under 100ms"
 // on the operator's M-series Mac. The hook runs this before every Bash

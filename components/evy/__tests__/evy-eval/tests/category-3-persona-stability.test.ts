@@ -1,4 +1,4 @@
-// components/master/__tests__/evy-eval/tests/category-3-persona-stability.test.ts
+// components/evy/__tests__/evy-eval/tests/category-3-persona-stability.test.ts
 //
 // Evy Eval — Category 3: Persona Stability (4 tests)
 //

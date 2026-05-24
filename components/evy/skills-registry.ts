@@ -1,4 +1,4 @@
-// components/master/skills-registry.ts — v2.8.1 skills clarity
+// components/evy/skills-registry.ts — v2.8.1 skills clarity
 //
 // Single source of truth for "what skills exist, where they came from, and
 // which categorization bucket the dashboard should render them in." The
@@ -127,7 +127,7 @@ export function evySkillsAuditLog(): string {
 /**
  * Resolve the set of project roots to scan for .subctl/skills. The master
  * keeps a registry of known active projects at
- * ~/.config/subctl/master/projects.json — when present, we scan each of
+ * ~/.config/subctl/evy/projects.json — when present, we scan each of
  * those. Tests + callers can also pass an explicit list via opts.
  */
 function defaultProjectRoots(): string[] {

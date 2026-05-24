@@ -1,7 +1,7 @@
 # subctl self-introspection knowledge base — v2.8.9 (2026-05-16 update)
 # Format: TOON (https://github.com/toon-format/toon) for token efficiency.
 # Comments start with "#" and are extracted as section summaries by
-# components/master/tools/knowledge.ts. Top-level keys = sections.
+# components/evy/tools/knowledge.ts. Top-level keys = sections.
 #
 # Last refreshed 2026-05-16. Sections that drifted significantly since v2.7.7:
 #   - tools (Tier-2 lazy registration shipped; 88 registered → ~65 live for
@@ -40,12 +40,12 @@ overview:
 architecture:
   # daemons, comms patterns, data flow, launchd plists.
   daemons[2]{name,port,host,plist,log,role}:
-    master,8788,127.0.0.1,com.subctl.master.plist (planned — currently launched ad-hoc),~/Library/Logs/subctl/master.log,Conversational orchestrator + tool registry + verifier + watchdog.
+    master,8788,127.0.0.1,com.subctl.evy.plist (planned — currently launched ad-hoc),~/Library/Logs/subctl/evy.log,Conversational orchestrator + tool registry + verifier + watchdog.
     dashboard,8787,127.0.0.1 (configurable for LAN/Tailscale),~/Library/LaunchAgents/com.subctl.dashboard.plist,~/Library/Logs/subctl/dashboard.{out,err}.log,SPA + REST + WebSocket front door. Proxies /api/master/* to the master daemon.
   comms_patterns:
     inbound[3]{channel,how}:
       dashboard_chat,POST /api/master/chat → proxied to master :8788/chat → enqueues prompt with source="chat".
-      telegram,Master long-polls Bot API via master-notify-listener.ts → enqueues prompt with source="telegram".
+      telegram,Master long-polls Bot API via evy-notify-listener.ts → enqueues prompt with source="telegram".
       watchdog,Self-fires synthetic prompts every review_interval_minutes (default 30; per-team stall threshold default 15) with source="watchdog".
     outbound[3]{channel,how}:
       sse,GET /events streams agent events (token deltas, tool calls, decisions). Dashboard + listeners subscribe.
@@ -54,22 +54,22 @@ architecture:
   data_flow:
     operator_to_master: dashboard chat OR telegram → POST → master prompt queue → agent loop → tool calls → text reply → SSE broadcast.
     master_to_dev_team: master tool subctl_orch_spawn → tmux new-session w/ per-account CLAUDE_CONFIG_DIR → worker boots with its own SKILL + tool catalog.
-    dev_team_to_master: worker writes status events into ~/.config/subctl/master/inbox/<team>.jsonl → master tails dir (2s poll + fs.watch) → auto-prompts on blocked/error.
+    dev_team_to_master: worker writes status events into ~/.config/subctl/evy/inbox/<team>.jsonl → master tails dir (2s poll + fs.watch) → auto-prompts on blocked/error.
   persistent_state[5]{path,purpose}:
-    ~/.config/subctl/master/agent-state.json,Persisted transcript — restart-survivable.
-    ~/.config/subctl/master/decisions.jsonl,Append-only decision log (one JSON per event).
-    ~/.config/subctl/master/inbox/<team>.jsonl,Per-team lead→master event stream.
-    ~/.config/subctl/master/policy.json,Per-project autonomy + watchdog config.
-    ~/.config/subctl/master/providers.json,Model routing per role (router/supervisor/reviewer/etc).
+    ~/.config/subctl/evy/agent-state.json,Persisted transcript — restart-survivable.
+    ~/.config/subctl/evy/decisions.jsonl,Append-only decision log (one JSON per event).
+    ~/.config/subctl/evy/inbox/<team>.jsonl,Per-team lead→master event stream.
+    ~/.config/subctl/evy/policy.json,Per-project autonomy + watchdog config.
+    ~/.config/subctl/evy/providers.json,Model routing per role (router/supervisor/reviewer/etc).
   launchd:
     confirmed[1]{label,path}:
       com.subctl.dashboard,~/Library/LaunchAgents/com.subctl.dashboard.plist
-    notes: master launchd plist referenced throughout docs but only the dashboard plist was found in ~/Library/LaunchAgents at v2.7.7. Master daemon is currently expected at com.subctl.master.plist per docs/master.md §5.1.
+    notes: master launchd plist referenced throughout docs but only the dashboard plist was found in ~/Library/LaunchAgents at v2.7.7. Master daemon is currently expected at com.subctl.evy.plist per docs/master.md §5.1.
 
 components:
   # the components/ subtree breakdown.
   dirs[8]{path,purpose}:
-    components/master,The master daemon — server.ts entry + tools/* registry + verifier + policy engine + compact-policy + secrets + personality.
+    components/evy,The master daemon — server.ts entry + tools/* registry + verifier + policy engine + compact-policy + secrets + personality.
     components/dashboard (dashboard/),The web SPA + REST + WebSocket. Bun.serve on :8787. Proxies /api/master/* to :8788.
     components/mcp,MCP integration scaffold (package.json + README only at v2.7.7). Future MCP server bridge.
     components/orch,orch.sh — bash helpers for the subctl orchestration verbs (spawn / list / kill).
@@ -79,13 +79,13 @@ components:
     components/claude-config,settings-autonomy.patch.json — Claude Code settings template patched into per-account cfg_dirs.
     components/skills,Skill catalogs — autonomy/, master/, orchestrator-mode/, subctl/, plus skills.sh helper.
   master_subtree[7]{path,purpose}:
-    components/master/server.ts,Entry. Wires pi-agent-core + tool registry + HTTP routes + watchdog + verifier loop.
-    components/master/tools/*.ts,One file per tool family. Each exports an object of {description,schema,invoke}.
-    components/master/verifier.ts,Post-turn anti-hallucination gate. Scans assistant text for claim triggers + requires matching tool call.
-    components/master/compact-policy.ts,Pure decision module — JIT compaction at prompt composition time (v2.7.3+).
-    components/master/secrets.ts,Local secrets layer at ~/.config/subctl/secrets.json (v2.7.4+).
-    components/master/personality.ts,Voice preset loader (straight-shooter / witty / sarcastic / robotic / arnold / elon / hilarious).
-    components/master/policy/,Trusted/Gated/Sealed policy engine — TS reference implementation alongside the Go hot path.
+    components/evy/server.ts,Entry. Wires pi-agent-core + tool registry + HTTP routes + watchdog + verifier loop.
+    components/evy/tools/*.ts,One file per tool family. Each exports an object of {description,schema,invoke}.
+    components/evy/verifier.ts,Post-turn anti-hallucination gate. Scans assistant text for claim triggers + requires matching tool call.
+    components/evy/compact-policy.ts,Pure decision module — JIT compaction at prompt composition time (v2.7.3+).
+    components/evy/secrets.ts,Local secrets layer at ~/.config/subctl/secrets.json (v2.7.4+).
+    components/evy/personality.ts,Voice preset loader (straight-shooter / witty / sarcastic / robotic / arnold / elon / hilarious).
+    components/evy/policy/,Trusted/Gated/Sealed policy engine — TS reference implementation alongside the Go hot path.
 
 providers:
   # provider abstractions for coding-agent harnesses (NOT model providers).
@@ -104,26 +104,26 @@ providers:
 
 tools:
   # the ~70 master tools the agent can call. Family + brief.
-  # Names below match the live registry in components/master/server.ts.
+  # Names below match the live registry in components/evy/server.ts.
   families[18]{family,count,prefix,source_file,summary}:
-    subctl_orch,8,subctl_orch_,components/master/tools/subctl-orch.ts,Dev-team tmux lifecycle: list / status / spawn / spawn_template / msg / kill / state / inbox.
-    gh,4,gh_,components/master/tools/gh.ts,GitHub via gh CLI: pr_list / pr_view / pr_checks / issue_list.
-    coderabbit,3,coderabbit_,components/master/tools/coderabbit.ts,AI code review: review_local / preview_prompts / stats.
-    telegram,2,telegram_,components/master/tools/telegram.ts,Operator-bound Telegram bot: send / send_digest.
-    system,9,system_,components/master/tools/system.ts,Host introspection: hardware / load / disk / lmstudio_models / tmux_sessions / process_top / projects_dir / daemon_self / my_tools.
-    project,2,project_/vault_,components/master/tools/project.ts,project_create + vault_append (sandboxed Obsidian markdown writes).
-    memory,4,memory_,components/master/tools/memory.ts,claude-mem worker queries: search / timeline / observations / health.
-    context7,3,context7_,components/master/tools/context7.ts,Up-to-date library docs: resolve / docs / health.
-    tier1_memory,4,memory_,components/master/tools/tier1-memory.ts,Always-in-context memory curators: show / remember / forget / user_update.
-    skill_author,4,skill_,components/master/tools/skill-author.ts,Master-source skill authoring: create / revise / remove / list_master.
-    notify,1,notify_,components/master/tools/notify.ts,Publish curated events to dashboard notifications feed.
-    specforge,1,specforge,components/master/tools/specforge.ts,5-stage greenfield/brownfield intake state machine.
-    scheduler,3,schedule_/list_/cancel_,components/master/tools/scheduler.ts,Schedule arbitrary follow-up prompts at a future time.
-    attachments,2,read_/list_,components/master/tools/attachments.ts,Read + list operator-uploaded attachments (text/JSON/YAML/TOML/scripts).
-    vault_link,1,vault_,components/master/tools/vault-link.ts,Generate Obsidian vault deep-links.
-    policy,3,policy_,components/master/tools/policy/index.ts,Policy introspection: check / list / audit_tail.
-    diag,9,system_,components/master/tools/diag.ts,Self-diagnostics (v2.7.1): watchdog_self / port_check / lmstudio_health / log_tail / rate_limit_status / git_status / network_health / version_status / supervisor_info.
-    web,2,web_,components/master/tools/web.ts,Web tools (v2.7.2): web_search (Brave) + web_fetch (Firecrawl).
+    subctl_orch,8,subctl_orch_,components/evy/tools/subctl-orch.ts,Dev-team tmux lifecycle: list / status / spawn / spawn_template / msg / kill / state / inbox.
+    gh,4,gh_,components/evy/tools/gh.ts,GitHub via gh CLI: pr_list / pr_view / pr_checks / issue_list.
+    coderabbit,3,coderabbit_,components/evy/tools/coderabbit.ts,AI code review: review_local / preview_prompts / stats.
+    telegram,2,telegram_,components/evy/tools/telegram.ts,Operator-bound Telegram bot: send / send_digest.
+    system,9,system_,components/evy/tools/system.ts,Host introspection: hardware / load / disk / lmstudio_models / tmux_sessions / process_top / projects_dir / daemon_self / my_tools.
+    project,2,project_/vault_,components/evy/tools/project.ts,project_create + vault_append (sandboxed Obsidian markdown writes).
+    memory,4,memory_,components/evy/tools/memory.ts,claude-mem worker queries: search / timeline / observations / health.
+    context7,3,context7_,components/evy/tools/context7.ts,Up-to-date library docs: resolve / docs / health.
+    tier1_memory,4,memory_,components/evy/tools/tier1-memory.ts,Always-in-context memory curators: show / remember / forget / user_update.
+    skill_author,4,skill_,components/evy/tools/skill-author.ts,Master-source skill authoring: create / revise / remove / list_master.
+    notify,1,notify_,components/evy/tools/notify.ts,Publish curated events to dashboard notifications feed.
+    specforge,1,specforge,components/evy/tools/specforge.ts,5-stage greenfield/brownfield intake state machine.
+    scheduler,3,schedule_/list_/cancel_,components/evy/tools/scheduler.ts,Schedule arbitrary follow-up prompts at a future time.
+    attachments,2,read_/list_,components/evy/tools/attachments.ts,Read + list operator-uploaded attachments (text/JSON/YAML/TOML/scripts).
+    vault_link,1,vault_,components/evy/tools/vault-link.ts,Generate Obsidian vault deep-links.
+    policy,3,policy_,components/evy/tools/policy/index.ts,Policy introspection: check / list / audit_tail.
+    diag,9,system_,components/evy/tools/diag.ts,Self-diagnostics (v2.7.1): watchdog_self / port_check / lmstudio_health / log_tail / rate_limit_status / git_status / network_health / version_status / supervisor_info.
+    web,2,web_,components/evy/tools/web.ts,Web tools (v2.7.2): web_search (Brave) + web_fetch (Firecrawl).
   pending_v2_7_7:
     - system_subctl_knowledge — this very tool. Master self-introspection over the TOON breakdown.
   registry_introspection:
@@ -236,25 +236,25 @@ config:
   config_dir: ~/.config/subctl (override via $SUBCTL_CONFIG_DIR).
   files[14]{path,purpose}:
     ~/.config/subctl/accounts.conf,Pipe-delimited alias|provider|email|config_dir|description per OAuth profile.
-    ~/.config/subctl/master/policy.json,Per-project autonomy + watchdog config + escalation rules.
-    ~/.config/subctl/master/providers.json,Model routing per role: router / supervisor / reviewer / embeddings / escalate / fallback.
-    ~/.config/subctl/master/compact.json,JIT compaction config: warn_tokens (25k) / compact_tokens (40k) / target_tokens (30k) / keep_recent (6).
-    ~/.config/subctl/master/personality.json,Single key: preset — active personality (default straight-shooter).
-    ~/.config/subctl/master/obsidian.json,Operator's Obsidian vault root.
-    ~/.config/subctl/master/agent-state.json,Persisted transcript (survives restart).
-    ~/.config/subctl/master/decisions.jsonl,Append-only decision log.
-    ~/.config/subctl/master/memory.md,Tier-1 always-in-context learned facts (~3500 char budget).
-    ~/.config/subctl/master/user.md,Tier-1 always-in-context operator profile.
-    ~/.config/subctl/master/inbox/<team>.jsonl,Per-team lead→master event stream.
-    ~/.config/subctl/master-notify.json,Telegram bot token + chat_id (legacy path; v2.7.4+ prefers secrets.json).
+    ~/.config/subctl/evy/policy.json,Per-project autonomy + watchdog config + escalation rules.
+    ~/.config/subctl/evy/providers.json,Model routing per role: router / supervisor / reviewer / embeddings / escalate / fallback.
+    ~/.config/subctl/evy/compact.json,JIT compaction config: warn_tokens (25k) / compact_tokens (40k) / target_tokens (30k) / keep_recent (6).
+    ~/.config/subctl/evy/personality.json,Single key: preset — active personality (default straight-shooter).
+    ~/.config/subctl/evy/obsidian.json,Operator's Obsidian vault root.
+    ~/.config/subctl/evy/agent-state.json,Persisted transcript (survives restart).
+    ~/.config/subctl/evy/decisions.jsonl,Append-only decision log.
+    ~/.config/subctl/evy/memory.md,Tier-1 always-in-context learned facts (~3500 char budget).
+    ~/.config/subctl/evy/user.md,Tier-1 always-in-context operator profile.
+    ~/.config/subctl/evy/inbox/<team>.jsonl,Per-team lead→master event stream.
+    ~/.config/subctl/evy-notify.json,Telegram bot token + chat_id (legacy path; v2.7.4+ prefers secrets.json).
     ~/.config/subctl/secrets.json,Atomic chmod-600 secrets store (v2.7.4+). 5 known keys.
     ~/.config/subctl/config.toml,Operator config including [update].channel (v2.7.6+).
   launchd_agents[2]{label,path,purpose}:
-    com.subctl.master,~/Library/LaunchAgents/com.subctl.master.plist,Boots the master daemon. KeepAlive on SuccessfulExit=false. Restart via launchctl unload/load.
+    com.subctl.evy,~/Library/LaunchAgents/com.subctl.evy.plist,Boots the master daemon. KeepAlive on SuccessfulExit=false. Restart via launchctl unload/load.
     com.subctl.dashboard,~/Library/LaunchAgents/com.subctl.dashboard.plist,Boots dashboard on :8787. KeepAlive + NetworkState gate.
   state_dirs:
-    - ~/Library/Logs/subctl/ — master.log, dashboard.{out,err}.log.
-    - ~/.config/subctl/master/attachments/<date>/ — operator-uploaded files (v2.4.0+).
+    - ~/Library/Logs/subctl/ — evy.log, dashboard.{out,err}.log.
+    - ~/.config/subctl/evy/attachments/<date>/ — operator-uploaded files (v2.4.0+).
 
 policy:
   # Trusted/Gated/Sealed modes. Snapshot semantics. Defang behavior. Go vs TS hot-path.
@@ -272,7 +272,7 @@ policy:
   hot_path:
     binary: bin/subctl-policy-check (Go).
     rationale: Called by Claude Code PreToolUse hook on EVERY tool invocation. Latency budget — Go gets sub-50ms cold, sub-10ms warm.
-    parity: TS reference at components/master/tools/policy/ exercised by the same 76 test vectors; never the hot path.
+    parity: TS reference at components/evy/tools/policy/ exercised by the same 76 test vectors; never the hot path.
   bash_dispatcher: lib/policy.sh — six verbs (check delegates to Go; list / validate / explain / audit / snapshot via bun TS).
 
 cli_surface:
@@ -350,7 +350,7 @@ secrets:
   security_contract:
     - Values NEVER appear in HTTP response bodies or log messages from secrets.ts.
     - listSecrets() returns presence flags only (isSet / envOverride / lastModified ISO) — safe to surface in dashboard.
-    - Adding a new secret = one-line append to SECRET_KEYS in components/master/secrets.ts.
+    - Adding a new secret = one-line append to SECRET_KEYS in components/evy/secrets.ts.
   priority_chain_v2_7_4[3]{rank,source,when_used}:
     1,process.env.<UPPER_NAME>,Power users / CI / launchd-managed env. Always wins if non-empty.
     2,~/.config/subctl/secrets.json field,Dashboard-driven operator workflow. Fallback when env unset.
@@ -361,7 +361,7 @@ secrets:
     firecrawl_api_key,FIRECRAWL_API_KEY,web_fetch tool.
     linear_api_key,LINEAR_API_KEY,linear_* tool family.
     context7_api_key,CONTEXT7_API_KEY,context7_* tool family.
-  resolver: resolveSecret(key) in components/master/secrets.ts — applies the priority chain.
+  resolver: resolveSecret(key) in components/evy/secrets.ts — applies the priority chain.
 
 supervisor:
   # LM Studio integration, model pinning, JIT defense, ports.
@@ -390,12 +390,12 @@ telegram:
   # bot setup, listener, digest format, @Subctl_bot.
   bot_handle: "@Subctl_bot"
   bot_token_source:
-    primary: ~/.config/subctl/master-notify.json (bot_token or telegram_bot_token field).
+    primary: ~/.config/subctl/evy-notify.json (bot_token or telegram_bot_token field).
     new_path: ~/.config/subctl/secrets.json (planned migration — secrets.ts pattern).
   setup_path: bash install.sh --botfather (also via subctl setup --botfather). Walks operator through BotFather → token → chat_id capture.
   separation_of_concerns:
     note: subctl master uses a DIFFERENT bot than other Argent-family agents (e.g. aos-telegram via TELEGRAM_BOT_TOKEN). Two different bots; two different chats.
-  listener: components/master/master-notify-listener.ts long-polls Bot API. Inbound messages → enqueued as prompts with source="telegram".
+  listener: components/evy/evy-notify-listener.ts long-polls Bot API. Inbound messages → enqueued as prompts with source="telegram".
   outbound_tool: telegram_send (text) + telegram_send_digest (multi-event summary).
   digest_format[5]{field,purpose}:
     title,One-line summary.
@@ -444,13 +444,13 @@ claude_mem:
       - Spawning a dev team into a project worked on before — brief the lead from past observations.
       - Transcript was just auto-compacted (rebuild short-term context).
   tier_boundary:
-    tier_1: ~/.config/subctl/master/memory.md + user.md — OPERATOR-facing notes. Always in context.
+    tier_1: ~/.config/subctl/evy/memory.md + user.md — OPERATOR-facing notes. Always in context.
     tier_2: claude-mem — project/incident history. On-demand.
     tier_3: Obsidian vault — long-form decision history via vault_append.
 
 compact_policy:
   # JIT compaction at prompt composition, two-stage 25k/40k/30k thresholds.
-  module: components/master/compact-policy.ts (pure decision module — no side effects).
+  module: components/evy/compact-policy.ts (pure decision module — no side effects).
   trigger_point: At prompt composition time (NOT a periodic ticker for the primary check).
   rationale_v2_7_3:
     problem: Supervisor has a finite loaded context window. Once prompt overflows it, model silently truncates + hallucinates "Standing by" non-answers.
@@ -463,13 +463,13 @@ compact_policy:
     keep_recent: 6 turns preserved intact.
   decision_actions[3]: ok (proceed) / warn (banner + proceed) / compact (compact first, then proceed).
   back_compat: If compact.json still uses v2.7.2 threshold_pct, falls back to percentage mode (compact at threshold_pct of loaded_ctx, warn 10pp below).
-  config_path: ~/.config/subctl/master/compact.json.
+  config_path: ~/.config/subctl/evy/compact.json.
 
 diagnostic_tools:
   # the v2.7.1 self-diagnostic family. Origin: M3 agent reflected on a watchdog stale-tmux bug and proposed 7 tools via Telegram; operator added an 8th. v2.7.7 has 9.
   origin: 2026-05-11. M3 watchdog hit a stale-tmux bug. Agent proposed 7 tools via Telegram. Operator accepted + added an 8th (version_status). Persistent supervisor loop working as designed.
   all_read_only: true — none mutate subctl state. They answer "is the host healthy?" with first-hand evidence rather than LLM guess.
-  source_file: components/master/tools/diag.ts.
+  source_file: components/evy/tools/diag.ts.
   tools[9]{name,purpose,key_data}:
     system_watchdog_self,What the watchdog is currently watching + last tick/fire timestamps,Per-team watched sessions + interval + staleness threshold.
     system_port_check,Which TCP ports are bound by whom,8788 (master) / 8787 (dashboard) / 1234 (LM Studio) / 37701 (claude-mem) / others on request.
@@ -530,39 +530,39 @@ file_index:
   # canonical list of important files with one-line purpose each.
   entry_points[4]{path,purpose}:
     bin/subctl,Top-level CLI dispatcher.
-    components/master/server.ts,Master daemon entry — Bun.serve on :8788.
+    components/evy/server.ts,Master daemon entry — Bun.serve on :8788.
     dashboard/server.ts,Dashboard entry — Bun.serve on :8787.
     install.sh,One-shot installer (clone + bun install + launchd plist install + optional botfather walk).
   master_core[10]{path,purpose}:
-    components/master/server.ts,Daemon entry — wires pi-agent-core + tool registry + HTTP + watchdog + verifier.
-    components/master/verifier.ts,Post-turn anti-hallucination gate.
-    components/master/compact-policy.ts,JIT compaction decision module (v2.7.3+).
-    components/master/secrets.ts,Local secrets layer (v2.7.4+).
-    components/master/personality.ts,Voice preset loader.
-    components/master/policy.json.example,Per-project policy template.
-    components/master/providers.json.example,Model routing template.
-    components/master/master-notify-listener.ts,Telegram long-poll listener.
-    components/master/attachments.ts,Attachment storage layer (v2.4.0+).
-    components/master/knowledge/subctl.toon,THIS FILE — self-introspection TOON breakdown (v2.7.7+).
+    components/evy/server.ts,Daemon entry — wires pi-agent-core + tool registry + HTTP + watchdog + verifier.
+    components/evy/verifier.ts,Post-turn anti-hallucination gate.
+    components/evy/compact-policy.ts,JIT compaction decision module (v2.7.3+).
+    components/evy/secrets.ts,Local secrets layer (v2.7.4+).
+    components/evy/personality.ts,Voice preset loader.
+    components/evy/policy.json.example,Per-project policy template.
+    components/evy/providers.json.example,Model routing template.
+    components/evy/evy-notify-listener.ts,Telegram long-poll listener.
+    components/evy/attachments.ts,Attachment storage layer (v2.4.0+).
+    components/evy/knowledge/subctl.toon,THIS FILE — self-introspection TOON breakdown (v2.7.7+).
   tool_files[18]{path,purpose}:
-    components/master/tools/subctl-orch.ts,Dev-team tmux lifecycle.
-    components/master/tools/gh.ts,GitHub via gh CLI.
-    components/master/tools/coderabbit.ts,AI code review.
-    components/master/tools/telegram.ts,Operator Telegram outbound.
-    components/master/tools/system.ts,Host introspection (9 tools).
-    components/master/tools/project.ts,project_create + vault_append.
-    components/master/tools/memory.ts,claude-mem worker queries.
-    components/master/tools/context7.ts,Up-to-date library docs.
-    components/master/tools/tier1-memory.ts,Always-in-context memory curators.
-    components/master/tools/skill-author.ts,Master-source skill authoring.
-    components/master/tools/notify.ts,Curated dashboard notifications.
-    components/master/tools/specforge.ts,5-stage greenfield/brownfield intake.
-    components/master/tools/scheduler.ts,Follow-up scheduling.
-    components/master/tools/attachments.ts,Read/list operator-uploaded files.
-    components/master/tools/vault-link.ts,Obsidian deep-link generator.
-    components/master/tools/policy/index.ts,Policy introspection (check/list/audit_tail).
-    components/master/tools/diag.ts,Self-diagnostics (9 system_* tools).
-    components/master/tools/web.ts,Brave search + Firecrawl fetch.
+    components/evy/tools/subctl-orch.ts,Dev-team tmux lifecycle.
+    components/evy/tools/gh.ts,GitHub via gh CLI.
+    components/evy/tools/coderabbit.ts,AI code review.
+    components/evy/tools/telegram.ts,Operator Telegram outbound.
+    components/evy/tools/system.ts,Host introspection (9 tools).
+    components/evy/tools/project.ts,project_create + vault_append.
+    components/evy/tools/memory.ts,claude-mem worker queries.
+    components/evy/tools/context7.ts,Up-to-date library docs.
+    components/evy/tools/tier1-memory.ts,Always-in-context memory curators.
+    components/evy/tools/skill-author.ts,Master-source skill authoring.
+    components/evy/tools/notify.ts,Curated dashboard notifications.
+    components/evy/tools/specforge.ts,5-stage greenfield/brownfield intake.
+    components/evy/tools/scheduler.ts,Follow-up scheduling.
+    components/evy/tools/attachments.ts,Read/list operator-uploaded files.
+    components/evy/tools/vault-link.ts,Obsidian deep-link generator.
+    components/evy/tools/policy/index.ts,Policy introspection (check/list/audit_tail).
+    components/evy/tools/diag.ts,Self-diagnostics (9 system_* tools).
+    components/evy/tools/web.ts,Brave search + Firecrawl fetch.
   policy_engine[6]{path,purpose}:
     bin/subctl-policy-check,Go binary — hot-path policy check (PreToolUse hook target).
     bin/policy/list.ts,Resolved-policy view CLI.

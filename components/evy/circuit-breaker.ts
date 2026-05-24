@@ -1,4 +1,4 @@
-// components/master/circuit-breaker.ts
+// components/evy/circuit-breaker.ts
 //
 // v2.7.19 — Empty-listener tool-call circuit breaker.
 //

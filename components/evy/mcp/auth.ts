@@ -1,4 +1,4 @@
-// components/master/mcp/auth.ts
+// components/evy/mcp/auth.ts
 //
 // MCP-Expose (#24, wave 1) — bearer-token + caller_id verification for the
 // in-process MCP server. Every authenticated request must carry BOTH:

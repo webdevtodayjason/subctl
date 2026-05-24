@@ -32,7 +32,7 @@ import {
   type TeamTemplate,
   type TeamTemplateDeveloper,
   projectDeveloperToolScope,
-} from "../../components/master/team-templates";
+} from "../../components/evy/team-templates";
 
 // ─── per-team state on disk ─────────────────────────────────────────────────
 

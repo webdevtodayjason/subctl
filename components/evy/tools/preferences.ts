@@ -1,4 +1,4 @@
-// components/master/tools/preferences.ts
+// components/evy/tools/preferences.ts
 //
 // v2.8.1 — Master tools so Evy can read and update operator preferences
 // from inside a turn. Distinct from Evy Memory (Tier 3): preferences are

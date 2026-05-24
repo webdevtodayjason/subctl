@@ -1,4 +1,4 @@
-// components/master/__tests__/skills-registry.test.ts
+// components/evy/__tests__/skills-registry.test.ts
 //
 // v2.8.1 skills clarity — registry contract pins.
 //
@@ -60,7 +60,7 @@ beforeEach(() => {
   process.env.SUBCTL_SKILLS_DIR = importedDir;
   process.env.SUBCTL_EVY_SKILLS_AUDIT = join(tmpRoot, "audit.jsonl");
   // Point CONFIG_DIR at the tmpdir so defaultProjectRoots can't accidentally
-  // find the real ~/.config/subctl/master/projects.json.
+  // find the real ~/.config/subctl/evy/projects.json.
   process.env.SUBCTL_CONFIG_DIR = join(tmpRoot, "config");
 });
 

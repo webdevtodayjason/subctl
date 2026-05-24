@@ -253,7 +253,7 @@ export const systemTools = {
 
   daemon_self: {
     description:
-      "Information about THIS subctl master daemon process: PID, uptime, transcript size, config paths, tools count, supervisor model. Use when asked 'what's your status' or 'where do you live'.",
+      "Information about THIS subctl evy daemon process: PID, uptime, transcript size, config paths, tools count, supervisor model. Use when asked 'what's your status' or 'where do you live'.",
     schema: { type: "object", properties: {}, required: [] },
     invoke: async () => {
       return {
@@ -263,10 +263,10 @@ export const systemTools = {
         node_compat: process.versions.node,
         config_dir: process.env.SUBCTL_CONFIG_DIR ?? `${HOME}/.config/subctl`,
         master_state_dir: `${process.env.SUBCTL_CONFIG_DIR ?? `${HOME}/.config/subctl`}/master`,
-        log_path: `${HOME}/Library/Logs/subctl/master.log`,
-        plist_path: `${HOME}/Library/LaunchAgents/com.subctl.master.plist`,
-        http_host: process.env.SUBCTL_MASTER_HOST ?? "127.0.0.1",
-        http_port: process.env.SUBCTL_MASTER_PORT ?? "8788",
+        log_path: `${HOME}/Library/Logs/subctl/evy.log`,
+        plist_path: `${HOME}/Library/LaunchAgents/com.subctl.evy.plist`,
+        http_host: process.env.SUBCTL_EVY_HOST ?? "127.0.0.1",
+        http_port: process.env.SUBCTL_EVY_PORT ?? "8788",
       };
     },
   },

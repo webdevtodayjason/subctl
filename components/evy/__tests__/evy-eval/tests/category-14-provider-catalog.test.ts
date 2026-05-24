@@ -1,4 +1,4 @@
-// components/master/__tests__/evy-eval/tests/category-14-provider-catalog.test.ts
+// components/evy/__tests__/evy-eval/tests/category-14-provider-catalog.test.ts
 //
 // Evy Eval — Category 14: pi-ai Provider Catalog (v2.7.24) (2 tests)
 //

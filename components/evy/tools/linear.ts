@@ -109,7 +109,7 @@ const MUTATION_TIMEOUT_MS = 30_000;
 
 // v2.7.4: hint mentions both paths (dashboard panel OR plist).
 const KEY_MISSING_HINT =
-  "Set it via the dashboard Settings → API Tokens panel (writes ~/.config/subctl/secrets.json, chmod 600) OR in ~/Library/LaunchAgents/com.subctl.master.plist EnvironmentVariables followed by `launchctl kickstart -k gui/$UID/com.subctl.master`.";
+  "Set it via the dashboard Settings → API Tokens panel (writes ~/.config/subctl/secrets.json, chmod 600) OR in ~/Library/LaunchAgents/com.subctl.evy.plist EnvironmentVariables followed by `launchctl kickstart -k gui/$UID/com.subctl.evy`.";
 
 function requireApiKey(): { ok: true; key: string } | { ok: false; error: string } {
   // v2.7.4 priority chain: env > secrets.json > absent.

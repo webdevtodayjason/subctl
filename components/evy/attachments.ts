@@ -1,7 +1,7 @@
 // Phase 3l — Document attachments in chat.
 //
 // Storage layout:
-//   ~/.config/subctl/master/attachments/
+//   ~/.config/subctl/evy/attachments/
 //   ├── 2026-05-10/
 //   │   ├── a1b2c3d4-foothold-spec.md
 //   │   └── e5f6a7b8-pasted-2026-05-10-1342.md
@@ -34,7 +34,7 @@ import { join } from "node:path";
 
 const SUBCTL_CONFIG_DIR =
   process.env.SUBCTL_CONFIG_DIR ?? join(homedir(), ".config", "subctl");
-const ROOT = join(SUBCTL_CONFIG_DIR, "master", "attachments");
+const ROOT = join(SUBCTL_CONFIG_DIR, "evy", "attachments");
 const INDEX_PATH = join(ROOT, "index.jsonl");
 
 // Phase 1 mime allowlist. Anything outside this set is refused — operator

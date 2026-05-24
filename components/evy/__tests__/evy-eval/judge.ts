@@ -1,4 +1,4 @@
-// components/master/__tests__/evy-eval/judge.ts
+// components/evy/__tests__/evy-eval/judge.ts
 //
 // Phase 2 of the Evy eval pipeline: LLM judge. Sends Evy's response
 // + a per-test judge prompt to Claude Sonnet, parses the forced-JSON
@@ -47,7 +47,7 @@ const ANTHROPIC_VERSION = "2023-06-01";
  *   3. null  (dual-mode: judge phase skipped, regex-only grading)
  *
  * Reads secrets.json fresh on every call. This module deliberately
- * does NOT share the secrets cache with `components/master/secrets.ts`
+ * does NOT share the secrets cache with `components/evy/secrets.ts`
  * because the eval harness must be importable WITHOUT touching the
  * master daemon's runtime state — tests run in subprocesses that
  * shouldn't perturb the daemon's live cache.

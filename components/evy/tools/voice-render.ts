@@ -1,4 +1,4 @@
-// components/master/tools/voice-render.ts
+// components/evy/tools/voice-render.ts
 //
 // v2.8.0 — Master tool: voice_render({ text, voice_id? }) → { audio_url,
 // format, duration_ms, cached, hash }. POSTs to the local TTS server

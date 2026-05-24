@@ -1,4 +1,4 @@
-// components/master/tools/policy/verifier-cluster.ts
+// components/evy/tools/policy/verifier-cluster.ts
 //
 // Denial-cluster detection + correction firing.
 // Pack 06 §7 + HANDOFF_DIGEST D8 (β: pulled into v2.7.0 as PR 6.5).
@@ -17,7 +17,7 @@
 //
 // Per-team in-memory state (resets on master restart):
 //   - correctionCount[teamId]: how many corrections fired for this team.
-//     After 2, we give up: log the cluster to ~/.config/subctl/master/decisions.jsonl
+//     After 2, we give up: log the cluster to ~/.config/subctl/evy/decisions.jsonl
 //     for operator review (mirrors the existing post-turn claim verifier's
 //     2-correction giveup behavior in server.ts §verifier gate).
 //   - lastCorrectionAt[teamId]: cooldown clock. After a fire, suppress further
@@ -234,13 +234,13 @@ async function defaultReadSnapshotMeta(
 
 /**
  * Default decisions.jsonl appender: writes one line to
- * `~/.config/subctl/master/decisions.jsonl`. Mirrors `logDecision` in
+ * `~/.config/subctl/evy/decisions.jsonl`. Mirrors `logDecision` in
  * server.ts. Best-effort — swallow errors so a write failure here can't kill
  * the ticker.
  */
 function defaultAppendDecision(entry: Record<string, unknown>): void {
   const cfgDir = process.env.SUBCTL_CONFIG_DIR ?? join(homedir(), ".config", "subctl");
-  const masterDir = join(cfgDir, "master");
+  const masterDir = join(cfgDir, "evy");
   const path = join(masterDir, "decisions.jsonl");
   try {
     mkdirSync(masterDir, { recursive: true });

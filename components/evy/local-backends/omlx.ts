@@ -1,4 +1,4 @@
-// components/master/local-backends/omlx.ts
+// components/evy/local-backends/omlx.ts
 //
 // OmniMLX adapter — Apple-Silicon LLM inference server (jundot/omlx).
 //

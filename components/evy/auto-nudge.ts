@@ -1,4 +1,4 @@
-// components/master/auto-nudge.ts
+// components/evy/auto-nudge.ts
 //
 // v2.7.22 — Auto-nudge state machine for the team-staleness watchdog.
 //

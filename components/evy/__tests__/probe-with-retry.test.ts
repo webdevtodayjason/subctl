@@ -1,4 +1,4 @@
-// components/master/__tests__/probe-with-retry.test.ts
+// components/evy/__tests__/probe-with-retry.test.ts
 //
 // Pins the retry-with-backoff contract used by Cognee + Memori boot
 // probes. The motivating incident: master logged

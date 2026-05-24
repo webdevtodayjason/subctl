@@ -1,4 +1,4 @@
-// components/master/probe-with-retry.ts
+// components/evy/probe-with-retry.ts
 //
 // Generic retry-with-backoff wrapper for sidecar reachability probes
 // (Cognee, Memori, etc.). Replaces the one-shot probe pattern that

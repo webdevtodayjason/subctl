@@ -1,4 +1,4 @@
-// components/master/__tests__/auto-compact.test.ts
+// components/evy/__tests__/auto-compact.test.ts
 //
 // v2.7.22 — fix for the auto-compact watchdog whose last_tick_at stayed
 // null indefinitely. Root cause: the boot-time setTimeout that fired

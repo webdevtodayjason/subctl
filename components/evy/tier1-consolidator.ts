@@ -1,4 +1,4 @@
-// components/master/tier1-consolidator.ts
+// components/evy/tier1-consolidator.ts
 //
 // Tier 1 Consolidator (v2.9.0) — LLM-driven dedup pass for the pending
 // candidate queue. The 5-minute memory-kernel reviewer is rule-permissive
@@ -110,7 +110,7 @@ export interface ConsolidateInput {
 // ─── char budget math ────────────────────────────────────────────────────
 //
 // Mirrors the serializeEntries / writeMemory shape in
-// components/master/tools/tier1-memory.ts so the dashboard meter matches
+// components/evy/tools/tier1-memory.ts so the dashboard meter matches
 // what memory_remember would actually compute on Apply.
 
 /** Section break between memory.md entries — must match ENTRY_DELIMITER in tier1-memory.ts. */

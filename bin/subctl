@@ -746,9 +746,17 @@ case "$cmd" in
     subctl_plugins "$@"
     ;;
 
+  evy)
+    . "$SUBCTL_REPO_ROOT/lib/evy.sh"
+    subctl_evy "$@"
+    ;;
+
   master)
-    . "$SUBCTL_REPO_ROOT/lib/master.sh"
-    subctl_master "$@"
+    # v3.0 compat shim — `subctl master <verb>` continues to work
+    # through v3.x with a deprecation warning surfaced in commit 3
+    # (Phase 3). Currently routes silently to subctl_evy.
+    . "$SUBCTL_REPO_ROOT/lib/evy.sh"
+    subctl_evy "$@"
     ;;
 
   policy)

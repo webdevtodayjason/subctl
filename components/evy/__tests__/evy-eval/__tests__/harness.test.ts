@@ -1,4 +1,4 @@
-// components/master/__tests__/evy-eval/__tests__/harness.test.ts
+// components/evy/__tests__/evy-eval/__tests__/harness.test.ts
 //
 // Tests for the harness layer: session driver (stubbed in pr24),
 // baseline hashing, score logging, run summary.
@@ -49,9 +49,9 @@ beforeEach(() => {
   process.env.SUBCTL_CONFIG_DIR = tmp;
   // Pre-stage a providers.json with a known supervisor model so
   // getEvyModelId returns a deterministic value.
-  mkdirSync(join(tmp, "master"), { recursive: true });
+  mkdirSync(join(tmp, "evy"), { recursive: true });
   writeFileSync(
-    join(tmp, "master", "providers.json"),
+    join(tmp, "evy", "providers.json"),
     JSON.stringify({
       models: { supervisor: { provider: "test-prov", model: "test-model" } },
     }),
@@ -122,7 +122,7 @@ describe("computePartialBaselineHash", () => {
   test("differs when providers.json supervisor model changes", () => {
     const a = computePartialBaselineHash();
     writeFileSync(
-      join(tmp, "master", "providers.json"),
+      join(tmp, "evy", "providers.json"),
       JSON.stringify({
         models: { supervisor: { provider: "test-prov", model: "DIFFERENT" } },
       }),
@@ -172,12 +172,12 @@ describe("getEvyModelId", () => {
   });
 
   test("returns 'unknown:unknown' when providers.json missing", () => {
-    rmSync(join(tmp, "master", "providers.json"));
+    rmSync(join(tmp, "evy", "providers.json"));
     expect(getEvyModelId()).toBe("unknown:unknown");
   });
 
   test("returns 'unknown:unknown' on malformed providers.json", () => {
-    writeFileSync(join(tmp, "master", "providers.json"), "not json");
+    writeFileSync(join(tmp, "evy", "providers.json"), "not json");
     expect(getEvyModelId()).toBe("unknown:unknown");
   });
 });
@@ -209,7 +209,7 @@ describe("logEvalScore", () => {
   }
 
   test("creates the parent directory on first call", () => {
-    const path = join(tmp, "master", "state", "eval-scores.jsonl");
+    const path = join(tmp, "evy", "state", "eval-scores.jsonl");
     expect(existsSync(path)).toBe(false);
     logEvalScore(sampleEntry());
     expect(existsSync(path)).toBe(true);
@@ -220,7 +220,7 @@ describe("logEvalScore", () => {
     logEvalScore(sampleEntry({ test_id: "1.2" }));
     logEvalScore(sampleEntry({ test_id: "1.3" }));
 
-    const path = join(tmp, "master", "state", "eval-scores.jsonl");
+    const path = join(tmp, "evy", "state", "eval-scores.jsonl");
     const lines = readFileSync(path, "utf8")
       .split("\n")
       .filter((l) => l.length > 0);
@@ -234,7 +234,7 @@ describe("logEvalScore", () => {
   test("survives empty optional fields", () => {
     // No fastFailHit, no judgeResult — should still write a valid line.
     logEvalScore(sampleEntry({ result: "regex-only-pass" }));
-    const path = join(tmp, "master", "state", "eval-scores.jsonl");
+    const path = join(tmp, "evy", "state", "eval-scores.jsonl");
     const raw = readFileSync(path, "utf8");
     const parsed = JSON.parse(raw.trim()) as EvalScoreLogEntry;
     expect(parsed.result).toBe("regex-only-pass");

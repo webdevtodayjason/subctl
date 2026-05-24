@@ -1,4 +1,4 @@
-// components/master/local-backends/ollama.ts
+// components/evy/local-backends/ollama.ts
 //
 // Ollama adapter — auto-loading model server with an OpenAI-compat shim.
 //

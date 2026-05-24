@@ -1,4 +1,4 @@
-// components/master/__tests__/compact-policy.test.ts
+// components/evy/__tests__/compact-policy.test.ts
 //
 // Tests for the v2.7.3 compact-policy module. The decision logic is the
 // algorithm that keeps the supervisor from ever seeing an over-budget

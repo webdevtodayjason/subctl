@@ -13,7 +13,7 @@
 #   - boot_prompt: what the lead is told as its first message
 #
 # Stored at $SUBCTL_TEAM_TEMPLATES_DIR/<name>.json (default
-# ~/.config/subctl/master/team-templates/).
+# ~/.config/subctl/evy/team-templates/).
 #
 # Used by `subctl orch spawn --template <name>` (Phase 3c) to wire a
 # specialized lead before launching its tmux session.
@@ -22,7 +22,7 @@ set -uo pipefail
 
 . "$(dirname "${BASH_SOURCE[0]}")/../../lib/core.sh"
 
-SUBCTL_TEAM_TEMPLATES_DIR="${SUBCTL_TEAM_TEMPLATES_DIR:-$HOME/.config/subctl/master/team-templates}"
+SUBCTL_TEAM_TEMPLATES_DIR="${SUBCTL_TEAM_TEMPLATES_DIR:-$HOME/.config/subctl/evy/team-templates}"
 
 subctl_templates() {
   local sub="${1:-}"; shift || true
@@ -37,7 +37,7 @@ subctl_templates() {
 subctl templates <verb> [args]
 
   Manage dev-team templates at \$SUBCTL_TEAM_TEMPLATES_DIR
-  (default: ~/.config/subctl/master/team-templates/).
+  (default: ~/.config/subctl/evy/team-templates/).
 
 Verbs:
   list, ls                       List all templates.

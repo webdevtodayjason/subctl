@@ -1,4 +1,4 @@
-// components/master/__tests__/cognee-promotion.test.ts
+// components/evy/__tests__/cognee-promotion.test.ts
 //
 // Tests for the Cognee write path — Tier 3 → Tier 4 promotion ticker
 // introduced in v2.8.15. Every external surface (curated-table reader,

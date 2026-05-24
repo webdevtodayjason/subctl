@@ -1,4 +1,4 @@
-// components/master/local-backends/index.ts
+// components/evy/local-backends/index.ts
 //
 // Phase 4 — Local inference backend registry + common contract.
 //

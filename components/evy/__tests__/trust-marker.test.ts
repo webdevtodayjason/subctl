@@ -1,4 +1,4 @@
-// components/master/__tests__/trust-marker.test.ts
+// components/evy/__tests__/trust-marker.test.ts
 //
 // v2.7.20 — HMAC-authenticated trust marker (ADR 0011 Layer 1). Pins
 // the contract between providers/claude/teams.sh (which generates the

@@ -1,4 +1,4 @@
-// components/master/consciousness-loop/planner.ts
+// components/evy/consciousness-loop/planner.ts
 //
 // Memory Init #7 — rule-based deterministic planner (v0.1).
 //

@@ -157,7 +157,7 @@ subctl_ensure_config_dir() {
 
 # ── version ──────────────────────────────────────────────────────────────────
 # Single source of truth: VERSION file at repo root.
-# bin/subctl, lib/update.sh, dashboard/server.ts, and components/master/server.ts
+# bin/subctl, lib/update.sh, dashboard/server.ts, and components/evy/server.ts
 # all derive their version string from this file (see CHANGELOG.md for bump policy).
 if [[ -r "$SUBCTL_REPO_ROOT/VERSION" ]]; then
   SUBCTL_VERSION="$(tr -d '[:space:]' < "$SUBCTL_REPO_ROOT/VERSION")"

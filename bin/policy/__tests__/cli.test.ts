@@ -278,7 +278,7 @@ ${JSON.stringify({ ts: "2026-05-11T18:43:00.111Z", team_id: team, mode: "gated",
 describe("subctl policy snapshot", () => {
   test("--show prints the snapshot file", async () => {
     // Write a snapshot first using the master tool's writer.
-    const { writePolicySnapshot } = await import("../../../components/master/tools/policy/snapshot");
+    const { writePolicySnapshot } = await import("../../../components/evy/tools/policy/snapshot");
     await writePolicySnapshot("t-show", projectRoot, "gated");
 
     const r = await runCli(SNAPSHOT_TS, ["t-show", "--show"], { SUBCTL_STATE_DIR: stateDir, SUBCTL_CONFIG_DIR: cfgDir });
@@ -289,7 +289,7 @@ describe("subctl policy snapshot", () => {
   });
 
   test("--verify on an untampered snapshot reports OK", async () => {
-    const { writePolicySnapshot } = await import("../../../components/master/tools/policy/snapshot");
+    const { writePolicySnapshot } = await import("../../../components/evy/tools/policy/snapshot");
     await writePolicySnapshot("t-verify", projectRoot, "gated");
 
     const r = await runCli(SNAPSHOT_TS, ["t-verify", "--verify"], { SUBCTL_STATE_DIR: stateDir, SUBCTL_CONFIG_DIR: cfgDir });

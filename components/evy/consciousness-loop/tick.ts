@@ -1,4 +1,4 @@
-// components/master/consciousness-loop/tick.ts
+// components/evy/consciousness-loop/tick.ts
 //
 // Memory Init #7 — single-tick orchestration.
 //

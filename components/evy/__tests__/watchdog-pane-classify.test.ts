@@ -1,4 +1,4 @@
-// components/master/__tests__/watchdog-pane-classify.test.ts
+// components/evy/__tests__/watchdog-pane-classify.test.ts
 //
 // v2.8.14 — Operator-reported watchdog false-positive on `claude-birdie`
 // (2026-05-21): worker replied via tmux pane with "work complete, idle by

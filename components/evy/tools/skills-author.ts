@@ -1,4 +1,4 @@
-// components/master/tools/skills-author.ts — v2.8.1 Evy-authored skills.
+// components/evy/tools/skills-author.ts — v2.8.1 Evy-authored skills.
 //
 // The operator-visible counterpart to the legacy skill-author.ts. That older
 // tool wrote master-only skills into a private subdirectory of the imported

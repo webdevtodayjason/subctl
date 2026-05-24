@@ -21,7 +21,7 @@
 // **Bridge preservation** — `window.__skillsClarityRefresh` is
 // published from inside `mount()` for behavior parity. A
 // `grep -rn '__skillsClarityRefresh'` across `dashboard/` and
-// `components/master/` finds ZERO readers other than the assignment
+// `components/evy/` finds ZERO readers other than the assignment
 // itself — the bridge is effectively dead inside the dashboard. BUT
 // external consumers (the master daemon's `/master/skills/*` route, an
 // operator bookmarklet, a browser extension) might still call into it,

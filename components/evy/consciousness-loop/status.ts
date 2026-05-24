@@ -1,4 +1,4 @@
-// components/master/consciousness-loop/status.ts
+// components/evy/consciousness-loop/status.ts
 //
 // Memory Init #7 — read-only status surface.
 //

@@ -325,8 +325,8 @@ blocked, error) append an event to the team inbox:
     subctl team report --type error    --text \"infra check failed\"
 
 The team name auto-resolves from \$SUBCTL_TEAM_NAME (already in your env).
-Events land at ~/.config/subctl/master/inbox/<team>.jsonl, which the
-master daemon tails and surfaces on the dashboard + Telegram. Use these
+Events land at ~/.config/subctl/evy/inbox/<team>.jsonl, which the
+Evy daemon tails and surfaces on the dashboard + Telegram. Use these
 events as the primary control-plane signal — the operator may not be
 watching your tmux pane, but the inbox is.
 

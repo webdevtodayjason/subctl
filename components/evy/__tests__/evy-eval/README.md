@@ -183,7 +183,7 @@ it, tests fall back to **regex-only mode**: passing tests are tagged
 
 ## Reading `eval-scores.jsonl`
 
-Score log lives at `~/.config/subctl/master/state/eval-scores.jsonl`.
+Score log lives at `~/.config/subctl/evy/state/eval-scores.jsonl`.
 Append-only. One JSON object per line. Shape (from `types.ts`):
 
 ```jsonc
@@ -210,16 +210,16 @@ Useful one-liners:
 
 ```bash
 # All failures across all runs:
-grep '"result":"fail"' ~/.config/subctl/master/state/eval-scores.jsonl
+grep '"result":"fail"' ~/.config/subctl/evy/state/eval-scores.jsonl
 
 # Last 5 runs of test 1.2:
-grep '"test_id":"1.2"' ~/.config/subctl/master/state/eval-scores.jsonl | tail -5
+grep '"test_id":"1.2"' ~/.config/subctl/evy/state/eval-scores.jsonl | tail -5
 
 # Find when the baseline last reset (group by baselineHash):
-jq -r '.baselineHash' ~/.config/subctl/master/state/eval-scores.jsonl | sort -u
+jq -r '.baselineHash' ~/.config/subctl/evy/state/eval-scores.jsonl | sort -u
 
 # Spot a partial run (regex-only-pass count):
-grep -c '"regex-only-pass"' ~/.config/subctl/master/state/eval-scores.jsonl
+grep -c '"regex-only-pass"' ~/.config/subctl/evy/state/eval-scores.jsonl
 ```
 
 ## Two modes: with vs. without `anthropic_api_key`

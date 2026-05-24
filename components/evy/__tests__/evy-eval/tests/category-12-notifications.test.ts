@@ -1,13 +1,13 @@
-// components/master/__tests__/evy-eval/tests/category-12-notifications.test.ts
+// components/evy/__tests__/evy-eval/tests/category-12-notifications.test.ts
 //
 // Evy Eval — Category 12: Notifications + Auto-Nudge (v2.7.22) (2 tests)
 //
 // v2.7.22 separated the notification channel from the chat transcript.
 // The team-staleness watchdog no longer synthesizes operator-facing
 // prompts into Evy's transcript; it emits structured notifications via
-// `components/master/notifications.ts`, surfaced via the dashboard bell
+// `components/evy/notifications.ts`, surfaced via the dashboard bell
 // tray and Telegram pushes on `severity:"alert"`. The auto-nudge flow
-// (`components/master/auto-nudge.ts`) first nudges the stale team, holds
+// (`components/evy/auto-nudge.ts`) first nudges the stale team, holds
 // for 30 min, and if the team still hasn't responded escalates to a
 // `severity:"alert"` notification + a re-nudge with an escalated body.
 //

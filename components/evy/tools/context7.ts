@@ -24,7 +24,7 @@ let _rpcId = 0;
 async function rpc<T>(method: string, params: Record<string, unknown>): Promise<T | { error: string }> {
   const apiKey = getApiKey();
   if (!apiKey) {
-    return { error: "CONTEXT7_API_KEY not configured. Set it via the dashboard Settings → API Tokens panel (writes ~/.config/subctl/secrets.json, chmod 600) OR in ~/Library/LaunchAgents/com.subctl.master.plist EnvironmentVariables and reload the launchd job." };
+    return { error: "CONTEXT7_API_KEY not configured. Set it via the dashboard Settings → API Tokens panel (writes ~/.config/subctl/secrets.json, chmod 600) OR in ~/Library/LaunchAgents/com.subctl.evy.plist EnvironmentVariables and reload the launchd job." };
   }
   _rpcId++;
   try {

@@ -1,4 +1,4 @@
-// components/master/__tests__/xai-oauth-cli.test.ts
+// components/evy/__tests__/xai-oauth-cli.test.ts
 //
 // Phase D coverage — the CLI auth path.
 //

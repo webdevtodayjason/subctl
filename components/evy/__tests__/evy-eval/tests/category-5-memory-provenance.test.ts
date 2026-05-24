@@ -1,4 +1,4 @@
-// components/master/__tests__/evy-eval/tests/category-5-memory-provenance.test.ts
+// components/evy/__tests__/evy-eval/tests/category-5-memory-provenance.test.ts
 //
 // Evy Eval — Category 5: Memory and Provenance (3 tests)
 //

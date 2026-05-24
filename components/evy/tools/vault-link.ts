@@ -12,7 +12,7 @@ const SUBCTL_CONFIG_DIR =
 function getVaultRoot(): string {
   let root = `${homedir()}/Documents/Obsidian Vault`;
   try {
-    const cfgPath = join(SUBCTL_CONFIG_DIR, "master", "obsidian.json");
+    const cfgPath = join(SUBCTL_CONFIG_DIR, "evy", "obsidian.json");
     if (existsSync(cfgPath)) {
       const j = JSON.parse(readFileSync(cfgPath, "utf8")) as { vault_root?: string };
       if (j.vault_root) root = j.vault_root.replace(/^~/, homedir());

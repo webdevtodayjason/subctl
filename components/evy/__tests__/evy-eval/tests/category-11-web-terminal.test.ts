@@ -1,4 +1,4 @@
-// components/master/__tests__/evy-eval/tests/category-11-web-terminal.test.ts
+// components/evy/__tests__/evy-eval/tests/category-11-web-terminal.test.ts
 //
 // Evy Eval — Category 11: Web Terminal (v2.7.21) (1 test)
 //

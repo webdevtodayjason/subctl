@@ -1,4 +1,4 @@
-// components/master/tools/__tests__/linear.test.ts
+// components/evy/tools/__tests__/linear.test.ts
 //
 // Tests for the v2.7.2 Linear-tool family. Hermetic — every test
 // swaps in a canned `fetchHttp` so the suite never reaches
@@ -162,7 +162,7 @@ describe("linear_list_issues", () => {
     );
     expect(r.ok).toBe(false);
     expect(r.error).toContain("LINEAR_API_KEY");
-    expect(r.error).toContain("com.subctl.master.plist");
+    expect(r.error).toContain("com.subctl.evy.plist");
   });
 
   test("4xx (e.g. 401 invalid key) returns structured error", async () => {

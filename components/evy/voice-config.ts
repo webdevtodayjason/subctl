@@ -1,4 +1,4 @@
-// components/master/voice-config.ts
+// components/evy/voice-config.ts
 //
 // v2.8.0 — Voice layer config. ~/.config/subctl/voice.json holds the
 // operator-editable knobs for the local TTS pipeline:

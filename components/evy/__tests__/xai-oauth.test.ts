@@ -1,4 +1,4 @@
-// components/master/__tests__/xai-oauth.test.ts
+// components/evy/__tests__/xai-oauth.test.ts
 //
 // Phase A coverage for xai-oauth.ts. The host-pin negative case is the
 // load-bearing test — it asserts that a discovery response with a

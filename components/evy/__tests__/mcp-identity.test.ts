@@ -1,4 +1,4 @@
-// components/master/__tests__/mcp-identity.test.ts
+// components/evy/__tests__/mcp-identity.test.ts
 //
 // MCP-Expose (#24, wave 1) — caller_id → decisions.jsonl `by` field
 // adapter. The wave-2 tool surface will spread `buildMcpProvenance`'s

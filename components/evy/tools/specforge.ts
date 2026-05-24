@@ -15,7 +15,7 @@
 // Single tool surface: specforge with action ∈ {handle, status, exit}.
 // Same shape as ArgentOS so operator's mental model carries over.
 //
-// State persists to ~/.config/subctl/master/specforge/<session-key>.json.
+// State persists to ~/.config/subctl/evy/specforge/<session-key>.json.
 // Default session key is "default" — multiple parallel specs would use
 // distinct keys.
 
@@ -258,7 +258,7 @@ function applyTransition(state: SpecforgeState, args: SpecforgeHandleArgs): { st
         try {
           const vaultRoot = (() => {
             try {
-              const cfgPath = join(homedir(), ".config/subctl/master/obsidian.json");
+              const cfgPath = join(homedir(), ".config/subctl/evy/obsidian.json");
               if (existsSync(cfgPath)) {
                 const j = JSON.parse(readFileSync(cfgPath, "utf8")) as { vault_root?: string };
                 if (j.vault_root) return j.vault_root.replace(/^~/, homedir());

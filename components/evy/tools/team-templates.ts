@@ -1,4 +1,4 @@
-// components/master/tools/team-templates.ts — v2.8.0 team-template tools.
+// components/evy/tools/team-templates.ts — v2.8.0 team-template tools.
 //
 // Exposes the team-template foundation to the master agent:
 //
@@ -8,7 +8,7 @@
 //                                    template-spawned team
 //
 // All template I/O goes through the in-process loader at
-// components/master/team-templates.ts (parse + validate + cache).
+// components/evy/team-templates.ts (parse + validate + cache).
 //
 // Dispatch routing: each developer in the template gets its own tmux pane
 // (lazy-created on first dispatch). Re-dispatching to a live developer

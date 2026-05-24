@@ -1,6 +1,6 @@
 # lib/voice.sh — subctl voice layer install / enable / disable / status.
 #
-# v2.8.0. Mirrors lib/master.sh's launchd plumbing for the master daemon
+# v2.8.0. Mirrors lib/evy.sh's launchd plumbing for the master daemon
 # but for services/tts/server.py. Pure bash on purpose: install.sh
 # sources this same library so the operator can install voice in two
 # places (interactive `subctl voice install` vs `./install.sh --voice`).
@@ -8,7 +8,7 @@
 # Self-hosted-only floor per ADR 0009 — this file never touches a cloud
 # TTS API. Backend choice is mock | voxcpm | kokoro.
 
-# Resolve repo root if not already exported (matches lib/master.sh).
+# Resolve repo root if not already exported (matches lib/evy.sh).
 : "${SUBCTL_REPO_ROOT:=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
 SUBCTL_TTS_LABEL="${SUBCTL_TTS_LABEL:-com.subctl.tts}"

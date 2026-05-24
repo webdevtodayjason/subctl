@@ -1,4 +1,4 @@
-// components/master/__tests__/evy-eval/tests/category-9-watchdog-controls.test.ts
+// components/evy/__tests__/evy-eval/tests/category-9-watchdog-controls.test.ts
 //
 // Evy Eval — Category 9: Watchdog Controls + Circuit Breaker (v2.7.19) (3 tests)
 //

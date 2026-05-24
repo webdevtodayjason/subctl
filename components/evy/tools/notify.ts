@@ -14,7 +14,7 @@
 //   notify_dashboard("Backed off team billing-fix — they reported they're nearly done", "decision")
 //
 // The sidecar shows the latest 30, color-coded by kind. The full
-// notification log persists to ~/.config/subctl/master/notifications.jsonl
+// notification log persists to ~/.config/subctl/evy/notifications.jsonl
 // for audit + the dashboard's "see all" view.
 
 import { appendFileSync, mkdirSync } from "node:fs";

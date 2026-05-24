@@ -112,7 +112,7 @@ import { resolveSecret } from "../secrets";
 // rotate Brave / Firecrawl / Linear / Context7 keys. The hint surfaces
 // both paths.
 const KEY_MISSING_HINT =
-  "Set it via the dashboard Settings → API Tokens panel (writes ~/.config/subctl/secrets.json, chmod 600) OR in ~/Library/LaunchAgents/com.subctl.master.plist EnvironmentVariables followed by `launchctl kickstart -k gui/$UID/com.subctl.master`.";
+  "Set it via the dashboard Settings → API Tokens panel (writes ~/.config/subctl/secrets.json, chmod 600) OR in ~/Library/LaunchAgents/com.subctl.evy.plist EnvironmentVariables followed by `launchctl kickstart -k gui/$UID/com.subctl.evy`.";
 
 /** Cap a response body excerpt so a 5MB error page doesn't flood the agent context. */
 function bodyExcerpt(text: string, max = 400): string {

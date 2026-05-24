@@ -63,7 +63,7 @@ import {
   loadResolvedPolicy,
   loadUserPolicy,
   resolveSubctlInstall,
-} from "../../components/master/tools/policy/load.ts";
+} from "../../components/evy/tools/policy/load.ts";
 import type { GatedMode, PolicyDocument } from "../../lib/policy/types";
 import { getSnapshotPath, getTeamsDir, isValidTeamId } from "./audit-api";
 

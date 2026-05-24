@@ -1,4 +1,4 @@
-// components/master/aggregator-clients.ts
+// components/evy/aggregator-clients.ts
 //
 // v2.9.1 — Provider Model Catalog Phase 3 — aggregator routing.
 //
@@ -442,7 +442,7 @@ function numericPrice(
 /**
  * Amazon Bedrock catalog. Stubbed — Bedrock's `ListFoundationModels`
  * sits in `@aws-sdk/client-bedrock` which isn't bundled in
- * components/master/package.json. Pulling the SDK in for catalog
+ * components/evy/package.json. Pulling the SDK in for catalog
  * enumeration is heavy (~200KB after tree-shake, plus its credential
  * provider chain). Deferred to a future minor release that already
  * needs the SDK for chat dispatch.

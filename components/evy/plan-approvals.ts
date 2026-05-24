@@ -1,4 +1,4 @@
-// components/master/plan-approvals.ts
+// components/evy/plan-approvals.ts
 //
 // v2.7.29 — Plan-approval workflow.
 //

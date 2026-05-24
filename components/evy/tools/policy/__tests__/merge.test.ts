@@ -1,4 +1,4 @@
-// components/master/tools/policy/__tests__/merge.test.ts
+// components/evy/tools/policy/__tests__/merge.test.ts
 //
 // Pure-function tests for `mergePolicies()`. Stays clear of I/O (load.test.ts
 // owns that surface) and exercises the merge semantics directly:

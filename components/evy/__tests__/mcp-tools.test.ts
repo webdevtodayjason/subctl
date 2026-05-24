@@ -1,4 +1,4 @@
-// components/master/__tests__/mcp-tools.test.ts
+// components/evy/__tests__/mcp-tools.test.ts
 //
 // MCP-Expose (#25, wave 2) — tool surface tests. Pins:
 //

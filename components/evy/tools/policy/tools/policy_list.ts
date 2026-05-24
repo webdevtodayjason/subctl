@@ -1,4 +1,4 @@
-// components/master/tools/policy/tools/policy_list.ts
+// components/evy/tools/policy/tools/policy_list.ts
 //
 // `policy_list` — return the fully resolved policy for a project, with merge
 // source attribution. Pack 06 §6.2: "Output is structured (object), not text —

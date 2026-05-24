@@ -1,4 +1,4 @@
-// components/master/tools/__tests__/tinyfish-agent.test.ts
+// components/evy/tools/__tests__/tinyfish-agent.test.ts
 //
 // Tests for v2.7.27 `tinyfish_agent` — the third TinyFish surface
 // (POST https://agent.tinyfish.ai/v1/automation/run). Every path is

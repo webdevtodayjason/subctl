@@ -1,4 +1,4 @@
-// components/master/consciousness-loop/types.ts
+// components/evy/consciousness-loop/types.ts
 //
 // Memory Init #7 — Evy Cognition Loop v0.1.
 //

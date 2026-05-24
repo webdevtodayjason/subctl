@@ -1,4 +1,4 @@
-// components/master/tools/policy/__tests__/tokenize.test.ts
+// components/evy/tools/policy/__tests__/tokenize.test.ts
 //
 // Tokenizer contract tests. Pack 11 §2.1 dictates every case in this file.
 //

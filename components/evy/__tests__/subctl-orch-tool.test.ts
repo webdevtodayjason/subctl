@@ -1,4 +1,4 @@
-// components/master/__tests__/subctl-orch-tool.test.ts
+// components/evy/__tests__/subctl-orch-tool.test.ts
 //
 // Regression coverage for the 2026-05-18 template-spawn 500 incident.
 //

@@ -1,4 +1,4 @@
-// components/master/local-backends/lmstudio.ts
+// components/evy/local-backends/lmstudio.ts
 //
 // LM Studio adapter — most capable of the three local backends.
 //

@@ -1,4 +1,4 @@
-// components/master/__tests__/watchdog-prune.test.ts
+// components/evy/__tests__/watchdog-prune.test.ts
 //
 // v2.8.2 — Regression coverage for the stale-team watchdog bug
 // reported 2026-05-18 (`claude-hermes-agent` + `claude-subctl`

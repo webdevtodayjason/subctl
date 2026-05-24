@@ -1,4 +1,4 @@
-// components/master/tools/policy/__tests__/vectors.test.ts
+// components/evy/tools/policy/__tests__/vectors.test.ts
 //
 // Cross-implementation contract test. Loads `config/policy/test-vectors.toml`
 // (PR 3's 76-vector corpus) and asserts every vector matches the TS check
@@ -29,7 +29,7 @@ import { checkCommand } from "../check";
 import type { PolicyDocument } from "../types";
 
 // Resolve config dir from this file's path:
-//   .../subctl/components/master/tools/policy/__tests__/vectors.test.ts
+//   .../subctl/components/evy/tools/policy/__tests__/vectors.test.ts
 // to .../subctl/config/policy/
 const SUBCTL_ROOT = join(
   import.meta.dir,

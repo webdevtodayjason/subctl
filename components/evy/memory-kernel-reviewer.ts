@@ -1,4 +1,4 @@
-// components/master/memory-kernel-reviewer.ts
+// components/evy/memory-kernel-reviewer.ts
 //
 // Memory Consciousness Cycle — Reviewer (Worker B deliverable).
 //

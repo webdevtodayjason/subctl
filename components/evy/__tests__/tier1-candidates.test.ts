@@ -1,4 +1,4 @@
-// components/master/__tests__/tier1-candidates.test.ts
+// components/evy/__tests__/tier1-candidates.test.ts
 //
 // Phase 3 — Tier 1 candidate queue. Hermetic: every test injects a tmp
 // JSONL path and a fake writeTier1 callback via _setDepsForTesting so no

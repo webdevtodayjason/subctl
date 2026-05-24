@@ -1,4 +1,4 @@
-// components/master/__tests__/team-gc.test.ts
+// components/evy/__tests__/team-gc.test.ts
 //
 // v2.7.32 — Tests for the startup team-dir garbage collector.
 

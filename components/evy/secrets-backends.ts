@@ -1,4 +1,4 @@
-// components/master/secrets-backends.ts
+// components/evy/secrets-backends.ts
 //
 // v2.7.31 — Multi-backend secret resolution chain (ADR 0012).
 //
@@ -24,7 +24,7 @@
 //   - `op` is spawned via Bun.spawn with shell=false to avoid any
 //     interpolation surface. The op:// ref is passed as an argv
 //     entry, not via a shell string.
-//   - The audit log lives at ~/.config/subctl/master/secrets-audit.jsonl
+//   - The audit log lives at ~/.config/subctl/evy/secrets-audit.jsonl
 //     and contains only timestamp + key + ref + cache_hit. Append-only.
 //   - 1Password results are cached in process memory for 5 minutes
 //     keyed by the op:// reference. Cache is cleared on process restart;

@@ -22,12 +22,12 @@ import { homedir } from "node:os";
 import { resolve, normalize, join, dirname } from "node:path";
 
 // Resolve the configured Obsidian vault root. Reads
-// ~/.config/subctl/master/obsidian.json if present (set via dashboard
+// ~/.config/subctl/evy/obsidian.json if present (set via dashboard
 // Settings → Obsidian vault), otherwise falls back to the default.
 function resolveVaultRoot(): string {
   const fallback = `${homedir()}/Documents/Obsidian Vault`;
   try {
-    const cfgPath = `${homedir()}/.config/subctl/master/obsidian.json`;
+    const cfgPath = `${homedir()}/.config/subctl/evy/obsidian.json`;
     if (existsSync(cfgPath)) {
       const j = JSON.parse(readFileSync(cfgPath, "utf8")) as { vault_root?: string };
       if (j.vault_root) return j.vault_root.replace(/^~/, homedir());
@@ -49,7 +49,7 @@ function pathEscapesRoot(targetAbs: string, root: string): boolean {
 export const projectTools = {
   project_create: {
     description:
-      "Create a new project on this host. Optionally clones a git URL (or initializes an empty repo with a README), creates an Obsidian vault subtree at ~/Documents/Obsidian Vault/<name>/ with RESUME.md + design/ + reviews/ + postmortems/ folders, appends an entry to ~/.config/subctl/master/policy.json with the chosen autonomy level, and restarts the master daemon so the new project is tracked. Use this when Jason asks to start a new project (and only with his explicit go).",
+      "Create a new project on this host. Optionally clones a git URL (or initializes an empty repo with a README), creates an Obsidian vault subtree at ~/Documents/Obsidian Vault/<name>/ with RESUME.md + design/ + reviews/ + postmortems/ folders, appends an entry to ~/.config/subctl/evy/policy.json with the chosen autonomy level, and restarts the master daemon so the new project is tracked. Use this when Jason asks to start a new project (and only with his explicit go).",
     schema: {
       type: "object",
       properties: {

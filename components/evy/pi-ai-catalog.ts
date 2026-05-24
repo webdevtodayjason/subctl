@@ -1,4 +1,4 @@
-// components/master/pi-ai-catalog.ts
+// components/evy/pi-ai-catalog.ts
 //
 // v2.7.24 — pi-ai provider catalog adapter.
 //
@@ -271,9 +271,9 @@ const PROVIDER_META: Record<
  * listCatalogProviders() because that function iterates pi-ai's catalog.
  *
  * Each id MUST also be wired into:
- *   - components/master/server.ts PROVIDER_API (transport mapping)
- *   - components/master/server.ts getApiKeyForProvider (credential branch)
- *   - components/master/server.ts buildModel baseUrl (if not OpenAI-compat default)
+ *   - components/evy/server.ts PROVIDER_API (transport mapping)
+ *   - components/evy/server.ts getApiKeyForProvider (credential branch)
+ *   - components/evy/server.ts buildModel baseUrl (if not OpenAI-compat default)
  */
 export const SUBCTL_ONLY_PROVIDERS: ReadonlyArray<string> = ["xai-oauth"];
 
@@ -437,9 +437,9 @@ export function getDefaultModelWithSource(providerId: string): {
 }
 
 /** Return pi-ai's bundled model entries for a provider. Wrapper around
- *  getModels() that lives here so callers outside components/master/ (e.g.
+ *  getModels() that lives here so callers outside components/evy/ (e.g.
  *  dashboard/lib/catalogs.ts) don't have to resolve `@earendil-works/pi-ai`
- *  directly — pi-ai is installed in components/master/node_modules/ and
+ *  directly — pi-ai is installed in components/evy/node_modules/ and
  *  isn't visible from dashboard/'s module resolution. Returns an empty
  *  array for unknown providers instead of throwing. */
 export function getBundledModels(providerId: string): Record<string, unknown>[] {

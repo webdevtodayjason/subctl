@@ -1,8 +1,8 @@
-// components/master/tools/background.ts
+// components/evy/tools/background.ts
 //
 // v2.8.10 — Background-run tool family.
 //
-// Three tools surface the components/master/background-runs.ts runtime
+// Three tools surface the components/evy/background-runs.ts runtime
 // to Evy:
 //
 //   - background_run     (generic dispatcher: run ANY tool in the background)
@@ -16,7 +16,7 @@
 //
 // Surfacing: when a run completes, its result is buffered and prepended
 // to the operator's NEXT chat/telegram message — see
-// components/master/background-runs.ts for the rationale (don't inject
+// components/evy/background-runs.ts for the rationale (don't inject
 // synthetic messages; provider-pairing rules will reject them).
 
 import {

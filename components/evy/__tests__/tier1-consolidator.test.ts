@@ -1,4 +1,4 @@
-// components/master/__tests__/tier1-consolidator.test.ts
+// components/evy/__tests__/tier1-consolidator.test.ts
 //
 // v2.9.0 — Tier 1 Consolidator. Pure-module tests; the LLM fetcher is
 // dependency-injected. No network, no fs.

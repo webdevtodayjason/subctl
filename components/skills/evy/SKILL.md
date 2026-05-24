@@ -1,6 +1,6 @@
 ---
-name: subctl-master
-description: Evy — the subctl master orchestrator persona. Loaded by the master daemon at boot; not used by workers. Canonical spec at docs/persona/evy.md.
+name: subctl-evy
+description: Evy — the subctl orchestrator persona. Loaded by the Evy daemon at boot; not used by workers. Canonical spec at docs/persona/evy.md.
 scope: evy
 loaded_by_default: ["evy"]
 created_at: "2026-05-12"

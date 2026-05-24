@@ -1,4 +1,4 @@
-// components/master/watchdogs.ts
+// components/evy/watchdogs.ts
 //
 // v2.7.19 — Watchdog kill controls.
 //
@@ -33,8 +33,8 @@
 // command path doesn't kill itself.
 
 export type WatchdogKind =
-  | "telegram-listener"   // master-notify-listener.ts long-poll
-  | "cli-prompt-poll"     // master-notify-listener.ts cli-prompts.jsonl bridge
+  | "telegram-listener"   // evy-notify-listener.ts long-poll
+  | "cli-prompt-poll"     // evy-notify-listener.ts cli-prompts.jsonl bridge
   | "inbox-poll"          // server.ts lead-report inbox tailer (2s)
   | "team-staleness"      // server.ts 3-min ticker (refreshTeamActivityFromTmux)
   | "followup-scheduler"  // server.ts 60s scheduler (popDueFollowups)
@@ -146,7 +146,7 @@ export function killWatchdog(
     entry.kill();
   } catch (err) {
     // Don't surface this — the operator already wants this thing gone.
-    // Best-effort: log to stderr so it surfaces in master.log, then
+    // Best-effort: log to stderr so it surfaces in evy.log, then
     // remove anyway so subsequent listWatchdogs() doesn't show ghosts.
     console.error(
       `[watchdog] kill threw for ${id}: ${(err as Error).message ?? err}`,

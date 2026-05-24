@@ -3,13 +3,13 @@
 // Two files, both small enough to inject into the system prompt without
 // blowing the context budget:
 //
-//   ~/.config/subctl/master/memory.md
+//   ~/.config/subctl/evy/memory.md
 //     "Things master has learned that should always be present" —
 //     recurring decisions, project facts, gotchas. Master can edit this
 //     itself via memory_remember / memory_forget. Operator can edit via
 //     the Memory tab in the dashboard.
 //
-//   ~/.config/subctl/master/user.md
+//   ~/.config/subctl/evy/user.md
 //     Operator profile — Jason's role, infrastructure, work style,
 //     preferences. Stable across sessions; rarely changes. Master can
 //     edit it (memory_user_update) but should be conservative.
@@ -150,7 +150,7 @@ export const tier1MemoryTools = {
 
   memory_remember: {
     description:
-      "**Use this when** you need to durably commit an operator-asserted fact or learned pattern to Tier 1 (~/.config/subctl/master/memory.md). Conservative — small char budget, injected every turn. Always declare `source_type` so provenance is recoverable. Refuses on overflow; consolidate or forget old entries first.",
+      "**Use this when** you need to durably commit an operator-asserted fact or learned pattern to Tier 1 (~/.config/subctl/evy/memory.md). Conservative — small char budget, injected every turn. Always declare `source_type` so provenance is recoverable. Refuses on overflow; consolidate or forget old entries first.",
     schema: {
       type: "object",
       properties: {
@@ -263,7 +263,7 @@ export const tier1MemoryTools = {
 
   memory_user_update: {
     description:
-      "Replace master's operator profile (~/.config/subctl/master/user.md) with new content. The operator profile describes Jason — his role, infrastructure, projects, preferences, work style. Use sparingly; this is durable context that should change rarely. Refuses on overflow. Consider asking Jason for a confirmation before overwriting.",
+      "Replace master's operator profile (~/.config/subctl/evy/user.md) with new content. The operator profile describes Jason — his role, infrastructure, projects, preferences, work style. Use sparingly; this is durable context that should change rarely. Refuses on overflow. Consider asking Jason for a confirmation before overwriting.",
     schema: {
       type: "object",
       properties: {
@@ -297,7 +297,7 @@ export const tier1MemoryTools = {
 
   // ─── Memory Init #5 Phase 3 — Tier 1 candidate queue ─────────────────
   // When the memory kernel's reviewer returns `action: "propose_tier1"`,
-  // the candidate lands in ~/.config/subctl/master/tier1-candidates.jsonl
+  // the candidate lands in ~/.config/subctl/evy/tier1-candidates.jsonl
   // for operator (or Evy) review. The three tools below are Evy's surface
   // for listing, approving, and rejecting candidates. Approval routes the
   // proposed fact through memory_remember above so the same char-budget

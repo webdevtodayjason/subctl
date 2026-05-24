@@ -1,4 +1,4 @@
-// components/master/__tests__/memory.test.ts
+// components/evy/__tests__/memory.test.ts
 //
 // v2.7.23 — Evy Memory (Tier 3) storage primitive tests.
 //

@@ -1,4 +1,4 @@
-// components/master/__tests__/aggregator-clients.test.ts
+// components/evy/__tests__/aggregator-clients.test.ts
 //
 // v2.9.1 — Provider Model Catalog Phase 3 — aggregator routing tests.
 //

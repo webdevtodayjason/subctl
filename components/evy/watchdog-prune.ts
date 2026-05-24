@@ -1,4 +1,4 @@
-// components/master/watchdog-prune.ts
+// components/evy/watchdog-prune.ts
 //
 // v2.8.2 — Stale-team watchdog hardening.
 //

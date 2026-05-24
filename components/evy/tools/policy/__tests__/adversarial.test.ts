@@ -1,4 +1,4 @@
-// components/master/tools/policy/__tests__/adversarial.test.ts
+// components/evy/tools/policy/__tests__/adversarial.test.ts
 //
 // THE MOST IMPORTANT TEST FILE IN THE POLICY ENGINE (pack 11 §5).
 //

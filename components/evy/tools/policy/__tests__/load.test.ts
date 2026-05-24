@@ -1,4 +1,4 @@
-// components/master/tools/policy/__tests__/load.test.ts
+// components/evy/tools/policy/__tests__/load.test.ts
 //
 // End-to-end load + resolve tests. Stays clear of `mergePolicies` purity
 // tests (those live in merge.test.ts) and focuses on the I/O contract:
@@ -148,7 +148,7 @@ describe("resolveSubctlInstall", () => {
   test("anchors to the real subctl repo by default", () => {
     delete process.env.SUBCTL_INSTALL_ROOT;
     const root = resolveSubctlInstall();
-    // We're inside <subctl>/components/master/tools/policy/__tests__/, so the
+    // We're inside <subctl>/components/evy/tools/policy/__tests__/, so the
     // resolved root must contain config/policy/defaults.toml.
     const defaultsExists = readFileSync(
       join(root, "config", "policy", "defaults.toml"),

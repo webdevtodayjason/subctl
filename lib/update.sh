@@ -867,7 +867,7 @@ _subctl_update_main() {
     subctl_info "--no-restart: skipping service bounce"
   else
     local restarted_any=false
-    for label in com.subctl.master com.subctl.dashboard; do
+    for label in com.subctl.evy com.subctl.dashboard; do
       local plist="$HOME/Library/LaunchAgents/${label}.plist"
       if [[ -f "$plist" ]] && launchctl list | awk '{print $3}' | grep -qx "$label"; then
         subctl_info "restarting $label"
