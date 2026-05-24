@@ -38,6 +38,8 @@ subctl_notify() {
       ask-yesno)      shift; subctl_notify_ask_yesno "$@"; return $? ;;
       ask-choice)     shift; subctl_notify_ask_choice "$@"; return $? ;;
       ask-text)       shift; subctl_notify_ask_text "$@"; return $? ;;
+      asks-pending)   shift; subctl_notify_asks_pending "$@"; return $? ;;
+      reply)          shift; subctl_notify_reply "$@"; return $? ;;
       inbox)          shift; subctl_notify_inbox "$@"; return $? ;;
       inbox-ack)      shift; subctl_notify_inbox_ack "$@"; return $? ;;
       -h|--help)
@@ -60,10 +62,20 @@ subctl notify <message> [opts]
                    sanity (does NOT send a ping by default)
   --diagnose --send  same checks PLUS deliver a live test message
 
+Subcommands (operator-in-the-loop):
+  subctl notify ask-yesno  "<q>" [--id X] [--to telegram,buddy] [--wait]
+  subctl notify ask-choice "<q>" -o ID:label … [--id X] [--to …] [--wait]
+  subctl notify ask-text   "<q>" [--id X] [--to …] [--wait]
+  subctl notify asks-pending [--id X] [--json]
+  subctl notify reply --id X --answer Y [--source buddy] [--from-name N]
+  subctl notify inbox        [--id X] [--unacked] [--limit N] [--json]
+  subctl notify inbox-ack  <question_id>
+
 Examples:
   subctl notify "Stuck: shannon prisma migration needs decision"
   subctl notify --setup
   subctl notify --test
+  subctl notify ask-yesno "Deploy?" --id ACC-1 --to buddy --wait
 EOF
         return 0 ;;
       *) positional+=("$1"); shift ;;
@@ -356,6 +368,164 @@ subctl_notify_status() {
     "$([[ -f "$NOTIFY_LOG" ]] && printf " (%d lines)" "$(wc -l < "$NOTIFY_LOG" | tr -d ' ')" || echo "")"
 }
 
+# ── asks-pending: persistent view of in-flight ask-* questions ──────────────
+#
+# v3.2.0 — every `subctl notify ask-*` send writes a JSONL record to
+# ~/.config/subctl/evy/asks-pending.jsonl so external consumers (the
+# subctl-buddy bridge, custom dashboards, audit tooling) can see what's
+# currently waiting on an operator answer. The same record is removed
+# when the answer arrives (via Telegram tap, `subctl notify reply`, or
+# POST /api/notify/reply). Canonical doc: docs/asks-pending-surface.md.
+
+# Path resolution mirrors the TS module — honors SUBCTL_CONFIG_DIR with
+# fallback to $HOME/.config/subctl.
+_subctl_asks_pending_path() {
+  local cfg="${SUBCTL_CONFIG_DIR:-$HOME/.config/subctl}"
+  printf "%s/evy/asks-pending.jsonl\n" "$cfg"
+}
+
+# mkdir-based file lock. Portable + atomic — agrees with the TS side
+# (components/evy/asks-pending.ts) on the lock-dir path `<path>.lockd`.
+# Stale lock dirs (>10s old) are forcibly removed before retrying.
+# Usage: _subctl_asks_lock_acquire; <work>; _subctl_asks_lock_release
+_subctl_asks_lock_acquire() {
+  local path="${1:-$(_subctl_asks_pending_path)}"
+  local lockdir="${path}.lockd"
+  local deadline=$(( $(date +%s) + 5 ))
+  while ! mkdir "$lockdir" 2>/dev/null; do
+    # Stale-lock check
+    if [[ -d "$lockdir" ]]; then
+      local age
+      # macOS stat differs from GNU; use a portable form via -f / -c.
+      if age=$(stat -f %m "$lockdir" 2>/dev/null); then
+        :
+      else
+        age=$(stat -c %Y "$lockdir" 2>/dev/null || echo 0)
+      fi
+      local now
+      now=$(date +%s)
+      if (( now - age > 10 )); then
+        rmdir "$lockdir" 2>/dev/null || true
+        continue
+      fi
+    fi
+    if (( $(date +%s) > deadline )); then
+      subctl_err "asks-pending: lock timeout on $lockdir"
+      return 1
+    fi
+    sleep 0.05
+  done
+}
+
+_subctl_asks_lock_release() {
+  local path="${1:-$(_subctl_asks_pending_path)}"
+  rmdir "${path}.lockd" 2>/dev/null || true
+}
+
+# Append a pending-ask record. Args:
+#   $1 = id        (e.g. ACC-1)
+#   $2 = kind      (ask-yesno|ask-choice|ask-text)
+#   $3 = question  (raw text)
+#   $4 = default   (yes|no|"" for yesno only)
+#   $5 = options   (raw JSON array string OR "null")
+#   $6 = timeout_at (ISO-8601 or empty)
+#   $7 = channels  (comma-separated, e.g. "telegram,buddy")
+_subctl_asks_pending_append() {
+  local id="$1" kind="$2" question="$3" default="${4:-}" options="${5:-null}"
+  local timeout_at="${6:-}" channels_csv="${7:-telegram}"
+  local path created_at
+  path=$(_subctl_asks_pending_path)
+  mkdir -p "$(dirname "$path")"
+  created_at=$(date -u +'%Y-%m-%dT%H:%M:%S.000Z')
+
+  # Convert comma-separated channels into a JSON array via jq -R/split.
+  local channels_json
+  channels_json=$(printf '%s' "$channels_csv" | jq -Rc 'split(",") | map(select(length > 0))')
+
+  local default_json="null"
+  [[ -n "$default" ]] && default_json="\"$default\""
+
+  local timeout_json="null"
+  [[ -n "$timeout_at" ]] && timeout_json="\"$timeout_at\""
+
+  local line
+  line=$(jq -nc \
+    --arg id "$id" \
+    --arg kind "$kind" \
+    --arg question "$question" \
+    --argjson default_v "$default_json" \
+    --argjson options "$options" \
+    --arg created_at "$created_at" \
+    --argjson timeout_at "$timeout_json" \
+    --argjson channels "$channels_json" \
+    '{id: $id, kind: $kind, question: $question, default: $default_v,
+      options: $options, created_at: $created_at, timeout_at: $timeout_at,
+      source_tool: "notify", channels: $channels}')
+
+  _subctl_asks_lock_acquire "$path" || return 1
+  printf '%s\n' "$line" >> "$path"
+  _subctl_asks_lock_release "$path"
+}
+
+# Remove records whose id matches $1. Idempotent. Echoes removed-count.
+_subctl_asks_pending_remove() {
+  local id="$1"
+  local path
+  path=$(_subctl_asks_pending_path)
+  if [[ ! -f "$path" ]]; then
+    echo "0"
+    return 0
+  fi
+  _subctl_asks_lock_acquire "$path" || return 1
+  local before after removed
+  before=$(wc -l < "$path" | tr -d ' ')
+  local tmp="${path}.tmp.$$"
+  jq -c --arg id "$id" 'select(.id != $id)' "$path" > "$tmp" 2>/dev/null || {
+    rm -f "$tmp"
+    _subctl_asks_lock_release "$path"
+    echo "0"
+    return 0
+  }
+  mv "$tmp" "$path"
+  after=$(wc -l < "$path" | tr -d ' ')
+  removed=$(( before - after ))
+  _subctl_asks_lock_release "$path"
+  echo "$removed"
+}
+
+# Parse --to flag value. Default: "telegram". Validates each token.
+# Echoes the normalized csv (deduplicated, lowercased). Exits non-zero
+# on unknown channel names so misspellings fail loud.
+_subctl_normalize_channels() {
+  local raw="${1:-telegram}"
+  local out=""
+  local IFS=','
+  for ch in $raw; do
+    # Trim whitespace
+    ch=$(echo "$ch" | tr '[:upper:]' '[:lower:]' | xargs)
+    [[ -z "$ch" ]] && continue
+    case "$ch" in
+      telegram|buddy) ;;  # known
+      *) subctl_err "unknown channel: $ch (valid: telegram, buddy)"; return 1 ;;
+    esac
+    case ",${out}," in
+      *,${ch},*) ;;  # dedup
+      *) out="${out:+$out,}$ch" ;;
+    esac
+  done
+  [[ -z "$out" ]] && out="telegram"
+  echo "$out"
+}
+
+# Returns 0 if comma-separated $1 contains $2.
+_subctl_channels_has() {
+  local csv="$1" needle="$2"
+  case ",${csv}," in
+    *,${needle},*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # ── ask protocol — structured Q&A via Telegram inline keyboards ─────────────
 
 # Internal: read token + chat from env or config (DRY)
@@ -397,17 +567,18 @@ _subctl_notify_send_keyboard() {
   return 1
 }
 
-# subctl notify ask-yesno "<question>" [--id Q42] [--timeout 30m] [--default yes|no] [--wait]
+# subctl notify ask-yesno "<question>" [--id Q42] [--timeout 30m] [--default yes|no] [--wait] [--to telegram,buddy]
 subctl_notify_ask_yesno() {
-  local question="" qid="" timeout="" default="" wait=false
+  local question="" qid="" timeout="" default="" wait=false to=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --id)       qid="$2"; shift 2 ;;
       --timeout)  timeout="$2"; shift 2 ;;
       --default)  default="$2"; shift 2 ;;
       --wait)     wait=true; shift ;;
+      --to)       to="$2"; shift 2 ;;
       -h|--help)
-        echo "subctl notify ask-yesno <question> [--id Q42] [--timeout DUR] [--default yes|no] [--wait]"
+        echo "subctl notify ask-yesno <question> [--id Q42] [--timeout DUR] [--default yes|no] [--wait] [--to telegram,buddy]"
         return 0 ;;
       *) [[ -z "$question" ]] && question="$1" || question="$question $1"; shift ;;
     esac
@@ -415,33 +586,54 @@ subctl_notify_ask_yesno() {
   [[ -z "$question" ]] && { subctl_err "no question — usage: subctl notify ask-yesno <question>"; return 1; }
   [[ -z "$qid" ]] && qid=$(_subctl_notify_genid)
 
-  local creds token chat
-  creds=$(_subctl_notify_creds)
-  token=$(echo "$creds" | cut -f1)
-  chat=$(echo "$creds" | cut -f2)
-  if [[ -z "$token" || -z "$chat" ]]; then
-    subctl_err "no token/chat configured — run: subctl notify --setup"
-    return 1
-  fi
+  local channels
+  channels=$(_subctl_normalize_channels "$to") || return 1
 
-  local cwd_short
-  cwd_short=$(pwd | sed "s|$HOME|~|")
-  local text="🚨 subctl · ${cwd_short} · [${qid}]
+  # Always persist the pending-ask record — channels metadata controls
+  # delivery, not visibility. Bridge consumers filter via .channels.
+  local timeout_at=""
+  if [[ -n "$timeout" ]]; then
+    timeout_at=$(_subctl_compute_timeout_at "$timeout")
+  fi
+  _subctl_asks_pending_append "$qid" "ask-yesno" "$question" "${default:-yes}" \
+    "null" "$timeout_at" "$channels"
+
+  # Telegram delivery only if the operator routed there. `--to buddy`
+  # alone skips Telegram entirely — the buddy bridge picks the ask up
+  # from asks-pending.jsonl and surfaces it on the M5Stack device.
+  if _subctl_channels_has "$channels" "telegram"; then
+    local creds token chat
+    creds=$(_subctl_notify_creds)
+    token=$(echo "$creds" | cut -f1)
+    chat=$(echo "$creds" | cut -f2)
+    if [[ -z "$token" || -z "$chat" ]]; then
+      subctl_err "no token/chat configured — run: subctl notify --setup"
+      _subctl_asks_pending_remove "$qid" >/dev/null  # roll back
+      return 1
+    fi
+
+    local cwd_short
+    cwd_short=$(pwd | sed "s|$HOME|~|")
+    local text="🚨 subctl · ${cwd_short} · [${qid}]
 
 ${question}"
 
-  # Inline keyboard: [Yes][No]. callback_data = "Q42:yes" / "Q42:no"
-  local keyboard
-  keyboard=$(jq -nc --arg q "$qid" '[[
-    {text: "✅ Yes", callback_data: ($q + ":yes")},
-    {text: "❌ No",  callback_data: ($q + ":no")}
-  ]]')
+    # Inline keyboard: [Yes][No]. callback_data = "Q42:yes" / "Q42:no"
+    local keyboard
+    keyboard=$(jq -nc --arg q "$qid" '[[
+      {text: "✅ Yes", callback_data: ($q + ":yes")},
+      {text: "❌ No",  callback_data: ($q + ":no")}
+    ]]')
 
-  if _subctl_notify_send_keyboard "$chat" "$token" "$text" "$keyboard"; then
-    subctl_ok "ask-yesno sent · id=${qid}"
+    if _subctl_notify_send_keyboard "$chat" "$token" "$text" "$keyboard"; then
+      subctl_ok "ask-yesno sent · id=${qid} · channels=${channels}"
+    else
+      subctl_err "send failed"
+      _subctl_asks_pending_remove "$qid" >/dev/null
+      return 1
+    fi
   else
-    subctl_err "send failed"
-    return 1
+    subctl_ok "ask-yesno queued · id=${qid} · channels=${channels} (skipped Telegram)"
   fi
 
   echo "$qid"  # printed to stdout so callers can capture it
@@ -451,9 +643,9 @@ ${question}"
   fi
 }
 
-# subctl notify ask-choice "<question>" -o A:label1 -o B:label2 [--id Q42] [--wait] ...
+# subctl notify ask-choice "<question>" -o A:label1 -o B:label2 [--id Q42] [--wait] [--to telegram,buddy] ...
 subctl_notify_ask_choice() {
-  local question="" qid="" timeout="" default="" wait=false
+  local question="" qid="" timeout="" default="" wait=false to=""
   local -a options=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -462,6 +654,7 @@ subctl_notify_ask_choice() {
       --timeout)   timeout="$2"; shift 2 ;;
       --default)   default="$2"; shift 2 ;;
       --wait)      wait=true; shift ;;
+      --to)        to="$2"; shift 2 ;;
       -h|--help)
         cat <<EOF
 subctl notify ask-choice <question> -o ID:label [-o ID:label …] [opts]
@@ -476,6 +669,7 @@ Options:
   --timeout DUR with --wait, time to block (e.g. 30m, 1h, 90s)
   --default ID  fallback choice if --wait times out
   --wait        block until reply arrives or timeout
+  --to LIST     comma-separated channels (telegram,buddy). Default: telegram.
 
 Example:
   subctl notify ask-choice "Migration approach?" \\
@@ -493,38 +687,62 @@ EOF
   [[ ${#options[@]} -gt 8 ]] && { subctl_err "max 8 options (Telegram limit)"; return 1; }
   [[ -z "$qid" ]] && qid=$(_subctl_notify_genid)
 
-  local creds token chat
-  creds=$(_subctl_notify_creds)
-  token=$(echo "$creds" | cut -f1)
-  chat=$(echo "$creds" | cut -f2)
-  if [[ -z "$token" || -z "$chat" ]]; then
-    subctl_err "no token/chat configured — run: subctl notify --setup"
-    return 1
+  local channels
+  channels=$(_subctl_normalize_channels "$to") || return 1
+
+  # Build options JSON array for asks-pending record:
+  # [{id: "A", label: "drop-fk-recreate"}, ...]
+  local options_json
+  options_json=$(printf '%s\n' "${options[@]}" | jq -Rcs '
+    split("\n")
+    | map(select(length > 0))
+    | map(split(":") | {id: (.[0] // "?"), label: ((.[1:] | join(":")) // "")})')
+
+  local timeout_at=""
+  if [[ -n "$timeout" ]]; then
+    timeout_at=$(_subctl_compute_timeout_at "$timeout")
   fi
+  _subctl_asks_pending_append "$qid" "ask-choice" "$question" "${default:-}" \
+    "$options_json" "$timeout_at" "$channels"
 
-  local cwd_short
-  cwd_short=$(pwd | sed "s|$HOME|~|")
-  local body="🚨 subctl · ${cwd_short} · [${qid}]\n\n${question}\n"
-  # Show the option mapping in the message body too
-  for opt in "${options[@]}"; do
-    body="${body}\n• ${opt}"
-  done
-  # printf-friendly text (escape -e style)
-  local text
-  text=$(printf "%b" "$body")
+  if _subctl_channels_has "$channels" "telegram"; then
+    local creds token chat
+    creds=$(_subctl_notify_creds)
+    token=$(echo "$creds" | cut -f1)
+    chat=$(echo "$creds" | cut -f2)
+    if [[ -z "$token" || -z "$chat" ]]; then
+      subctl_err "no token/chat configured — run: subctl notify --setup"
+      _subctl_asks_pending_remove "$qid" >/dev/null
+      return 1
+    fi
 
-  # Build keyboard JSON: one button per option, vertical stack
-  local kb_json
-  kb_json=$(printf '%s\n' "${options[@]}" | jq -R --arg q "$qid" '
-    split(":") as $p
-    | [{text: ($p[0] // "?") + ": " + ($p[1] // ""), callback_data: ($q + ":" + ($p[0] // "?") + ":" + ($p[1] // ""))}]
-  ' | jq -s '.')
+    local cwd_short
+    cwd_short=$(pwd | sed "s|$HOME|~|")
+    local body="🚨 subctl · ${cwd_short} · [${qid}]\n\n${question}\n"
+    # Show the option mapping in the message body too
+    for opt in "${options[@]}"; do
+      body="${body}\n• ${opt}"
+    done
+    # printf-friendly text (escape -e style)
+    local text
+    text=$(printf "%b" "$body")
 
-  if _subctl_notify_send_keyboard "$chat" "$token" "$text" "$kb_json"; then
-    subctl_ok "ask-choice sent · id=${qid} · ${#options[@]} options"
+    # Build keyboard JSON: one button per option, vertical stack
+    local kb_json
+    kb_json=$(printf '%s\n' "${options[@]}" | jq -R --arg q "$qid" '
+      split(":") as $p
+      | [{text: ($p[0] // "?") + ": " + ($p[1] // ""), callback_data: ($q + ":" + ($p[0] // "?") + ":" + ($p[1] // ""))}]
+    ' | jq -s '.')
+
+    if _subctl_notify_send_keyboard "$chat" "$token" "$text" "$kb_json"; then
+      subctl_ok "ask-choice sent · id=${qid} · ${#options[@]} options · channels=${channels}"
+    else
+      subctl_err "send failed"
+      _subctl_asks_pending_remove "$qid" >/dev/null
+      return 1
+    fi
   else
-    subctl_err "send failed"
-    return 1
+    subctl_ok "ask-choice queued · id=${qid} · ${#options[@]} options · channels=${channels} (skipped Telegram)"
   fi
   echo "$qid"
 
@@ -533,17 +751,18 @@ EOF
   fi
 }
 
-# subctl notify ask-text "<question>" [--id Q42] [--wait] [--timeout DUR]
+# subctl notify ask-text "<question>" [--id Q42] [--wait] [--timeout DUR] [--to telegram,buddy]
 # Telegram supports force_reply to prompt the user with a reply box.
 subctl_notify_ask_text() {
-  local question="" qid="" timeout="" wait=false
+  local question="" qid="" timeout="" wait=false to=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --id)      qid="$2"; shift 2 ;;
       --timeout) timeout="$2"; shift 2 ;;
       --wait)    wait=true; shift ;;
+      --to)      to="$2"; shift 2 ;;
       -h|--help)
-        echo "subctl notify ask-text <question> [--id Q42] [--wait] [--timeout DUR]"
+        echo "subctl notify ask-text <question> [--id Q42] [--wait] [--timeout DUR] [--to telegram,buddy]"
         return 0 ;;
       *) [[ -z "$question" ]] && question="$1" || question="$question $1"; shift ;;
     esac
@@ -551,46 +770,88 @@ subctl_notify_ask_text() {
   [[ -z "$question" ]] && { subctl_err "no question"; return 1; }
   [[ -z "$qid" ]] && qid=$(_subctl_notify_genid)
 
-  local creds token chat
-  creds=$(_subctl_notify_creds)
-  token=$(echo "$creds" | cut -f1)
-  chat=$(echo "$creds" | cut -f2)
-  if [[ -z "$token" || -z "$chat" ]]; then
-    subctl_err "no token/chat configured — run: subctl notify --setup"
-    return 1
-  fi
+  local channels
+  channels=$(_subctl_normalize_channels "$to") || return 1
 
-  local cwd_short
-  cwd_short=$(pwd | sed "s|$HOME|~|")
-  local text="🚨 subctl · ${cwd_short} · [${qid}]
+  local timeout_at=""
+  if [[ -n "$timeout" ]]; then
+    timeout_at=$(_subctl_compute_timeout_at "$timeout")
+  fi
+  _subctl_asks_pending_append "$qid" "ask-text" "$question" "" "null" \
+    "$timeout_at" "$channels"
+
+  if _subctl_channels_has "$channels" "telegram"; then
+    local creds token chat
+    creds=$(_subctl_notify_creds)
+    token=$(echo "$creds" | cut -f1)
+    chat=$(echo "$creds" | cut -f2)
+    if [[ -z "$token" || -z "$chat" ]]; then
+      subctl_err "no token/chat configured — run: subctl notify --setup"
+      _subctl_asks_pending_remove "$qid" >/dev/null
+      return 1
+    fi
+
+    local cwd_short
+    cwd_short=$(pwd | sed "s|$HOME|~|")
+    local text="🚨 subctl · ${cwd_short} · [${qid}]
 
 ${question}
 
 Reply to this message with your answer."
 
-  local payload
-  payload=$(jq -nc \
-    --arg chat "$chat" \
-    --arg text "$text" \
-    '{chat_id: $chat, text: $text, reply_markup: {force_reply: true, selective: true}}')
-  local resp
-  resp=$(curl -sS -X POST \
-    -H "Content-Type: application/json" \
-    --data "$payload" \
-    "https://api.telegram.org/bot${token}/sendMessage" 2>&1)
-  local ok
-  ok=$(echo "$resp" | jq -r '.ok // false' 2>/dev/null)
-  if [[ "$ok" != "true" ]]; then
-    subctl_err "send failed"
-    echo "$resp" | head -c 200 >&2
-    return 1
+    local payload
+    payload=$(jq -nc \
+      --arg chat "$chat" \
+      --arg text "$text" \
+      '{chat_id: $chat, text: $text, reply_markup: {force_reply: true, selective: true}}')
+    local resp
+    resp=$(curl -sS -X POST \
+      -H "Content-Type: application/json" \
+      --data "$payload" \
+      "https://api.telegram.org/bot${token}/sendMessage" 2>&1)
+    local ok
+    ok=$(echo "$resp" | jq -r '.ok // false' 2>/dev/null)
+    if [[ "$ok" != "true" ]]; then
+      subctl_err "send failed"
+      echo "$resp" | head -c 200 >&2
+      _subctl_asks_pending_remove "$qid" >/dev/null
+      return 1
+    fi
+    subctl_ok "ask-text sent · id=${qid} · channels=${channels}"
+  else
+    subctl_ok "ask-text queued · id=${qid} · channels=${channels} (skipped Telegram)"
   fi
-  subctl_ok "ask-text sent · id=${qid}"
   echo "$qid"
 
   if $wait; then
     _subctl_notify_inbox_wait "$qid" "${timeout:-1h}" ""
   fi
+}
+
+# Compute an ISO-8601 timeout_at from a "30m"|"1h"|"90s" duration string.
+# Echoes empty if duration parse fails.
+_subctl_compute_timeout_at() {
+  local dur="$1" sec=0
+  case "$dur" in
+    *h) sec=$(( ${dur%h} * 3600 )) ;;
+    *m) sec=$(( ${dur%m} * 60 )) ;;
+    *s) sec=${dur%s} ;;
+    *)  sec=${dur:-0} ;;
+  esac
+  if (( sec <= 0 )); then
+    echo ""
+    return
+  fi
+  # Portable across macOS (`date -u -v+Ns`) and GNU (`date -u -d "@$now"`).
+  local now_ts target_ts
+  now_ts=$(date +%s)
+  target_ts=$(( now_ts + sec ))
+  # macOS BSD date
+  if date -u -r "$target_ts" '+%Y-%m-%dT%H:%M:%S.000Z' 2>/dev/null; then
+    return
+  fi
+  # GNU date
+  date -u -d "@$target_ts" '+%Y-%m-%dT%H:%M:%S.000Z' 2>/dev/null || echo ""
 }
 
 # subctl notify inbox [--id Q42] [--unacked] [--limit 20] [--json]
@@ -657,6 +918,157 @@ subctl_notify_inbox_ack() {
     subctl_err "ack failed (dashboard not running, or question not found)"
     return 1
   fi
+}
+
+# subctl notify asks-pending [--id Q42] [--json]
+# Read the pending-asks surface. HTTP-first (consults the dashboard if
+# running), falls back to direct file read. Mirrors `notify inbox`'s
+# pattern.
+subctl_notify_asks_pending() {
+  local qid="" json=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --id)   qid="$2"; shift 2 ;;
+      --json) json=true; shift ;;
+      -h|--help)
+        echo "subctl notify asks-pending [--id Q42] [--json]"
+        return 0 ;;
+      *) shift ;;
+    esac
+  done
+
+  local source="(none)" data="[]"
+  local http_url="http://127.0.0.1:8787/api/asks/pending"
+  if [[ -n "$qid" ]]; then
+    http_url="${http_url}?id=${qid}"
+  fi
+
+  local http_code
+  http_code=$(curl -sS --max-time 2 -o /tmp/_subctl_asks.json -w "%{http_code}" \
+    "$http_url" 2>/dev/null || echo "000")
+
+  if [[ "$http_code" == "200" ]]; then
+    source="dashboard-api"
+    if [[ -n "$qid" ]]; then
+      # Endpoint returns the singleton record directly when filtered.
+      data=$(jq -c '[.]' /tmp/_subctl_asks.json 2>/dev/null || echo "[]")
+    else
+      data=$(jq -c '.entries // []' /tmp/_subctl_asks.json 2>/dev/null || echo "[]")
+    fi
+  else
+    # 404 from a dashboard that pre-dates this endpoint, or dashboard
+    # down — either way, direct file read is the source of truth.
+    local path
+    path=$(_subctl_asks_pending_path)
+    if [[ -f "$path" ]]; then
+      source="file"
+      data=$(jq -cs '.' "$path" 2>/dev/null || echo "[]")
+      if [[ -n "$qid" ]]; then
+        data=$(echo "$data" | jq --arg q "$qid" '[ .[] | select(.id == $q) ]')
+      fi
+    fi
+  fi
+
+  if $json; then
+    echo "$data"
+    return 0
+  fi
+
+  local count
+  count=$(echo "$data" | jq 'length')
+  if [[ "$count" == "0" ]]; then
+    subctl_info "📭 no pending asks (source: $source)"
+    return 0
+  fi
+  echo "$data" | jq -r '.[] | "  \(.id)  \(.kind)  channels=\((.channels // []) | join(","))  \"\(.question)\""'
+}
+
+# subctl notify reply --id Q42 --answer yes [--source buddy] [--from-name "..."] [--answer-label "..."]
+# Inject a reply for a pending ask as if a Telegram tap had answered it.
+# HTTP-first (POST /api/notify/reply); falls back to direct file write +
+# best-effort asks-pending removal.
+subctl_notify_reply() {
+  local qid="" answer="" source="buddy" from_name="" answer_label=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --id)            qid="$2"; shift 2 ;;
+      --answer)        answer="$2"; shift 2 ;;
+      --source)        source="$2"; shift 2 ;;
+      --from-name)     from_name="$2"; shift 2 ;;
+      --answer-label)  answer_label="$2"; shift 2 ;;
+      -h|--help)
+        cat <<EOF
+subctl notify reply --id Q42 --answer yes [--source buddy] [--from-name NAME] [--answer-label LABEL]
+
+Inject a reply for a pending ask-* — same effect as a Telegram button
+tap. Used by the subctl-buddy bridge so a physical button on the M5Stack
+device can answer an outstanding question. The originating --wait
+caller returns with the submitted answer.
+
+Required:
+  --id Q42        the question id (from \`subctl notify asks-pending\`)
+  --answer yes    the answer value (yes|no for ask-yesno; option id for
+                  ask-choice; free text for ask-text)
+
+Optional:
+  --source buddy    source tag for the inbox entry (default: buddy)
+  --from-name NAME  human-readable label for who/what answered
+  --answer-label L  display label (defaults to --answer)
+EOF
+        return 0 ;;
+      *) shift ;;
+    esac
+  done
+  [[ -z "$qid" ]] && { subctl_err "missing --id"; return 1; }
+  [[ -z "$answer" ]] && { subctl_err "missing --answer"; return 1; }
+  [[ -z "$answer_label" ]] && answer_label="$answer"
+
+  # HTTP-first
+  local body
+  body=$(jq -nc \
+    --arg id "$qid" \
+    --arg answer "$answer" \
+    --arg answer_label "$answer_label" \
+    --arg source "$source" \
+    --arg from_name "$from_name" \
+    '{question_id: $id, answer: $answer, answer_label: $answer_label,
+      source: $source, from_name: $from_name}')
+
+  local http_code
+  http_code=$(curl -sS --max-time 2 -X POST \
+    -H "Content-Type: application/json" \
+    --data "$body" \
+    -o /tmp/_subctl_reply.json \
+    -w "%{http_code}" \
+    "http://127.0.0.1:8787/api/notify/reply" 2>/dev/null || echo "000")
+
+  if [[ "$http_code" == "200" ]]; then
+    subctl_ok "reply injected · id=${qid} · answer=${answer} (via dashboard)"
+    return 0
+  fi
+
+  # File-fallback — write inbox entry + remove from asks-pending.
+  subctl_warn "dashboard unreachable (HTTP $http_code) — falling back to direct file write"
+  local ts
+  ts=$(date -u +'%Y-%m-%dT%H:%M:%S.000Z')
+  local entry
+  entry=$(jq -nc \
+    --arg ts "$ts" \
+    --arg source "$source" \
+    --arg id "$qid" \
+    --arg answer "$answer" \
+    --arg answer_label "$answer_label" \
+    --arg from_name "$from_name" \
+    '{ts: $ts, source: $source, type: "button", question_id: $id,
+      answer: $answer, answer_label: $answer_label, from_id: null,
+      from_name: $from_name, raw_text: $answer, acked: false}')
+
+  local inbox="${SUBCTL_CONFIG_DIR:-$HOME/.config/subctl}/inbox.jsonl"
+  mkdir -p "$(dirname "$inbox")"
+  printf '%s\n' "$entry" >> "$inbox"
+  local removed
+  removed=$(_subctl_asks_pending_remove "$qid")
+  subctl_ok "reply written to $inbox · id=${qid} · removed ${removed} pending record(s)"
 }
 
 # Internal: poll the inbox for an answer to a specific question id.

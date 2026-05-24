@@ -1,3 +1,60 @@
+## [3.2.0] — 2026-05-24
+
+### `feat(notify): pending-asks surface + reply injection + channel routing`
+
+Three coupled features that together unblock the [subctl-buddy](https://github.com/webdevtodayjason/subctl-buddy) bridge — the M5Stack ESP32 hardware companion that mirrors subctl state on a desk device and lets the operator answer yes/no questions with a physical button. Until v3.2.0 the `subctl notify ask-*` question id was held in master-daemon memory only, with no file or HTTP surface for external consumers to enumerate it.
+
+**1. Pending-asks surface.** Every `subctl notify ask-yesno|ask-choice|ask-text` send now writes a JSONL record at `~/.config/subctl/evy/asks-pending.jsonl` (path honors `SUBCTL_CONFIG_DIR`). The record is removed atomically when the reply arrives — via Telegram tap (the existing path), the new `subctl notify reply` CLI verb, or `POST /api/notify/reply`. Bash and TypeScript writers coordinate via a portable `<path>.lockd` mkdir lock.
+
+Three read paths surface the same data:
+
+- **CLI:** `subctl notify asks-pending [--id Q42] [--json]` — human-readable by default, JSON via `--json`. HTTP-first with file-fallback.
+- **HTTP:** `GET /api/asks/pending` returns `{entries: [...]}`. `GET /api/asks/pending?id=X` returns the singleton record or a 404 JSON body.
+- **File:** parse the JSONL directly. Schema documented at `docs/asks-pending-surface.md`.
+
+**2. Reply injection.** A new CLI verb makes externally-injected replies a first-class operation:
+
+```text
+subctl notify reply --id BLE-PROBE-1 --answer yes [--source buddy] [--from-name "M5StickC Plus"] [--answer-label "Yes"]
+```
+
+Same effect as a Telegram button tap: the corresponding inbox entry is written with `source: "buddy"` / `type: "button"`, the pending-ask record is removed, and the originating `subctl notify ask-* --wait` caller returns with the submitted answer. The new HTTP endpoint `POST /api/notify/reply` accepts the same payload.
+
+`InboxEntry`'s `source` and `type` string unions widen to include the buddy shape; `from_id` becomes `number | null` (Telegram callers keep their numeric user id; buddy callers set null). The existing `_subctl_notify_inbox_wait` poll loop matches by `question_id` regardless of `source`, so externally-injected entries are honored identically to Telegram callbacks — no extra glue required.
+
+**3. Channel routing.** `subctl notify ask-* --to <list>` accepts a comma-separated channel list:
+
+| Flag                     | Telegram delivery | Pending record         |
+|--------------------------|-------------------|------------------------|
+| (no flag)                | yes               | `channels=["telegram"]` |
+| `--to telegram`          | yes               | `channels=["telegram"]` |
+| `--to buddy`             | no                | `channels=["buddy"]`    |
+| `--to telegram,buddy`    | yes               | `channels=["telegram","buddy"]` |
+
+Default stays `telegram` for full backward compatibility. Unknown channel names (`--to bogus`) are rejected loudly so misspellings fail fast. Records are persisted regardless of routing — the `channels` array is metadata bridge consumers filter on (`record.channels.includes("buddy")`), not a visibility gate.
+
+**Files added:**
+
+- `components/evy/asks-pending.ts` — `PendingAsk` type + `appendPendingAsk` / `removePendingAsk` / `listPendingAsks` / `getPendingAsk` helpers with mkdir-lock concurrency.
+- `components/evy/__tests__/asks-pending.test.ts` — 15 tests covering basics, removal, schema fidelity (ask-yesno / ask-choice / ask-text), channels metadata round-trip, atomic-rename safety, and concurrent-remove serialization.
+- `docs/asks-pending-surface.md` — canonical schema doc for both `asks-pending.jsonl` and the inbox.jsonl reply shape.
+
+**Files touched:**
+
+- `components/notify/notify.sh` — `--to` flag on all three ask-* verbs; persist asks-pending record on every send (atomic, with roll-back if the Telegram send subsequently fails); new `asks-pending` + `reply` subcommands.
+- `dashboard/notify-listener.ts` — widened `InboxEntry` unions; `injectExternalReply()` helper exported for `POST /api/notify/reply`; `removePendingAsk()` hook fires on callback_query AND text-answer-with-question_id branches so Telegram taps drop the pending record automatically.
+- `dashboard/server.ts` — `GET /api/asks/pending[?id=X]` + `POST /api/notify/reply` routes.
+
+**Out of scope** (per the buddy handoff doc):
+
+- `plan_approval_request` HMAC workflow — separate channel, unaffected.
+- MCP-tool variants — CLI + HTTP only for v1; MCP wrappers can land later without schema change.
+- Multi-buddy fanout — protocol-level concern, not subctl's job.
+
+Implements the full handoff at `/Users/sem/code/subctl-buddy/docs/handoff-subctl-surface.md`.
+
+---
+
 ## [3.1.0] — 2026-05-24
 
 ### `feat(fitness): engagement instrumentation (Kernel Fitness Phase 1)`

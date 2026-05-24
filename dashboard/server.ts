@@ -2863,7 +2863,12 @@ import {
   notifyListenerStatus,
   readInbox,
   ackInboxEntry,
+  injectExternalReply,
 } from "./notify-listener";
+import {
+  getPendingAsk,
+  listPendingAsks,
+} from "../components/evy/asks-pending";
 
 const _listener = startNotifyListener({ stateProvider: buildState });
 if (_listener.running) {
@@ -6951,6 +6956,71 @@ const server = Bun.serve({
           status: ok ? 200 : 404,
           headers: { "Content-Type": "application/json" },
         });
+      }
+    }
+
+    // ─── v3.2.0 — buddy-integration surface ─────────────────────────────────
+    //
+    // The subctl-buddy bridge polls GET /api/asks/pending to mirror
+    // pending operator questions on the M5Stack device, and POSTs to
+    // /api/notify/reply to submit button-tap answers. Canonical schema
+    // doc: docs/asks-pending-surface.md.
+
+    // GET /api/asks/pending          → { entries: [...] }
+    // GET /api/asks/pending?id=X     → single record OR 404
+    if (url.pathname === "/api/asks/pending" && req.method === "GET") {
+      const id = url.searchParams.get("id");
+      if (id) {
+        const rec = getPendingAsk(id);
+        if (!rec) {
+          return new Response(
+            JSON.stringify({ error: "not found", id }),
+            { status: 404, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return new Response(JSON.stringify(rec), {
+          headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+        });
+      }
+      const entries = listPendingAsks();
+      return new Response(JSON.stringify({ entries }), {
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+      });
+    }
+
+    // POST /api/notify/reply  body: {question_id, answer, source?, from_name?, answer_label?}
+    // Inject a reply as if a Telegram button tap had answered it. The
+    // bash --wait poll loop picks the new inbox entry up on its next
+    // tick; the corresponding asks-pending record is removed atomically.
+    if (url.pathname === "/api/notify/reply" && req.method === "POST") {
+      let body: any = {};
+      try { body = await req.json(); } catch { /* invalid JSON */ }
+      const question_id = String(body.question_id ?? "").trim();
+      const answer = String(body.answer ?? "").trim();
+      if (!question_id || !answer) {
+        return new Response(
+          JSON.stringify({ ok: false, error: "question_id + answer required" }),
+          { status: 400, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      try {
+        const entry = await injectExternalReply({
+          question_id,
+          answer,
+          answer_label: body.answer_label ?? undefined,
+          source: typeof body.source === "string" && body.source.length > 0
+            ? body.source
+            : undefined,
+          from_name: body.from_name ?? undefined,
+        });
+        return new Response(JSON.stringify({ ok: true, entry }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      } catch (e: any) {
+        return new Response(
+          JSON.stringify({ ok: false, error: e?.message ?? "inject failed" }),
+          { status: 500, headers: { "Content-Type": "application/json" } },
+        );
       }
     }
 
