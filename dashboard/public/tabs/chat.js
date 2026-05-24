@@ -603,7 +603,7 @@ export async function mount({ root: _root }) {
       if (!provider || !model) return;
       const ok = await window.notice.confirm(
         "Switch supervisor model",
-        `New supervisor: ${provider} / ${model}\n\nThis edits providers.json and restarts the master daemon. Your transcript is preserved.`,
+        `New supervisor: ${provider} / ${model}\n\nThis edits providers.json and restarts Evy. Your transcript is preserved.`,
       );
       if (!ok) return;
       apply.disabled = true;
@@ -697,7 +697,7 @@ export async function mount({ root: _root }) {
         } else if (typeof j.active === "string") {
           paint(j.active);
           if (window.notice) {
-            window.notice("Profile swapped", `Master will use the ${j.active} profile on the next prompt.`);
+            window.notice("Profile swapped", `Evy will use the ${j.active} profile on the next prompt.`);
           }
         }
       } catch (err) {
@@ -1666,18 +1666,18 @@ export async function mount({ root: _root }) {
       "/clear                         — clear the chat log (client-side only)",
       "/status                        — quick health check (uptime, transcript, subscribers)",
       "/diag                          — full diagnostic: LM Studio, Telegram, coderabbit, gh, tmux",
-      "/teams                         — list dev teams the master is tracking",
+      "/teams                         — list dev teams Evy is tracking",
       "/spawn <account> <project> [prompt]",
-      "                                 ask master to spawn a dev team",
-      "/kill <team>                   — ask master to kill a dev team session",
+      "                                 ask Evy to spawn a dev team",
+      "/kill <team>                   — ask Evy to kill a dev team session",
       `/attach <team>                 — show the SSH command to attach to a team's tmux on ${HOST_LABEL}`,
       "/config                        — show config file paths and what each controls",
       "",
       "How dev teams work:",
-      `  • Master spawns tmux sessions on ${HOST_LABEL} via subctl_orch_spawn`,
+      `  • Evy spawns tmux sessions on ${HOST_LABEL} via subctl_orch_spawn`,
       "  • The lead Claude Code in pane 0 uses TeamCreate + Agent(team_name=\"…\") to make workers",
       "  • Each lead writes status to ~/.config/subctl/master/inbox/<team>.jsonl",
-      "  • Master tails inboxes (2s poll), reacts to blocked/error events, watchdog at 30min",
+      "  • Evy tails inboxes (2s poll), reacts to blocked/error events, watchdog at 30min",
       `  • Attach manually with: ssh ${SSH_HOST_ALIAS} tmux attach -t <team>`,
       "",
       `Config (all on ${HOST_LABEL}):`,
@@ -1744,14 +1744,14 @@ export async function mount({ root: _root }) {
           while (log.firstChild) log.removeChild(log.firstChild);
           const empty = document.createElement("div");
           empty.className = "master-log-empty";
-          empty.innerHTML = "cleared (client-side; master's transcript still intact) — try <code>/help</code>";
+          empty.innerHTML = "cleared (client-side; Evy's transcript still intact) — try <code>/help</code>";
           log.appendChild(empty);
           return;
         }
 
         case "status":
           await fetchAndRenderJSON("/api/master/health", "status", (j) =>
-            `master ${j.ok ? "OK" : "DEGRADED"}  v${j.version}\n` +
+            `Evy ${j.ok ? "OK" : "DEGRADED"}  v${j.version}\n` +
             `  uptime          ${j.uptime_s}s\n` +
             `  transcript      ${j.transcript_msgs} messages\n` +
             `  SSE subscribers ${j.subscribers}\n` +
@@ -1764,7 +1764,7 @@ export async function mount({ root: _root }) {
           appendSystemBlock("running diagnostics (LM Studio + Telegram + coderabbit + gh + tmux)…");
           await fetchAndRenderJSON("/api/master/diag", "diag", (j) => {
             const header =
-              `master ${j.ok ? "ALL CHECKS PASSED" : "DEGRADED"} · v${j.version || "?"}\n` +
+              `Evy ${j.ok ? "ALL CHECKS PASSED" : "DEGRADED"} · v${j.version || "?"}\n` +
               `  supervisor      ${j.supervisor}\n` +
               `  uptime          ${j.uptime_s}s\n` +
               `  tools loaded    ${j.tools_loaded}\n` +
@@ -1799,7 +1799,7 @@ export async function mount({ root: _root }) {
           appendSystemBlock(
             `Attach to dev team "${args}" on ${HOST_LABEL}:\n\n` +
             `  ssh ${SSH_HOST_ALIAS} -t tmux attach -t ${args}\n\n` +
-            `Detach with Ctrl-b then d. The master and team keep running after detach.`,
+            `Detach with Ctrl-b then d. Evy and the team keep running after detach.`,
           );
           return;
         }
@@ -1811,7 +1811,7 @@ export async function mount({ root: _root }) {
             "  policy.json",
             "    operator info, project portfolio, autonomy levels (drive/ask/shadow),",
             "    review_interval_minutes, stall_detection_minutes, max_concurrent_workers,",
-            "    escalation_triggers. master reads at boot.",
+            "    escalation_triggers. Evy reads at boot.",
             "",
             "  providers.json",
             "    model routing per role: router (cheap dispatch), supervisor (the brain),",
@@ -1819,10 +1819,10 @@ export async function mount({ root: _root }) {
             "    .models.<role>.{provider, model, host} fields.",
             "",
             "  master-notify.json (one level up at ~/.config/subctl/master-notify.json)",
-            "    bot_token + chat_id for the master Telegram bot.",
+            "    bot_token + chat_id for Evy's Telegram bot.",
             "",
             "  inbox/ (auto-created)",
-            "    one .jsonl per dev team. master tails for status events.",
+            "    one .jsonl per dev team. Evy tails for status events.",
             "",
             `edit the file directly on ${HOST_LABEL}, then restart with:`,
             "  launchctl unload  ~/Library/LaunchAgents/com.subctl.master.plist",

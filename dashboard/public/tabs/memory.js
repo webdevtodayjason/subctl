@@ -226,7 +226,7 @@ export async function mount({ root: _root }) {
           result.textContent = "✗ " + (j.error || "save failed");
         } else {
           result.className = "memory-card-result ok";
-          result.textContent = "✓ saved · master will see it on next prompt";
+          result.textContent = "✓ saved · Evy will see it on next prompt";
           setTimeout(() => { result.textContent = ""; }, 4000);
         }
       } catch (err) {

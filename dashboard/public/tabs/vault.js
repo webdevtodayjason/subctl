@@ -165,7 +165,7 @@ export async function mount({ root: _root }) {
         return;
       }
       if (!j.tree || j.tree.length === 0) {
-        tree.innerHTML = `<div class="dim small">(empty vault — write a note via the master and refresh)</div>`;
+        tree.innerHTML = `<div class="dim small">(empty vault — write a note via Evy and refresh)</div>`;
         return;
       }
       tree.innerHTML = "";

@@ -159,7 +159,7 @@ export async function mount({ root: _root }) {
         const caps = j.captures || [];
         countEl.textContent = `${caps.length} team${caps.length === 1 ? "" : "s"}`;
         if (caps.length === 0) {
-          grid.innerHTML = `<div class="orch-empty">no dev teams running — chat with master to spawn one</div>`;
+          grid.innerHTML = `<div class="orch-empty">no dev teams running — chat with Evy to spawn one</div>`;
           if (!exp.hidden) closeExpanded();
           return;
         }
@@ -295,7 +295,7 @@ export async function mount({ root: _root }) {
         const teams = j.teams || [];
         activeCount.textContent = teams.length;
         if (!teams.length) {
-          activeBody.innerHTML = "<div class=\"orch-empty\">no dev teams running — chat with master to spawn one</div>";
+          activeBody.innerHTML = "<div class=\"orch-empty\">no dev teams running — chat with Evy to spawn one</div>";
           activeMeta.textContent = "—";
           return;
         }
@@ -761,7 +761,7 @@ export async function mount({ root: _root }) {
       } catch (err) {
         if (empty) {
           empty.style.display = "";
-          empty.textContent = `master unreachable: ${err && err.message ? err.message : err}`;
+          empty.textContent = `Evy unreachable: ${err && err.message ? err.message : err}`;
         }
         if (table) table.hidden = true;
         if (countEl) countEl.textContent = "—";

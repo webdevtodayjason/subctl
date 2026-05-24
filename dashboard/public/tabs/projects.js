@@ -313,10 +313,10 @@ export async function mount({ root: _root }) {
           <section class="pd-card pd-card-wide pd-chat">
             <h3>Talk to master about this project</h3>
             <div class="pd-chat-log" id="pd-chat-log-${escapeText(p.name)}">
-              <div class="dim small">messages here are pre-scoped to <strong>${escapeText(p.name)}</strong> — master gets your text plus project metadata so it can call the right tools without you re-stating context</div>
+              <div class="dim small">messages here are pre-scoped to <strong>${escapeText(p.name)}</strong> — Evy gets your text plus project metadata so she can call the right tools without you re-stating context</div>
             </div>
             <form class="pd-chat-form" data-project="${escapeText(p.name)}" data-path="${escapeText(p.path)}">
-              <input type="text" class="pd-chat-input" placeholder="ask master about ${escapeText(p.name)}…" autocomplete="off" />
+              <input type="text" class="pd-chat-input" placeholder="ask Evy about ${escapeText(p.name)}…" autocomplete="off" />
               <button type="submit" class="primary-btn">send</button>
             </form>
           </section>
@@ -376,7 +376,7 @@ export async function mount({ root: _root }) {
 
     // Wire action buttons
     detailEl.querySelector('[data-action="spawn-team"]')?.addEventListener("click", async () => {
-      if (!confirm(`Ask master to spawn a dev team for "${p.name}"?`)) return;
+      if (!confirm(`Ask Evy to spawn a dev team for "${p.name}"?`)) return;
       await fetch("/api/master/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -385,7 +385,7 @@ export async function mount({ root: _root }) {
           source: "chat",
         }),
       });
-      alert("Asked master. Switch to Chat to follow the response.");
+      alert("Asked Evy. Switch to Chat to follow the response.");
     });
     detailEl.querySelector('[data-action="open-vault"]')?.addEventListener("click", () => {
       // Project's vault subdir is <vault_root>/master/<project_name>/.

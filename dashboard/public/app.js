@@ -781,7 +781,7 @@
       const td0 = document.createElement("td");
       td0.colSpan = 7;
       td0.className = "empty";
-      td0.innerHTML = "no dev teams running — master will spawn them via <code>subctl_orch_spawn</code> when conversations conclude one is needed";
+      td0.innerHTML = "no dev teams running — Evy will spawn them via <code>subctl_orch_spawn</code> when conversations conclude one is needed";
       tr.appendChild(td0);
       tbody.replaceChildren(tr);
       return;
@@ -2372,7 +2372,7 @@
         const j = await r.json();
         if (j && j.ok) render(j);
       } catch (err) {
-        grid.innerHTML = '<div class="dim small">master unreachable: ' + escapeHtml(String(err && err.message || err)) + '</div>';
+        grid.innerHTML = '<div class="dim small">Evy unreachable: ' + escapeHtml(String(err && err.message || err)) + '</div>';
       }
     }
 

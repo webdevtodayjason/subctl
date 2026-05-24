@@ -618,14 +618,14 @@ A brief "Prompt copied" toast confirms. The structured shape pastes into any LLM
 
 Hermes lets the agent **add its own skills** under `optional-skills/<category>/<name>/SKILL.md`. We adopt the same with constraints:
 
-- Master can write to `~/.config/subctl/skills/master/skills/<category>/<name>/SKILL.md` only
+- Evy can write to `~/.config/subctl/skills/master/skills/<category>/<name>/SKILL.md` only
 - Categories restricted to an allow-list: `team-coordination`, `escalation-patterns`, `code-review-synthesis`, `project-bootstrap`, `incident-response`, `notifications`
 - Each new skill must include a `description` frontmatter that mentions one of: orchestration, dev-team, team-lead, escalation, review, or watchdog (sanity check against role drift)
 - Tool: `skill_create(name, category, description, content)` + `skill_revise(id, content)`
 - All writes logged to `decisions.jsonl` so operator can audit
-- Skills appear in the dashboard Skills tab under source = `master`, distinguishable from imported sources
+- Skills appear in the dashboard Skills tab under source = `master` (a code-level enum value — see Phase 3 rename), distinguishable from imported sources
 
-This is how master "gets smarter at its job" without drifting outside its lane.
+This is how Evy "gets smarter at her job" without drifting outside her lane.
 
 ---
 
@@ -680,12 +680,12 @@ in-browser. Not today.
 
 ### Phase 3d — Personal skills authoring
 
-Master can author `master/skills/<category>/<name>/SKILL.md` (see §3.6).
+Evy can author `master/skills/<category>/<name>/SKILL.md` (see §3.6).
 
 - `skill_create` + `skill_revise` tools with category allow-list
-- Dashboard Skills tab shows the `master` source distinctly
+- Dashboard Skills tab shows the `master` source distinctly (enum value, code-level — Phase 3 rename target)
 - Decision log entry per write
-- Test: ask master to capture a recurring orchestration pattern as a skill
+- Test: ask Evy to capture a recurring orchestration pattern as a skill
 
 ### Phase 3e — Tier 1 always-in-context memory
 
@@ -704,7 +704,7 @@ Curate to summary-style notifications:
 
 - "Spawned dev team `auth-rewrite` for project X"
 - "Team `auth-rewrite` reported blocked: 'lint failing on src/x.ts'"
-- "Master decided: ping team-lead via subctl_orch_msg"
+- "Evy decided: ping team-lead via subctl_orch_msg"
 - "Sent Telegram digest"
 
 Backed by a new Evy tool `notify_dashboard(summary, kind)` plus
@@ -720,7 +720,7 @@ to claude-mem.
 Dogfood on Down-Time-Arena. Operator (Jason) wants to spawn a dev team
 to build a new cybersecurity game inside the existing arena (Speartip
 sponsorship lined up; need to expand beyond the current single game).
-Watch the full loop: master → spawn → lead works → reports → master
+Watch the full loop: Evy → spawn → lead works → reports → Evy
 nudges/escalates → operator gets summary. Validate every link.
 
 ### Phase 3j — Plugin system (CLI-anything, AOS-style)
@@ -763,9 +763,9 @@ team for project X with a freeform prompt," it's "spawn off Step 4
 of <project>/SPEC.md."
 
 Two entry modes:
-- **Greenfield**: "what should we build?" Master starts from product/
+- **Greenfield**: "what should we build?" Evy starts from product/
   market/risk questions, drafts a vision, then converges to scope.
-- **Brownfield**: "what should we extend?" Master reads the existing
+- **Brownfield**: "what should we extend?" Evy reads the existing
   codebase + RESUME.md, then proposes incremental scope.
 
 **Pattern to mirror** (from ArgentOS at `~/argentos/src/infra/specforge-conductor.ts`):
@@ -830,7 +830,7 @@ projects). Personality is voice; persona is job.
 
 **Constraints (must not be relaxable per preset):**
 
-- Tool-call accuracy unchanged. Personality cannot make the master
+- Tool-call accuracy unchanged. Personality cannot make Evy
   fabricate tool names or skip required arguments.
 - Decision-log entries stay in straight-shooter voice (these are
   audit records, not vibes).
@@ -958,14 +958,14 @@ POST   /chat
 1. User uploads or pastes large text → `POST /api/master/attachments`
    returns `{id}`. Browser stores `[id, ...]` against the input box.
 2. User hits send → browser does `POST /chat { text, attachments: [...] }`.
-3. Master server reads each attachment's bytes, wraps in fenced
+3. Evy's server reads each attachment's bytes, wraps in fenced
    `<attachment>` blocks, prepends to the user message before
    invoking `agent.prompt()`.
 4. Transcript message records the user text + an `attachments` array
    of `{id, filename, size}` (NOT the inline content). Browser
    renders the pill chip; model saw the full content during the call.
-5. After auto-compaction drops the prompt, the next time the master
-   needs that attachment it calls `read_attachment(id)` and gets it
+5. After auto-compaction drops the prompt, the next time Evy
+   needs that attachment she calls `read_attachment(id)` and gets it
    back.
 
 **UI:**
@@ -998,7 +998,7 @@ POST   /chat
 
 **Out of scope for first cut:**
 
-- Per-attachment ACLs (everyone with master access sees everything).
+- Per-attachment ACLs (everyone with Evy access sees everything).
 - OCR for scanned PDFs.
 - Inline-editing or annotation of attachments inside chat.
 - Sharing attachments out-bound (e.g., into a dev-team's worker
@@ -1300,8 +1300,8 @@ each. Evy tool count: 62 → **69**.
 
 ### Phase 3o.3 — Compact correctness (v2.7.3)
 
-A few hours after v2.7.2 tagged, the operator caught the master
-hallucinating "Standing by" responses to questions it couldn't see.
+A few hours after v2.7.2 tagged, the operator caught Evy
+hallucinating "Standing by" responses to questions she couldn't see.
 Diagnosis: the 5-minute auto-compact ticker had fired AFTER the
 supervisor was already past 100% util on its next prompt. The ticker
 was the wrong design — a polling watchdog can't keep a synchronous
@@ -1710,10 +1710,11 @@ Today (post v2.1.0) subctl has:
 - `subctl_skills_*` imports skills from public git repos into a
   catalog at `~/.config/subctl/skills/`
 - `skill_create / skill_revise / skill_remove` Evy tools, but
-  **constrained to the master-skill source only** with a category
-  allowlist (`team-coordination`, `escalation-patterns`,
+  **constrained to the Evy-skill source only** (today's enum value
+  `master` is a code-level identifier — Phase 3 rename target) with
+  a category allowlist (`team-coordination`, `escalation-patterns`,
   `code-review-synthesis`, …). Evy can author skills FOR
-  ITSELF; the operator cannot author skills via the dashboard.
+  HERSELF; the operator cannot author skills via the dashboard.
 - Per-cfg-dir symlinking via `subctl_settings_install_claude_dir`,
   which lifts repo-baked skills (`subctl`, `autonomy`,
   `orchestrator-mode`) into every Claude config dir at install
@@ -1724,8 +1725,8 @@ What ArgentOS has and subctl doesn't:
 1. **Operator-facing skill authoring UI** — write/edit a skill from
    the dashboard without dropping to a text editor. Live preview
    of the SKILL.md, frontmatter validation, syntax highlight.
-2. **Multi-source authoring** — author skills targeted at the
-   master, AT specific dev-team templates, AT specific Claude
+2. **Multi-source authoring** — author skills targeted at Evy,
+   AT specific dev-team templates, AT specific Claude
    accounts, OR at the operator's own global `~/.claude/`.
 3. **Per-skill enable/disable toggles** — turn a skill off without
    deleting it, with a per-source override.
@@ -1841,17 +1842,17 @@ shows the conflict UI.
   `running · headless` or similar. Operators interpret "detached"
   as broken when it actually means "no terminal is currently
   attached, work continues fine" — flagged 2026-05-10.
-- Master skill needs an explicit nudge to call `notify_dashboard`
+- Evy's skill needs an explicit nudge to call `notify_dashboard`
   on milestone events. The notifications sidecar in the chat
-  panel is empty during real dogfood runs because the master
+  panel is empty during real dogfood runs because Evy
   never publishes — diagnosed 2026-05-10. Add to Evy SKILL.md
   the rule: "On Milestone-X-complete, call notify_dashboard with
   kind=milestone."
 
 - Sweep remaining `alert()` / `confirm()` calls in Projects + Teams + Skills tabs to use `window.notice` (the Chat tab is done)
 - `lms --version` ANSI banner stripping is imperfect — first line with a digit picks up an ASCII-art fragment
-- Evy's tool list in chat ("subctl_orch_state", "subctl_orch_inbox" etc.) doesn't match the actual tool names (Evy is hallucinating; system_lmstudio_models was right but state/inbox aren't real). Need a `system_my_tools` introspection so master always reports accurate names from the registry rather than memory.
-- Persistent-skills SKILL.md test for master: when claude-mem captures a recurring pattern, Evy should propose a skill via `notify_dashboard` and let operator approve before writing.
+- Evy's tool list in chat ("subctl_orch_state", "subctl_orch_inbox" etc.) doesn't match the actual tool names (Evy is hallucinating; system_lmstudio_models was right but state/inbox aren't real). Need a `system_my_tools` introspection so Evy always reports accurate names from the registry rather than memory.
+- Persistent-skills SKILL.md test for Evy: when claude-mem captures a recurring pattern, Evy should propose a skill via `notify_dashboard` and let operator approve before writing.
 - `subctl update` end-to-end test: pull, rebuild, restart launchd jobs, doctor on the way out.
 
 ### Phase 3o.16 — TinyFish first-class (v2.7.16)
@@ -1926,7 +1927,7 @@ OpenRouter is a unified gateway for hundreds of AI models (incl. a free preview 
 
 ### Phase 3o.18 — Supervisor profiles (v2.7.18)
 
-The supervisor model becomes a **profile**, not a single value. v2.7.18 introduces two named profiles — `chat` and `heavy` — that the operator switches between from the dashboard's sticky chat-header pill or via Telegram `/profile chat|heavy` without restarting master. The switch lands at the start of the next prompt, never mid-turn, so an in-flight pi-agent-core stream is never disturbed.
+The supervisor model becomes a **profile**, not a single value. v2.7.18 introduces two named profiles — `chat` and `heavy` — that the operator switches between from the dashboard's sticky chat-header pill or via Telegram `/profile chat|heavy` without restarting Evy. The switch lands at the start of the next prompt, never mid-turn, so an in-flight pi-agent-core stream is never disturbed.
 
 The two profiles are intentionally tied to a use-case, not a vendor:
 
@@ -1973,13 +1974,13 @@ Two reliability fixes shipping together, both driven by the same 2026-05-13 inci
 
 #### The incident
 
-During a 90-minute drive home Evy — running the heavy supervisor `qwen/qwen3.6-35b-a3b` — stopped responding to Telegram. The post-mortem showed master was stuck in an infinite tool-call loop, alternating between an assistant turn with `stopReason: "toolUse"` and empty text, and a tool result with `{ entries: [], listener: { running: false, ... } }`. The looping tool was `subctl_orch_inbox` (→ dashboard `/api/notify/inbox`); the dead listener was the dashboard's notify-listener (`dashboard/notify-listener.ts:notifyListenerStatus()`). The reasoning model fell into a "check again before answering" trap: empty inbox + dead listener → check again → repeat. CPU at 0.3% (idle); the prompt queue was wedged for 90 minutes because every assistant turn ended in another tool-use call instead of a final text response. The operator had no kill path until they got home.
+During a 90-minute drive home Evy — running the heavy supervisor `qwen/qwen3.6-35b-a3b` — stopped responding to Telegram. The post-mortem showed Evy was stuck in an infinite tool-call loop, alternating between an assistant turn with `stopReason: "toolUse"` and empty text, and a tool result with `{ entries: [], listener: { running: false, ... } }`. The looping tool was `subctl_orch_inbox` (→ dashboard `/api/notify/inbox`); the dead listener was the dashboard's notify-listener (`dashboard/notify-listener.ts:notifyListenerStatus()`). The reasoning model fell into a "check again before answering" trap: empty inbox + dead listener → check again → repeat. CPU at 0.3% (idle); the prompt queue was wedged for 90 minutes because every assistant turn ended in another tool-use call instead of a final text response. The operator had no kill path until they got home.
 
 #### Watchdog controls
 
 Three operator-facing surfaces, one shared registry (`components/master/watchdogs.ts`).
 
-**Registry.** Every long-running tick or loop in master registers through `registerWatchdog({ id, kind, kill })`:
+**Registry.** Every long-running tick or loop in Evy registers through `registerWatchdog({ id, kind, kill })`:
 
 - `telegram-listener` — the master-notify-listener Telegram long-poll (see §2.6 config).
 - `cli-prompt-poll` — the `subctl master prompt` JSONL bridge polling.
@@ -2495,7 +2496,7 @@ editing dotfiles.
 
 ### 5.3 LM Studio configuration
 
-**Master auto-pins the supervisor's context window on boot.** The
+**Evy auto-pins the supervisor's context window on boot.** The
 recurring 4K JIT trap (LM Studio quietly evicts a model under memory
 pressure and reloads it at default 4K) is solved as of Phase 3c.3:
 Evy calls `POST /api/v1/models/load` with an explicit
@@ -2544,10 +2545,10 @@ Or restart Evy via `subctl update` / `launchctl unload+load`.
 - Auto-compact at 90% utilization is the second line of defense once
   the working transcript fills the window
 
-### 5.4 Master self-introspection — `system_subctl_knowledge` (v2.7.7+)
+### 5.4 Evy self-introspection — `system_subctl_knowledge` (v2.7.7+)
 
 Evy ships a canonical, TOON-formatted breakdown of
-itself at `components/master/knowledge/subctl.toon` and exposes it via
+herself at `components/master/knowledge/subctl.toon` and exposes it via
 the `system_subctl_knowledge` tool. Use it before answering "how does
 X work?" / "what's in Y?" / "what are subctl's modes?" — the file is
 the source of truth for the version you're running.
@@ -2698,7 +2699,9 @@ subctl orch spawn --template feature-dev \
 
 ## 6. Glossary
 
-- **Master** — the persistent dev-team orchestrator daemon
+> For the canonical, vault-mirrored taxonomy see [glossary.md](glossary.md).
+
+- **Evy** — the persistent dev-team orchestrator daemon (and her persona). Was historically called "master" in code identifiers; v3.0 Phase 3 renames those.
 - **Dev team** — a tmux session with a Claude Code lead in pane 0 + workers in pane 1..N
 - **Lead** — the head Claude Code instance in a dev team that subdivides work
 - **Worker** — Claude Code sub-agent spawned by the lead via `TeamCreate`+`Agent`

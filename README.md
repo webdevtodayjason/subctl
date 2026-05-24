@@ -4,6 +4,8 @@
 
 # subctl
 
+> **Terminology note:** the persistent daemon is called **Evy**. Some legacy code identifiers still use "master" (e.g. `subctl master`, `components/master/`, `com.subctl.master`) — see [docs/glossary.md](docs/glossary.md) or the project Initiative for the migration plan.
+
 **An agentic harness for the AI subscriptions you already pay for.**
 
 A persistent conversational orchestrator that runs on your hardware, talks to you through a dashboard chat panel or Telegram, spawns dev-team tmux sessions on demand, watches them for staleness, gates its own claims with a runtime verifier, and pushes projects forward — with your laptop closed and your subscriptions on auto-rotate.
