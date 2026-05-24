@@ -40,6 +40,7 @@ ASSUME_YES=false
 ALLOW_MISSING_HARD=false
 SKIP_DEPS=false
 ONLY_BOTFATHER=false
+ROLLBACK_V3_RENAME=false
 
 for arg in "$@"; do
   case "$arg" in
@@ -52,6 +53,7 @@ for arg in "$@"; do
     --yes|-y)                ASSUME_YES=true ;;
     --allow-missing-hard)    ALLOW_MISSING_HARD=true ;;
     --botfather)             ONLY_BOTFATHER=true ;;
+    --rollback-v3-rename)    ROLLBACK_V3_RENAME=true ;;
     --uninstall)             exec bash "$REPO_ROOT/uninstall.sh" ;;
     -h|--help)
       sed -n '2,21p' "$0"; exit 0 ;;
@@ -60,6 +62,173 @@ for arg in "$@"; do
 done
 
 run() { $DRY_RUN && echo "[dry-run] $*" || eval "$@"; }
+
+# ── v3.0 Phase 3 — Evy rename migration ─────────────────────────────────────
+#
+# Migrates legacy "master" naming → "Evy" naming on disk. Idempotent — safe
+# to re-run, safe to run on fresh installs (no-ops when there's nothing to
+# migrate). Runs unconditionally during component_install on v3.0+ installs
+# so operators upgrading from v2.x get migrated transparently.
+#
+# What changes on disk:
+#   ~/Library/LaunchAgents/com.subctl.master.plist  → unloaded + removed
+#   ~/.config/subctl/master/                        → renamed to evy/
+#   ~/.config/subctl/master-notify.json             → renamed to evy-notify.json
+#   ~/.config/subctl/_backup-pre-v3-rename-<ISO>.tar.gz  ← created BEFORE rename
+#   ~/.config/subctl/master                         → symlink to evy/ (one-cycle compat)
+#   ~/.config/subctl/master-notify.json             → symlink to evy-notify.json (one-cycle compat)
+#
+# The new com.subctl.evy.plist is loaded by `subctl evy enable` (operator-driven),
+# not by this migration. We tear down the old plist here so the v2.x daemon
+# stops running before the operator brings up the v3.0 daemon.
+subctl_migrate_to_evy() {
+  local home_dir="${HOME:?HOME unset}"
+  local cfg_dir="$home_dir/.config/subctl"
+  local agents_dir="$home_dir/Library/LaunchAgents"
+  local old_plist="$agents_dir/com.subctl.master.plist"
+  local new_plist="$agents_dir/com.subctl.evy.plist"
+  local old_state="$cfg_dir/master"
+  local new_state="$cfg_dir/evy"
+  local old_notify="$cfg_dir/master-notify.json"
+  local new_notify="$cfg_dir/evy-notify.json"
+  local backup_ts; backup_ts=$(date -u +%Y%m%dT%H%M%SZ)
+  local backup_tgz="$cfg_dir/_backup-pre-v3-rename-$backup_ts.tar.gz"
+
+  # Idempotency guard — if the state dir is already migrated AND the old
+  # path is either gone or already a symlink to the new path, we're done.
+  if [[ -d "$new_state" && ( ! -e "$old_state" || -L "$old_state" ) ]] \
+     && [[ ! -f "$old_plist" ]]; then
+    subctl_info "v3.0 Evy rename migration already complete (skipping)"
+    return 0
+  fi
+
+  # Nothing to migrate? (fresh install, no legacy artifacts)
+  if [[ ! -f "$old_plist" && ! -d "$old_state" && ! -f "$old_notify" ]]; then
+    subctl_info "no v2.x master artifacts on disk — Evy rename migration not needed"
+    return 0
+  fi
+
+  subctl_info "v3.0 Phase 3 — migrating master → Evy on disk"
+
+  # Pre-migration backup. Tarball everything that's about to move so a
+  # botched rename can be reversed manually.
+  if [[ -d "$old_state" || -f "$old_notify" ]]; then
+    local backup_items=()
+    [[ -d "$old_state" ]] && backup_items+=("master")
+    [[ -f "$old_notify" ]] && backup_items+=("master-notify.json")
+    if $DRY_RUN; then
+      echo "[dry-run] tar -czf $backup_tgz -C $cfg_dir ${backup_items[*]}"
+    else
+      tar -czf "$backup_tgz" -C "$cfg_dir" "${backup_items[@]}" \
+        && subctl_info "  pre-migration backup → $backup_tgz" \
+        || { subctl_err "  backup failed — refusing to continue"; return 1; }
+    fi
+  fi
+
+  # Unload the old plist (best effort — may not be loaded).
+  if [[ -f "$old_plist" ]]; then
+    run launchctl unload "$old_plist" 2>/dev/null || true
+    subctl_info "  unloaded com.subctl.master (if it was running)"
+  fi
+
+  # Atomic rename of the state dir. We only rename when target doesn't
+  # exist — defensive against partial prior migrations.
+  if [[ -d "$old_state" && ! -e "$new_state" ]]; then
+    run mv "$old_state" "$new_state"
+    subctl_info "  renamed state dir: $old_state → $new_state"
+  elif [[ -d "$old_state" && -d "$new_state" && ! -L "$old_state" ]]; then
+    subctl_warn "  both $old_state and $new_state exist — leaving both alone"
+    subctl_warn "  resolve manually then re-run: bash install.sh"
+    return 1
+  fi
+
+  # Notify config — same atomic-rename pattern.
+  if [[ -f "$old_notify" && ! -e "$new_notify" ]]; then
+    run mv "$old_notify" "$new_notify"
+    subctl_info "  renamed notify config: $old_notify → $new_notify"
+  fi
+
+  # One-cycle compat symlinks. External tooling that hardcoded the old
+  # paths (operator scripts, third-party watchers) keeps working through
+  # v3.x. Removed in v3.x+1.
+  if [[ -d "$new_state" && ! -e "$old_state" ]]; then
+    run ln -s "$new_state" "$old_state"
+    subctl_info "  compat symlink: $old_state → $new_state (removed in v3.x+1)"
+  fi
+  if [[ -f "$new_notify" && ! -e "$old_notify" ]]; then
+    run ln -s "$new_notify" "$old_notify"
+    subctl_info "  compat symlink: $old_notify → $new_notify (removed in v3.x+1)"
+  fi
+
+  # Remove the old plist file. The label may persist as a launchctl ghost
+  # entry until reboot if the unload didn't fully complete, which is
+  # harmless — `subctl evy enable` will write and load com.subctl.evy.
+  if [[ -f "$old_plist" ]]; then
+    run rm "$old_plist"
+    subctl_info "  removed $old_plist"
+  fi
+
+  subctl_ok "Evy rename migration complete"
+  subctl_info "  run 'subctl evy enable' to bring up the v3.0 daemon"
+}
+
+# Reverse the v3.0 Evy rename. Best-effort — restores state dir, notify
+# config, and (if a backup tarball is on disk) the original layout.
+subctl_rollback_v3_rename() {
+  local home_dir="${HOME:?HOME unset}"
+  local cfg_dir="$home_dir/.config/subctl"
+  local agents_dir="$home_dir/Library/LaunchAgents"
+  local old_plist="$agents_dir/com.subctl.master.plist"
+  local new_plist="$agents_dir/com.subctl.evy.plist"
+  local old_state="$cfg_dir/master"
+  local new_state="$cfg_dir/evy"
+  local old_notify="$cfg_dir/master-notify.json"
+  local new_notify="$cfg_dir/evy-notify.json"
+
+  subctl_info "v3.0 rollback — restoring master/ layout from evy/"
+
+  # Unload the new plist so it isn't holding the daemon up while we reverse.
+  if [[ -f "$new_plist" ]]; then
+    run launchctl unload "$new_plist" 2>/dev/null || true
+    subctl_info "  unloaded com.subctl.evy (if it was running)"
+    run rm -f "$new_plist"
+  fi
+
+  # Tear down compat symlinks first.
+  if [[ -L "$old_state" ]]; then
+    run rm "$old_state"
+    subctl_info "  removed compat symlink $old_state"
+  fi
+  if [[ -L "$old_notify" ]]; then
+    run rm "$old_notify"
+    subctl_info "  removed compat symlink $old_notify"
+  fi
+
+  # Rename the actual state dir back to master/.
+  if [[ -d "$new_state" && ! -e "$old_state" ]]; then
+    run mv "$new_state" "$old_state"
+    subctl_info "  renamed state dir: $new_state → $old_state"
+  fi
+  if [[ -f "$new_notify" && ! -e "$old_notify" ]]; then
+    run mv "$new_notify" "$old_notify"
+    subctl_info "  renamed notify config: $new_notify → $old_notify"
+  fi
+
+  # Inform operator about the backup tarball (latest by mtime).
+  local latest_backup
+  latest_backup=$(ls -t "$cfg_dir"/_backup-pre-v3-rename-*.tar.gz 2>/dev/null | head -1)
+  if [[ -n "$latest_backup" ]]; then
+    subctl_info "  pre-migration backup still on disk: $latest_backup"
+    subctl_info "  (delete manually once you've confirmed the rollback works)"
+  fi
+
+  # The v2.x plist must be restored separately — the operator brings the
+  # daemon back up the v2.x way (via `subctl master enable` on a v2.x
+  # checkout, or by re-running `bash install.sh` from main).
+  subctl_warn "  v2.x master plist NOT restored — re-checkout a v2.x branch and run 'bash install.sh' to regenerate"
+
+  subctl_ok "rollback complete"
+}
 
 # ── install tree (worktree pinned to main, decoupled from dev tree) ──────────
 #
@@ -662,6 +831,12 @@ component_install() {
   subctl_info "config"
   run subctl_ensure_config_dir
 
+  # v3.0 Phase 3 — Evy rename migration. Runs unconditionally (idempotent;
+  # no-ops on fresh installs or after a successful prior run). Must
+  # precede the daemon-install step so the old plist is torn down before
+  # the operator brings up the v3.0 daemon.
+  subctl_migrate_to_evy
+
   # migrate (optional)
   if $DO_MIGRATE; then
     subctl_info "detecting prior installs"
@@ -898,6 +1073,12 @@ _bootstrap_jq
 # --botfather: walkthrough only, exit
 if $ONLY_BOTFATHER; then
   run_botfather_walkthrough
+  exit $?
+fi
+
+# --rollback-v3-rename: reverse the Evy rename migration, exit
+if $ROLLBACK_V3_RENAME; then
+  subctl_rollback_v3_rename
   exit $?
 fi
 

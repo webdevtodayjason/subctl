@@ -2,6 +2,49 @@
 
 > **v3.0 rolling release.** Sections accrete as each Phase worker lands. Operator merges manually; this header stays `unreleased` until the full rc1 stack is ready to ship.
 
+### `refactor(v3.0): code-level rename master → Evy (Phase 3)`
+
+Filesystem + identifier rename of the persistent daemon from "master" to "Evy" across:
+
+- `components/master/` → `components/evy/`
+- `lib/master.sh` → `lib/evy.sh`
+- `docs/master.md` → `docs/evy.md`
+- CLI subcommand `subctl master <verb>` → `subctl evy <verb>` (compat shim through v3.x — `subctl master` exec-forwards to `subctl evy` and emits a deprecation warning; removed in v3.x+1)
+- Plist label `com.subctl.master` → `com.subctl.evy` (template at `components/evy/launchd/com.subctl.evy.plist`, Label `__OWNER__.evy`)
+- State dir `~/.config/subctl/master/` → `~/.config/subctl/evy/` (symlink kept for one cycle, removed in v3.x+1)
+- Log path `~/Library/Logs/subctl/master.log` → `~/Library/Logs/subctl/evy.log`
+- Bash naming convention: `subctl_master_*` → `subctl_evy_*` across `lib/evy.sh`'s 12-verb dispatcher
+- Env var `SUBCTL_MASTER_LABEL` → `SUBCTL_EVY_LABEL` (with runtime fallback that honors the old name + warns through v3.x)
+- Notify config `~/.config/subctl/master-notify.json` → `~/.config/subctl/evy-notify.json` (`install.sh` migrates with one-cycle symlink)
+- Internal modules: `components/master/master-notify-listener.ts` → `components/evy/evy-notify-listener.ts` (already renamed in Phase 3 commit 1)
+- Dashboard backend (`dashboard/server.ts`): `/api/logs`, `/api/teams`, `/api/memory/tier1` state-dir references updated
+- Providers (`providers/claude/teams.sh`, `providers/openai-codex/teams.sh`): `SUBCTL_TEAM_TEMPLATES_DIR` default + inbox path updated
+- Daemon knowledge file (`components/evy/knowledge/subctl.toon`): state paths + plist label + renamed-file refs updated
+- `--evy` CLI log flag added as the v3.0-preferred alias for `--master` (both honored through v3.x; `--master` removed in v3.x+1)
+
+`install.sh` handles the migration atomically on upgrade:
+
+1. Pre-migration backup tarball at `~/.config/subctl/_backup-pre-v3-rename-<ISO>.tar.gz` containing the legacy `master/` dir + `master-notify.json`.
+2. `launchctl unload` of the legacy `com.subctl.master` plist (best-effort).
+3. Atomic `mv` of `~/.config/subctl/master/` → `~/.config/subctl/evy/`.
+4. Atomic `mv` of `~/.config/subctl/master-notify.json` → `~/.config/subctl/evy-notify.json`.
+5. One-cycle compat symlinks (`master` → `evy`, `master-notify.json` → `evy-notify.json`) so external tooling that hardcoded old paths keeps working through v3.x.
+6. Old `com.subctl.master.plist` file removed; the new `com.subctl.evy.plist` is loaded by `subctl evy enable` (operator-driven, same as today).
+
+Idempotent — re-running on an already-migrated install no-ops with `v3.0 Evy rename migration already complete (skipping)`. Fresh installs no-op with `no v2.x master artifacts on disk — Evy rename migration not needed`.
+
+`bash install.sh --rollback-v3-rename` reverses the migration: unloads the new plist, removes compat symlinks, renames `evy/` back to `master/` and `evy-notify.json` back to `master-notify.json`, and tells the operator where the pre-migration backup tarball lives. The v2.x plist must be regenerated from a v2.x checkout — rollback does NOT restore it directly.
+
+**Carved out from this PR, pending v3.x follow-ups** (per design decisions captured during the Phase 3 spec):
+
+- HMAC trust marker `[subctl-master directive ...]` — wire protocol; rename requires version negotiation across all worker providers (`providers/claude/`, `providers/openai-codex/`, `providers/deepseek/`, `providers/pi-coding-agent/`).
+- HTTP routes `/api/master/*` (28 routes) — cross dashboard / MCP / curl surfaces; rename atomic with dashboard JS update.
+- `[master]` and `[master-notify]` `console.error` prefixes in source (~hundreds of sites) — cosmetic; deferred to a sweep PR. Operators may see mixed Evy / `[master]` strings in `subctl logs` until then.
+- `--master` CLI flag retained alongside the new `--evy` alias; removed in a later cycle.
+- Prose references to "master daemon" / "master orchestrator" inside `lib/evy.sh` help text and `components/evy/knowledge/subctl.toon` — cosmetic; left for the Phase 1 docs follow-up to keep this PR scoped to paths + identifiers.
+
+**Operator action on upgrade:** Nothing manual. `bash install.sh` from a v3.0 checkout runs the migration as part of component install, then the operator runs `subctl evy enable` to bring up the v3.0 daemon. The compat shim means `subctl master enable` from existing muscle memory keeps working (with a deprecation warning) through v3.x.
+
 ### `docs(v3.0): language rename master → Evy (Phase 1, non-breaking)`
 
 First phase of the v3.0 cycle: the persistent daemon is now called **Evy** everywhere user-facing — docs prose, dashboard UI strings, CLI help text, this CHANGELOG. Code identifiers (paths under `components/master/`, `lib/master.sh`, the `com.subctl.master` plist label, the `~/.config/subctl/master/` state directory, the `subctl master` CLI subcommand, the `/api/master/*` dashboard routes, the `--master` log flag) are unchanged in this release. Phase 3 of the v3.0 cycle renames those, ships a migration script, and provides a `subctl master` → `subctl evy` compat shim.

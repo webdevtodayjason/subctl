@@ -753,8 +753,11 @@ case "$cmd" in
 
   master)
     # v3.0 compat shim — `subctl master <verb>` continues to work
-    # through v3.x with a deprecation warning surfaced in commit 3
-    # (Phase 3). Currently routes silently to subctl_evy.
+    # through v3.x with an active deprecation warning. Forwarded to
+    # subctl_evy. This shim ships through v3.x and is removed in v3.x+1.
+    # (lib/core.sh is already sourced at the top of bin/subctl.)
+    subctl_warn "DEPRECATION: 'subctl master' is renamed to 'subctl evy' in v3.0. Forwarding..."
+    subctl_warn "(This compat shim ships through v3.x; will be removed in v3.x+1.)"
     . "$SUBCTL_REPO_ROOT/lib/evy.sh"
     subctl_evy "$@"
     ;;
