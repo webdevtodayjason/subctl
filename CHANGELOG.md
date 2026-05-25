@@ -2,12 +2,12 @@
 
 ### `chore(ci): drain the no-secrets gate of pre-existing false positives`
 
-The repo's no-secrets gate (`scripts/check-no-secrets.sh`) has been polluted for months by hardcoded `/Users/sem/...` paths in docs, test fixtures, code comments, and example configs — none of them real credentials, just historical artifacts of paths typed during development. The gate has been failing on every PR for so long that the team's reflex was to `--admin` merge through it, which is exactly the wrong reflex when a real secret eventually does slip in.
+The repo's no-secrets gate (`scripts/check-no-secrets.sh`) has been polluted for months by hardcoded developer-home paths (the maintainer's username path prefix on macOS) in docs, test fixtures, code comments, and example configs — none of them real credentials, just historical artifacts of paths typed during development. The gate has been failing on every PR for so long that the team's reflex was to `--admin` merge through it, which is exactly the wrong reflex when a real secret eventually does slip in.
 
 This patch drains the backlog so the gate goes back to being signal-only.
 
 **Substitutions (79 hits across 27 files):**
-- `/Users/sem/...` → `/Users/you/...` everywhere it appeared in:
+- developer-home path prefix → `/Users/you/...` everywhere it appeared in:
   - Code comments (`components/evy/server.ts`, `components/evy/memory-kernel.ts`, `dashboard/public/icons.js`)
   - UI placeholders (`dashboard/public/index.html` — vault root input placeholder)
   - Test fixtures (6 test files across `components/evy/__tests__/` and `dashboard/__tests__/`)
@@ -18,7 +18,7 @@ This patch drains the backlog so the gate goes back to being signal-only.
 **Targeted fixes (3 fixtures):**
 - `lib/__tests__/cli.test.ts` — shortened `sk-` placeholder fixtures below the 20-char threshold (still exercises the redactor without tripping the gate)
 - `components/evy/__tests__/voice-render.test.ts` — assembled the long `sk-` fixture at runtime via string concat so the literal source doesn't match
-- `docs/spikes/picoder.md` — replaced real emails (`jason@webdevtoday.com`, `jbrashear72@icloud.com`) with `jason@example.com`
+- `docs/spikes/picoder.md` — replaced two real emails with `jason@example.com` placeholders
 
 **Scanner hardening (`scripts/check-no-secrets.sh`):**
 - Added `__pycache__` to `--exclude-dir` (was hitting compiled Python from the `cognee` service)
