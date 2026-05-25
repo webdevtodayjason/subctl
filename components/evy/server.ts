@@ -666,7 +666,7 @@ const TOOL_GATES = {
 TOOL_GATES.memory_kernel = TOOL_GATES.memori;
 
 console.error(
-  `[master] tool gates: ${Object.entries(TOOL_GATES).map(([k, v]) => `${k}=${v ? "on" : "off"}`).join(", ")}`,
+  `[evy] tool gates: ${Object.entries(TOOL_GATES).map(([k, v]) => `${k}=${v ? "on" : "off"}`).join(", ")}`,
 );
 
 export const toolRegistry: Record<string, InternalTool> = {
@@ -1015,7 +1015,7 @@ export function buildModel(cfg: {
       _anthropicGuardSeen.add(dedupKey);
       const verdict = allowed ? "ARMED (env opt-in)" : "BLOCKED";
       console.error(
-        `[master][ANTHROPIC-API-GUARD] buildModel called with provider="anthropic" model="${cfg.model}" host="${cfg.host ?? "(default)"}" — ${verdict}`,
+        `[evy][ANTHROPIC-API-GUARD] buildModel called with provider="anthropic" model="${cfg.model}" host="${cfg.host ?? "(default)"}" — ${verdict}`,
       );
       const title = allowed
         ? `Anthropic provider ARMED (${cfg.model})`
@@ -1042,7 +1042,7 @@ export function buildModel(cfg: {
         });
       } catch (err) {
         console.error(
-          `[master][ANTHROPIC-API-GUARD] emitNotification failed: ${(err as Error).message}`,
+          `[evy][ANTHROPIC-API-GUARD] emitNotification failed: ${(err as Error).message}`,
         );
       }
       // External side effects (real Telegram push + decisions.jsonl append)
@@ -1058,7 +1058,7 @@ export function buildModel(cfg: {
         void sendTelegramOutbound(`🚨 ${title}\n\n${body}`).catch(
           (err: unknown) => {
             console.error(
-              `[master][ANTHROPIC-API-GUARD] Telegram alert failed: ${(err as Error)?.message ?? String(err)}`,
+              `[evy][ANTHROPIC-API-GUARD] Telegram alert failed: ${(err as Error)?.message ?? String(err)}`,
             );
           },
         );
@@ -1072,7 +1072,7 @@ export function buildModel(cfg: {
           });
         } catch (err) {
           console.error(
-            `[master][ANTHROPIC-API-GUARD] logDecision failed: ${(err as Error).message}`,
+            `[evy][ANTHROPIC-API-GUARD] logDecision failed: ${(err as Error).message}`,
           );
         }
       }
@@ -1411,7 +1411,7 @@ export function migrateLocalBackend(providers: Providers): {
   );
   if (distinctHosts.length > 1) {
     console.error(
-      `[master] WARN local_backend migration: ${candidates.length} local-role(s) used ${distinctHosts.length} different hosts (${distinctHosts.join(", ")}); folding into ${pick.host}. Verify in dashboard → Settings → Local Inference Backend.`,
+      `[evy] WARN local_backend migration: ${candidates.length} local-role(s) used ${distinctHosts.length} different hosts (${distinctHosts.join(", ")}); folding into ${pick.host}. Verify in dashboard → Settings → Local Inference Backend.`,
     );
   }
   providers.local_backend = {
@@ -1838,7 +1838,7 @@ function loadAgentTranscript(): AgentMessage[] {
     return dropOrphanToolResults(msgs);
   } catch (err) {
     console.error(
-      `[master] WARN agent-state.json corrupt, starting fresh: ${(err as Error).message}`,
+      `[evy] WARN agent-state.json corrupt, starting fresh: ${(err as Error).message}`,
     );
     return [];
   }
@@ -1871,7 +1871,7 @@ export function dropOrphanToolResults(messages: AgentMessage[]): AgentMessage[] 
   });
   if (dropped > 0) {
     console.error(
-      `[master] dropped ${dropped} orphan toolResult(s) at load — preempted Codex/OpenAI HTTP 400.`,
+      `[evy] dropped ${dropped} orphan toolResult(s) at load — preempted Codex/OpenAI HTTP 400.`,
     );
   }
   return filtered;
@@ -2126,7 +2126,7 @@ function updateLastReviewTs() {
     writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
   } catch (err) {
     console.error(
-      `[master] WARN could not update state.json last_review_ts: ${(err as Error).message}`,
+      `[evy] WARN could not update state.json last_review_ts: ${(err as Error).message}`,
     );
   }
 }
@@ -2134,18 +2134,18 @@ function updateLastReviewTs() {
 // ─── main ───────────────────────────────────────────────────────────────────
 
 async function main() {
-  console.error(`[master] booting subctl evy v${SUBCTL_VERSION}`);
+  console.error(`[evy] booting subctl evy v${SUBCTL_VERSION}`);
 
   const probe = ensureConfigFiles();
   if (!probe.ok) {
-    console.error(`[master] boot failed: ${probe.warnings.join("; ")}`);
+    console.error(`[evy] boot failed: ${probe.warnings.join("; ")}`);
     process.exit(1);
   }
-  for (const w of probe.warnings) console.error(`[master] WARN ${w}`);
+  for (const w of probe.warnings) console.error(`[evy] WARN ${w}`);
 
   const { providers, policy, skill } = loadConfig();
   console.error(
-    `[master] loaded — operator=${policy.operator.name}, projects=${policy.projects.length}, models=${Object.keys(providers.models).length}`,
+    `[evy] loaded — operator=${policy.operator.name}, projects=${policy.projects.length}, models=${Object.keys(providers.models).length}`,
   );
 
   // ── v2.8.13 Phase 4: local_backend migration ────────────────────────────
@@ -2158,7 +2158,7 @@ async function main() {
     if (mig.migrated && mig.picked) {
       persistProviders(providers);
       console.error(
-        `[master] local_backend seeded from ${mig.picked.kind} @ ${mig.picked.host}; rewrote roles ${mig.rewrittenRoles.join(", ")} → provider="local"`,
+        `[evy] local_backend seeded from ${mig.picked.kind} @ ${mig.picked.host}; rewrote roles ${mig.rewrittenRoles.join(", ")} → provider="local"`,
       );
       logDecision({
         project: "_master",
@@ -2167,7 +2167,7 @@ async function main() {
       });
     }
   } catch (err) {
-    console.error(`[master] local_backend migration failed: ${(err as Error).message}`);
+    console.error(`[evy] local_backend migration failed: ${(err as Error).message}`);
   }
 
   // ── pi-agent-core wiring ────────────────────────────────────────────────
@@ -2180,7 +2180,7 @@ async function main() {
   const supervisorCfgFromProviders = providers.models.supervisor;
   if (!supervisorCfgFromProviders) {
     console.error(
-      `[master] FATAL providers.json missing models.supervisor — cannot boot agent`,
+      `[evy] FATAL providers.json missing models.supervisor — cannot boot agent`,
     );
     process.exit(1);
   }
@@ -2189,7 +2189,7 @@ async function main() {
     profilesFile = loadProfiles();
   } catch (err) {
     console.error(
-      `[master] FATAL profiles.json load failed: ${(err as Error).message}`,
+      `[evy] FATAL profiles.json load failed: ${(err as Error).message}`,
     );
     process.exit(1);
     throw err; // unreachable, narrows the type
@@ -2209,7 +2209,7 @@ async function main() {
   }, providers);
   let activeProfile: ProfileName = profilesFile.active;
   console.error(
-    `[master] profile=${activeProfile} → supervisor=${supervisorCfg.provider}/${supervisorCfg.model}`,
+    `[evy] profile=${activeProfile} → supervisor=${supervisorCfg.provider}/${supervisorCfg.model}`,
   );
   let supervisorModel = buildModel(supervisorCfg);
   const tools = Object.entries(toolRegistry).map(([name, t]) =>
@@ -2260,7 +2260,7 @@ async function main() {
         && sameLocalRoute(providers.models.reviewer, supervisorCfg)
       ) {
         console.error(
-          `[master] ctx-pin reviewer: SKIPPED — same model+host as supervisor (avoids LM Studio :2 instance)`,
+          `[evy] ctx-pin reviewer: SKIPPED — same model+host as supervisor (avoids LM Studio :2 instance)`,
         );
         return false;
       }
@@ -2271,7 +2271,7 @@ async function main() {
     rolesToPin.map(async (role) => {
       const cfg = providers.models[role]!;
       const result = await ensureModelLoaded(cfg, role, providers);
-      console.error(`[master] ${result.ok ? "ctx-pin" : "ctx-pin FAILED"} ${role}: ${result.detail}`);
+      console.error(`[evy] ${result.ok ? "ctx-pin" : "ctx-pin FAILED"} ${role}: ${result.detail}`);
     }),
   );
 
@@ -2842,7 +2842,7 @@ async function main() {
       require("node:fs").closeSync(fd);
       chunk = buf.toString("utf8");
     } catch (err) {
-      console.error(`[master] inbox tail error ${filePath}: ${(err as Error).message}`);
+      console.error(`[evy] inbox tail error ${filePath}: ${(err as Error).message}`);
       return;
     }
     teamReadOffsets.set(filePath, stat.size);
@@ -2890,7 +2890,7 @@ async function main() {
         if (f.endsWith(".jsonl")) tailInboxFile(join(INBOX_DIR, f));
       }
     } catch (err) {
-      console.error(`[master] inbox scan error: ${(err as Error).message}`);
+      console.error(`[evy] inbox scan error: ${(err as Error).message}`);
     }
   }
 
@@ -2928,13 +2928,13 @@ async function main() {
       // Don't trust the filename arg — just rescan all .jsonl files.
       scanInboxOnce();
     });
-    console.error(`[master] inbox watcher+poll armed at ${INBOX_DIR}`);
+    console.error(`[evy] inbox watcher+poll armed at ${INBOX_DIR}`);
   } catch (err) {
-    console.error(`[master] inbox fs.watch failed (${(err as Error).message}) — relying on 2s poll`);
+    console.error(`[evy] inbox fs.watch failed (${(err as Error).message}) — relying on 2s poll`);
   }
 
   console.error(
-    `[master] agent ready — supervisor=${supervisorCfg.provider}/${supervisorCfg.model}, tools=${tools.length}, transcript=${agent.state.messages.length} msgs`,
+    `[evy] agent ready — supervisor=${supervisorCfg.provider}/${supervisorCfg.model}, tools=${tools.length}, transcript=${agent.state.messages.length} msgs`,
   );
 
   // v2.8.10 — background-task runtime. Wire emitNotification into the
@@ -3569,7 +3569,7 @@ async function main() {
     const decision = decideCompactAction(current, loadedCtx ?? 0, cfg);
     if (decision.action === "ok") return;
     if (decision.action === "warn") {
-      console.error(`[master] compact-warn (jit): ${decision.reason}`);
+      console.error(`[evy] compact-warn (jit): ${decision.reason}`);
       broadcast("compact_warning", {
         ts: new Date().toISOString(),
         stage: "warn",
@@ -3584,7 +3584,7 @@ async function main() {
     }
     // decision.action === "compact"
     console.error(
-      `[master] just-in-time compact: ${decision.reason} — compacting toward ${cfg.target_tokens.toLocaleString()} tok`,
+      `[evy] just-in-time compact: ${decision.reason} — compacting toward ${cfg.target_tokens.toLocaleString()} tok`,
     );
     broadcast("compact_warning", {
       ts: new Date().toISOString(),
@@ -3602,12 +3602,12 @@ async function main() {
       initiator: "jit",
     });
     if (!result.ok) {
-      console.error(`[master] just-in-time compact failed: ${result.error}`);
+      console.error(`[evy] just-in-time compact failed: ${result.error}`);
     } else if (result.noop) {
-      console.error(`[master] just-in-time compact noop: ${result.message}`);
+      console.error(`[evy] just-in-time compact noop: ${result.message}`);
     } else {
       console.error(
-        `[master] just-in-time compact ok — archived ${result.archived_count}, kept ${result.kept_msgs}`,
+        `[evy] just-in-time compact ok — archived ${result.archived_count}, kept ${result.kept_msgs}`,
       );
     }
   }
@@ -3837,7 +3837,7 @@ async function main() {
       emitStage("turn_complete", { stages: JSON.stringify(stageTimes) });
       let { stop, err } = lastStopReason();
       if (stop === "error" && isTransient(err) && !stopped) {
-        console.error(`[master] transient error "${err}" (source=${p.source}), retrying in 5s`);
+        console.error(`[evy] transient error "${err}" (source=${p.source}), retrying in 5s`);
         await new Promise((r) => setTimeout(r, 5000));
         await agent.prompt(p.text);
         ({ stop, err } = lastStopReason());
@@ -3990,11 +3990,11 @@ async function main() {
               ? text.slice(0, 3900) + "\n\n…[truncated; full reply in dashboard chat]"
               : text;
             void sendTelegramOutbound(out).catch((err) => {
-              console.error(`[master] telegram auto-relay failed: ${err.message}`);
+              console.error(`[evy] telegram auto-relay failed: ${err.message}`);
             });
           }
         } catch (err) {
-          console.error(`[master] telegram auto-relay setup failed: ${(err as Error).message}`);
+          console.error(`[evy] telegram auto-relay setup failed: ${(err as Error).message}`);
         }
       }
 
@@ -6176,7 +6176,7 @@ async function main() {
     },
   });
 
-  console.error(`[master] http listening on http://${masterHost}:${httpServer.port} — POST /chat, GET /events, GET /health`);
+  console.error(`[evy] http listening on http://${masterHost}:${httpServer.port} — POST /chat, GET /events, GET /health`);
 
   // ── Telegram poll loop (evy-notify-listener) ────────────────────────
   // Each operator message arrives via the listener's onOperatorMessage
@@ -6185,14 +6185,14 @@ async function main() {
   // the SSE stream + decision log can distinguish channels.
   const listenerResult = startMasterNotifyListener({
     onOperatorMessage: (msg) => {
-      console.error(`[master] telegram inbound from ${msg.from_name ?? "?"}: ${msg.text.slice(0, 80)}`);
+      console.error(`[evy] telegram inbound from ${msg.from_name ?? "?"}: ${msg.text.slice(0, 80)}`);
       void dispatchToAgent(msg.text, "telegram");
     },
   });
   if (listenerResult.running) {
-    console.error(`[master] telegram listener armed`);
+    console.error(`[evy] telegram listener armed`);
   } else {
-    console.error(`[master] telegram listener NOT armed: ${listenerResult.reason}`);
+    console.error(`[evy] telegram listener NOT armed: ${listenerResult.reason}`);
   }
 
   // ── notification Telegram push (v2.7.22) ───────────────────────────────
@@ -6207,7 +6207,7 @@ async function main() {
     const txt = `🚨 ${n.title}\n\n${n.body}`;
     void sendTelegramOutbound(txt).catch((err) => {
       console.error(
-        `[master] notification telegram push failed (${n.id}): ${(err as Error).message}`,
+        `[evy] notification telegram push failed (${n.id}): ${(err as Error).message}`,
       );
     });
   });
@@ -6612,7 +6612,7 @@ async function main() {
     kill: () => clearInterval(watchdog),
   });
   console.error(
-    `[master] watchdog armed — interval=${watchdogIntervalMin}m, staleness_threshold=${stalenessThresholdMin}m`,
+    `[evy] watchdog armed — interval=${watchdogIntervalMin}m, staleness_threshold=${stalenessThresholdMin}m`,
   );
 
   // ── scheduled-followup ticker ────────────────────────────────────────
@@ -6628,7 +6628,7 @@ async function main() {
     try {
       due = popDueFollowups();
     } catch (err) {
-      console.error(`[master] followup tick error: ${(err as Error).message}`);
+      console.error(`[evy] followup tick error: ${(err as Error).message}`);
       return;
     }
     if (due.length === 0) return;
@@ -6651,7 +6651,7 @@ async function main() {
     kind: "followup-scheduler",
     kill: () => clearInterval(followupTicker),
   });
-  console.error(`[master] scheduled-followup ticker armed — every 60s`);
+  console.error(`[evy] scheduled-followup ticker armed — every 60s`);
 
   // ── v3.1.0 Kernel Fitness Phase 1: engagement timeout sweeper ──────────
   // Every hour, walk the engagement ledger and write `ignored` outcomes
@@ -6678,7 +6678,7 @@ async function main() {
     expected_interval_s: Math.floor(ENGAGEMENT_SWEEP_INTERVAL_MS / 1000),
     kill: () => clearInterval(engagementSweeper),
   });
-  console.error(`[master] engagement sweeper armed — every 1h, 24h floor`);
+  console.error(`[evy] engagement sweeper armed — every 1h, 24h floor`);
 
   // ── v3.3.0 Kernel Fitness Phase 2: hourly fitness writer ────────────────
   // Every hour, roll up the prior window's engagement-ledger +
@@ -6709,7 +6709,7 @@ async function main() {
     expected_interval_s: Math.floor(FITNESS_WRITE_INTERVAL_MS / 1000),
     kill: () => clearInterval(fitnessTimer),
   });
-  console.error(`[master] fitness writer armed — every 1h, hourly windows`);
+  console.error(`[evy] fitness writer armed — every 1h, hourly windows`);
 
   // ── auto-compact watchdog (v2.7.3: SAFETY NET) ─────────────────────────
   // v2.7.3 demoted this ticker from the primary gate to a safety net. The
@@ -6764,7 +6764,7 @@ async function main() {
       const decision = decideCompactAction(current, loadedCtx ?? 0, cfg);
       if (decision.action !== "compact") return; // ticker only acts on hard compact
       console.error(
-        `[master] safety-net compact (ticker): ${decision.reason} — compacting toward ${cfg.target_tokens.toLocaleString()} tok`,
+        `[evy] safety-net compact (ticker): ${decision.reason} — compacting toward ${cfg.target_tokens.toLocaleString()} tok`,
       );
       const result = compactTranscriptInline({
         target_tokens: cfg.target_tokens,
@@ -6772,11 +6772,11 @@ async function main() {
         initiator: "ticker",
       });
       if (result.ok && !result.noop) {
-        console.error(`[master] safety-net compact ok — archived ${result.archived_count}, kept ${result.kept_msgs}`);
+        console.error(`[evy] safety-net compact ok — archived ${result.archived_count}, kept ${result.kept_msgs}`);
       } else if (result.noop) {
-        console.error(`[master] safety-net compact noop — ${result.message}`);
+        console.error(`[evy] safety-net compact noop — ${result.message}`);
       } else {
-        console.error(`[master] safety-net compact failed: ${result.error ?? "unknown"}`);
+        console.error(`[evy] safety-net compact failed: ${result.error ?? "unknown"}`);
         emitNotification({
           kind: "auto-compact-error",
           severity: "warn",
@@ -6785,7 +6785,7 @@ async function main() {
         });
       }
     } catch (err) {
-      console.error(`[master] safety-net compact error: ${(err as Error).message}`);
+      console.error(`[evy] safety-net compact error: ${(err as Error).message}`);
       emitNotification({
         kind: "auto-compact-error",
         severity: "warn",
@@ -6811,7 +6811,7 @@ async function main() {
   // touchWatchdog now happens at the top of runAutoCompactTick itself, so
   // even this early fire counts as a real tick.
   setTimeout(() => void runAutoCompactTick(), 15_000);
-  console.error("[master] auto-compact safety-net ticker armed — every 5min (PRIMARY gate is just-in-time, see runJitCompactCheck())");
+  console.error("[evy] auto-compact safety-net ticker armed — every 5min (PRIMARY gate is just-in-time, see runJitCompactCheck())");
 
   // ── verifier denial-cluster ticker (PR 6.5, HANDOFF_DIGEST D8) ─────────
   // Scans each team's recent audit entries every 30s. If a Gated worker is
@@ -6826,7 +6826,7 @@ async function main() {
     kind: "verifier-cluster",
     kill: () => clusterTicker.stop(),
   });
-  console.error("[master] verifier denial-cluster ticker armed — interval=30s, burst=>5/60s, stuck=>3/5min");
+  console.error("[evy] verifier denial-cluster ticker armed — interval=30s, burst=>5/60s, stuck=>3/5min");
 
   // ── upstream-check watchdog (v2.7.25 Scope C) ───────────────────────────
   // ADR 0015 declared pi-ai + pi-agent-core first-class upstreams under
@@ -6838,7 +6838,7 @@ async function main() {
   upstreamWatchdog = startUpstreamWatchdog({
     packageJsonPath: join(COMPONENT_DIR, "package.json"),
   });
-  console.error("[master] upstream-check watchdog armed — interval=6h, packages=pi-ai + pi-agent-core");
+  console.error("[evy] upstream-check watchdog armed — interval=6h, packages=pi-ai + pi-agent-core");
 
   // ── Evy cognition loop (Memory Init #7, v0.1) ──────────────────────────
   // Disabled-by-default bounded cognition loop. Config gate lives at
@@ -6914,10 +6914,10 @@ async function main() {
   });
   if (cognitionLoop.armed) {
     console.error(
-      `[master] cognition-loop armed — interval=${cognitionLoop.config.tick_interval_ms}ms, id=${COGNITION_LOOP_WATCHDOG_ID}`,
+      `[evy] cognition-loop armed — interval=${cognitionLoop.config.tick_interval_ms}ms, id=${COGNITION_LOOP_WATCHDOG_ID}`,
     );
   } else {
-    console.error("[master] cognition-loop disabled by config (enable via ~/.config/subctl/evy/consciousness-loop.json)");
+    console.error("[evy] cognition-loop disabled by config (enable via ~/.config/subctl/evy/consciousness-loop.json)");
   }
 
   // ── idle-pane watchdog (2026-05-19 transport reliability fix) ──────────
@@ -6942,10 +6942,10 @@ async function main() {
   });
   if (idlePaneWatchdog.armed) {
     console.error(
-      `[master] idle-pane watchdog armed — interval=${idlePaneWatchdog.config.interval_ms}ms, threshold=${idlePaneWatchdog.config.idle_threshold_ticks} ticks, auto_retry=${idlePaneWatchdog.config.auto_retry_enabled}, id=${IDLE_PANE_WATCHDOG_ID}`,
+      `[evy] idle-pane watchdog armed — interval=${idlePaneWatchdog.config.interval_ms}ms, threshold=${idlePaneWatchdog.config.idle_threshold_ticks} ticks, auto_retry=${idlePaneWatchdog.config.auto_retry_enabled}, id=${IDLE_PANE_WATCHDOG_ID}`,
     );
   } else {
-    console.error("[master] idle-pane watchdog disabled by config (enable via ~/.config/subctl/evy/idle-pane-watchdog.json)");
+    console.error("[evy] idle-pane watchdog disabled by config (enable via ~/.config/subctl/evy/idle-pane-watchdog.json)");
   }
 
   // ── MCP server (MCP-Expose #1 mount, follow-up to f3a8e7a) ─────────────
@@ -7262,14 +7262,14 @@ async function main() {
     },
   });
   if (mcpHandle) {
-    console.error(`[master] mcp server armed — base=/mcp, discovery=/.well-known/mcp, version=${SUBCTL_VERSION}, tools=ping+state_snapshot+notify+send_message+recent_messages+recent_decisions+list_notifications+watchdog_state+list_teams+team_inbox+team_msg+team_kill+memory_search+memory_timeline`);
+    console.error(`[evy] mcp server armed — base=/mcp, discovery=/.well-known/mcp, version=${SUBCTL_VERSION}, tools=ping+state_snapshot+notify+send_message+recent_messages+recent_decisions+list_notifications+watchdog_state+list_teams+team_inbox+team_msg+team_kill+memory_search+memory_timeline`);
   }
 
   // ── graceful shutdown ───────────────────────────────────────────────────
   const shutdown = (signal: string) => {
     if (stopped) return;
     stopped = true;
-    console.error(`[master] caught ${signal}, shutting down`);
+    console.error(`[evy] caught ${signal}, shutting down`);
     clearInterval(watchdog);
     clearInterval(followupTicker);
     clearInterval(autoCompactInterval);
@@ -7294,7 +7294,7 @@ async function main() {
       saveAgentTranscript(agent.state.messages);
     } catch (err) {
       console.error(
-        `[master] WARN transcript flush on shutdown failed: ${(err as Error).message}`,
+        `[evy] WARN transcript flush on shutdown failed: ${(err as Error).message}`,
       );
     }
     logDecision({
@@ -7317,7 +7317,7 @@ async function main() {
 // `ensureModelLoaded` without spinning up the full daemon.
 if (import.meta.main) {
   main().catch((err) => {
-    console.error(`[master] fatal:`, err);
+    console.error(`[evy] fatal:`, err);
     process.exit(1);
   });
 }

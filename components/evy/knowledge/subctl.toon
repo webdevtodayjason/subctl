@@ -140,7 +140,7 @@ tools:
     - knowledge (1 tool, v2.7.7) — system_subctl_knowledge (this very surface).
   tier2_gating_v2_8_9:
     - Implemented 2026-05-16 (commit 8e564fa). 7 families now register conditionally at master boot.
-    - Gate decisions logged at boot: [master] tool gates: gh=<on/off>, coderabbit=<>, context7=<>, linear=<>, tinyfish=<>, voice=<>, skillRouter=<>.
+    - Gate decisions logged at boot: [evy] tool gates: gh=<on/off>, coderabbit=<>, context7=<>, linear=<>, tinyfish=<>, voice=<>, skillRouter=<>.
     - Gated families: gh, coderabbit (binary presence), context7, linear, tinyfish (API key in env or secrets.json), voice (~/.config/subctl/voice.json enabled:true), skill_/evy_skills_ (~/.config/subctl/skill-router.enabled marker file).
     - Always-on families (NOT gated): subctl_orch, system, memory, evy_memory, specforge, telegram, policy, web, vault, notify, team_docs, watchdog, schedule_, attachments, diag, knowledge, project, tier1_memory.
     - Effect: registry shrinks from 88 → 65 for the typical operator (~4600 prompt-prefix tokens saved per turn).

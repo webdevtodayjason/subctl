@@ -2910,6 +2910,17 @@ const server = Bun.serve({
   idleTimeout: 0,
   async fetch(req, srv) {
     const url = new URL(req.url);
+
+    // v3.3.2: /api/master/* is the legacy prefix from before the rename;
+    // /api/evy/* is canonical going forward. Normalize incoming
+    // /api/master/* to /api/evy/* so internal handlers (and the daemon
+    // proxy below) only have to know one form. External callers on
+    // either prefix keep working — this is a transparent alias, not a
+    // 308 redirect. Will be removed in v4.x.
+    if (url.pathname.startsWith("/api/master/")) {
+      url.pathname = "/api/evy/" + url.pathname.slice("/api/master/".length);
+    }
+
     if (url.pathname === "/api/live") {
       if (srv.upgrade(req)) return undefined as any;
       return new Response("Upgrade failed", { status: 400 });
@@ -6053,7 +6064,7 @@ const server = Bun.serve({
     // a model in our setup) and bounces the master launchd job. The
     // master's transcript persists across restart, so the switch is
     // effectively in-place.
-    if (url.pathname === "/api/master/supervisor" && req.method === "POST") {
+    if (url.pathname === "/api/evy/supervisor" && req.method === "POST") {
       let body: { provider?: string; model?: string; host?: string };
       try {
         body = await req.json();
@@ -6435,7 +6446,7 @@ const server = Bun.serve({
     // chat state is lost. Non-blocking: returns immediately with the
     // kickstart command's exit code; the dashboard polls /health to know
     // when master is back.
-    if (url.pathname === "/api/master/restart" && req.method === "POST") {
+    if (url.pathname === "/api/evy/restart" && req.method === "POST") {
       try {
         const uid = process.getuid?.() ?? 0;
         const r = spawnSync(
@@ -6732,11 +6743,11 @@ const server = Bun.serve({
       }
     }
 
-    if (url.pathname.startsWith("/api/master/")) {
+    if (url.pathname.startsWith("/api/evy/")) {
       const masterPort = process.env.SUBCTL_EVY_PORT ?? "8788";
-      const masterUrl = `http://127.0.0.1:${masterPort}${url.pathname.replace(/^\/api\/master/, "")}${url.search}`;
+      const masterUrl = `http://127.0.0.1:${masterPort}${url.pathname.replace(/^\/api\/evy/, "")}${url.search}`;
       try {
-        if (url.pathname === "/api/master/events" && req.method === "GET") {
+        if (url.pathname === "/api/evy/events" && req.method === "GET") {
           // SSE pass-through. Bun's fetch returns a streaming Response;
           // we forward its body directly so the browser sees text/event-stream.
           const upstream = await fetch(masterUrl, {

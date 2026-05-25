@@ -1,3 +1,34 @@
+## [3.3.2] — 2026-05-24
+
+### `chore(rename): final v3 rename leftovers — log prefixes + route alias`
+
+Closes out the v3 `master → Evy` rename (Phases 1–3, v3.0.0) with the two pieces deliberately deferred from Phase 3 because they were touch-heavy:
+
+**1. `[master]` log prefix sweep.** 69 `console.error("[master] …")` lines across `components/evy/server.ts` (59), `components/evy/tools/policy/verifier-cluster.ts` (9), and `components/evy/evy-notify-listener.ts` (1) flipped to `[evy]`. Log readers, dashboard log-tail panel, and grep recipes that target the daemon's stderr now see a consistent prefix matching the daemon's name (`com.subctl.evy`). The bracketed `[evy][ANTHROPIC-API-GUARD]` style is preserved for sub-component prefixes.
+
+**2. `/api/master/*` → `/api/evy/*` route aliasing.** The dashboard HTTP surface previously exposed three `/api/master/*` paths (`/supervisor`, `/restart`, and a catchall proxy `/api/master/*` that forwards to the Evy daemon on 8788). All three are renamed to `/api/evy/*` as the canonical form. A transparent alias at the top of `dashboard/server.ts` rewrites incoming `/api/master/X` → `/api/evy/X` before route matching, so:
+
+- New callers should use `/api/evy/*` going forward.
+- Old callers (browser tabs, scripts, third-party MCP clients) continue to work — the alias makes it indistinguishable.
+- The alias layer is single-line, well-commented, and slated for removal in v4.x.
+
+This finishes the rename story end-to-end (language → code → routes → logs). No behavior change; both prefixes return the same response:
+
+```bash
+curl http://localhost:8787/api/master/events  # legacy — still works
+curl http://localhost:8787/api/evy/events     # canonical
+```
+
+**Tests:** 196/196 dashboard + 5/5 isolation pass. `bun build dashboard/server.ts` produces a clean 4.7 MB bundle.
+
+**Files:**
+- `components/evy/server.ts` — 59 log prefix flips
+- `components/evy/tools/policy/verifier-cluster.ts` — 9 log prefix flips
+- `components/evy/evy-notify-listener.ts` — 1 log prefix flip
+- `dashboard/server.ts` — 4 route renames + 1 alias rewrite block
+
+---
+
 ## [3.3.1] — 2026-05-24
 
 ### `feat(fitness): dashboard fitness panel (Kernel Fitness Phase 3)`
