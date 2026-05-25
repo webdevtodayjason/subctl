@@ -3,7 +3,7 @@
 Date: 2026-05-18
 Author: claude-subctl (worker, dispatched by master)
 Source release: **Hermes Agent v0.14.0 (v2026.5.16)** — "The Foundation Release"
-Source repo: `/Users/sem/code/hermes-agent` @ `55c9f3206` (main)
+Source repo: `/Users/you/code/hermes-agent` @ `55c9f3206` (main)
 Handoff: `.subctl/docs/handoffs/2026-05-18-hermes-compaction-skill-loading-research.md`
 
 ## TL;DR

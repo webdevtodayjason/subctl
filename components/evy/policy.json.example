@@ -21,7 +21,7 @@
 
   "projects": [
     {
-      "path": "/Users/sem/code/ampcortex.ai",
+      "path": "/Users/you/code/ampcortex.ai",
       "autonomy_level": "ask",
       "_comment_autonomy": "AMP Cortex has hard ops contract, regulatory exposure (HIPAA), real money. Master proposes; operator approves every action.",
       "watch_branches": ["feat/tenant-stub-killer", "feat/admin-fix-pack"],
@@ -30,7 +30,7 @@
       "must_escalate": ["push_to_main", "merge_pr", "apply_migration", "deploy", "modify_ops_directory"]
     },
     {
-      "path": "/Users/sem/code/subctl",
+      "path": "/Users/you/code/subctl",
       "autonomy_level": "drive",
       "_comment_autonomy": "Master can drive most subctl work — bug fixes, doc updates, version bumps, even merging. Still escalates breaking-change PRs and infra config.",
       "watch_branches": ["main", "feat/codex-provider"],
@@ -38,14 +38,14 @@
       "must_escalate": ["push_to_main", "merge_breaking_change_pr", "release_tag"]
     },
     {
-      "path": "/Users/sem/code/subctl.com",
+      "path": "/Users/you/code/subctl.com",
       "autonomy_level": "drive",
       "watch_branches": ["main"],
       "ci_required": false,
       "must_escalate": ["change_pricing_copy", "change_install_url"]
     },
     {
-      "path": "/Users/sem/code/argent-core",
+      "path": "/Users/you/code/argent-core",
       "autonomy_level": "shadow",
       "_comment_autonomy": "Master observes only. Reports state and surfaces blockers to operator. Never spawns workers here without explicit instruction.",
       "watch_branches": ["dev", "feat/aos-subctl"]

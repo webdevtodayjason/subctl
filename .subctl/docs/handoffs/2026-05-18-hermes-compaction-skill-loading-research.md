@@ -44,7 +44,7 @@ Potential mismatch worth investigating: first-party subctl docs describe fixed 2
 
 Local repo exists:
 
-- Path: `/Users/sem/code/hermes-agent`
+- Path: `/Users/you/code/hermes-agent`
 - Branch: `main`
 - Last commit: `55c9f3206 fix(tui): width-aware markdown table rendering with vertical fallback (#26195)`
 

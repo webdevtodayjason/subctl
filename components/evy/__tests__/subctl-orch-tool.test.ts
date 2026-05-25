@@ -43,7 +43,7 @@ describe("subctlOrchTools.spawn_template error surfacing", () => {
           await subctlOrchTools.spawn_template.invoke({
             template: "code-review",
             account: "claude-jason",
-            project: "/Users/sem/code/subctl",
+            project: "/Users/you/code/subctl",
           });
         } catch (err) {
           caught = err as Error;
@@ -70,7 +70,7 @@ describe("subctlOrchTools.spawn_template error surfacing", () => {
           await subctlOrchTools.spawn_template.invoke({
             template: "code-review",
             account: "claude-jason",
-            project: "/Users/sem/code/subctl",
+            project: "/Users/you/code/subctl",
           });
         } catch (err) {
           caught = err as Error;
@@ -102,7 +102,7 @@ describe("subctlOrchTools.spawn_template error surfacing", () => {
           const result = (await subctlOrchTools.spawn_template.invoke({
             template: "code-review",
             account: "claude-jason",
-            project: "/Users/sem/code/subctl",
+            project: "/Users/you/code/subctl",
           })) as { ok?: boolean; session_name?: string };
           expect(result.ok).toBe(true);
           expect(result.session_name).toBe("claude-test");

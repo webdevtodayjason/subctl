@@ -356,8 +356,8 @@ describe("handlePolicyTeams", () => {
       spawnedAt: "2026-05-11T18:00:00.000Z",
       allowlistSha: "a3f9c2e1",
       sourcePaths: [
-        "/Users/sem/code/myproject/.subctl/policy.toml",
-        "/Users/sem/.config/subctl/policy.toml",
+        "/Users/you/code/myproject/.subctl/policy.toml",
+        "/Users/you/.config/subctl/policy.toml",
       ],
       preset: "node",
     });
@@ -380,7 +380,7 @@ describe("handlePolicyTeams", () => {
     expect(body.teams[1].mode).toBe("gated");
     expect(body.teams[1].allowlist_sha).toBe("a3f9c2e1");
     expect(body.teams[1].preset).toBe("node");
-    expect(body.teams[1].project_root).toBe("/Users/sem/code/myproject");
+    expect(body.teams[1].project_root).toBe("/Users/you/code/myproject");
     expect(body.teams[1].has_snapshot).toBe(true);
   });
 });

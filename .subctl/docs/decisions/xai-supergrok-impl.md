@@ -2,8 +2,8 @@
 
 **Phase:** xai-supergrok-step-1
 **Date:** 2026-05-18
-**Source of truth (upstream):** `/Users/sem/code/hermes-agent/hermes_cli/auth.py` (Python, ~6298 lines)
-**Mirror target (downstream):** `/Users/sem/code/subctl/components/master/openai-codex-auth.ts` + `codex-oauth.ts` (the v2.8.9 codex pattern we are matching)
+**Source of truth (upstream):** `/Users/you/code/hermes-agent/hermes_cli/auth.py` (Python, ~6298 lines)
+**Mirror target (downstream):** `/Users/you/code/subctl/components/master/openai-codex-auth.ts` + `codex-oauth.ts` (the v2.8.9 codex pattern we are matching)
 **Operator assignment (from `.subctl/docs/decisions.jsonl`, 2026-05-18T20:30Z):**
 > read Hermes hermes_cli/auth.py and mirror openai-codex-auth.ts
 
@@ -96,7 +96,7 @@ match across the Hermes and subctl logs.
 
 ## 2. Subctl mirror target — anchored citations
 
-All line numbers refer to `/Users/sem/code/subctl/components/master/`.
+All line numbers refer to `/Users/you/code/subctl/components/master/`.
 
 ### 2.1 Pattern we are reproducing (codex)
 

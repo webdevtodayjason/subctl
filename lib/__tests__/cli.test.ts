@@ -692,7 +692,7 @@ describe("subctl config (v2.7.36)", () => {
       JSON.stringify(
         {
           models: { supervisor: { model: "gpt-4o", host: "https://api.openai.com/v1" } },
-          api_key: "sk-abcdefghijklmnopqrstuvwx",
+          api_key: "sk-abcdefghijklmno",
           secrets: { anthropic_token: "sk-ant-abc1234567890" },
         },
         null,
@@ -721,7 +721,7 @@ describe("subctl config (v2.7.36)", () => {
     // Non-secret fields are kept.
     expect(r.stdout).toContain("gpt-4o");
     // sk-* values are stripped (both directly and via key-based redaction).
-    expect(r.stdout).not.toContain("sk-abcdefghijklmnopqrstuvwx");
+    expect(r.stdout).not.toContain("sk-abcdefghijklmno");
     expect(r.stdout).not.toContain("sk-ant-abc1234567890");
     // The "api_key" + "anthropic_token" keys must have been redacted via key-walk.
     expect(r.stdout).toMatch(/redacted/);

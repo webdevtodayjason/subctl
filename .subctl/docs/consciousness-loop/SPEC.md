@@ -15,7 +15,7 @@ The useful threshold is not metaphysical consciousness. It is continuous agency 
 
 ## Implementation target
 
-Brownfield subCTL project at `/Users/sem/code/subctl`.
+Brownfield subCTL project at `/Users/you/code/subctl`.
 
 Build a disabled-by-default `consciousness-loop` watchdog with:
 

@@ -1,17 +1,17 @@
 # HANDOFF.md — session 2026-05-23 (v2.9.0 Tier 1 Consolidator)
 
 **Operator:** Jason Brashear
-**Repo:** `webdevtodayjason/subctl` @ `/Users/sem/code/subctl`
+**Repo:** `webdevtodayjason/subctl` @ `/Users/you/code/subctl`
 **Branch:** `main` (no feature branches in flight)
 **Main HEAD:** (after this PR merges) v2.9.0 squash-merge of `feat/tier1-consolidator`
 **VERSION file:** `2.9.0`
 **Last tag:** `v2.9.0` (after tag is pushed)
-**Vault:** `/Users/sem/Documents/Obsidian Vault/Subctl/` — refreshed 2026-05-22 21:30 CDT in prior session; new entries for v2.9.0 land at merge time
+**Vault:** `/Users/you/Documents/Obsidian Vault/Subctl/` — refreshed 2026-05-22 21:30 CDT in prior session; new entries for v2.9.0 land at merge time
 
 ## Quick verify (run these first on next session)
 
 ```bash
-cd /Users/sem/code/subctl
+cd /Users/you/code/subctl
 git log --oneline -1                                              # expect v2.9.0 squash-merge
 git tag -l 'v*' | sort -V | tail -1                               # expect: v2.9.0
 cat VERSION                                                       # expect: 2.9.0
@@ -99,7 +99,7 @@ OpenRouter / Bedrock / Vercel / Cloudflare. ~400 LOC. Lower urgency, matrix comp
 
 ## Lessons learned today (read these first if you're picking up cold)
 
-These are in the vault at `/Users/sem/Documents/Obsidian Vault/Subctl/Lessons Learned/`:
+These are in the vault at `/Users/you/Documents/Obsidian Vault/Subctl/Lessons Learned/`:
 
 1. **`2026-05-22 - Silent ticker bugs need scanned-but-empty signals`** — v2.8.15 ran "successfully" for 8 hours promoting 0 rows because `errors[]` was empty and logs gated on `scanned > 0`. Track work-attempted, not just work-succeeded.
 2. **`2026-05-22 - Salvage stalled-worker output before respawning`** — chat-dropdown-fix worker stalled mid-task. `git diff --stat HEAD` showed 4 of 6 deliverables already landed. Killed worker, committed the partial work, finished the gap manually. Saved 60-90 min vs respawn.
@@ -118,7 +118,7 @@ These are in the vault at `/Users/sem/Documents/Obsidian Vault/Subctl/Lessons Le
 ## Where the canonical docs live
 
 - **Repo root:** this file (`HANDOFF.md`) + `CHANGELOG.md` + `VERSION` + `ORCHESTRATION.md`
-- **Vault root:** `/Users/sem/Documents/Obsidian Vault/Subctl/`
+- **Vault root:** `/Users/you/Documents/Obsidian Vault/Subctl/`
   - `01 - Current State.md` (always read first; refreshed today)
   - `04 - Roadmap.md` (refreshed today)
   - `Daily Updates/2026-05-22.md` (six-release wave narrative — prior session)
@@ -128,7 +128,7 @@ These are in the vault at `/Users/sem/Documents/Obsidian Vault/Subctl/Lessons Le
 
 ## Memory system
 
-Auto-memory at `/Users/sem/.claude/projects/-Users-sem-code-subctl/memory/`. Includes:
+Auto-memory at `/Users/you/.claude/projects/-Users-sem-code-subctl/memory/`. Includes:
 - `feedback_idle_signal.md` (today's addition — the loud idle signal rule)
 - `accounts_inventory.md`, `feedback_advisor_first.md`, `feedback_pivot_when_wrong.md`, etc.
 

@@ -12,9 +12,9 @@
 //      lead, escalate to Jason, or take corrective action. Master is reactive
 //      to user chat AND proactive about keeping projects moving — that's the KPI.
 //
-// Lives at: /Users/sem/code/subctl/components/evy/
+// Lives at: /Users/you/code/subctl/components/evy/
 // Started by: launchd plist (com.subctl.evy.plist) at boot
-// Logs to:    /Users/sem/Library/Logs/subctl/evy.log
+// Logs to:    /Users/you/Library/Logs/subctl/evy.log
 // HTTP at:    127.0.0.1:8788 (configurable via SUBCTL_EVY_PORT) — kept on
 //             localhost on purpose; dashboard server proxies the public surface.
 

@@ -23,7 +23,7 @@ set to `{ provider: "openai-codex", model: "gpt-5.5" }` and profile host
 
 Empirical evidence in master.log from the live test:
 ```
-[codex-auth] using access_token from /Users/sem/.codex-jason
+[codex-auth] using access_token from /Users/you/.codex-jason
   (account=210e4eee-0a00-4404-ac37-75e4b7083b74, exp_in_s=43946)
 [latency] turn=mp6wmr9y-k72pqn stage=llm_call_start ms=189
 [latency] turn=mp6wmr9y-k72pqn stage=last_token ms=8249
@@ -91,18 +91,18 @@ profile by running the Codex CLI against that profile's CODEX_HOME:
 
 ```bash
 # 1. Re-authenticate the codex-jason profile against ChatGPT Pro.
-CODEX_HOME=/Users/sem/.codex-jason codex login
+CODEX_HOME=/Users/you/.codex-jason codex login
 
 # (Codex CLI opens a browser to https://auth.openai.com/oauth/authorize,
 # you sign in with jbrashear72@icloud.com, the CLI catches the callback
 # and writes fresh access_token + refresh_token to
-# /Users/sem/.codex-jason/auth.json with mode 0600.)
+# /Users/you/.codex-jason/auth.json with mode 0600.)
 
 # 2. (Optional) Sanity-check the new auth.json:
 jq '.tokens | { has_at: (.access_token != null),
                 has_rt: (.refresh_token != null),
                 account: .account_id }' \
-  /Users/sem/.codex-jason/auth.json
+  /Users/you/.codex-jason/auth.json
 
 # 3. Re-stage the test configs and retry — master will pick up the new
 #    auth.json on the next prompt with no restart needed (codex-auth
@@ -151,7 +151,7 @@ curl -sS 'http://127.0.0.1:8788/transcript?limit=2' | jq '.messages[-1]'
 
 **Expected after re-auth:**
 
-- `[codex-auth] using access_token from /Users/sem/.codex-jason` — same line.
+- `[codex-auth] using access_token from /Users/you/.codex-jason` — same line.
 - `[latency] turn=… stage=first_token ms=NNN` — present (was absent on the
   invalidated-token run).
 - `[latency] turn=… stage=last_token ms=NNN` — present, well after
