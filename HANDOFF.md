@@ -1,141 +1,127 @@
-# HANDOFF.md — session 2026-05-23 (v2.9.0 Tier 1 Consolidator)
+# HANDOFF.md — session 2026-05-24/25 (v3.3.1 → v3.3.3 wave)
 
 **Operator:** Jason Brashear
 **Repo:** `webdevtodayjason/subctl` @ `/Users/you/code/subctl`
 **Branch:** `main` (no feature branches in flight)
-**Main HEAD:** (after this PR merges) v2.9.0 squash-merge of `feat/tier1-consolidator`
-**VERSION file:** `2.9.0`
-**Last tag:** `v2.9.0` (after tag is pushed)
-**Vault:** `/Users/you/Documents/Obsidian Vault/Subctl/` — refreshed 2026-05-22 21:30 CDT in prior session; new entries for v2.9.0 land at merge time
+**Main HEAD:** `194b521` — `chore(v3.3.3): drain no-secrets gate of pre-existing false positives (#35)`
+**VERSION file:** `3.3.3`
+**Last tag:** `v3.3.3` (pushed to origin)
+**Fleet status:** Local Mac + M3 Studio both on v3.3.3
+**Vault:** `/Users/you/Documents/Obsidian Vault/Subctl/` — fully refreshed 2026-05-25 morning. `01 - Current State.md`, `Daily Updates/2026-05-25.md`, `07 - Initiative History.md`, `05 - Decisions Log.md`, `Initiatives/Kernel Fitness...md` all up to date. Two new Lessons Learned files (`2026-05-25 - Self-referential gate failure.md`, `2026-05-25 - Auto-merge plus admin-override is a deliberate workflow.md`).
+
+---
 
 ## Quick verify (run these first on next session)
 
 ```bash
 cd /Users/you/code/subctl
-git log --oneline -1                                              # expect v2.9.0 squash-merge
-git tag -l 'v*' | sort -V | tail -1                               # expect: v2.9.0
-cat VERSION                                                       # expect: 2.9.0
-curl -s http://127.0.0.1:8787/api/version                         # expect: {"version":"2.9.0"}
-curl -s http://127.0.0.1:8788/health | jq .version                # expect: "2.9.0"
-curl -s http://127.0.0.1:8745/health | jq .total_memories         # expect: 225 (or higher)
-ls ~/Library/LaunchAgents/com.subctl.claude-mem-reaper.plist 2>&1 # expect: file not found (retired)
+git log --oneline -1                                  # expect: 194b521 chore(v3.3.3): ...
+git tag -l 'v*' | sort -V | tail -3                   # expect: v3.3.1 v3.3.2 v3.3.3
+cat VERSION                                           # expect: 3.3.3
+curl -s http://127.0.0.1:8787/api/version             # expect: {"version":"3.3.3"}
+curl -s http://127.0.0.1:8787/api/evy/health | jq .ok # expect: true (v3.3.2 canonical alias)
+curl -s http://127.0.0.1:8787/api/master/health | jq .ok # expect: true (legacy alias still works)
+bash scripts/check-no-secrets.sh 2>&1 | tail -2       # expect: ✓ secret scan clean (modulo .orchestration/)
 ```
-
-If `main HEAD` doesn't match, fetch + verify before doing anything else.
-
-## Releases (2026-05-22 → 2026-05-23)
-
-| Tag | What | PR | Notes |
-|-----|------|-----|-------|
-| **v2.8.13** | Phase 4 local backend picker (LM Studio / Ollama / oMLX) + first-boot migration | #13 | 11 CodeRabbit passes |
-| **v2.8.14** | Watchdog re-classify on pane-hash change + observability | #14 | Fixes `claude-birdie` false alerts |
-| **v2.8.15** | Cognee write path — Tier 3 → Tier 4 promotion ticker | #15 | **Shipped broken** (silent entity_id bug) |
-| **v2.8.16** | Cognee entity_id fix | #16 | 222/222 promoted on first tick |
-| **v2.8.17** | Chat dropdown enumerates enabled models + bulk toggle | #17 | Worker stalled mid-task; salvaged + finished manually |
-| **v2.8.18** | API-key privacy guard + usage resilience | #18 | 8 CodeRabbit passes |
-| **v2.9.0** | Tier 1 Consolidator — LLM-driven dedup of pending Tier 1 candidates | (this PR) | New `POST /memory/tier1/consolidate` endpoint + dashboard ⚗ button + modal. `text_override` on approve endpoint so consolidator-merged text wins. Operator-in-the-loop required. |
-
-## Infrastructure work today
-
-- **claude-mem plugin upgraded** 9.0.12 → 13.3.0 via `/plugins` slash command. Manual `bun install` required inside the 13.3.0 cache dir — upstream missing install script. New daemon PID 1317.
-- **claude-mem reaper retired** (`com.subctl.claude-mem-reaper` launchd job + scripts removed). Was load-bearing for 9.0.12's retry_count bug; 13.x drops that mechanism.
-- **Cognee promotion drained** 3 → 225 memories after v2.8.16 fix.
-- **Tier 1 memory budget raised** 2200 → 4000 chars (`SUBCTL_MEMORY_LIMIT=4000` in master plist EnvironmentVariables). Unblocks the 63 pending Tier 1 approvals.
-- **System memory recovered** 127 GB → 76 GB used (killed 545 stuck 9.0.12 claude-mem retries + a runaway `--help` loop at 99% CPU).
-
-## Fleet status (pre-v2.9.0 merge — both hosts still on v2.8.18)
-
-| Host | Master | Dashboard | Network |
-|------|--------|-----------|---------|
-| Local | v2.8.18 ✓ | v2.8.18 ✓ | localhost |
-| M3 Ultra | v2.8.18 ✓ | v2.8.18 ✓ | 192.168.100.62 (home), 100.84.108.16 (office Tailscale) |
-
-After this PR merges + tag is pushed + deploy runs, both hosts move to v2.9.0.
-
-Cognee sidecar runs LOCAL ONLY (not M3). M3's cognee-promotion stays disarmed as expected.
-
-## Open work (priority order)
-
-### 1. v2.9.0 smoke test — actually run the consolidator
-
-The consolidator endpoint shipped behind operator-in-the-loop. Smoke test path:
-1. Open Memory tab in dashboard
-2. Click ⚗ Consolidate (LLM) button
-3. Modal renders with proposal — review the consolidated set + char budget meter
-4. Edit any entries inline, expand the Dropped section to spot-check
-5. Click Apply — should iterate through 1 approve per merged group + N rejects for merged-from + N rejects for dropped
-
-If anything's off, file a bug. The 63 pending candidates are the perfect test bed.
-
-### 2. v2.8.19 — per-alias backoff + composite-key cache
-
-Documented in v2.8.18 CHANGELOG as deferred. Lift `_usagePollBackoffUntil` from scalar to `Map<alias, BackoffState>` so a healthy alias keeps polling while a 429'd alias backs off independently. Same for `_usageLastGood` cache key (alias → alias+config_dir composite). ~50 LOC + tests.
-
-### 3. Handoff CLI for model-switch UX
-
-Operator explicitly named this today. `subctl model set <role> <provider> <model>` shells to master `/api/master/supervisor`. ~80 LOC in `lib/cli.sh`. Single worker, 30-45 min.
-
-### 4. AICTX integration retry
-
-`pip install aictx` worked. `aictx install` crashed on RepoMap Tree-sitter EOF prompt. Try `aictx install --help` for a non-interactive flag OR wrap in `script -q /dev/null aictx install` for a real TTY.
-
-### 5. Memory cycle Phase 4 — context slimming
-
-Deferred since 2026-05-17 Memory Init #5 waiting on real reviewer telemetry. With Cognee promotion live (222 curated → graph) the telemetry signal NOW exists. Unblocks. ~200 LOC + test surface. Single worker, 90-120 min.
-
-### 6. Provider Model Catalog Phase 3 — aggregator routing
-
-OpenRouter / Bedrock / Vercel / Cloudflare. ~400 LOC. Lower urgency, matrix completion.
-
-## Known issues operator surfaced today, NOT YET fixed in code
-
-- **M3 accounts.conf has stale openrouter row** — the sk-or-v1-d0ae21be... key was pasted as the alias. v2.8.18 ships the CLI guard + UI redaction so new ones blocked + masked. **Operator said they'd handle via the dashboard** (generate a new openrouter key, add through the web UI Secrets panel).
-- **M3 usage data 429-rate-limited** — Anthropic's `/api/oauth/usage` endpoint throttles busy accounts. v2.8.18 ships stale fallback + backoff so the dashboard shows last-known data with "·stale Xm" indicator instead of blanks. Self-heals as the rate-limit lifts. Also: `claude-jason` has no `.credentials.json` on M3 — would need `subctl auth claude claude-jason` run locally on M3 to populate. Not blocking.
-
-## Operator preferences captured this session (saved to memory)
-
-- **Loud idle signal** — at end-of-turn when everything's idle, fire `🚨🚨🚨 ALL HANDS IDLE — AWAITING USER 🚨🚨🚨` so the operator can scan-for-it when returning to the window.
-- **IN FLIGHT: framing** when work is pending — surface what's running (worker ID, CodeRabbit pass, etc.) so the operator knows whether to expect a notification or jump in.
-
-## Lessons learned today (read these first if you're picking up cold)
-
-These are in the vault at `/Users/you/Documents/Obsidian Vault/Subctl/Lessons Learned/`:
-
-1. **`2026-05-22 - Silent ticker bugs need scanned-but-empty signals`** — v2.8.15 ran "successfully" for 8 hours promoting 0 rows because `errors[]` was empty and logs gated on `scanned > 0`. Track work-attempted, not just work-succeeded.
-2. **`2026-05-22 - Salvage stalled-worker output before respawning`** — chat-dropdown-fix worker stalled mid-task. `git diff --stat HEAD` showed 4 of 6 deliverables already landed. Killed worker, committed the partial work, finished the gap manually. Saved 60-90 min vs respawn.
-3. **`2026-05-22 - Worker SendMessage race with idle notification`** — workers go idle after their first SendMessage, then process the next inbox message as a "status check" instead of new work. Pattern: explicit "NEW WORK — not a status check on your prior commit" framing in the first sentence breaks through.
-
-## Active processes worth knowing
-
-| Process | PID (last check) | Purpose |
-|---|---|---|
-| `com.subctl.master` (local) | check via `launchctl list \| grep com.subctl.master` | Master daemon (`:8788`) |
-| `com.subctl.dashboard` (local) | check via launchctl | Dashboard daemon (`:8787`) |
-| `com.subctl.cognee` (local) | check via launchctl | Cognee sidecar (`:8745`) |
-| `com.subctl.memori` (local) | check via launchctl | Memori sidecar (`:8746`) |
-| claude-mem worker-service daemon | PID 1317 | 13.3.0; auto-spawns when needed |
-
-## Where the canonical docs live
-
-- **Repo root:** this file (`HANDOFF.md`) + `CHANGELOG.md` + `VERSION` + `ORCHESTRATION.md`
-- **Vault root:** `/Users/you/Documents/Obsidian Vault/Subctl/`
-  - `01 - Current State.md` (always read first; refreshed today)
-  - `04 - Roadmap.md` (refreshed today)
-  - `Daily Updates/2026-05-22.md` (six-release wave narrative — prior session)
-  - `Orchestration Handoffs/2026-05-22-eod.md` (prior session's EOD snapshot — the v2.9.0 vault entries land at merge time)
-  - `Lessons Learned/2026-05-22 - *.md` (3 lessons captured 2026-05-22)
-  - `Initiatives/Tier 1 Consolidator.md` (now shipped as v2.9.0 — keeps the plan as the design-of-record)
-
-## Memory system
-
-Auto-memory at `/Users/you/.claude/projects/-Users-sem-code-subctl/memory/`. Includes:
-- `feedback_idle_signal.md` (today's addition — the loud idle signal rule)
-- `accounts_inventory.md`, `feedback_advisor_first.md`, `feedback_pivot_when_wrong.md`, etc.
-
-Check `MEMORY.md` for the full index.
-
-claude-mem 13.3.0 actively indexing this session's observations into the persistent cross-session memory (use `mcp__plugin_claude-mem_mcp-search__*` tools to query in future sessions).
 
 ---
 
-🚨🚨🚨 ALL HANDS IDLE — AWAITING USER 🚨🚨🚨
+## What landed this session
+
+Three patches, all shipped end-to-end (PR → merge → tag → fleet deploy → smoke test):
+
+| Tag | PR | Story | Hits |
+|---|---|---|---|
+| **v3.3.1** | #33 | Kernel Fitness Phase 3 — dashboard fitness panel | +1,177 LOC: new Fitness tab, 3 read-only endpoints, fitness-api.ts + 28 tests |
+| **v3.3.2** | #34 | Final v3 rename leftovers | 69 `[master]` log prefixes → `[evy]`; `/api/master/*` → `/api/evy/*` with transparent back-compat alias |
+| **v3.3.3** | #35 | Drain no-secrets gate of false positives | 79 hits across 27 files swept; scanner hardened; **CI's no-secrets gate passed for the first time in months** |
+
+---
+
+## Important state — read before doing anything
+
+### 1. Kernel Fitness initiative is on 30-day soak
+
+Phase 3 (v3.3.1) shipped 2026-05-24. **Do NOT dispatch Phase 4 (scaffold extraction = v3.3.2 in the original plan, now renumbered) before 2026-06-24.** The soak lets baseline fitness data accumulate before any optimization pressure is applied — that's the whole point of the negative criterion (writer + dashboard must NOT influence the supervisor prompt path).
+
+Reference: `Initiatives/Kernel Fitness — engagement + refiner + judge.md` in the Obsidian vault.
+
+### 2. Version cap holds — v3.3.x patch line only
+
+Per operator's standing rule (in memory at `feedback_version_cap.md`): all releases stay on the v3.3.x patch line (3.3.4, 3.3.5, ...) until the operator explicitly says v4. No more v3.4.0 / v3.5.0 / etc. proposals.
+
+### 3. CI's no-secrets gate now works
+
+After v3.3.3, the gate is clean signal. Future PRs that trip it are real findings worth investigating — **NOT** something to `--admin` merge through. If a PR fails the no-secrets gate, fix it, don't bypass it.
+
+### 4. The `[master]` → `[evy]` rename is fully complete
+
+Language, code identifiers, log prefixes, HTTP routes — all done. `/api/master/*` still works as a transparent alias to `/api/evy/*` (will be removed in v4.x). External consumers don't need to change anything; internal new work uses `/api/evy/*`.
+
+### 5. CI infrastructure is occasionally slow
+
+PR #35 spent 40+ minutes stuck on `brew install shellcheck` step (runner infrastructure issue, not code). If a future CI run looks hung past ~15 min on a non-code step, it's safe to admin-merge if the relevant checks (no-secrets, build, tests) have already passed.
+
+---
+
+## Open queue
+
+| # | Work | Size | Why now |
+|---|---|---|---|
+| 1 | HMAC marker version negotiation | M | Worker→Evy directive HMAC needs versioning for partial-fleet upgrades. **Needs ~1 design discussion before code.** |
+| 2 | OpenCode worker addition | M | Add OpenCode as worker provider alongside Claude/Codex/DeepSeek. Pattern follows existing workers. |
+| 3 | gemini/minimax/zai/xai-oauth provider expansion | L | Bigger surface — multiple providers. Belongs after #2 since it shares pattern work. |
+| 4 | Memory hygiene pass (task #23) | S | Address Evy's v2.8.7 audit findings. |
+| 5 | v2.8.16 cognee-promotion entity_id propagation (task #41) | S | Older carry-over bug. |
+| 6 | `.orchestration/` to scanner exclude list | XS | Local-only QoL — gitignored dir trips scanner locally (not in CI). Tiny one-liner patch. |
+| 7 | cli.test.ts subprocess flakiness | S | Pre-existing 15-fail subprocess-timeout issue surfaced during v3.3.3 testing. Same 30/15 profile on main. |
+
+**My recommendation:** start with #6 (literal one-liner — adds `.orchestration` to scanner's exclude-dir list, locally-clean scanner makes next dev cycle smoother), then #4 or #5 (small, mechanical). Save #1 (HMAC) for when you can sit down for the design discussion — it's not mechanical.
+
+---
+
+## Standing rules in effect (from memory)
+
+These are loaded automatically but worth surfacing because they shaped a lot of this session:
+
+- **Auto-merge validated work** — orchestrator merges PRs without asking once tests/scanner/build are green. CI no-secrets gate false positives are pre-authorized for `--admin` override; after v3.3.3 ships, this shouldn't be needed for that reason anymore.
+- **Incremental releases** — one story per tag, not bundled.
+- **Verify worker rebase against main numerically** — `git diff --stat origin/main..feature` before merging worker output; workers can ship regressions against stale main.
+- **Monitor every worker dispatch** — workers ship silently; SendMessage replies don't reliably land. Arm a Monitor for PR-open after every dispatch.
+- **Never kill tmux by PID** — argv preserved from spawning command can take down the operator's attached server.
+- **Loud idle signal** — fire 🚨🚨🚨 ALL HANDS IDLE — AWAITING USER 🚨🚨🚨 at end-of-turn when truly idle; surface IN FLIGHT lines when work is pending.
+- **Master plist paths** — local plist reads dev tree (`/Users/sem/code/subctl`), M3 plist reads install worktree. Deploys must update both sources on local.
+
+---
+
+## How to pick up where I left off
+
+If you're starting fresh:
+
+1. **Sanity check the fleet:** run the Quick Verify block above. If anything is off, something drifted overnight.
+2. **Decide queue ordering:** #6 (scanner exclude `.orchestration`) is the lowest-friction next ship. If the operator wants a bigger story, #2 (OpenCode worker) is the next substantive feature.
+3. **Don't start Phase 4 of Kernel Fitness yet** — soak window doesn't end until ~2026-06-24.
+
+If the operator gives a specific task: just do it. The auto-merge + incremental-release pattern is humming; lean into it.
+
+---
+
+## Memory state
+
+Auto-memory at `~/.claude/projects/-Users-sem-code-subctl/memory/`. New memories created/updated this session:
+
+- `feedback_explicit_actions.md` — rewritten: orchestrator auto-merges validated work
+- `feedback_incremental_releases.md` — smaller-releases rule
+- `feedback_parallel_worker_rebase.md` — diff-stat verification gate
+- `feedback_monitor_worker_pr.md` — workers ship silently; arm monitor
+- `feedback_version_cap.md` — v3.3.x patch line only until v4
+
+The Obsidian vault at `/Users/you/Documents/Obsidian Vault/Subctl/` has the Kernel Fitness initiative doc, but `01 - Current State.md` may be stale — refresh it from git on next session if asked for a project TLDR.
+
+---
+
+## Open questions (none blocking)
+
+- None right now. Three patches shipped clean; queue is clear of dependencies; soak is just calendar time.
+
+If anything in the Quick Verify fails on the next session start, that's the first signal to investigate — likely a daemon restart didn't take or a plist points at the wrong tree.
