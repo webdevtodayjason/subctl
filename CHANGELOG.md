@@ -1,3 +1,55 @@
+## [3.3.0] — 2026-05-24
+
+### `feat(fitness): fitness writer + stall composite (Kernel Fitness Phase 2)`
+
+Pure data-plane writer that reads the engagement ledger (v3.1.0) + decisions ledger + consciousness-loop audit and emits one `fitness-ledger.jsonl` entry per hour-window.
+
+**Per-window scalars:**
+
+```
+stall_composite = 0.4 * reflection_repeat_rate
+                + 0.3 * worker_nudge_rate
+                + 0.3 * compaction_rate
+
+engagement_rate = acted / (acted + acked + ignored)
+```
+
+Stall composite lower-is-better. Engagement rate higher-is-better. Both bounded `[0, 1]`. Components:
+
+| Component | Source | Definition |
+|---|---|---|
+| `reflection_repeat_rate` | `consciousness-loop/audit.jsonl` `unchanged` field | repeated-signal ticks / total ticks in window |
+| `worker_nudge_rate` | `decisions.jsonl` `action == "team_auto_nudge"` | nudges / (nudges + other worker-related team_* decisions) |
+| `compaction_rate` | `decisions.jsonl` `action == "transcript_compacted"` | compactions / reflection_count, clamped |
+
+**Gaming watch:** windows with `< 5` reflections (`min_reflections_floor`) emit `null` composite + `missing_data_reason: "low_reflection_volume"`. Prevents the agent from artificially improving the metric by reducing reflection volume.
+
+**Negative criterion enforced:** `fitness-ledger.jsonl` is **WRITE-ONLY** from Evy's perspective. New red-team test in `components/evy/__tests__/fitness-ledger-isolation.test.ts` enforces no supervisor-prompt code path reads it (two layers — export-shape guard + surgical body grep on `composeSystemPrompt`, `buildMemoryBlock`, `buildPersonalityFragment`, `hydrateContext`, `buildReviewerSystemPrompt`). A third defensive check asserts the writer module itself does not import any supervisor-prompt-assembly module.
+
+**Idempotent:** the writer guards against double-write within a window by scanning prior entries for the same `window_start`. A fast daemon restart cycle that fires the tick twice does not duplicate.
+
+**Window cadence:** 1 hour (locked design decision). Configurable via `components/evy/fitness-config.json` but READ-ONLY at runtime — operator hand-edits + bounces the daemon to apply.
+
+**Files added:**
+
+- `components/evy/fitness-types.ts` — `FitnessLedgerEntry`, `FitnessComponents`, `EngagementCounts`, `MissingDataReason`, `FitnessConfig` shapes.
+- `components/evy/fitness-writer.ts` — write-only public API (`writeFitnessWindow`, `runFitnessWriter`, `getLedgerPath`, test helpers). Hourly tick registered as a watchdog from `components/evy/server.ts`. Reads engagement ledger + decisions ledger + cognition-loop audit (incl. rotated `audit.jsonl.1` generation) internally; never exposes raw entries to callers.
+- `components/evy/fitness-config.json` — shipped config: 1h windows, 10-window read-back, 0.4/0.3/0.3 weights, 5-reflection floor.
+- `components/evy/__tests__/fitness-writer.test.ts` — covers: empty window emits null + reason, synthetic decisions yield expected composite, shipped weights sum to 1.0, basename-guard refuses non-canonical paths, 24-hour synthetic activity yields 24 entries, engagement-rate is correct, scaffold_version populated, idempotent re-fire is a no-op, `no_engagement_surfaces` vs `insufficient_data` reason routing.
+- `components/evy/__tests__/fitness-ledger-isolation.test.ts` — red-team test (export-shape, supervisor-prompt grep, writer-import scan).
+
+**Files touched:**
+
+- `components/evy/server.ts` — import + hourly watchdog `fitness-writer` armed alongside the existing `engagement-sweeper` (NOT inside the supervisor turn loop).
+- `VERSION` — `3.2.0` → `3.3.0`.
+- `CHANGELOG.md` — this entry.
+
+Phase 3 (dashboard panel) will read this ledger as v3.4.0. Phase 5 (refiner) reads it later as v3.6.0.
+
+Closes Phase 2 of `Initiatives/Kernel Fitness — engagement + refiner + judge.md`.
+
+---
+
 ## [3.2.0] — 2026-05-24
 
 ### `feat(notify): pending-asks surface + reply injection + channel routing`
