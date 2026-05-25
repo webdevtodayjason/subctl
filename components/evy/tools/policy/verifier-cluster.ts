@@ -175,7 +175,7 @@ async function defaultDeliverToWorker(teamId: string, text: string): Promise<voi
       { stdout: "pipe", stderr: "pipe" },
     );
     if (setBuf.exitCode !== 0) {
-      console.error(`[master] verifier-cluster: tmux set-buffer failed for ${session}: ${setBuf.stderr?.toString()?.trim()}`);
+      console.error(`[evy] verifier-cluster: tmux set-buffer failed for ${session}: ${setBuf.stderr?.toString()?.trim()}`);
       return;
     }
     const paste = Bun.spawnSync(
@@ -183,7 +183,7 @@ async function defaultDeliverToWorker(teamId: string, text: string): Promise<voi
       { stdout: "pipe", stderr: "pipe" },
     );
     if (paste.exitCode !== 0) {
-      console.error(`[master] verifier-cluster: tmux paste-buffer failed for ${session}: ${paste.stderr?.toString()?.trim()}`);
+      console.error(`[evy] verifier-cluster: tmux paste-buffer failed for ${session}: ${paste.stderr?.toString()?.trim()}`);
       return;
     }
     const enter = Bun.spawnSync(
@@ -191,10 +191,10 @@ async function defaultDeliverToWorker(teamId: string, text: string): Promise<voi
       { stdout: "pipe", stderr: "pipe" },
     );
     if (enter.exitCode !== 0) {
-      console.error(`[master] verifier-cluster: tmux send-keys Enter failed for ${session}: ${enter.stderr?.toString()?.trim()}`);
+      console.error(`[evy] verifier-cluster: tmux send-keys Enter failed for ${session}: ${enter.stderr?.toString()?.trim()}`);
     }
   } catch (err) {
-    console.error(`[master] verifier-cluster: tmux delivery threw for ${session}: ${(err as Error).message}`);
+    console.error(`[evy] verifier-cluster: tmux delivery threw for ${session}: ${(err as Error).message}`);
   }
 }
 
@@ -247,7 +247,7 @@ function defaultAppendDecision(entry: Record<string, unknown>): void {
     const line = JSON.stringify({ ts: new Date().toISOString(), ...entry }) + "\n";
     appendFileSync(path, line);
   } catch (err) {
-    console.error(`[master] verifier-cluster: decisions.jsonl append failed: ${(err as Error).message}`);
+    console.error(`[evy] verifier-cluster: decisions.jsonl append failed: ${(err as Error).message}`);
   }
 }
 
@@ -416,7 +416,7 @@ export async function fireClusterCorrection(
     try {
       await writeVerifierCorrection(teamId, auditRule, meta.mode, meta.allowlistSha);
     } catch (err) {
-      console.error(`[master] verifier-cluster: writeVerifierCorrection failed for ${teamId}: ${(err as Error).message}`);
+      console.error(`[evy] verifier-cluster: writeVerifierCorrection failed for ${teamId}: ${(err as Error).message}`);
     }
   }
 
@@ -425,7 +425,7 @@ export async function fireClusterCorrection(
   try {
     await deps.deliverToWorker(teamId, text);
   } catch (err) {
-    console.error(`[master] verifier-cluster: deliverToWorker failed for ${teamId}: ${(err as Error).message}`);
+    console.error(`[evy] verifier-cluster: deliverToWorker failed for ${teamId}: ${(err as Error).message}`);
   }
 
   lastCorrectionAt.set(teamId, now);
@@ -451,7 +451,7 @@ export async function runClusterTickOnce(now: Date = new Date()): Promise<string
   try {
     teams = await deps.listTeams();
   } catch (err) {
-    console.error(`[master] verifier-cluster: listTeams failed: ${(err as Error).message}`);
+    console.error(`[evy] verifier-cluster: listTeams failed: ${(err as Error).message}`);
     return [];
   }
   const fired: string[] = [];
@@ -463,7 +463,7 @@ export async function runClusterTickOnce(now: Date = new Date()): Promise<string
       await fireClusterCorrection(teamId, trigger, now);
       fired.push(teamId);
     } catch (err) {
-      console.error(`[master] verifier-cluster: tick for ${teamId} failed: ${(err as Error).message}`);
+      console.error(`[evy] verifier-cluster: tick for ${teamId} failed: ${(err as Error).message}`);
     }
   }
   return fired;

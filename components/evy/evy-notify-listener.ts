@@ -38,7 +38,7 @@
 //   const listener = startMasterNotifyListener({
 //     stateProvider: () => buildLiveDaemonState(),
 //   });
-//   if (!listener.running) console.error(`[master] listener: ${listener.reason}`);
+//   if (!listener.running) console.error(`[evy] listener: ${listener.reason}`);
 //
 //   // Either pull each tick…
 //   const messages = drainOperatorInbox();
