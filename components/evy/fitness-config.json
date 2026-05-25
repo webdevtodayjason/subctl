@@ -1,0 +1,7 @@
+{
+  "window_seconds": 3600,
+  "k_windows": 10,
+  "delta": 0.05,
+  "weights": { "repeat": 0.4, "nudge": 0.3, "compaction": 0.3 },
+  "min_reflections_floor": 5
+}

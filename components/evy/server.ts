@@ -303,6 +303,15 @@ import {
   recordSurfaceEmitted,
   runTimeoutSweeper as runEngagementTimeoutSweeper,
 } from "./engagement-tracker";
+// ── v3.3.0 Kernel Fitness Phase 2: fitness writer (write-only). ────────
+// Pure data-plane roll-up of engagement-ledger + decisions.jsonl +
+// consciousness-loop audit into hourly fitness-ledger.jsonl entries.
+// Same isolation discipline as Phase 1: no reader API, no supervisor-
+// prompt path touches this module. Red-team test in
+// `__tests__/fitness-ledger-isolation.test.ts` enforces both layers.
+import {
+  writeFitnessWindow as runFitnessWindow,
+} from "./fitness-writer";
 
 const HOME = homedir();
 const COMPONENT_DIR = import.meta.dir;
@@ -6670,6 +6679,37 @@ async function main() {
     kill: () => clearInterval(engagementSweeper),
   });
   console.error(`[master] engagement sweeper armed — every 1h, 24h floor`);
+
+  // ── v3.3.0 Kernel Fitness Phase 2: hourly fitness writer ────────────────
+  // Every hour, roll up the prior window's engagement-ledger +
+  // decisions.jsonl + consciousness-loop audit into one
+  // fitness-ledger.jsonl entry. Pure data-plane: never reads outside
+  // those three sources, never touches the supervisor prompt, never
+  // calls an LLM. Disabling the watchdog has zero behavioral impact
+  // on Evy — the writer is a passive measurement layer.
+  const FITNESS_WRITE_INTERVAL_MS = 60 * 60 * 1000; // hourly
+  const fitnessTimer = setInterval(() => {
+    touchWatchdog("fitness-writer");
+    void runFitnessWindow().then((entry) => {
+      if (entry) {
+        console.error(
+          `[fitness] wrote window ${entry.window_start} ` +
+            `(stall=${entry.stall_composite ?? "null"}, ` +
+            `engagement=${entry.engagement_rate ?? "null"}, ` +
+            `reflections=${entry.reflection_count}, ticks=${entry.tick_count})`,
+        );
+      }
+    }).catch((err) => {
+      console.error(`[fitness] writer tick failed: ${(err as Error).message}`);
+    });
+  }, FITNESS_WRITE_INTERVAL_MS);
+  registerWatchdog({
+    id: "fitness-writer",
+    kind: "fitness-writer",
+    expected_interval_s: Math.floor(FITNESS_WRITE_INTERVAL_MS / 1000),
+    kill: () => clearInterval(fitnessTimer),
+  });
+  console.error(`[master] fitness writer armed — every 1h, hourly windows`);
 
   // ── auto-compact watchdog (v2.7.3: SAFETY NET) ─────────────────────────
   // v2.7.3 demoted this ticker from the primary gate to a safety net. The
