@@ -6399,7 +6399,7 @@ const server = Bun.serve({
       const entries = readFitnessLedger(defaultFitnessLedgerPath(), {
         windowSeconds: win,
       });
-      return Response.json({ entries });
+      return Response.json({ entries }, { headers: { "Cache-Control": "no-store" } });
     }
 
     // ── /api/evy/engagement/ledger — Kernel Fitness Phase 3 (v3.3.1) ──────
@@ -6416,7 +6416,7 @@ const server = Bun.serve({
         windowSeconds: win,
         type,
       });
-      return Response.json({ entries });
+      return Response.json({ entries }, { headers: { "Cache-Control": "no-store" } });
     }
 
     // ── /api/evy/fitness/health — Kernel Fitness Phase 3 (v3.3.1) ─────────
@@ -6424,7 +6424,7 @@ const server = Bun.serve({
     if (url.pathname === "/api/evy/fitness/health" && req.method === "GET") {
       const entries = readFitnessLedger(defaultFitnessLedgerPath());
       const result = computeFitnessHealth(entries);
-      return Response.json(result);
+      return Response.json(result, { headers: { "Cache-Control": "no-store" } });
     }
 
     // ── /api/master/restart — operator-triggered daemon kickstart ─────────

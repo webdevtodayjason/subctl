@@ -140,7 +140,9 @@ function renderNow(fitness24h, engage24h) {
       ${stallVal === null ? '<span style="color:#888;">—</span>' : fmtMetric(stallVal)}
     </div>
     <div style="font-size:.7rem;color:var(--muted,#888);">${
-      latest?.missing_data_reason ? "missing: " + latest.missing_data_reason : "24h window"
+      latest?.missing_data_reason
+        ? "missing: " + escapeHtml(latest.missing_data_reason)
+        : "24h window"
     }</div>
     <div style="margin-top:.5rem;">${renderSparkline(stallSeries, { invert: true })}</div>
   `;

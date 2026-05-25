@@ -249,12 +249,16 @@ export function computeHealth(
     };
   }
 
-  const stallSlope = computeSlope(
-    validStall.map((e) => [Date.parse(e.window_start), e.stall_composite as number]),
-  );
-  const engSlope = computeSlope(
-    validEng.map((e) => [Date.parse(e.window_start), e.engagement_rate as number]),
-  );
+  // Filter unparseable timestamps before computing slope — a single NaN
+  // poisons the linear-regression sums and silently gives a bogus verdict.
+  const stallPoints: [number, number][] = validStall
+    .map((e) => [Date.parse(e.window_start), e.stall_composite as number] as [number, number])
+    .filter(([t]) => Number.isFinite(t));
+  const engPoints: [number, number][] = validEng
+    .map((e) => [Date.parse(e.window_start), e.engagement_rate as number] as [number, number])
+    .filter(([t]) => Number.isFinite(t));
+  const stallSlope = computeSlope(stallPoints);
+  const engSlope = computeSlope(engPoints);
 
   const stallDegrading = stallSlope > 0;
   const engDegrading = engSlope < 0;
