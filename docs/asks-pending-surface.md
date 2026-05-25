@@ -164,6 +164,6 @@ the dashboard Bun process) coordinate via a `<path>.lockd` mkdir lock:
 ## Handoff reference
 
 The original integration request lives at
-`/Users/sem/code/subctl-buddy/docs/handoff-subctl-surface.md`. v3.2.0
+`/Users/you/code/subctl-buddy/docs/handoff-subctl-surface.md`. v3.2.0
 implements every "Required change 1", "Required change 2", and the
 "Optional but useful — channel routing" section in full.

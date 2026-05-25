@@ -221,7 +221,7 @@ describe("verifier — procedure-or-rule-update-claim — structured inspection 
         {
           name: "team_doc_write",
           arguments: {
-            project_root: "/Users/sem/code/foo",
+            project_root: "/Users/you/code/foo",
             relative_path: "promise-procedure.md",
             content: "Operating procedure for promises: see schedule_followup tool.",
           },

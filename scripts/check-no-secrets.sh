@@ -22,13 +22,19 @@ cd "$REPO_ROOT"
 
 EXCLUDE_DIRS=(--exclude-dir=.git --exclude-dir=node_modules --exclude-dir=dist \
               --exclude-dir=.bun --exclude-dir=.archived- \
-              --exclude-dir=worktrees)
+              --exclude-dir=worktrees --exclude-dir=__pycache__)
 # Note: .claude/worktrees/* is git-worktree metadata (with .git pointers
 # referencing absolute /Users/... paths). Scanner skips it by name.
 # Excluded files: this script itself (regex patterns above), and
 # bin/subctl-deck (compiled Go binary; gitignored, but live in working tree
-# and its embedded debug info contains absolute build paths).
-EXCLUDE_FILES=(--exclude=check-no-secrets.sh --exclude=subctl-deck)
+# and its embedded debug info contains absolute build paths). Also `.git`
+# matched as a regular FILE (not directory) — when this repo is checked
+# out as a git worktree, the top-level `.git` is a pointer file with
+# content like `gitdir: /Users/.../.git/worktrees/<name>`. That's benign
+# repo plumbing, not committed content. CI never hits this (fresh clones
+# have a real `.git` directory which the --exclude-dir above skips), but
+# the pre-push hook on a developer worktree would.
+EXCLUDE_FILES=(--exclude=check-no-secrets.sh --exclude=subctl-deck --exclude=.git)
 
 # Patterns
 FORBIDDEN=(

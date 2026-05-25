@@ -41,15 +41,15 @@ sleep 4 && curl -sS http://127.0.0.1:8788/health | jq -r '.ok, .active_profile'
 ## Test 1 — Codex OAuth chat dispatch (requires operator re-auth first)
 
 **Precondition (operator):** Re-auth the `openai-jason` profile because both
-tokens at `/Users/sem/.codex-jason/auth.json` are server-invalidated (see
+tokens at `/Users/you/.codex-jason/auth.json` are server-invalidated (see
 `next-steps.md`):
 
 ```bash
-CODEX_HOME=/Users/sem/.codex-jason codex login
+CODEX_HOME=/Users/you/.codex-jason codex login
 # Verify
 jq '.tokens | { has_at: (.access_token != null),
                 has_rt: (.refresh_token != null) }' \
-  /Users/sem/.codex-jason/auth.json
+  /Users/you/.codex-jason/auth.json
 ```
 
 **Stage configs.**
@@ -100,10 +100,10 @@ sleep 25
 **Assertions.**
 
 ```bash
-# A1. codex-auth resolver fired and decoded a token from /Users/sem/.codex-jason.
+# A1. codex-auth resolver fired and decoded a token from /Users/you/.codex-jason.
 grep '\[codex-auth\]' ~/Library/Logs/subctl/master.log | tail -3
 # Expected: a line like:
-#   [codex-auth] using access_token from /Users/sem/.codex-jason (account=210e4eee-..., exp_in_s=NNNNN)
+#   [codex-auth] using access_token from /Users/you/.codex-jason (account=210e4eee-..., exp_in_s=NNNNN)
 
 # A2. Latency log shows BOTH first_token AND last_token at reasonable cloud
 # timings (>500ms, <60000ms). first_token MUST be present — that was the

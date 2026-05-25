@@ -6,13 +6,13 @@ Severity: high — blocks dev-team spawn
 
 ## Trigger
 
-While starting Step 1 for the operator-approved `subctl-proxy` project, Evy attempted to spawn `subctl-proxy-team` via `subctl_orch_spawn` against `/Users/sem/code/subctl` using account `claude-jason`.
+While starting Step 1 for the operator-approved `subctl-proxy` project, Evy attempted to spawn `subctl-proxy-team` via `subctl_orch_spawn` against `/Users/you/code/subctl` using account `claude-jason`.
 
 ## Observed failure
 
 ```text
 subctl /api/orchestration/spawn → HTTP 500:  ✗ policy snapshot bridge failed:
-error: Cannot find package 'smol-toml' from '/Users/sem/.local/lib/subctl-install/components/master/tools/policy/snapshot.ts'
+error: Cannot find package 'smol-toml' from '/Users/you/.local/lib/subctl-install/components/master/tools/policy/snapshot.ts'
 
 Bun v1.2.17 (macOS arm64)
  ✗ policy: failed to write snapshot for team claude-subctl
@@ -47,7 +47,7 @@ Possibilities:
 Attempt to spawn any team whose policy snapshot path is exercised. The failing attempt was:
 
 - account: `claude-jason`
-- project: `/Users/sem/code/subctl`
+- project: `/Users/you/code/subctl`
 - intended team: `subctl-proxy-team`
 - phase: `step-1-section-18-decisions`
 

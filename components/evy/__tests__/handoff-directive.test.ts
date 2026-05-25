@@ -191,7 +191,7 @@ describe("buildShortDirective", () => {
   });
 
   test("rejects absolute path", () => {
-    expect(() => buildShortDirective("/Users/sem/foo.md")).toThrow();
+    expect(() => buildShortDirective("/Users/you/foo.md")).toThrow();
   });
 });
 

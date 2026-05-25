@@ -108,7 +108,7 @@ Codex token.
 
 ## 4. Subctl's `auth.json` shape vs what pi-ai expects
 
-`/Users/sem/.codex-jason/auth.json`:
+`/Users/you/.codex-jason/auth.json`:
 ```jsonc
 {
   "OPENAI_API_KEY": null,

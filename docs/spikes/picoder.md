@@ -201,8 +201,8 @@ alias|provider|email|config_dir|description
 ```
 
 ```
-claude-jason    | claude        | jason@webdevtoday.com  | ~/.claude-jason       | Daily driver
-openai-jason    | openai-codex  | jbrashear72@icloud.com | ~/.codex-jason        | Personal Codex
+claude-jason    | claude        | jason@example.com      | ~/.claude-jason       | Daily driver
+openai-jason    | openai-codex  | jason@example.com      | ~/.codex-jason        | Personal Codex
 ```
 
 Pi-coder rows fit:

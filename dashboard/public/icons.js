@@ -5,7 +5,7 @@
 // Why a string-returning helper (not the lucide runtime web component):
 //
 //   The dashboard frontend has no build step — index.html + app.js are
-//   served verbatim from /Users/sem/code/subctl/dashboard/public/. The
+//   served verbatim from /Users/you/code/subctl/dashboard/public/. The
 //   existing code uses `element.innerHTML = template + …` and
 //   `escapeHtml()` to render lists, dropdowns, and badges. A helper that
 //   returns an SVG string drops straight into those template literals

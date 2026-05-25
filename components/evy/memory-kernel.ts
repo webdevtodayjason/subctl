@@ -20,7 +20,7 @@
 // the reviewer (pure module, no fs) and the memori-client (already has
 // dep injection). All side-effect surfaces are injectable for tests.
 //
-// Design contract: /Users/sem/Documents/Obsidian Vault/Subctl/design/
+// Design contract: /Users/you/Documents/Obsidian Vault/Subctl/design/
 // memory-kernel-consciousness-cycle.md — "Architecture Sketch".
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";

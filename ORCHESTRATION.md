@@ -8,7 +8,7 @@ Most recent session at top. Older sessions retained below as historical record.
 
 **Protocol start:** 2026-05-17T~03:00 CDT
 **Mode:** Autonomous orchestration. Operator gave full pre-authorization for the entire arc — scope, dispatch, verify, commit, push — without mid-flight check-ins.
-**Initiative source:** `/Users/sem/Documents/Obsidian Vault/Subctl/design/memory-kernel-consciousness-cycle.md` — design doc Evy authored. This session implements Phases 1 + 2; Phases 3 (Tier 1 candidates) + 4 (context slimming) deferred.
+**Initiative source:** `/Users/you/Documents/Obsidian Vault/Subctl/design/memory-kernel-consciousness-cycle.md` — design doc Evy authored. This session implements Phases 1 + 2; Phases 3 (Tier 1 candidates) + 4 (context slimming) deferred.
 
 ### Plan
 
@@ -153,15 +153,15 @@ Three follow-ups parked in the prior HANDOFF §2:
 Applied the same pattern that landed on local Mac 2026-05-13 night. M3 dev tree was on `main` at start (v2.8.5 = `da3578a`), preventing creating an install worktree on `main`. Resolution:
 1. M3 dev tree fast-forwarded from `da3578a` → `5d5749e` (local Mac's main)
 2. M3 dev tree moved to label branch `dev` (same SHA as main, harmless leftover label) to free up `main` for the install worktree
-3. Install worktree created: `git worktree add /Users/sem/.local/lib/subctl-install main`
+3. Install worktree created: `git worktree add /Users/you/.local/lib/subctl-install main`
 4. Vendored both dep trees: `bun install` in `~/.local/lib/subctl-install/dashboard/` (10 packages) + `~/.local/lib/subctl-install/components/master/` (174 packages)
 5. Backed up both plists with timestamp `20260515-055638`
-6. **Dashboard plist:** `PlistBuddy Set :ProgramArguments:2` → install-tree path; `plutil -lint` OK; `launchctl bootout` + `launchctl bootstrap`. New PID **27129**, status 0, HTTP 200 on `/api/version` (returns v2.8.5). Confirmed via `ps -p` that the new PID is running `/Users/sem/.local/lib/subctl-install/dashboard/server.ts`.
+6. **Dashboard plist:** `PlistBuddy Set :ProgramArguments:2` → install-tree path; `plutil -lint` OK; `launchctl bootout` + `launchctl bootstrap`. New PID **27129**, status 0, HTTP 200 on `/api/version` (returns v2.8.5). Confirmed via `ps -p` that the new PID is running `/Users/you/.local/lib/subctl-install/dashboard/server.ts`.
 7. **Master plist:** same procedure. New PID **27432**, status 0, HTTP 200 on `/health`. Confirmed running install-tree code.
 8. **`com.subctl.tts.plist`** NOT touched — separate plist for the voice service, scope was dashboard + master only. The TTS daemon still points at the dev tree (`~/code/subctl/services/tts/server.py`), parked as a future cleanup if it ever bites.
 
 **M3-specific quirks observed:**
-- Non-interactive `zsh` over SSH has a minimal PATH; `bun` lives at `/Users/sem/.bun/bin/bun` which had to be sourced explicitly. Standard utils (`curl`, `head`, `id`) needed full paths in some invocations.
+- Non-interactive `zsh` over SSH has a minimal PATH; `bun` lives at `/Users/you/.bun/bin/bun` which had to be sourced explicitly. Standard utils (`curl`, `head`, `id`) needed full paths in some invocations.
 - M3 dev tree was 28 commits behind origin (sat at v2.8.5 da3578a; pulled to 5d5749e). The decomposition + this morning's CLI work all landed cleanly via fast-forward.
 
 **Rollback evidence:** plist backups at `~/Library/LaunchAgents/com.subctl.{dashboard,master}.plist.bak-20260515-055638` on M3. Restoring is `mv .bak-… .plist; launchctl bootout && launchctl bootstrap` — same procedure in reverse.
@@ -820,7 +820,7 @@ The 10-min status cron (`d7420c37`) was cancelled at completion. No further work
 
 ### Post-wave infra split — daily-driver dashboard decoupled from dev tree
 
-**Trigger:** Operator flagged that his local dashboard "doesn't update from what you're working on" and that he didn't want to be "locked into [the] local one always sitting on the development code." Investigation showed `~/Library/LaunchAgents/com.subctl.dashboard.plist` pointed `ProgramArguments` directly at `/Users/sem/code/subctl/dashboard/server.ts` — the dev tree. ANY branch checkout in that path would change what the daemon would serve on next restart. There was no separate install copy.
+**Trigger:** Operator flagged that his local dashboard "doesn't update from what you're working on" and that he didn't want to be "locked into [the] local one always sitting on the development code." Investigation showed `~/Library/LaunchAgents/com.subctl.dashboard.plist` pointed `ProgramArguments` directly at `/Users/you/code/subctl/dashboard/server.ts` — the dev tree. ANY branch checkout in that path would change what the daemon would serve on next restart. There was no separate install copy.
 
 **Operator's choice via AskUserQuestion:** Option A — separate install worktree.
 
@@ -828,7 +828,7 @@ The 10-min status cron (`d7420c37`) was cancelled at completion. No further work
 1. `git worktree add ~/.local/lib/subctl-install main` — new worktree pinned to `main` (currently at `dd958ba`, v2.8.5).
 2. `cd ~/.local/lib/subctl-install/dashboard && bun install` — vendor deps (xterm.js + addon-fit + smol-toml + lucide + node-pty) installed in the install tree's `node_modules/`.
 3. Backed up plist to `~/Library/LaunchAgents/com.subctl.dashboard.plist.bak-20260513-211858`.
-4. `/usr/libexec/PlistBuddy -c "Set :ProgramArguments:2 /Users/sem/.local/lib/subctl-install/dashboard/server.ts"` — repointed the launchd job at the install tree.
+4. `/usr/libexec/PlistBuddy -c "Set :ProgramArguments:2 /Users/you/.local/lib/subctl-install/dashboard/server.ts"` — repointed the launchd job at the install tree.
 5. `launchctl bootout gui/$UID/com.subctl.dashboard` then `launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.subctl.dashboard.plist`.
 6. **Killed PID 1473** (the long-running v2.7.7-in-memory daemon from May 12 that HANDOFF.md had flagged as "don't restart — only working reference"). Replaced with PID 94317 running from the install tree at v2.8.5.
 
@@ -836,9 +836,9 @@ The 10-min status cron (`d7420c37`) was cancelled at completion. No further work
 - `curl http://localhost:8787/api/version` → `{"version":"2.8.5"}` ✓
 - `curl -I http://localhost:8787/bootstrap.js` → `404` ✓ (proves install tree is on `main`, NOT the feature branch — wave-1 changes are isolated to `~/code/subctl`)
 - index.html on :8787 has only `<script src="/app.js">` — no `bootstrap.js` script tag ✓
-- `ps -ef` confirms `PID 94317 bun run /Users/sem/.local/lib/subctl-install/dashboard/server.ts` ✓
+- `ps -ef` confirms `PID 94317 bun run /Users/you/.local/lib/subctl-install/dashboard/server.ts` ✓
 
-**Test-the-branch path established:** `cd /Users/sem/code/subctl && PORT=8788 bun run dashboard/server.ts` runs the dev tree on a sibling port. PID 97068 currently serves this — `:8788/bootstrap.js` returns 200, index has both script tags. Operator browses `http://localhost:8788` to verify wave-1 without touching daily-driver `:8787`.
+**Test-the-branch path established:** `cd /Users/you/code/subctl && PORT=8788 bun run dashboard/server.ts` runs the dev tree on a sibling port. PID 97068 currently serves this — `:8788/bootstrap.js` returns 200, index has both script tags. Operator browses `http://localhost:8788` to verify wave-1 without touching daily-driver `:8787`.
 
 **Deploy flow (until a CLI verb is wired):**
 ```
@@ -853,7 +853,7 @@ launchctl kickstart -k gui/$UID/com.subctl.dashboard
 
 **Follow-up parking lot (not done tonight):**
 - Add `subctl dashboard deploy` CLI verb wrapping the deploy flow above.
-- Apply same split to M3 Ultra (`com.subctl.master` + `com.subctl.dashboard` there). Currently M3's daemons read from a remote git checkout at `/Users/sem/code/subctl` over its SSH session; the same lock-in risk applies if a future session does branch work on M3.
+- Apply same split to M3 Ultra (`com.subctl.master` + `com.subctl.dashboard` there). Currently M3's daemons read from a remote git checkout at `/Users/you/code/subctl` over its SSH session; the same lock-in risk applies if a future session does branch work on M3.
 - Add the install-tree pattern to `install.sh` for fresh installs so this isn't a manual surgery for the next operator.
 - The `DECISIONS.md` architectural-call entry for this split lives only in ORCHESTRATION.md for now; should be promoted to a proper DECISIONS.md entry on the next merge to `main`.
 
@@ -962,10 +962,10 @@ Initial dispatch via Agent + team_name failed: Claude Code's iTerm2 native-pane 
 ## Worktrees (one per slice — non-overlapping git working trees)
 
 ```
-/Users/sem/code/subctl                              feat/codex-provider          (orchestrator)
-/Users/sem/code/subctl-s2a-sdk-wiring               feat/master-stage2-sdk-wiring (S2-A worker)
-/Users/sem/code/subctl-s2b-cli-listener             feat/master-stage2-cli-listener (S2-B worker)
-/Users/sem/code/subctl-s2c-install-wiring           feat/master-stage2-install-wiring (S2-C worker)
+/Users/you/code/subctl                              feat/codex-provider          (orchestrator)
+/Users/you/code/subctl-s2a-sdk-wiring               feat/master-stage2-sdk-wiring (S2-A worker)
+/Users/you/code/subctl-s2b-cli-listener             feat/master-stage2-cli-listener (S2-B worker)
+/Users/you/code/subctl-s2c-install-wiring           feat/master-stage2-install-wiring (S2-C worker)
 ```
 
 Each worker commits + pushes its slice branch. Orchestrator merges all three into feat/codex-provider after verification, then runs `git worktree remove` cleanup.

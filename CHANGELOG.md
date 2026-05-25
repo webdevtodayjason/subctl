@@ -1,3 +1,37 @@
+## [3.3.3] — 2026-05-24
+
+### `chore(ci): drain the no-secrets gate of pre-existing false positives`
+
+The repo's no-secrets gate (`scripts/check-no-secrets.sh`) has been polluted for months by hardcoded `/Users/sem/...` paths in docs, test fixtures, code comments, and example configs — none of them real credentials, just historical artifacts of paths typed during development. The gate has been failing on every PR for so long that the team's reflex was to `--admin` merge through it, which is exactly the wrong reflex when a real secret eventually does slip in.
+
+This patch drains the backlog so the gate goes back to being signal-only.
+
+**Substitutions (79 hits across 27 files):**
+- `/Users/sem/...` → `/Users/you/...` everywhere it appeared in:
+  - Code comments (`components/evy/server.ts`, `components/evy/memory-kernel.ts`, `dashboard/public/icons.js`)
+  - UI placeholders (`dashboard/public/index.html` — vault root input placeholder)
+  - Test fixtures (6 test files across `components/evy/__tests__/` and `dashboard/__tests__/`)
+  - Example config (`components/evy/policy.json.example`)
+  - Docs & handoffs (`docs/evy.md`, `docs/asks-pending-surface.md`, `CHANGELOG.md`, `HANDOFF.md`, `ORCHESTRATION.md`, all `.subctl/docs/**`, `feat/codex-oauth-chat-*.md`)
+  - Various provider scripts (`providers/openai-codex/teams.sh`)
+
+**Targeted fixes (3 fixtures):**
+- `lib/__tests__/cli.test.ts` — shortened `sk-` placeholder fixtures below the 20-char threshold (still exercises the redactor without tripping the gate)
+- `components/evy/__tests__/voice-render.test.ts` — assembled the long `sk-` fixture at runtime via string concat so the literal source doesn't match
+- `docs/spikes/picoder.md` — replaced real emails (`jason@webdevtoday.com`, `jbrashear72@icloud.com`) with `jason@example.com`
+
+**Scanner hardening (`scripts/check-no-secrets.sh`):**
+- Added `__pycache__` to `--exclude-dir` (was hitting compiled Python from the `cognee` service)
+- Added `.git` to `--exclude=` for cases where the repo is checked out as a git worktree (the top-level `.git` is a pointer file containing `gitdir: /Users/.../`; benign repo plumbing, but trips the path regex)
+
+**Result:** `bash scripts/check-no-secrets.sh` exits 0 cleanly. CI's no-secrets gate stops being noise; subsequent PRs that fail it are real signals worth investigating.
+
+**Tests:** every file I edited still passes (110/110 across the 8 test files with substitutions). Dashboard suite, isolation tests, voice-render, audit-api, spawn-errors — all green. `bun build dashboard/server.ts` clean.
+
+**Tag implication:** future PRs should merge without `--admin` if the only blocker is the no-secrets gate, restoring the gate's intended meaning.
+
+---
+
 ## [3.3.2] — 2026-05-24
 
 ### `chore(rename): final v3 rename leftovers — log prefixes + route alias`
@@ -173,7 +207,7 @@ Default stays `telegram` for full backward compatibility. Unknown channel names 
 - MCP-tool variants — CLI + HTTP only for v1; MCP wrappers can land later without schema change.
 - Multi-buddy fanout — protocol-level concern, not subctl's job.
 
-Implements the full handoff at `/Users/sem/code/subctl-buddy/docs/handoff-subctl-surface.md`.
+Implements the full handoff at `/Users/you/code/subctl-buddy/docs/handoff-subctl-surface.md`.
 
 ---
 

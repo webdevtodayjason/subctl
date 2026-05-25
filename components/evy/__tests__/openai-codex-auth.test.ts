@@ -117,8 +117,8 @@ describe("loadAccountsConf", () => {
     writeAccountsConf(
       "# header comment\n" +
         "\n" +
-        "  claude-jason | claude | a@b.com | /Users/sem/.claude-jason | Daily driver\n" +
-        "openai-jason | openai-codex | c@d.com | /Users/sem/.codex-jason | Codex\n",
+        "  claude-jason | claude | a@b.com | /Users/you/.claude-jason | Daily driver\n" +
+        "openai-jason | openai-codex | c@d.com | /Users/you/.codex-jason | Codex\n",
     );
     const rows = loadAccountsConf();
     expect(rows).toHaveLength(2);
@@ -142,7 +142,7 @@ describe("loadAccountsConf", () => {
   test("malformed rows (fewer than 4 pipe-fields) are skipped, not fatal", () => {
     writeAccountsConf(
       "broken | row\n" +
-        "openai-jason | openai-codex | x@y.z | /Users/sem/.codex-jason\n",
+        "openai-jason | openai-codex | x@y.z | /Users/you/.codex-jason\n",
     );
     const rows = loadAccountsConf();
     expect(rows).toHaveLength(1);
@@ -159,7 +159,7 @@ describe("resolveActiveCodexConfigDir", () => {
     const a = join(tmpDir, "codex-jason");
     const b = join(tmpDir, "codex-titanium");
     writeAccountsConf(
-      "claude-jason | claude | x@y.z | /Users/sem/.claude-jason | first\n" +
+      "claude-jason | claude | x@y.z | /Users/you/.claude-jason | first\n" +
         `openai-jason | openai-codex | x@y.z | ${a} | personal\n` +
         `openai-titanium | openai-codex | x@y.z | ${b} | work\n`,
     );
@@ -168,7 +168,7 @@ describe("resolveActiveCodexConfigDir", () => {
 
   test("skips rows whose provider != openai-codex", () => {
     writeAccountsConf(
-      "claude-jason | claude | x@y.z | /Users/sem/.claude-jason | first\n",
+      "claude-jason | claude | x@y.z | /Users/you/.claude-jason | first\n",
     );
     // no openai-codex in conf — falls back to ~/.codex; that may or may not
     // exist on this machine, so just assert the function returned a string

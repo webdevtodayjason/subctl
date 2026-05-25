@@ -2613,7 +2613,7 @@ without going through the TCC-blocked Obsidian vault path.
 ```jsonc
 // Persist the operator's mandate for a fresh team — frontmatter wraps it.
 team_doc_write({
-  project_root: "/Users/sem/code/osint-cve-monitor",
+  project_root: "/Users/you/code/osint-cve-monitor",
   relative_path: "SPEC.md",
   content: "# osint-cve-monitor\n\nWatch NVD + GitHub Advisories…",
   frontmatter: { operator: "jason", account: "claude-jason", phase: "baseline", kind: "spec" }
@@ -2622,7 +2622,7 @@ team_doc_write({
 
 // Log a meaningful decision for the operator to scroll back to.
 team_decision_log({
-  project_root: "/Users/sem/code/osint-cve-monitor",
+  project_root: "/Users/you/code/osint-cve-monitor",
   summary: "swapped supervisor from openai-jason to claude-jason — 5h limit on openai",
   by: "master"
 })

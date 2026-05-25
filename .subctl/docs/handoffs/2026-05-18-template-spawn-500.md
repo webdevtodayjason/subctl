@@ -18,7 +18,7 @@ Detail below preserved for historical record.
 
 Date: 2026-05-18
 Operator: Jason
-Project: `/Users/sem/code/subctl`
+Project: `/Users/you/code/subctl`
 
 ## Trigger
 
@@ -35,7 +35,7 @@ Do **not** push or merge without operator approval.
 ## Known context
 
 - Current subctl repo state from desk check:
-  - Path: `/Users/sem/code/subctl`
+  - Path: `/Users/you/code/subctl`
   - Branch: `feat/ctxpin-respect-loaded`
   - Ahead origin: 10
   - Behind origin: 0
@@ -91,8 +91,8 @@ Also present and likely unrelated unless logs say otherwise:
 
 Another worker may be running a read-only installer comparison between:
 
-- subCTL: `/Users/sem/code/subctl`
-- Hermes: `/Users/sem/code/hermes-agent`
+- subCTL: `/Users/you/code/subctl`
+- Hermes: `/Users/you/code/hermes-agent`
 
 This 500 fix is separate. Avoid disturbing their working tree if they are in the same repo. Check `git status` before editing and preserve existing uncommitted changes.
 
@@ -118,8 +118,8 @@ This 500 fix is separate. Avoid disturbing their working tree if they are in the
 ```
 $ curl -sS -X POST http://127.0.0.1:8787/api/orchestration/spawn \
     -H 'Content-Type: application/json' \
-    -d '{"template":"code-review","account":"claude-jason","project":"/Users/sem/code/subctl","prompt":""}'
-{"ok":false,"error":" ✗ team template not found: /Users/sem/.config/subctl/master/team-templates/code-review.json\n"}
+    -d '{"template":"code-review","account":"claude-jason","project":"/Users/you/code/subctl","prompt":""}'
+{"ok":false,"error":" ✗ team template not found: /Users/you/.config/subctl/master/team-templates/code-review.json\n"}
 [HTTP 500]
 ```
 
@@ -184,7 +184,7 @@ Live body for the template-not-found path now carries the discriminator the supe
 ```json
 {
   "ok": false,
-  "error": "✗ team template not found: /Users/sem/.config/subctl/master/team-templates/code-review.json\n…",
+  "error": "✗ team template not found: /Users/you/.config/subctl/master/team-templates/code-review.json\n…",
   "error_kind": "template_not_found"
 }
 ```
