@@ -1,3 +1,24 @@
+## [3.3.4] — 2026-05-25
+
+### `fix(policy): restore claude-teams spawn — _write_snapshot imports renamed master path`
+
+`providers/claude/_write_snapshot.ts` still imported `writeAuditHeader` and `writePolicySnapshot` from `../../components/master/tools/policy/...`, which no longer exists since v3.0.0 moved the tool family to `components/evy/tools/policy/`. The bridge is invoked synchronously by `providers/claude/policy.sh` at spawn time, so the broken imports turned every `claude-teams` spawn into:
+
+```
+✗ policy snapshot bridge failed:
+error: Cannot find module '../../components/master/tools/policy/audit'
+       from '/Users/.../providers/claude/_write_snapshot.ts'
+✗ policy: failed to write snapshot for team claude-...
+```
+
+This is a literal continuation of the v3.3.2 rename-leftovers PR — the same class of bug, just in a file the prefix-sweep grep missed because `providers/claude/_write_snapshot.ts` was outside the `[master]` log-prefix corpus.
+
+**Fix:** two-line import update in `providers/claude/_write_snapshot.ts` pointing at the `evy/` path. No runtime behaviour change; the modules at the new path are byte-identical to the v3.0.0 move.
+
+**Verification:** `claude-teams -o -y -a <account>` now writes a valid snapshot and proceeds to tmux session creation as expected.
+
+---
+
 ## [3.3.3] — 2026-05-24
 
 ### `chore(ci): drain the no-secrets gate of pre-existing false positives`

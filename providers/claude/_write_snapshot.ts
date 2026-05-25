@@ -25,8 +25,8 @@
 
 import process from "node:process";
 
-import { writeAuditHeader } from "../../components/master/tools/policy/audit";
-import { writePolicySnapshot } from "../../components/master/tools/policy/snapshot";
+import { writeAuditHeader } from "../../components/evy/tools/policy/audit";
+import { writePolicySnapshot } from "../../components/evy/tools/policy/snapshot";
 
 interface ParsedArgs {
   team: string;
