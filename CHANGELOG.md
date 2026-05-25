@@ -1,3 +1,42 @@
+## [3.3.1] — 2026-05-24
+
+### `feat(fitness): dashboard fitness panel (Kernel Fitness Phase 3)`
+
+New Fitness tab in the dashboard sidebar (between Memory and Vault) that surfaces the metrics from Phase 1 (engagement ledger, v3.1.0) and Phase 2 (fitness writer, v3.3.0). Pure read-only observability — no writes back to either ledger from this tab.
+
+**Panels:**
+- **Now** — current stall composite + engagement rate with sparklines. Stall lower-better (red trend = bad), engagement higher-better (green trend = good).
+- **7-day trend** — inline SVG line chart with both metrics on a shared [0,1] axis. No Chart.js dependency.
+- **Recent surfaces (last 24h)** — last 30 surface_emitted events with outcomes: ✓ acted, • acked, ⊘ ignored, ⏳ pending. Pulled live from the engagement ledger.
+- **Health pill** — red/yellow/green verdict answering "is Evy learning?" computed server-side from the last 24h of fitness windows (slope analysis + engagement threshold).
+
+**New read-only HTTP endpoints (dashboard server):**
+- `GET /api/evy/fitness/ledger[?window=24h|7d|30d|Nh|Nd]`
+- `GET /api/evy/engagement/ledger[?window=...][?type=surface_emitted|engagement]`
+- `GET /api/evy/fitness/health` → `{ health: "green"|"yellow"|"red", reason, latest_window }`
+
+All endpoints handle file-missing gracefully (return empty array or `red` health verdict, never 500). A fresh install with no ledgers yet renders an "insufficient data" empty state.
+
+**Negative criterion preserved:** the dashboard reads the ledgers as a separate process via `node:fs` directly (no import from `components/evy/fitness-writer.ts` or `components/evy/engagement-tracker.ts`). The supervisor-prompt assembly path inside Evy still has zero visibility into either ledger. Existing red-team tests from v3.1.0 + v3.3.0 still pass.
+
+**Polling:** the tab refreshes on a 60s timer. The writer emits hourly, so faster polling is wasted.
+
+After this ships: **30-day soak** before Phase 4 (scaffold extraction = v3.3.2) dispatches. The soak lets baseline fitness data accumulate before any optimization pressure is applied.
+
+**New files:**
+- `dashboard/lib/fitness-api.ts` — pure helpers (path resolution, window parsing, JSONL reader, type-filtered readers, computeHealth with slope analysis)
+- `dashboard/public/tabs/fitness.js` — the tab module (mount/unmount lifecycle, polling, 4 panel renderers, SVG sparklines + trend chart)
+- `dashboard/__tests__/fitness-api.test.ts` — tests for path resolution, window parsing, jsonl reading, both filtered readers, and computeHealth's 8 verdict scenarios
+
+**Touched files:**
+- `dashboard/server.ts` — three new GET endpoints
+- `dashboard/public/bootstrap.js` — registers the fitness tab loader
+- `dashboard/public/index.html` — adds nav button + section mount
+
+Closes Phase 3 of `Initiatives/Kernel Fitness — engagement + refiner + judge.md`.
+
+---
+
 ## [3.3.0] — 2026-05-24
 
 ### `feat(fitness): fitness writer + stall composite (Kernel Fitness Phase 2)`

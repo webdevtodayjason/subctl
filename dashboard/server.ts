@@ -182,6 +182,21 @@ import type {
   Outcome as EvyOutcome,
   Source as EvySource,
 } from "../components/evy/engagement-types.ts";
+// ── v3.3.1 Kernel Fitness Phase 3: dashboard read-only ledger access. ──
+// Read-only handlers used by the new Fitness tab. The dashboard reads
+// fitness-ledger.jsonl + engagement-ledger.jsonl via node:fs through
+// these pure helpers — it never imports from components/evy/fitness-
+// writer.ts (whose isolation test forbids a reader API). The Fitness
+// tab is a separate-process observability surface; Evy's supervisor
+// prompt assembly path remains structurally unable to see either ledger.
+import {
+  computeHealth as computeFitnessHealth,
+  defaultEngagementLedgerPath,
+  defaultFitnessLedgerPath,
+  parseWindow as parseFitnessWindow,
+  readEngagementLedger,
+  readFitnessLedger,
+} from "./lib/fitness-api.ts";
 
 const PORT = Number(process.env.PORT ?? 8787);
 const STARTED_AT = Date.now();
@@ -6373,6 +6388,43 @@ const server = Bun.serve({
         );
       }
       return Response.json({ ok: true, surface_id, outcome, source });
+    }
+
+    // ── /api/evy/fitness/ledger — Kernel Fitness Phase 3 (v3.3.1) ─────────
+    // Read-only proxy for ~/.config/subctl/evy/fitness-ledger.jsonl.
+    // Optional query: ?window=24h|7d|30d|Nh|Nd to filter by window_start.
+    // File-missing → { entries: [] }, never 500.
+    if (url.pathname === "/api/evy/fitness/ledger" && req.method === "GET") {
+      const win = parseFitnessWindow(url.searchParams.get("window"));
+      const entries = readFitnessLedger(defaultFitnessLedgerPath(), {
+        windowSeconds: win,
+      });
+      return Response.json({ entries }, { headers: { "Cache-Control": "no-store" } });
+    }
+
+    // ── /api/evy/engagement/ledger — Kernel Fitness Phase 3 (v3.3.1) ──────
+    // Read-only proxy for ~/.config/subctl/evy/engagement-ledger.jsonl.
+    // Optional query: ?window=...&type=surface_emitted|engagement.
+    if (url.pathname === "/api/evy/engagement/ledger" && req.method === "GET") {
+      const win = parseFitnessWindow(url.searchParams.get("window"));
+      const typeParam = url.searchParams.get("type");
+      const type: "surface_emitted" | "engagement" | null =
+        typeParam === "surface_emitted" || typeParam === "engagement"
+          ? typeParam
+          : null;
+      const entries = readEngagementLedger(defaultEngagementLedgerPath(), {
+        windowSeconds: win,
+        type,
+      });
+      return Response.json({ entries }, { headers: { "Cache-Control": "no-store" } });
+    }
+
+    // ── /api/evy/fitness/health — Kernel Fitness Phase 3 (v3.3.1) ─────────
+    // Rolls last 24h of fitness ledger into a red/yellow/green verdict.
+    if (url.pathname === "/api/evy/fitness/health" && req.method === "GET") {
+      const entries = readFitnessLedger(defaultFitnessLedgerPath());
+      const result = computeFitnessHealth(entries);
+      return Response.json(result, { headers: { "Cache-Control": "no-store" } });
     }
 
     // ── /api/master/restart — operator-triggered daemon kickstart ─────────

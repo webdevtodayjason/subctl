@@ -34,6 +34,7 @@ const TAB_LOADERS = new Map([
   ["providers", () => import("./tabs/providers.js")],
   ["vault", () => import("./tabs/vault.js")],
   ["memory", () => import("./tabs/memory.js")],
+  ["fitness", () => import("./tabs/fitness.js")],
   ["skills", () => import("./tabs/skills.js")],
   ["projects", () => import("./tabs/projects.js")],
   ["settings", () => import("./tabs/settings.js")],
