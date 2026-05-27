@@ -37,6 +37,8 @@ Most recent first. When adding a new ADR, append to this list.
 
 | # | Title | Status |
 |---|---|---|
+| [0020](0020-evy-v4-learning-orchestrator-spec.md) | Evy v4 — Rust rewrite as a learning orchestrator | Accepted (Phase 0 blueprint freeze) |
+| [0019](0019-no-anthropic-provider-in-master.md) | No Anthropic provider in the master daemon | Accepted (queued — branch claude/keen-merkle-46515a) |
 | [0018](0018-operator-preferences-bilateral-maintenance.md) | Operator preferences — bilateral maintenance, structured TOML | Accepted (ships v2.8.1) |
 | [0017](0017-voice-layer-tts.md) | Voice layer (TTS) for Evy — self-hosted, opt-in, redacted | Accepted (ships v2.8.0) |
 | [0016](0016-lucide-icon-library.md) | Lucide icon library — replace emoji across dashboard surfaces | Accepted (ships v2.7.25) |

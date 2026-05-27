@@ -4,6 +4,340 @@ Most recent session at top. Older sessions retained below as historical record.
 
 ---
 
+## Session 2026-05-25 — Evy v4 Rust Rewrite, Phase 0 (Opus 4.7)
+
+**Protocol start:** 2026-05-25T~08:30 CDT
+**Mode:** Operator-supervised orchestration. Skill: `orchestrator-mode` + `obsidian-vault`. SUBCTL_AGENT_ROLE unset; legitimate operator-initiated activation.
+**Initiative:** Rewrite Evy (the subctl daemon) from Bun/TypeScript to Rust. New project at `/Users/sem/code/subctl-rust/`. Current `/Users/sem/code/subctl/` stays untouched until cutover.
+**Why:** Operator decision driven by (1) preference for Rust as core-infrastructure language, (2) acknowledgement that current TS Evy has never been used for real development projects — migration cost is much lower than it would be against production usage, (3) Evy's job has crystallized into eight clear primitives, including a learning loop that the v3.3.x speculative infrastructure was trying-but-failing to deliver.
+
+### Phase 0 Plan
+
+- **GOAL** — Lock the Evy v4 Rust rewrite blueprint in writing (ADR 0020) and scaffold an empty, compiling Rust workspace at `/Users/sem/code/subctl-rust/`, so Phase 1 worker dispatch has a durable spec and a working repo to build into.
+- **UNKNOWNS** — None blocking dispatch. Three provisional decisions (cutover criteria, CLI strategy, repo name) baked into the ADR with "operator may override during Phase 0" annotations.
+- **WORK BREAKDOWN** — Two parallel slices, non-overlapping file scopes.
+  - Slice A (`adr-writer`) — writes `docs/adr/0020-evy-v4-learning-orchestrator-spec.md` in the *current* subctl repo. 600-900 lines.
+  - Slice B (`rust-scaffolder`) — initializes `/Users/sem/code/subctl-rust/` with multi-crate Cargo workspace, CI, standard scaffold files. `cargo check + build + fmt + clippy` all clean. Local commit only — no push.
+- **SERIALIZATION** — A and B fully parallel. After both verified, orchestrator (a) bootstraps `Subctl-Rust/` folder in Obsidian vault, (b) supports operator's `gh repo create + git push`, (c) marks Phase 0 complete.
+- **DONE WHEN** — ADR 0020 exists 600+ lines covering all 8 primitives + learning loop + cutover + CLI + residual risks; subctl-rust scaffold compiles clean with one commit; ORCHESTRATION.md updated; Obsidian vault Subctl-Rust folder bootstrapped.
+
+### Task Ledger
+
+| ID | Task | State | Worker | Started | Finished |
+|----|------|-------|--------|---------|----------|
+| E1 | Write ADR 0020 (blueprint freeze, 600-900 lines, 8 primitives + learning loop + cutover + provisional decisions + residual risks) | **done** | adr-writer | 2026-05-25T~08:35 CDT | 2026-05-25T~10:39 CDT |
+| E2 | Scaffold subctl-rust Cargo workspace (7 crates + CI + scaffold files, cargo check/build/fmt/clippy clean, one local commit) | **done** | rust-scaffolder | 2026-05-25T~08:35 CDT | 2026-05-25T~10:39 CDT |
+| E3 | Verify ADR 0020 (file exists, line count, all sections present, frontmatter valid) | **done** | orchestrator | 2026-05-25T~10:42 CDT | 2026-05-25T~10:43 CDT |
+| E4 | Verify subctl-rust scaffold (cd + cargo check + cargo build + git log) | **done** | orchestrator | 2026-05-25T~10:44 CDT | 2026-05-25T~10:45 CDT |
+| E5 | Bootstrap Obsidian vault `Subctl-Rust/` project folder per `obsidian-vault` skill §8 | **done** | orchestrator | 2026-05-25T~10:45 CDT | 2026-05-25T~10:48 CDT |
+| E6 | Support operator `gh repo create webdevtodayjason/subctl-rust + git push` | awaiting-operator | operator+orchestrator | — | — |
+| E7 | Phase 0 closeout — append synthesis to ORCHESTRATION.md, mark Phase 0 complete, present Phase 1 plan | **done** | orchestrator | 2026-05-25T~11:15 CDT | 2026-05-25T~11:18 CDT |
+| E10 | `gh repo create webdevtodayjason/subctl-rust --public --source=. --push` (orchestrator-executed with operator's explicit auth) | **done** | orchestrator | 2026-05-25T~11:10 CDT | 2026-05-25T~11:11 CDT |
+| E11 | Final ADR 0020 cleanup pass: retitle Provisional→Decisions, resolve DeepSeek + thinking-partner deferrals with rationale, backfill 0019 row in docs/adr/README.md | **done** | adr-writer | 2026-05-25T~11:10 CDT | 2026-05-25T~11:11 CDT |
+| E12 | Verify E10 + E11 + E13 | **done** | orchestrator | 2026-05-25T~11:12 CDT | 2026-05-25T~11:18 CDT |
+| E13 | Spot-fix Phase plan line 688 — drop "provisional decisions" framing, reflect that operator review happened | **done** | adr-writer | 2026-05-25T~11:13 CDT | 2026-05-25T~11:17 CDT |
+| E8 | Batched ADR 0020 revision pass — (a) flip pi-ai language to "no pi-ai, native Rust SDKs, Hermes precedent", (b) add ADR 0020 row to docs/adr/README.md, (c) flip Status: Proposed → Accepted | **done** | adr-writer | 2026-05-25T~11:00 CDT | 2026-05-25T~11:04 CDT |
+| E9 | Verify E8 deliverable (grep checks, line count, status string, README row) | **done** | orchestrator | 2026-05-25T~11:05 CDT | 2026-05-25T~11:06 CDT |
+
+### Decision Log
+
+- **2026-05-25T08:30 CDT** — Decided to rewrite Evy v4 in Rust as a parallel new project, not an in-place port. Rationale: blueprint exists (eight primitives + learning loop spec), current TS Evy has no production usage to protect, operating tempo (~30 commits/day with AI assistance) makes a 13-21 day rewrite realistic, blueprint advantage outweighs Rust per-LOC velocity tax.
+- **2026-05-25T08:30 CDT** — Provisional defaults baked into ADR 0020 (operator may override during Phase 0): cutover criteria = 7-item list; CLI strategy = option (c) thin Rust binary with bash shell-out during transition; GitHub repo = `webdevtodayjason/subctl-rust`; workspace layout = multi-crate Cargo workspace with 7 members.
+- **2026-05-25T08:30 CDT** — DeepSeek V4 Pro adapter confirmed NOT wired in current subctl. Provider trait abstraction designed in Phase 1 will be tested by ability to add DeepSeek adapter without surgery.
+- **2026-05-25T08:30 CDT** — Cross-provider mandate format: each provider gets its own envelope shape. Provider trait abstracts dispatch surface, not message format.
+- **2026-05-25T08:35 CDT** — Phase 0 dispatch: two Claude Code workers in parallel. Codex / DeepSeek workers come online in Phase 1 when there's actually divisible Rust build work.
+- **2026-05-25T~10:55 CDT** — **No pi-ai dependency in v4.** Operator override of the ADR 0020 punt. Verified Hermes precedent (`hermes-agent/pyproject.toml` has zero pi-ai/pi-agent deps; runs multi-provider OAuth via native SDKs in `hermes_cli/auth.py`). v4 takes the same posture: `anthropic-sdk-rust` / `async-openai` / native OAuth, no TS sidecar, no JS supply-chain surface. ADR 0020 will be revised on the next batched update pass.
+
+### Verification Evidence
+
+**E1/E3 — ADR 0020 (verified 2026-05-25T~10:43 CDT):**
+- File: `/Users/sem/code/subctl/docs/adr/0020-evy-v4-learning-orchestrator-spec.md`
+- Size: 45,327 bytes, 948 lines (within 500-1000 hard range, slightly over 600-900 target)
+- All 10 H1+H2 sections present: Context, Decision, Reasoning, Consequences, Phase plan, Provisional decisions, Residual risks, Alternatives considered, References
+- All 8 primitives documented with their own H4 (lines 108, 123, 161, 194, 236, 255, 283, 299)
+- All 7 learning-loop layers documented with their own H4 (Layer 1 line 320, Layer 7 line 413)
+- Frontmatter matches existing ADR pattern (Status / Date / Decided by / Implemented in / Supersedes). Status set to "Proposed (Phase 0 blueprint freeze)" — worker chose this over "Accepted" to keep the Phase 0 override window open. Reasonable.
+- All 12 cross-referenced ADRs (0001, 0002, 0004, 0005, 0006, 0010, 0011, 0013, 0014, 0015, 0018, 0019) verified to exist on disk
+- 10 code fences (5 balanced blocks), 9 table-line rows (1 well-formed learning-loop summary table)
+- No constraint violations: single file created, no source edits, no commit, no push
+
+**E2/E4 — subctl-rust scaffold (verified 2026-05-25T~10:45 CDT):**
+- Directory: `/Users/sem/code/subctl-rust/` exists with full expected tree
+- Layout: `crates/evy-{core,policy,providers,scheduler,comms,memory}/` + `crates/evy/` (binary) — worker chose `crates/evy/` over `bin/evy/`, which was explicitly allowed in the prompt
+- Workspace Cargo.toml present with `[workspace.package]` (v0.1.0, edition 2021, rust-version 1.95) and `[workspace.dependencies]` (tokio, axum 0.8, sqlx 0.9, serde, figment, tracing, thiserror, anyhow, clap — all on stable)
+- Local rustc: 1.95.0 (matches workspace rust-version)
+- LICENSE: MIT, copyright 2026 Jason Brashear
+- README.md: points at ADR 0020 in parent subctl repo as authoritative spec
+- `.github/workflows/ci.yml`: fmt/clippy/test/build jobs, concurrency cancellation, `RUSTFLAGS: -D warnings`
+- All four gates pass: cargo check (0.07s), cargo build --release (0.11s), cargo fmt --all -- --check (clean), cargo clippy --all-targets -- -D warnings (clean)
+- Git: single commit `9806797 feat(v0.1.0-scaffold): initialize Evy v4 Rust workspace` with Co-Authored-By line
+- Not pushed to GitHub (worker respected the constraint — operator handles repo creation)
+- `main.rs` boots tokio + tracing_subscriber + emits "Evy v4 — scaffold only" log line + exits 0
+- All `lib.rs` files have `// TODO: Phase 1+` markers pointing at ADR 0020
+- No constraint violations: nothing in `/Users/sem/code/subctl/` touched, no external network calls
+
+**E13 — Phase plan line-688 spot-fix (verified 2026-05-25T~11:18 CDT):**
+- Stale forward-looking text replaced with a record of operator acceptance: "Operator reviewed and accepted the Decisions section below at Phase 0 closure (2026-05-25). The blueprint is now frozen; subsequent revisions become superseding ADRs."
+- `grep -i 'provisional\|operator may override'` → 0 hits. Clean.
+- Line count 999 → 998
+- Worker went idle without SendMessage report; deliverable verified directly per orchestrator-mode rule 6.
+
+---
+
+## Phase 1 Plan (dispatched 2026-05-25T~11:25 CDT)
+
+### Plan
+
+- **GOAL** — Build the foundation crates of subctl-rust. By Phase 1 close, the daemon binary boots in Rust, registers a worker via the Provider trait, runs an operator-defined cron job, and gates a spawn through the Policy interface — all pure Rust implementations of v3's load-bearing semantics.
+- **UNKNOWNS** — Provider trait dispatch shape (resolved in evy-core), scheduler persistence schema (resolved in evy-scheduler), policy config storage shape (resolved in evy-policy). None block dispatch.
+- **WORK BREAKDOWN** — 5 slices. A is serial blocker. B/C/D parallel after A. E serial after B+C+D.
+- **SERIALIZATION** — A (evy-core) → {B (evy-policy), C (evy-scheduler), D (evy-providers)} → E (evy binary wiring + smoke test).
+- **DONE WHEN** — `cargo test/clippy/build` all clean across workspace; smoke test boots daemon and runs end-to-end (worker registered + cron job fires); 5 commits landed; workspace tagged v0.2.0.
+
+### Phase 1 Task Ledger
+
+| ID | Task | State | Worker | Started | Finished |
+|----|------|-------|--------|---------|----------|
+| P1-A | evy-core — foundational types/traits/error (SERIAL BLOCKER) | **done** (merged to main as `0a19520`, 14 tests pass, all gates clean) | core-builder | 2026-05-25T~11:25 CDT | 2026-05-25T~11:59 CDT |
+| P1-B | evy-policy — port v3 TS policy gate + test vectors | **done** (134 unit + 1 integration tests, merged as `c41a39d`) | policy-porter | 2026-05-25T~12:02 CDT | 2026-05-25T~13:30 CDT |
+| P1-C | evy-scheduler — cron-shaped job runner + sqlite persistence | **done** (21 unit + 2 integration tests inc. real cron firing, merged as `43275de`) | scheduler-builder | 2026-05-25T~12:02 CDT | 2026-05-25T~13:18 CDT |
+| P1-D | evy-providers — Claude Code + Codex adapters + DeepSeek stub | **done** (14 unit tests + 1 ignored real-tmux test, merged as `d7fda2c`) | provider-builder | 2026-05-25T~12:02 CDT | 2026-05-25T~13:16 CDT |
+| P1-V2 | Verify P1-B + merge into main | **done** | orchestrator | 2026-05-25T~13:32 CDT | 2026-05-25T~13:35 CDT |
+| P1-V3 | Verify P1-C + merge into main | **done** | orchestrator | 2026-05-25T~13:32 CDT | 2026-05-25T~13:36 CDT |
+| P1-V4 | Verify P1-D + merge into main | **done** | orchestrator | 2026-05-25T~13:32 CDT | 2026-05-25T~13:37 CDT |
+| P1-SYNTH | Regenerate Cargo.lock to resolve chrono-twice semantic conflict from three-way merge | **done** | orchestrator | 2026-05-25T~13:38 CDT | 2026-05-25T~13:38 CDT |
+| P1-E | evy/binary — wire crates together, end-to-end smoke test | **done** (commit `22dfbd4`, integration smoke test passes in 52s, 5 new unit tests for config) | binary-wirer | 2026-05-25T~13:40 CDT | 2026-05-25T~13:53 CDT |
+| P1-V5 | Verify P1-E + Phase 1 close synthesis + tag v0.2.0 | **done** | orchestrator | 2026-05-25T~13:54 CDT | 2026-05-25T~13:55 CDT |
+| P1-V1 | Verify P1-A | **done** | orchestrator | 2026-05-25T~12:00 CDT | 2026-05-25T~12:01 CDT |
+| P1-V5 | Verify P1-E + Phase 1 close synthesis + tag v0.2.0 | blocked-on P1-E | orchestrator | — | — |
+
+### Worker provider strategy
+All five workers: `expert-rust-systems` (Claude Code with Rust-expert prompting). Codex / DeepSeek as live workers is a Phase 2+ unlock — happens when subctl-rust itself becomes capable of spawning them via the provider trait Phase 1 builds. Eat-our-own-dogfood, in order.
+
+### Pre-pinned design choices (locked in core-builder mandate, downstream workers plan against)
+- `async-trait` crate for Provider + WorkerHandle (object-safe `Box<dyn Provider>`)
+- `thiserror` for the workspace Error type
+- Newtype-wrapped UUIDs for MandateId / WorkerId
+- Serde on every public data type (Mandate, ProviderKind, WorkerStatus, PolicyMode)
+- `Send + Sync` bounds on Provider + WorkerHandle (tokio-safe)
+- File layout in `crates/evy-core/src/`: one module per concept (error, mandate, worker, provider, policy)
+
+## Phase 2 Plan (dispatched 2026-05-26 morning CDT)
+
+### Plan
+
+- **GOAL** — Take Evy from "foundation works" to "daemon runs autonomously and meets cutover criteria." Long-running daemon, real provider dispatch with HMAC, dashboard + Telegram surfaces, learning-loop substrate (observation log + claude-mem + playbooks), cutover testing.
+- **UNKNOWNS** — HMAC envelope shape (resolved in 2A via v3 spawn-hmac.ts), sqlx schema for observation log (resolved in 2C), exact dashboard endpoint set (resolved in 2B1). None block dispatch.
+- **WORK BREAKDOWN** — 4 slices, 5 workers total. 2A serial blocker, then 2B1+2B2+2C three-way parallel via git worktree, then 2D serial.
+- **SERIALIZATION** — 2A → {2B1 || 2B2 || 2C} → 2D.
+- **DONE WHEN** — daemon long-lived, HMAC in dispatch, real Claude+Codex spawn, dashboard at 127.0.0.1:8787, Telegram ask-operator works, observation log + claude-mem consumer + playbooks loadable, 100% v3 vectors pass on v4, one real workflow end-to-end no v3 fallback, workspace tagged v0.3.0.
+
+### Phase 2 Task Ledger
+
+| ID | Task | State | Worker | Started | Finished |
+|----|------|-------|--------|---------|----------|
+| P2-A | Daemon mode + HMAC trust marker + real Claude+Codex dispatch (SERIAL BLOCKER) | **done** (commit `c05b02f` merged FF to main; 196 tests passing + 3 ignored; daemon boot + graceful Ctrl-C verified) | daemon-and-dispatch-builder | 2026-05-26 morning | 2026-05-26T12:42 CDT |
+| P2-B1 | evy-comms HTTP/SSE — dashboard skeleton serving operator console at 127.0.0.1:8787 | **done + merged** (`fc9ba3c` → `227afa8`, 32 tests + 1 ignored) | http-sse-builder | 2026-05-26T~13:00 CDT | 2026-05-26T~13:07 CDT |
+| P2-B2 | evy-comms Telegram bridge — port from v3 evy-notify-listener.ts, "ask the operator" path | **done + merged** (`5a6f355` → `b9621c5`, 20 tests passing) | telegram-porter | 2026-05-26T~13:00 CDT | 2026-05-26T~13:08 CDT |
+| P2-C | evy-memory substrate — observation log + claude-mem consumer (read) + playbook file store + retrieval skeleton | **done + merged** (`2ff3173` → `67f47ac`, 32 tests + 2 ignored real-claude-mem) | memory-builder | 2026-05-26T~13:00 CDT | 2026-05-26T~13:05 CDT |
+| P2-D | Cutover testing + first real workflow + REPORT.md | **done + merged + tagged v0.3.0 (LOCAL)** (`b6e0300` → `95bce25`, REPORT.md verdict: READY WITH CAVEATS — daemon wiring incomplete) | cutover-tester | 2026-05-26T~13:11 CDT | 2026-05-26T~13:42 CDT |
+
+### Phase 3 EARLY DISPATCHES (operator: "do parallel work across multiple agents")
+
+Operator authorized parallel Phase 3 dispatch alongside P2-D ("keep them going, and if you can do parallel work across multiple agents, please do"). Four parallel Phase 3 slices in isolated worktrees, all branched from main at `b9621c5`:
+
+| ID | Task | State | Worker | Started | Finished |
+|----|------|-------|--------|---------|----------|
+| P3-A | TUI operator console — new crate `crates/evy-tui/` (ratatui + crossterm; HTTP/SSE client) | **done + merged** (`b1776f5` → `2938418`, 38 tests passing) | tui-builder | 2026-05-26T~13:15 CDT | 2026-05-26T~13:41 CDT |
+| P3-B | Discord adapter — new module in `crates/evy-comms/src/discord.rs` (serenity, mirrors Telegram pattern, slash commands) | **done + merged** (`eb9d69f` → `93f0746`, 70 tests + 1 ignored in evy-comms) | discord-builder | 2026-05-26T~13:15 CDT | 2026-05-26T~13:44 CDT |
+| P3-C | Research module — new crate `crates/evy-research/` (TinyFish adapter, search + fetch_content) | **done + merged** (`a9d49c2` → `7d3f25f`, 34 tests + 2 ignored real-TinyFish) | research-builder | 2026-05-26T~13:15 CDT | 2026-05-26T~13:40 CDT |
+| P3-D | Learning loop closure — feedback ingest + worker-effectiveness scoring + operator-preference auto-update in `crates/evy-memory/` | **done + merged** (`d0dd798` → `acf6944`, 63 tests passing in evy-memory) | learning-loop-builder | 2026-05-26T~13:15 CDT | 2026-05-26T~13:50 CDT |
+
+### Phase 3 Wave 1 Closeout (2026-05-26T~13:55 CDT) — tagged v0.4.0 LOCAL
+
+Batched merge of P3-A/B/C/D into main. Conflict resolution:
+- Root `Cargo.toml` `[workspace] members`: A and C both added entries — resolved manually keeping both (`crates/evy-research` + `crates/evy-tui`). First attempt accidentally committed conflict markers via a stale Edit-tool state; recovered with `git commit --amend` after fixing the file.
+- `Cargo.lock` regenerated twice (A merge + B merge both touched it semantically); `rm Cargo.lock && cargo generate-lockfile` fix-up.
+- `crates/evy-comms/{Cargo.toml,src/lib.rs}` auto-merged cleanly (B's additive deps + module decls didn't textually conflict with prior contents).
+
+Result: 4 merge commits + amended A + Cargo.lock regen, total of ~5 commits added to main. Tagged v0.4.0 on the B merge commit.
+
+Workspace status:
+- ~430 tests passing, ~7 intentionally ignored
+- cargo check / clippy / fmt / build --release all clean
+- 8 implemented crates + binary
+- All Phase 0+1+2+3-wave-1 workers idle
+
+**Held for operator input** (no Phase 3 wave 2 dispatch without these):
+- DeepSeek wire format details
+- Thinking-partner LLM choice + UX shape
+
+**P3-E "daemon-rewirer" candidate slice** for closing the v0.3.0 caveat: compose HttpServer + EventBroadcaster + ObservationLog + TelegramBridge + DiscordBridge + PlaybookStore + ScoreLedger + FeedbackIngest + OperatorPreferenceModel inside `crates/evy/src/lib.rs::run_daemon`. Pure composition work, ~1-2 days. Could be dispatched immediately as the next Phase 3 slice if operator approves.
+
+### Phase 3 Wave 2 DISPATCH (operator: "All three of those are good Green" — 2026-05-26)
+
+Operator authorized all three pending items (push, P3-E dispatch, DeepSeek + thinking-partner with orchestrator-chosen defaults). Pushed main + v0.3.0 + v0.4.0 to origin. Set up 3 worktrees + dispatched 3 parallel workers.
+
+**Orchestrator decisions for the previously-held items:**
+- **DeepSeek (P3-F):** OpenAI-compatible wire format at `https://api.deepseek.com/v1/chat/completions`, Bearer auth via `DEEPSEEK_API_KEY` env. **First non-tmux Provider impl** — API-direct rather than CLI-in-tmux. Exercises trait generality. Worker output written to a configured output directory.
+- **Thinking-partner (P3-G):** Claude API (Anthropic) for v0.5.0, local-on-DGX deferred to v0.6+ via the `LlmBackend` trait abstraction. UX shape: **structured planning sessions** (NOT free chat). Operator invokes via `evy plan <topic>` CLI or `/plan` slash command on Telegram/Discord; Evy asks structured clarifying questions, drafts a plan, iterates, concludes with a saveable summary.
+
+| ID | Task | State | Worker | Started | Finished |
+|----|------|-------|--------|---------|----------|
+| P3-E | Daemon-rewirer — compose HttpServer + EventBroadcaster + ObservationLog + TelegramBridge + DiscordBridge + PlaybookStore + ScoreLedger + FeedbackIngest + OperatorPreferenceModel + AskRegistry + NaiveRetriever in `crates/evy/src/lib.rs::run_daemon`. Closes the v0.3.0/v0.4.0 cutover caveat. | **done + merged** (`6b06e3e` → `1d10830`, 443 tests on branch, full daemon smoke test green) | daemon-rewirer | 2026-05-26T~14:00 CDT | 2026-05-26T~14:49 CDT |
+| P3-F | DeepSeek real adapter — replace stub with OpenAI-compatible HTTP impl. First non-tmux Provider in the codebase. | **done + merged** (`58179be` → `258dd9e`, 54 tests + ignored real-DeepSeek) | deepseek-builder | 2026-05-26T~14:00 CDT | 2026-05-26T~14:43 CDT |
+| P3-G | Thinking-partner conversational surface — new crate `crates/evy-thinking/`, Claude API backend, structured planning session UX. | **done + merged** (`0752d45` → `9921e35`, 45 tests + 2 ignored real-Anthropic) | thinking-partner-builder | 2026-05-26T~14:00 CDT | 2026-05-26T~14:37 CDT |
+| P3-V-2 | Verify P3-E/F/G + batched merge + tag v0.5.0 | **done** (zero conflicts in batched merge — first totally clean Phase merge) | orchestrator | 2026-05-26T~14:50 CDT | 2026-05-26T~14:55 CDT |
+
+### Phase 3 COMPLETE Closeout (2026-05-26T~14:55 CDT) — tagged v0.5.0 LOCAL
+
+Batched merge of P3-E/F/G into main with ZERO conflicts (compared to Phase 3 wave 1's Cargo.toml + lib.rs collision pain). Reasons it merged clean:
+- G added `crates/evy-thinking` to workspace members; F + E didn't touch root Cargo.toml
+- F is purely internal to evy-providers; G + E don't touch evy-providers
+- E touches crates/evy/* only; G + F don't touch crates/evy
+
+Full workspace state at v0.5.0:
+- **505 tests passing, 12 intentionally ignored** (real-CLI smoke tests gated for manual runs)
+- cargo check / clippy / fmt / build --release all clean (release build 29.9s)
+- 9 crates implemented + daemon binary
+- ADR 0020's seven cutover criteria all pass at BOTH library AND daemon-binary layer (the v0.3.0 caveat is closed by P3-E)
+
+**Implication:** the v4 library + binary stack is feature-complete per ADR 0020. The cutover decision is now operator-side — when to flip the v3 TypeScript daemon (`com.subctl.evy` on Bun) off and the v4 Rust daemon on.
+
+**Push status:** main + tags up through v0.4.0 live on origin. **v0.5.0 not yet pushed** — needs explicit operator auth per [Explicit push/merge auth].
+
+**Active workers:** none. All Phase 3 wave 2 workers idle (daemon-rewirer, deepseek-builder, thinking-partner-builder). Phase 0+1+2+3 wave 1 workers were shut down at Phase 2 dispatch.
+
+---
+
+
+
+**Push status:** main + v0.3.0 + v0.4.0 all live on origin (https://github.com/webdevtodayjason/subctl-rust). CI green on v0.4.0.
+
+**Held for operator input** (not dispatched):
+- DeepSeek adapter — needs wire-format details from operator
+- Thinking-partner conversational surface — needs LLM choice (local vs cloud) + UX shape decisions
+
+**Worker isolation:** Five workers active total (P2-D in main repo + 4 Phase 3 in worktrees). git worktree pattern per Lessons Learned/2026-05-25.
+
+**Merge conflict surface (predicted):** P3-B touches `crates/evy-comms/{Cargo.toml,lib.rs}` (same conflict pattern as B1+B2 — handled mechanically). P3-A + P3-C both touch root `Cargo.toml` `[workspace] members` to add their new crates — orchestrator resolves at merge. P3-D is internal to `evy-memory` — no cross-crate conflict.
+
+---
+
+
+| P2-D | Cutover test harness — port v3 vectors, run on v4, document one real workflow end-to-end | queued (blocked-on 2B1+2B2+2C) | cutover-tester | — | — |
+| P2-V1 | Verify P2-A + merge | blocked-on P2-A | orchestrator | — | — |
+| P2-V2 | Verify P2-B1 + merge | blocked-on P2-B1 | orchestrator | — | — |
+| P2-V3 | Verify P2-B2 + merge | blocked-on P2-B2 | orchestrator | — | — |
+| P2-V4 | Verify P2-C + merge | blocked-on P2-C | orchestrator | — | — |
+| P2-V5 | Verify P2-D + Phase 2 close + tag v0.3.0 + push | blocked-on P2-D | orchestrator | — | — |
+
+### Worker provider strategy
+All 5 workers: `expert-rust-systems` (Claude Code with Rust-expert prompting). Codex/DeepSeek-as-workers stays deferred to Phase 3 — Phase 2's real dispatch in 2A enables that future capability but doesn't exercise it as a worker-for-Evy's-own-development yet.
+
+### Worker isolation
+- P2-A is a single serial worker. Works directly on main with feature branch `phase2/slice-a-daemon-and-dispatch`. No worktree needed (no parallel concurrent worker).
+- P2-B1 + P2-B2 + P2-C dispatch concurrently via three separate `git worktree add` directories. Each gets isolated working tree + branch + target/ dir. This applies the Lessons Learned/2026-05-25 - Use git worktree for parallel feature workers.md guidance from Phase 1.
+
+### Phase 0+1 workers shut down
+Seven idle workers (`adr-writer`, `rust-scaffolder`, `core-builder`, `policy-porter`, `scheduler-builder`, `provider-builder`, `binary-wirer`) sent shutdown_request 2026-05-26 morning at Phase 2 dispatch. Clean team state for Phase 2's 5 workers.
+
+---
+
+### Phase 1 Closeout (2026-05-25T~13:55 CDT)
+
+All Phase 1 tasks closed. **Workspace tagged `v0.2.0` on main.**
+
+**Deliverables landed:**
+- `crates/evy-core/` — types, traits, workspace error. 14 tests + compile-time object-safety assertions.
+- `crates/evy-policy/` — v3 TS policy gate port. 134 unit + 1 integration tests, snapshot byte-compatible with v3 modulo `port_origin` field.
+- `crates/evy-scheduler/` — cron-shaped job runner. 21 unit + 2 integration tests including real cron firing and restart survival.
+- `crates/evy-providers/` — Claude Code + Codex tmux adapters, DeepSeek stub. 14 unit tests + 1 ignored real-tmux test deferred to Phase 2.
+- `crates/evy/` — daemon binary. Wires the four crates. Config loading via figment + TOML. Smoke test passes end-to-end in 52s.
+- `config/evy.toml`, `config/policy.toml` — runtime config files.
+
+**Total workspace state:** 192 tests passing, 1 intentionally ignored. `cargo build --workspace --release` → 5.77MB binary at `target/release/evy`. cargo check / clippy / fmt all clean.
+
+**Commits on main (chronological):**
+- `9806797` v0.1.0-scaffold (Phase 0)
+- `0a19520` evy-core
+- `c41a39d` merge slice-b ← `3173836` evy-policy
+- `43275de` merge slice-c ← `a8b6725` evy-scheduler
+- `d7fda2c` merge slice-d ← `238db8a` evy-providers
+- `e8be4bd` Cargo.lock regen (synthesis after 3-way merge)
+- `22dfbd4` evy binary wiring
+- **Tagged `v0.2.0`**
+
+**Workers active at Phase 1 close:** all five Phase 1 workers (core-builder, policy-porter, scheduler-builder, provider-builder, binary-wirer) plus the two Phase 0 workers (adr-writer, rust-scaffolder) are all idle. Total team size: 7. Will graceful-shutdown at Phase 2 dispatch since none carry forward.
+
+**Operator action pending:**
+- ~~Push main + v0.2.0~~ — **done 2026-05-26 morning.** Operator granted explicit auth ("Go ahead and push"); orchestrator pushed `9806797..22dfbd4` on `main` + tag `v0.2.0` to origin. Both visible on the remote.
+
+**Lessons learned worth keeping (writing up after Phase 1 close):**
+- **Parallel workers on shared working tree.** Three workers concurrently in `crates/evy-{policy,scheduler,providers}/` succeeded — git serialized each `git checkout + git commit` cycle so commits landed on the right branches. But the race window was fragile and a worker `git commit` while HEAD pointed at a sibling branch would have been disaster. Going forward: `git worktree add` per parallel worker for proper isolation.
+- **Three-way merge produces semantically-invalid Cargo.lock.** `ort` strategy makes textually-clean lockfile that lists the same package twice. Fix: `rm Cargo.lock && cargo generate-lockfile`. One synthesis commit captures.
+- **Worker SendMessage reports are unreliable.** 4 of 5 Phase 1 workers went idle without sending completion SendMessages. The orchestrator-mode "verify, never fabricate" discipline catches this — every claim verified directly via tool call.
+
+---
+
+### Idle workers from Phase 0
+- `adr-writer` (idle) — kept alive in case operator wants ADR revisions mid-Phase-1
+- `rust-scaffolder` (idle) — kept alive in case Phase 2 scaffolding work needs them
+
+---
+
+## Phase 0 Closeout (2026-05-25T~11:18 CDT)
+
+All 13 Phase 0 tasks closed. Summary:
+
+**Deliverables landed:**
+- `/Users/sem/code/subctl/docs/adr/0020-evy-v4-learning-orchestrator-spec.md` — 998 lines, Accepted (Phase 0 blueprint freeze). Eight primitives, seven-layer learning loop, all decisions confirmed, two Phase-2 deferrals pinned with rationale.
+- `/Users/sem/code/subctl/docs/adr/README.md` — index entries for 0020 + 0019 (the latter was a pre-existing gap discovered by adr-writer).
+- `/Users/sem/code/subctl-rust/` — multi-crate Cargo workspace, 7 crates, CI green. Pushed to https://github.com/webdevtodayjason/subctl-rust (public, main tracks origin/main).
+- `/Users/sem/Documents/Obsidian Vault/Subctl-Rust/` — vault folder with README + 00 - Start Here + 01 - Current State + 02 - Overview + 03 - Architecture + 04 - Roadmap + 05 - Decisions Log + Daily Updates/2026-05-25.md.
+
+**Decisions made during Phase 0 (recorded in vault Decisions Log + ADR 0020):**
+1. Rewrite Evy v4 in Rust as a parallel new project, not an in-place port.
+2. No pi-ai dependency. Native Rust SDKs; Hermes is the precedent.
+3. v4 ships with seven crates + binary in the Cargo workspace layout that's now scaffolded.
+4. Cutover criteria = 7-item list, CLI strategy = option (c), repo at webdevtodayjason/subctl-rust — all confirmed.
+5. DeepSeek V4 Pro adapter deferred to Phase 2 sibling ADR (no operator wire-format knowledge yet).
+6. Thinking-partner LLM choice deferred to Phase 2 sibling ADR (decision easier with surface-shape in hand).
+
+**Observations worth keeping:**
+- Three dispatches to `adr-writer` worked cleanly. Worker honestly flagged that the brief's "scattered pi-ai language" was wrong (it was already disciplined to one section), and discovered a real pre-existing gap in the ADR index (0019 row missing). Both findings recorded.
+- Worker did NOT send SendMessage reports on 2 of 4 task completions (rust-scaffolder + E13 spot-fix). Verification-by-tool-call caught both cleanly; the orchestrator-mode "verify, never fabricate" rule paid off.
+- Operator pace was high — 22-day repo cadence applies to this project too. Phase 0 closed inside ~3 hours from initiation.
+
+**Workers active at Phase 0 close:** `adr-writer` (idle), `rust-scaffolder` (idle). Both kept alive in case operator wants follow-up edits during Phase 1 launch.
+
+---
+
+**E10 — subctl-rust repo created and pushed (verified 2026-05-25T~11:11 CDT):**
+- URL: https://github.com/webdevtodayjason/subctl-rust
+- Visibility: PUBLIC
+- Default branch: main
+- HEAD on remote: `9806797` (the scaffold commit)
+- Local `main` tracks `origin/main`
+- Description: "Evy v4 — Rust rewrite of the subctl orchestrator daemon. Multi-channel comms, scheduler, provider-agnostic worker pool, policy gate, and a learning loop. Authoritative spec: ADR 0020 in the parent subctl repo."
+- Executed by orchestrator with operator's explicit auth ("create that repo") per [Explicit push/merge auth] memory rule.
+
+**E8/E9 — ADR 0020 batched revision pass (verified 2026-05-25T~11:06 CDT):**
+- Status flipped: `Status: Proposed (Phase 0 blueprint freeze)` → `Status: Accepted (Phase 0 blueprint freeze)` (parenthetical retained — correctly signals override window without contradicting Accepted)
+- Line count: 948 → 965 (+17 lines, all in the References block)
+- pi-ai grep returns 7 hits, **all confined to References block lines 903-921** — the resolved ADR 0015 v3-only-scope language, the new "v4 does not depend on pi-ai" statement, and the Hermes precedent entry. No "to be decided" framing anywhere else in the document.
+- `docs/adr/README.md` updated with new row at line 40: `| [0020](0020-evy-v4-learning-orchestrator-spec.md) | Evy v4 — Rust rewrite as a learning orchestrator | Accepted (Phase 0 blueprint freeze) |`
+- No other ADRs modified. No source code modified. No commit.
+- Worker correctly flagged a scope-finding: **the README index has a pre-existing gap at 0019.** Goes 0020 → 0018 with no 0019 row, despite `0019-no-anthropic-provider-in-master.md` existing on disk as an Accepted ADR. Held off per brief scope; offered a one-line backfill dispatch.
+
+**adr-writer flagged 4 open questions for operator review** (logged so they don't get lost):
+1. **README index update** — `docs/adr/README.md` indexes prior ADRs; worker held off per the "no existing files" constraint. Small follow-up dispatch warranted.
+2. **pi-ai dependency in v4** — ADR 0015 made pi-ai first-class for v3. ADR 0020 punts to Phase 1 ("v4 either consumes pi-ai or builds an equivalent"). Real fork in the road; may deserve a sibling ADR before Phase 1.
+3. **DeepSeek V4 Pro provider spec** — Phase 1 stub + Phase 2 implementation committed in 0020. If operator has wire-format details, those belong in a sibling ADR before the provider trait gets designed against guesses.
+4. **Thinking-partner LLM choice** — 0020 commits to a separate LLM relationship for Evy's reasoning but doesn't name a model. Operator may want to specify local (LM Studio / DGX) vs cloud, parallel to the ADR 0019 anthropic-guard pattern.
+
+---
+
 ## Session 2026-05-17 — Memory Consciousness Cycle (autonomous orchestration, Opus 4.7)
 
 **Protocol start:** 2026-05-17T~03:00 CDT
