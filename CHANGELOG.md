@@ -1,3 +1,29 @@
+## [3.3.9] — 2026-05-28
+
+### `fix(evy): supervisor-usage-capture URL pattern covers Codex + Azure Responses`
+
+v3.3.7's `globalThis.fetch` interceptor only matched `/v1/responses` and `/v1/chat/completions`. Live verification under the operator's actual chat profile (`openai-codex` via the `openai-codex-responses` provider) revealed the Codex URL is **`https://chatgpt.com/backend-api/codex/responses`** — no `/v1/` prefix — confirmed by reading `pi-ai/dist/providers/openai-codex-responses.js` line 144 and the `resolveCodexUrl` helper at lines 294-298 which builds `${normalized}/codex/responses` (or `${normalized}/responses` when the base already ends with `/codex`).
+
+Result: every Codex turn under v3.3.7/v3.3.8 fell through the interceptor unmatched, `getLastSupervisorUsage()` stayed null, and the Hermes pre-flight broadcast carried the char/4 estimator value instead of the real `prompt_tokens`.
+
+Fix: widen the URL regex to cover all `/responses` shapes pi-ai v0.74.0 produces:
+
+- `/v1/responses` — `openai-responses` provider
+- `/codex/responses` — `openai-codex-responses` provider (chatgpt.com backend)
+- `/openai/deployments/<deployment>/responses` — `azure-openai-responses` provider
+
+Chat Completions regex relaxed slightly to accept either a query string or a trailing slash boundary.
+
+Two new unit tests pin the coverage: one for the Codex URL, one for Azure. Both assert the captured `prompt_tokens` matches the synthetic `usage.input_tokens` value in the SSE response.
+
+### Verification
+
+- `supervisor-usage-capture.test.ts` — 19/19 pass (up from 17 with the two new URL coverage cases)
+- Full v3.3.6 + v3.3.7 + v3.3.9 compression + capture suite: 86/86 pass
+- Live: deploy + kickstart → POST /chat → `curl /api/debug/usage` returns populated `last_supervisor_usage` with `source: "responses"`
+
+---
+
 ## [3.3.8] — 2026-05-28
 
 ### `fix(evy): Hermes compaction gate fires for cloud supervisors + /api/debug/usage`
