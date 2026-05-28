@@ -48,6 +48,35 @@ interface CapturedUsage {
 let lastSupervisorUsage: CapturedUsage | null = null;
 let installed = false;
 
+// v3.3.10 diagnostics — counters incremented inside the wrapper so the
+// `/api/debug/usage` operator endpoint can answer "is the fetch interceptor
+// even seeing supervisor traffic?" — load-bearing for diagnosing the
+// Codex WebSocket gap (openai-codex-responses uses WS first, HTTP fallback
+// only, per pi-ai/dist/providers/openai-codex-responses.js:100-103). When
+// `fetch_calls_observed > 0` but `fetch_calls_matched === 0`, the operator
+// knows the wrapper is alive but their provider doesn't go through fetch.
+interface CaptureDiagnostics {
+  /** Every fetch() call the wrapper saw, regardless of URL. */
+  fetch_calls_observed: number;
+  /** Calls whose URL matched a chat-completions / responses regex. */
+  fetch_calls_matched: number;
+  /** Calls that successfully captured usage data. */
+  fetch_calls_captured: number;
+  /** Last URL we matched (truncated to 256 chars) — diagnostic only. */
+  last_matched_url: string | null;
+}
+
+const diagnostics: CaptureDiagnostics = {
+  fetch_calls_observed: 0,
+  fetch_calls_matched: 0,
+  fetch_calls_captured: 0,
+  last_matched_url: null,
+};
+
+export function getCaptureDiagnostics(): CaptureDiagnostics {
+  return { ...diagnostics };
+}
+
 export function getLastSupervisorUsage(): CapturedUsage | null {
   return lastSupervisorUsage;
 }
@@ -81,6 +110,10 @@ export function resolveRealPromptTokens(
 /** Test-only: reset module state between cases. */
 export function _resetForTesting(): void {
   lastSupervisorUsage = null;
+  diagnostics.fetch_calls_observed = 0;
+  diagnostics.fetch_calls_matched = 0;
+  diagnostics.fetch_calls_captured = 0;
+  diagnostics.last_matched_url = null;
 }
 
 /** Test-only: install a payload directly (covers the hint-prefers-hint test). */
@@ -111,6 +144,7 @@ export function installSupervisorUsageCapture(): void {
     input: RequestInfo | URL,
     init?: RequestInit,
   ): Promise<Response> => {
+    diagnostics.fetch_calls_observed++;
     let url = "";
     try {
       url =
@@ -187,6 +221,9 @@ export function installSupervisorUsageCapture(): void {
     if (!response.ok) return response;
     if (!isChatCompletions && !isResponses) return response;
 
+    diagnostics.fetch_calls_matched++;
+    diagnostics.last_matched_url = url.slice(0, 256);
+
     const contentType = response.headers.get("content-type") ?? "";
 
     // UNARY CASE — non-streaming JSON response. Clone, parse, extract.
@@ -243,6 +280,7 @@ function recordUnaryUsage(
         ts: Date.now(),
         source: "unary",
       };
+      diagnostics.fetch_calls_captured++;
     }
     return;
   }
@@ -256,6 +294,7 @@ function recordUnaryUsage(
       ts: Date.now(),
       source: "unary",
     };
+    diagnostics.fetch_calls_captured++;
   }
 }
 
@@ -326,6 +365,7 @@ function parseSseEventChunk(
           ts: Date.now(),
           source: "chat-completions",
         };
+        diagnostics.fetch_calls_captured++;
       }
       continue;
     }
@@ -344,6 +384,7 @@ function parseSseEventChunk(
           ts: Date.now(),
           source: "responses",
         };
+        diagnostics.fetch_calls_captured++;
       }
     }
   }
