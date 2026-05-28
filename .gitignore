@@ -17,6 +17,9 @@ tmp/
 # Orchestration scratch (multi-agent ledger + worker deliverables — local only)
 .orchestration/
 
+# CodeGraph MCP index (sqlite db + daemon scratch — local only)
+.codegraph/
+
 # Node/Bun
 node_modules/
 dist/
