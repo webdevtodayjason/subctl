@@ -1125,7 +1125,14 @@ export async function mount({ root: _root }) {
     if (voiceBtn) {
       voiceBtn.addEventListener("click", async () => {
         voiceBtn.disabled = true;
-        const current = !!window.__subctlVoiceEnabled;
+        // Derive current state from the button's own DOM class — that is
+        // the surface the operator can see, and it can't get out of sync
+        // with itself. window.__subctlVoiceEnabled is populated by an async
+        // fetch that races with this click on first paint; if that race
+        // loses, `current` would be `false` even when voice is actually on,
+        // and the operator's "toggle off" click would send `enabled: true`
+        // again (no observable change → "the toggle is broken").
+        const current = voiceBtn.classList.contains("chat-toolbar-btn--active");
         const next = !current;
         try {
           const r = await fetch("/api/voice/config", {
@@ -1139,8 +1146,14 @@ export async function mount({ root: _root }) {
           } else {
             // Optimistic — the SSE voice_config event will also fire and
             // confirm. Update the button now so the click feels instant.
-            window.__subctlVoiceEnabled = !!j.config?.enabled;
-            renderVoiceBtnState(!!j.config?.enabled);
+            // Trust the server's echoed config; if the shape ever drifts
+            // (no config key), fall back to the value we requested so the
+            // button still flips.
+            const enabledNow = (j.config && typeof j.config.enabled === "boolean")
+              ? j.config.enabled
+              : next;
+            window.__subctlVoiceEnabled = !!enabledNow;
+            renderVoiceBtnState(!!enabledNow);
           }
         } catch (err) {
           await window.notice.error("voice toggle error", String(err));
@@ -1486,7 +1499,15 @@ export async function mount({ root: _root }) {
       fetch("/api/voice/status", { cache: "no-store" })
         .then((r) => r.ok ? r.json() : null)
         .then((j) => {
-          if (j && j.config) window.__subctlVoiceEnabled = !!j.config.enabled;
+          if (j && j.config) {
+            window.__subctlVoiceEnabled = !!j.config.enabled;
+            // Keep the chat-header toggle in sync with master's voice.json
+            // on every SSE reconnect. Without this the button label can
+            // drift after a master restart: refreshVoiceEnabled used to
+            // update only the global, leaving the button showing whatever
+            // it was painted with at first mount.
+            renderVoiceBtnState(!!j.config.enabled);
+          }
         })
         .catch(() => { /* leave whatever value was last set */ });
     }
