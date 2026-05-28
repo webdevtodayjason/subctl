@@ -179,12 +179,12 @@ describe("loadCompactConfig", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  test("returns sensible defaults when file is missing", () => {
+  test("returns sensible defaults when file is missing (v3.3.5 — Hermes-bumped)", () => {
     const cfg = loadCompactConfig(join(tmp, "nonexistent.json"));
     expect(cfg.auto_compact).toBe(true);
-    expect(cfg.warn_tokens).toBe(25_000);
-    expect(cfg.compact_tokens).toBe(40_000);
-    expect(cfg.target_tokens).toBe(30_000);
+    expect(cfg.warn_tokens).toBe(55_000);
+    expect(cfg.compact_tokens).toBe(70_000);
+    expect(cfg.target_tokens).toBe(55_000);
     expect(cfg.keep_recent).toBe(6);
     expect(cfg.threshold_pct).toBeUndefined();
   });
@@ -256,8 +256,8 @@ describe("loadCompactConfig", () => {
     const p = join(tmp, "compact.json");
     writeFileSync(p, "{ this is not json ");
     const cfg = loadCompactConfig(p);
-    expect(cfg.warn_tokens).toBe(25_000);
-    expect(cfg.compact_tokens).toBe(40_000);
+    expect(cfg.warn_tokens).toBe(55_000);
+    expect(cfg.compact_tokens).toBe(70_000);
   });
 
   test("auto_compact=false is respected when present", () => {

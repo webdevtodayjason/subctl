@@ -34,7 +34,11 @@ import {
   listNotifications,
   _resetForTesting as resetNotifications,
 } from "../notifications";
-import { estimateTranscriptTokens } from "../compact-policy";
+import {
+  DEFAULT_COMPACT_CONFIG,
+  decideCompactAction,
+  estimateTranscriptTokens,
+} from "../compact-policy";
 
 beforeEach(() => {
   resetWatchdogs();
@@ -105,6 +109,63 @@ describe("compaction primitive — reduces 50k transcript to <35k tokens", () =>
     ];
     const afterTokens = estimateTranscriptTokens(after);
     expect(afterTokens).toBeLessThan(35_000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v3.3.5 — Hermes-findings-aligned compact behavior
+// ---------------------------------------------------------------------------
+//
+// Two narrow contract checks for the v3.3.5 changes:
+//   1. The +30K default bump means a 60k-token transcript now lands in the
+//      WARN band (between warn_tokens=55k and compact_tokens=70k) instead of
+//      the COMPACT band as it did pre-v3.3.5 (when compact_tokens=40k).
+//   2. The WARN band is the new operating threshold. server.ts's
+//      runJitCompactCheck calls compactTranscriptInline on both warn and
+//      compact actions — the only difference is the SSE/log initiator tag
+//      (jit-warn vs jit). The decision module's "warn" return value still
+//      means the same thing it always did (between thresholds); what
+//      changed is what the caller DOES with that signal.
+//
+// Spec source: .subctl/docs/hermes-compact-and-skills-findings.md §1.5.
+
+describe("v3.3.5 default-bump bands (Hermes findings §1.5)", () => {
+  test("60k transcript lands in warn band (55k ≤ x < 70k)", () => {
+    const decision = decideCompactAction(60_000, 0, DEFAULT_COMPACT_CONFIG);
+    expect(decision.action).toBe("warn");
+    expect(decision.threshold_used).toBe("warn_tokens");
+  });
+
+  test("v3.3.5 contract: full warn/compact/ok matrix at new bands", () => {
+    const cfg = DEFAULT_COMPACT_CONFIG;
+    // Below warn_tokens (55k) → ok (server proceeds with prompt as-is).
+    expect(decideCompactAction(50_000, 0, cfg).action).toBe("ok");
+    expect(decideCompactAction(54_999, 0, cfg).action).toBe("ok");
+    // At/above warn, below compact → warn (server now compacts; v3.3.5
+    // change). Pre-v3.3.5 this band only emitted an SSE banner.
+    expect(decideCompactAction(55_000, 0, cfg).action).toBe("warn");
+    expect(decideCompactAction(69_999, 0, cfg).action).toBe("warn");
+    // At/above compact → compact (server always summarized at this point).
+    expect(decideCompactAction(70_000, 0, cfg).action).toBe("compact");
+    expect(decideCompactAction(100_000, 0, cfg).action).toBe("compact");
+  });
+
+  test("warn band actually fits a realistic 60k transcript shape", () => {
+    // Build a synthetic transcript that lands at ~60k tokens (char/4 =>
+    // ~240k chars total). Verifies the bump-defaults don't create a
+    // pathological band where no realistic transcript falls in warn.
+    const bigText = "x".repeat(2400);
+    const messages: Array<{ content: Array<Record<string, unknown>> }> = [];
+    for (let i = 0; i < 100; i++) {
+      messages.push({ content: [{ type: "text", text: bigText }] });
+    }
+    const tokens = estimateTranscriptTokens(messages);
+    // Expect somewhere in the warn band (55k–70k).
+    expect(tokens).toBeGreaterThanOrEqual(55_000);
+    expect(tokens).toBeLessThan(70_000);
+    expect(decideCompactAction(tokens, 0, DEFAULT_COMPACT_CONFIG).action).toBe(
+      "warn",
+    );
   });
 });
 

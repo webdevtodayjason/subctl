@@ -79,20 +79,32 @@ export interface CompactDecision {
 }
 
 /**
- * Default compaction config. Encodes v2.7.3's locked operator policy:
- *   warn at 25k, compact at 40k, target 30k, keep 6 recent.
+ * Default compaction config. v3.3.5 — bumped +30K each per Hermes findings
+ * `§1.5` (`.subctl/docs/hermes-compact-and-skills-findings.md`):
+ *   warn at 55k (was 25k), compact at 70k (was 40k), target 55k (was 30k),
+ *   keep 6 recent.
  *
- * These numbers come from the empirical context-overflow incident on the
- * M3 Ultra (2026-05-12): the supervisor's 65k window started hallucinating
- * around 40k of transcript tokens once SKILL + tool schemas were added on
- * top. 25k gives the operator ~5 minutes of advance warning at typical
- * conversational pace.
+ * Why the bump: empirical context-overflow on the M3 Ultra (2026-05-12) was
+ * at 40k of transcript tokens against a 65k supervisor window once SKILL +
+ * tool schemas were added. The original 25k/40k window was correct for that
+ * loadout. As of v3.3.x the supervisor profile defaults to `chat` running
+ * Codex / gpt-5.5 (32K-128K-class windows depending on model) and the
+ * operator has moved to richer skill-bundles. Hermes' research on its own
+ * compact policy (which fires at `max(0.5 × ctx, 64K floor)` per
+ * `agent/context_compressor.py:553`) confirms the operating point is
+ * roughly "compact at threshold below the hard ceiling, sized so the next
+ * turn still fits." The +30K bump applies the same principle to Evy's
+ * existing absolute-token shape without re-architecting it.
+ *
+ * Combined with v3.3.5's other change — `runJitCompactCheck` now calls the
+ * inline summariser on `warn` as well as `compact` (see server.ts) — `warn`
+ * becomes the operating threshold and `compact` becomes a safety net.
  */
 export const DEFAULT_COMPACT_CONFIG: CompactConfig = {
   auto_compact: true,
-  warn_tokens: 25_000,
-  compact_tokens: 40_000,
-  target_tokens: 30_000,
+  warn_tokens: 55_000,
+  compact_tokens: 70_000,
+  target_tokens: 55_000,
   keep_recent: 6,
 };
 
