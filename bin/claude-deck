@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
 # claude-deck — convenience shim for `subctl deck`.
 # Launches the Bubble Tea TUI session manager. Provided by subctl.
-exec subctl deck "$@"
+#
+# Resolves the sibling v3 dispatcher in this script's bin/ directory rather
+# than relying on `subctl` on PATH — v4 takes over the bare `subctl` name
+# and doesn't dispatch v3 verbs.
+_self="${BASH_SOURCE[0]}"
+while [[ -L "$_self" ]]; do _self="$(readlink "$_self")"; done
+exec "$(cd "$(dirname "$_self")" && pwd)/subctl" deck "$@"

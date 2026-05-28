@@ -28,7 +28,7 @@ import { writeFileSync } from "node:fs";
 import {
   loadTemplate,
   renderRosterPreamble,
-} from "../../components/master/team-templates";
+} from "../../components/evy/team-templates";
 import { recordTemplateSpawn } from "../../dashboard/lib/team-dispatch";
 
 function fail(msg: string): never {
