@@ -4,6 +4,42 @@ Most recent session at top. Older sessions retained below as historical record.
 
 ---
 
+## Session 2026-05-28 — claude-teams unblock (autonomous, Opus 4.7)
+
+**Mode:** Autonomous after operator invoked "full orchestration autonomous mode." User invoked the autonomy skill mid-session after several round-trips on the diagnosis path.
+
+### Problem
+
+`claude-teams -o -y -a claude-jason` printed the v4 chat help and exited. Two layered bugs:
+
+1. **PATH collision** — `/Users/sem/.local/bin/subctl` (v4 chat root) beats `/Users/sem/bin/subctl` (v3 dispatcher) in the operator's interactive shell. All six `bin/claude-*` shims do `exec subctl <verb>`, so v4 caught them and emitted its own usage.
+2. **Stale `master/` imports** — `providers/claude/_write_snapshot.ts` and `_apply_team_template.ts` still imported from `components/master/...` after the v3 master→evy rename. The shim fix alone reached v3 dispatch but the spawn flow then died at module-load with `Cannot find module '../../components/master/tools/policy/audit'`.
+
+### Fixes shipped
+
+- `0ae23a3` — `fix(bin): resolve sibling v3 subctl in claude-* shims, not PATH` — each shim resolves its own location through symlinks, then execs the sibling `bin/subctl`. Restores `claude-{dash,deck,kill,radar,resume,teams}` regardless of PATH order.
+- `66ecbe7` — `fix(providers): repoint claude provider imports after master→evy rename` — repoints the two stale `components/master/...` imports in `providers/claude/`. Other repo mentions of `components/master` are comments referencing the rename, not live imports.
+
+Both commits sit on `fix/claude-teams-shim-and-imports`, branched off `origin/main` (clean PR shape — separated from the docs commit on `chore/hermes-research`).
+
+### Verification
+
+- `claude-teams -o -y -a claude-jason --dry-run` runs to "(dry run — not launching tmux)" on both dev tree (`~/code/subctl`) and install tree (`~/.local/lib/subctl-install`), allowlist_sha 812559ee.
+- `bun -e 'await import("./providers/claude/_apply_team_template.ts")'` resolves on both trees (exits with the usage error after parsing argv — proves module loaded).
+
+### Decision Log
+
+- **2026-05-28T~12:20 CDT** — Hardcode-resolve sibling subctl in shims rather than make v4 forward unknown verbs to v3. Rationale: preserves the design intent that bare `subctl` = chat; smaller blast radius; doesn't require touching v4 entry which is still being shaped by the install-integrator worker. Reversible.
+- **2026-05-28T~12:45 CDT** — Cherry-pick the two fix commits onto a clean branch off `origin/main` rather than PR them with the orthogonal Hermes-research docs commit. Rationale: cleaner PR, easier rollback, separates two unrelated concerns. Reversible.
+- **2026-05-28T~12:45 CDT** — Install tree (`~/.local/lib/subctl-install`) left dirty with manual copies of the same fixes so operator's interactive shell keeps working until the merged commit deploys. On merge: clear with `git -C ~/.local/lib/subctl-install checkout -- bin/claude-* providers/claude/_write_snapshot.ts providers/claude/_apply_team_template.ts` then `subctl dashboard deploy`. Reversible.
+
+### Open
+
+- Push `fix/claude-teams-shim-and-imports` to origin + open PR to main — requires explicit operator auth per `feedback_explicit_actions`.
+- Install tree dirty-state reconciliation — deferred to immediately post-merge.
+
+---
+
 ## Session 2026-05-17 — Memory Consciousness Cycle (autonomous orchestration, Opus 4.7)
 
 **Protocol start:** 2026-05-17T~03:00 CDT
