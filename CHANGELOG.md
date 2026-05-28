@@ -1,3 +1,36 @@
+## [3.3.12] — 2026-05-28
+
+### `fix(shell): claude-use / claude-whoami resolve v3 subctl explicitly — survive v4 PATH collision`
+
+The shell helper functions (`claude-use`, `claude-whoami`, `claude-accounts`) called bare `subctl config show` / `subctl accounts` to list and resolve accounts. Once the v4 `subctl-chat-tui` entry point landed at `~/.local/bin/subctl` and that directory sorted ahead of `~/bin` on the operator's interactive `PATH`, bare `subctl` resolved to **v4**, which does not dispatch v3 verbs — `config show` just prints v4 help text and exits 0. The awk parser downstream then found nothing to parse, so `claude-use` listed **no profiles**, `claude-use <alias>` reported "Unknown account", and `claude-whoami` always said "custom". From the operator's seat: "I can't switch, I can't select, `claude-use` shows nothing."
+
+#### Why it was masked
+
+Claude Code's own `settings.json` pins an `env.PATH` that puts `~/bin` first and omits `~/.local/bin`, so inside the Claude Code shell v3 won and the functions worked — the breakage only reproduced in the operator's interactive terminal, whose `.zshrc` prepends `~/.local/bin` (three times, via Hermes / uv / a third line) ahead of `~/bin`.
+
+#### What ships
+
+`lib/migrate.sh` (`subctl_migrate_generate_aliases`) now bakes a `_subctl_v3` resolver into the generated `shell-aliases.sh`:
+
+```sh
+_SUBCTL_V3="<repo>/bin/subctl"   # baked at generation time
+_subctl_v3() {
+  if [[ -x "$_SUBCTL_V3" ]]; then "$_SUBCTL_V3" "$@"; return $?; fi
+  if [[ -x "$HOME/bin/subctl" ]]; then "$HOME/bin/subctl" "$@"; return $?; fi
+  command subctl "$@"   # last resort only if v3 install moved
+}
+```
+
+All four bare-`subctl` call sites in the helpers (`config show` ×3, `accounts` ×1) now go through `_subctl_v3`, bypassing `PATH` entirely. This mirrors the existing `claude-teams` shim, which already resolves its v3 sibling directly because v4 owns the bare `subctl` name. The `command subctl` fallback is only reachable if both the baked path and `~/bin/subctl` are gone — in which case there is no v3 to find anyway.
+
+The intentional bare-`claude` account guard is unchanged — `command claude` / `claude-use <alias>` bypassing it remains by design.
+
+### Verification
+
+- Regenerated live `~/.config/subctl/shell-aliases.sh`; diff shows only the resolver + four `_subctl_v3` substitutions.
+- **Repro test:** with `PATH=~/.local/bin:...` (bare `subctl` → v4), sourcing the regenerated file makes `claude-use` list all 5 accounts, `claude-use jason` switch correctly, and `claude-whoami` resolve to `claude-jason`. Pre-fix, all three failed.
+- Already-running shells must re-source (`source ~/.zshrc`) or open a new terminal to pick up the new functions.
+
 ## [3.3.11] — 2026-05-28
 
 ### `fix(evy): force Codex provider into SSE transport so capture fires — closes v3.3.7 criterion #8`
