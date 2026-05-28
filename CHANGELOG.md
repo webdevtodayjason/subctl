@@ -1,3 +1,43 @@
+## [3.3.6] — 2026-05-28
+
+### `feat(evy): literal Hermes compression policy — formula + YAML knob + LLM summariser + 3 triggers`
+
+v3.3.5 shipped a narrowed adaptation of the Hermes findings (bumped defaults + lifted existing deterministic summariser). v3.3.6 ships the **literal** spec from `.subctl/docs/hermes-compact-and-skills-findings.md` §1.1–§1.3:
+
+- **Threshold formula**: `max(threshold_pct × ctx_window, MINIMUM_CONTEXT_LENGTH)` where `MINIMUM_CONTEXT_LENGTH = 64_000` and `threshold_pct` defaults to `0.50`. Verbatim from `agent/context_compressor.py:553-556` in hermes-agent.
+- **YAML config surface**: `~/.config/subctl/master/config.yaml` `compression.*` block. Operator override via `compression.threshold` (float 0–1) + kill-switch via `compression.enabled` (bool). Other knobs follow Hermes: `protect_first_n`, `protect_last_n`, `target_ratio`, `abort_on_summary_failure`, `auxiliary_model`, `minimum_context_length`. Parsed via Bun's built-in `Bun.YAML.parse` (no new dependency).
+- **LLM-driven summariser**: new `compression-compactor.ts` implements the four-phase compaction Hermes uses (`agent/context_compressor.py:1495-1516`):
+  1. Pre-pass tool-result pruning (no LLM)
+  2. Boundary detection by token budget (head + tail preserved)
+  3. LLM summarisation via cheap auxiliary model
+  4. Assemble: head + structured summary + tail
+- **Three triggers** wired in `server.ts`, all sharing the same `runHermesCompactCheck(stage, realPromptTokensHint?)` function:
+  - **pre-flight** — at the top of `processOnePrompt`, immediately after the legacy `runJitCompactCheck`
+  - **post-turn** — after `emitStage("turn_complete")`, before the transient-retry path
+  - **recovery** — inside the transient-retry block, gated on overflow-flavoured error strings (`context`, `too many tokens`, `maximum context`, `token limit`)
+
+**Coexistence with v3.3.5:** the legacy `compact-policy.ts` + `runJitCompactCheck` remain the back-compat surface for operators using the v2.7.3 absolute-token `compact.json` shape. Hermes path fires FIRST when `config.yaml` is present + enabled; legacy runs second as a safety net. Both gates leave the transcript in a valid shape for the next `agent.prompt()` call.
+
+**Real prompt_tokens — v3.3.6 fallback:** Hermes priority is `usage.prompt_tokens` from the most recent supervisor API response. v3 Evy's pi-agent-core wrapper doesn't surface `usage` to userland yet, so v3.3.6 falls back to the existing `estimateTranscriptTokens` char/4 estimator with the same +2500 fixed prompt overhead the legacy gate uses. When pi-agent-core exposes usage in a later release, the `realPromptTokensHint` parameter is already plumbed end-to-end — replace the fallback with the actual value at the call site.
+
+**Auxiliary model:** when `compression.auxiliary_model` is absent in config.yaml, the compactor uses the active supervisor model for summarisation. Operators wanting a separate cheap aux endpoint set `compression.auxiliary_model.{provider,model,base_url}` and the fetcher routes accordingly. Full standalone aux-model resolution (separate auth, separate context budget) is a v3.3.7+ follow-up — current path reuses the supervisor's `getApiKeyForProvider` resolver.
+
+### Verification
+
+- `components/evy/__tests__/compression-policy.test.ts` — **24/24 pass** covering the Hermes formula at boundary, floor, custom thresholds (incl. 0.75 Trinity Thinking model bump), kill switch, YAML parsing (default / override / malformed / partial).
+- `components/evy/__tests__/compression-compactor.test.ts` — **15/15 pass** covering Phase 1 pre-pass pruning + image stripping, Phase 2 token-budgeted boundary, Phase 3 prompt construction (fresh + iterative-update), Phase 4 orchestration, abort_on_summary_failure path, and **the integration test** on a synthetic 200-message ~50K-token transcript that crosses the threshold and verifies the full compact cycle reduces tokens.
+- `components/evy/__tests__/compression-triggers.test.ts` — **11/11 pass** with 3 tests per trigger (pre-flight, post-turn, recovery) plus a cross-trigger consistency test that all three reach the same decision at the same inputs.
+- Full evy suite: **1248 pass / 5 fail / 3661 expect()**. The 5 failures are pre-existing on main (`lmstudioAuthHeader` / `LMSTUDIO_API_TOKEN` env-fixture tests, unrelated). Zero new failures. +50 passes vs v3.3.5 (matches the 50 new tests added in this PR).
+- `bun build --target=bun components/evy/server.ts` clean.
+
+### Out of scope (deferred to v4 Evy / Rust evy-thinking)
+
+- evy-thinking system-prompt skill index + `skill_view` tool (the Hermes skill-loading mechanism from findings doc §2 — separate phase, Rust side).
+- Standalone auxiliary-model dispatch (separate auth resolver / separate context budget tracking).
+- Anti-thrash guard (Hermes' `should_compress` returns false if last two compressions saved <10%). Needs a compression-history record that v3.3.6 doesn't yet ship.
+
+---
+
 ## [3.3.5] — 2026-05-28
 
 ### `feat(evy): Hermes-aligned compact policy bump — +30K thresholds + warn-triggers-summariser`

@@ -136,6 +136,16 @@ import {
   type CompactConfig,
   type CompactDecision,
 } from "./compact-policy";
+import {
+  computeThresholdTokens as hermesComputeThresholdTokens,
+  loadCompressionConfig as hermesLoadCompressionConfig,
+  shouldCompress as hermesShouldCompress,
+  type CompressionConfig as HermesCompressionConfig,
+} from "./compression-policy";
+import {
+  compressTranscript as hermesCompressTranscript,
+  type CompactableMessage as HermesCompactableMessage,
+} from "./compression-compactor";
 import { loadSecret, resolveSecret } from "./secrets";
 import { registerMcpTools, startMcpServer } from "./mcp";
 // v2.9.1 — Provider Model Catalog Phase 3: aggregator routing
@@ -3612,6 +3622,193 @@ async function main() {
     }
   }
 
+  // ── v3.3.6 Hermes-aligned compression gate ────────────────────────────────
+  // Implements the literal Hermes spec from
+  // `.subctl/docs/hermes-compact-and-skills-findings.md` §1.1-§1.3:
+  //   threshold_tokens = max(threshold_pct × ctx_window, 64_000)
+  //   should_compress(real_prompt_tokens) → run LLM compactor
+  //   Three triggers share the same algorithm: pre-flight, post-turn, recovery.
+  //
+  // Coexists with the v2.7.3 absolute-token JIT gate (`runJitCompactCheck`
+  // above). The two are layered: Hermes fires FIRST when config.yaml is
+  // present and enabled; the legacy module still runs as a back-compat
+  // safety net for operators who haven't migrated to config.yaml. After
+  // both run, the supervisor's prompt window is guaranteed to be below the
+  // smaller of (Hermes threshold, legacy compact_tokens).
+  async function runHermesCompactCheck(
+    stage: "pre-flight" | "post-turn" | "recovery",
+    realPromptTokensHint?: number,
+  ): Promise<void> {
+    let cfg: HermesCompressionConfig;
+    try {
+      cfg = hermesLoadCompressionConfig();
+    } catch {
+      return;
+    }
+    if (!cfg.enabled) return;
+
+    // Real prompt_tokens — Hermes priority order:
+    //   1. `usage.prompt_tokens` from the most recent supervisor response
+    //      (preferred; the caller can pass this via `realPromptTokensHint`
+    //      when available). v3 Evy's pi-agent-core wrapper doesn't surface
+    //      `usage` yet, so the hint is usually undefined.
+    //   2. char/4 estimate including the +2500 fixed prompt overhead — the
+    //      same shape `runJitCompactCheck` already uses. This is the
+    //      working fallback for v3.3.6.
+    let realTokens = realPromptTokensHint;
+    if (realTokens === undefined || realTokens === null) {
+      const transcriptTokens = estimateTranscriptTokens(
+        agent.state.messages as Array<{ content?: unknown }>,
+      );
+      realTokens = transcriptTokens + FIXED_PROMPT_OVERHEAD_TOKENS;
+    }
+
+    const loadedCtx = await getSupervisorLoadedCtx();
+    if (!loadedCtx || loadedCtx <= 0) {
+      // No ctx info → can't compute Hermes threshold. The legacy gate
+      // already handles cloud/zero-ctx supervisors via percentage mode.
+      return;
+    }
+    const threshold = hermesComputeThresholdTokens(loadedCtx, cfg);
+    if (!hermesShouldCompress(realTokens, loadedCtx, cfg)) return;
+
+    console.error(
+      `[evy] hermes-compress (${stage}): ${realTokens} tok >= threshold ${threshold} (ctx=${loadedCtx}, pct=${cfg.threshold}) — invoking LLM summariser`,
+    );
+    broadcast("compact_warning", {
+      ts: new Date().toISOString(),
+      stage: `hermes-${stage}`,
+      initiator: `hermes-${stage}`,
+      current_tokens: realTokens,
+      warn_at: threshold,
+      compact_at: threshold,
+      threshold_used: "hermes_compression_threshold",
+      reason: `real_prompt_tokens=${realTokens} >= max(${cfg.threshold}×${loadedCtx}, ${cfg.minimum_context_length ?? 64000})=${threshold}`,
+    });
+
+    // Pick the auxiliary model. Config.yaml override > active supervisor.
+    const auxModel = cfg.auxiliary_model
+      ? {
+          provider: cfg.auxiliary_model.provider,
+          model: cfg.auxiliary_model.model,
+          baseUrl: cfg.auxiliary_model.base_url,
+        }
+      : (() => {
+          // Fall back to the configured supervisor for this profile. Same
+          // pattern memory-kernel-reviewer uses at server.ts:3081.
+          const sup = (() => {
+            try {
+              return {
+                provider: agent.state.provider ?? "openai-codex",
+                model: (agent.state as { model?: string }).model ?? "gpt-5.5",
+              };
+            } catch {
+              return { provider: "openai-codex", model: "gpt-5.5" };
+            }
+          })();
+          return { provider: sup.provider, model: sup.model, baseUrl: undefined };
+        })();
+
+    // Snapshot agent.state.messages so the compactor sees a stable input.
+    const snapshot = (agent.state.messages as HermesCompactableMessage[]).map(
+      (m) => ({ ...m }),
+    );
+
+    const result = await hermesCompressTranscript(
+      snapshot,
+      {
+        threshold_tokens: threshold,
+        protect_first_n: cfg.protect_first_n ?? 3,
+        protect_last_n: cfg.protect_last_n ?? 20,
+        target_ratio: cfg.target_ratio ?? 0.20,
+        abort_on_summary_failure: cfg.abort_on_summary_failure ?? false,
+      },
+      {
+        llmFetcher: async (messages, opts) => {
+          // Reuse the same supervisor-fetcher shape used by
+          // memory-kernel-reviewer (server.ts:3061). For v3.3.6 we route
+          // through the active supervisor's fetcher; if the operator wants
+          // a separate cheap aux endpoint they can wire it via
+          // `compression.auxiliary_model.base_url` + provider-side
+          // routing. Full standalone aux-model dispatch is a v3.3.7+
+          // follow-up.
+          const headers: Record<string, string> = {
+            "Content-Type": "application/json",
+          };
+          const token = getApiKeyForProvider(opts.provider);
+          if (token && token !== "not-needed") {
+            headers["Authorization"] = `Bearer ${token}`;
+          }
+          const body = {
+            model: opts.model,
+            messages,
+            temperature: opts.temperature ?? 0.2,
+            max_tokens: opts.max_tokens ?? 4096,
+            stream: false,
+          };
+          const baseUrl = opts.baseUrl ?? "https://api.openai.com";
+          const r = await fetch(`${baseUrl}/v1/chat/completions`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify(body),
+            signal: opts.signal,
+          });
+          if (!r.ok) {
+            const t = await r.text().catch(() => "");
+            throw new Error(`aux summariser ${r.status}: ${t.slice(0, 300)}`);
+          }
+          const json = (await r.json()) as {
+            choices?: Array<{ message?: { content?: string } }>;
+          };
+          return json.choices?.[0]?.message?.content ?? "";
+        },
+        auxiliaryModel: () => auxModel,
+        estimateTokens: (msgs) =>
+          estimateTranscriptTokens(msgs as Array<{ content?: unknown }>),
+      },
+      null, // no prior-summary chaining in v3.3.6
+    );
+
+    if (!result.ok) {
+      console.error(
+        `[evy] hermes-compress (${stage}) FAILED: ${result.error ?? "unknown"} — notes: ${result.notes.join("; ")}`,
+      );
+      return;
+    }
+    if (result.collapsed_count === 0) {
+      console.error(
+        `[evy] hermes-compress (${stage}) noop — ${result.notes.join("; ")}`,
+      );
+      return;
+    }
+
+    // Archive the original transcript before replacement. Mirrors what
+    // compactTranscriptInline does at line 3422.
+    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+    const archivePath = AGENT_STATE_PATH.replace(
+      /\.json$/,
+      `.archive-hermes-${stage}-${ts}.json`,
+    );
+    if (existsSync(AGENT_STATE_PATH)) {
+      try {
+        const { copyFileSync } = require("node:fs") as typeof import("node:fs");
+        copyFileSync(AGENT_STATE_PATH, archivePath);
+      } catch (e) {
+        console.error(
+          `[evy] hermes-compress archive failed (continuing): ${(e as Error).message}`,
+        );
+      }
+    }
+    agent.state.messages.length = 0;
+    for (const m of result.messages) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      agent.state.messages.push(m as any);
+    }
+    console.error(
+      `[evy] hermes-compress (${stage}) ok — collapsed ${result.collapsed_count} middle msg(s), final ${result.final_tokens} tok, llm=${result.llm_invoked}`,
+    );
+  }
+
   async function processOnePrompt(p: PendingPrompt): Promise<{ ok: boolean; error?: string }> {
     try {
       // ── v2.7.19 circuit-breaker reset ──────────────────────────────────
@@ -3655,6 +3852,19 @@ async function main() {
       // (so the new user text doesn't sneak in over-budget). The 5-min
       // ticker below is a safety net; this is the primary gate.
       await runJitCompactCheck();
+      // ── v3.3.6 Hermes pre-flight trigger ────────────────────────────────
+      // Layered on top of the legacy gate. Loads compression.threshold from
+      // config.yaml (default 0.50), computes max(pct × ctx, 64K), and runs
+      // the LLM-driven compactor when the real-token estimate crosses the
+      // threshold. Coexists with runJitCompactCheck — both gates leave the
+      // transcript valid for the next agent.prompt() call.
+      try {
+        await runHermesCompactCheck("pre-flight");
+      } catch (e) {
+        console.error(
+          `[evy] hermes pre-flight threw (continuing): ${(e as Error).message}`,
+        );
+      }
 
       // ── v2.10.0 — Memory Cycle Phase 4: context-hydration injection ────
       // After any pending compact (jit gate above) has settled, but
@@ -3835,9 +4045,43 @@ async function main() {
         }
       }
       emitStage("turn_complete", { stages: JSON.stringify(stageTimes) });
+      // ── v3.3.6 Hermes post-turn trigger ─────────────────────────────────
+      // After the assistant's response lands, re-check the transcript
+      // against the threshold. Mirrors Hermes' post-iteration check at
+      // `agent/conversation_loop.py:3636-3663`. Runs BEFORE the transient-
+      // retry path so a retry never inherits a known-over-budget window.
+      try {
+        await runHermesCompactCheck("post-turn");
+      } catch (e) {
+        console.error(
+          `[evy] hermes post-turn threw (continuing): ${(e as Error).message}`,
+        );
+      }
       let { stop, err } = lastStopReason();
       if (stop === "error" && isTransient(err) && !stopped) {
         console.error(`[evy] transient error "${err}" (source=${p.source}), retrying in 5s`);
+        // ── v3.3.6 Hermes recovery trigger ────────────────────────────────
+        // If the error LOOKS like a context-overflow (HTTP 400 from the
+        // provider, or a clear "context length exceeded" / "too many
+        // tokens" message), compact BEFORE the retry. Mirrors Hermes'
+        // recovery path at `agent/conversation_loop.py:2499-2520`. For
+        // non-overflow transient errors (rate limit, timeout) the
+        // compact would be no-op anyway since transcript hasn't grown.
+        const errStr = String(err ?? "").toLowerCase();
+        const looksLikeOverflow =
+          errStr.includes("context") ||
+          errStr.includes("too many tokens") ||
+          errStr.includes("maximum context") ||
+          errStr.includes("token limit");
+        if (looksLikeOverflow) {
+          try {
+            await runHermesCompactCheck("recovery");
+          } catch (e) {
+            console.error(
+              `[evy] hermes recovery threw (continuing): ${(e as Error).message}`,
+            );
+          }
+        }
         await new Promise((r) => setTimeout(r, 5000));
         await agent.prompt(p.text);
         ({ stop, err } = lastStopReason());
