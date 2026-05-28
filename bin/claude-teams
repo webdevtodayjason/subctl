@@ -2,4 +2,10 @@
 # claude-teams — convenience shim for `subctl teams claude`.
 # Provided by subctl (https://github.com/webdevtodayjason/subctl).
 # All flags are passed through verbatim. Run `subctl teams claude --help` for options.
-exec subctl teams claude "$@"
+#
+# Resolves the sibling v3 dispatcher in this script's bin/ directory rather
+# than relying on `subctl` on PATH — v4 takes over the bare `subctl` name
+# and doesn't dispatch v3 verbs.
+_self="${BASH_SOURCE[0]}"
+while [[ -L "$_self" ]]; do _self="$(readlink "$_self")"; done
+exec "$(cd "$(dirname "$_self")" && pwd)/subctl" teams claude "$@"
