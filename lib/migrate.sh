@@ -157,6 +157,22 @@ subctl_migrate_generate_aliases() {
       [[ "$provider" == "claude" ]] || continue
       echo "alias ${alias}='CLAUDE_CONFIG_DIR=\"$cfg_dir\" command claude'"
     done < <(subctl_list_accounts)
+
+    # v3 subctl dispatcher. v4 (subctl-chat-tui) now owns the bare `subctl`
+    # name on PATH and does NOT dispatch v3 verbs like `config show`/`accounts`,
+    # so the helper functions below must resolve the v3 binary explicitly —
+    # same reason the `claude-teams` shim calls its sibling directly. The path
+    # is baked at generation time; `command subctl` is only the last resort if
+    # the v3 install has moved (in which case there is no v3 to find anyway).
+    echo "# v3 subctl dispatcher — v4 owns the bare \`subctl\` name on PATH."
+    echo "_SUBCTL_V3=\"$SUBCTL_REPO_ROOT/bin/subctl\""
+    cat <<'RESOLVER'
+_subctl_v3() {
+  if [[ -x "$_SUBCTL_V3" ]]; then "$_SUBCTL_V3" "$@"; return $?; fi
+  if [[ -x "$HOME/bin/subctl" ]]; then "$HOME/bin/subctl" "$@"; return $?; fi
+  command subctl "$@"
+}
+RESOLVER
     cat <<'FNS'
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -166,7 +182,7 @@ claude-whoami() {
   else
     # Resolve to alias when possible
     local alias
-    alias=$(subctl config show 2>/dev/null | awk -F'|' -v c="$CLAUDE_CONFIG_DIR" '
+    alias=$(_subctl_v3 config show 2>/dev/null | awk -F'|' -v c="$CLAUDE_CONFIG_DIR" '
       !/^#/ && NF >= 4 {
         d=$4; gsub(/[ \t]/, "", d)
         gsub("~", ENVIRON["HOME"], d)
@@ -180,7 +196,7 @@ claude-whoami() {
   fi
 }
 
-claude-accounts() { subctl accounts; }
+claude-accounts() { _subctl_v3 accounts; }
 
 # claude-use <alias> — switch the current shell's CLAUDE_CONFIG_DIR in place.
 # Affects every subsequent `claude` invocation in this shell. Existing tmux
@@ -197,7 +213,7 @@ claude-use() {
     echo "Current: $(claude-whoami)"
     echo
     echo "Available accounts:"
-    subctl config show 2>/dev/null | awk -F'|' '
+    _subctl_v3 config show 2>/dev/null | awk -F'|' '
       !/^#/ && NF >= 4 {
         a=$1; e=$3; d=$4
         gsub(/^[ \t]+|[ \t]+$/, "", a)
@@ -219,7 +235,7 @@ claude-use() {
 
   # Resolve alias (allow bare "jason" or full "claude-jason")
   local cfg_dir
-  cfg_dir=$(subctl config show 2>/dev/null | awk -F'|' -v t="$target" '
+  cfg_dir=$(_subctl_v3 config show 2>/dev/null | awk -F'|' -v t="$target" '
     !/^#/ && NF >= 4 {
       a=$1; gsub(/[ \t]/, "", a)
       d=$4; gsub(/[ \t]/, "", d)
