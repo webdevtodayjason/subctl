@@ -124,8 +124,25 @@ export function installSupervisorUsageCapture(): void {
       return originalFetch(input as RequestInfo, init);
     }
 
-    const isChatCompletions = /\/v1\/chat\/completions(?:\?|$)/.test(url);
-    const isResponses = /\/v1\/responses(?:\?|$)/.test(url);
+    // URL matching covers the providers pi-ai v0.74.0 ships with:
+    //   - openai-completions       → `${base}/v1/chat/completions`
+    //   - openai-responses         → `${base}/v1/responses`
+    //   - openai-codex-responses   → `https://chatgpt.com/backend-api/codex/responses`
+    //                                or `${base}/codex/responses` /
+    //                                `${base}/responses` when `base` ends with
+    //                                `/codex` (see openai-codex-responses.js
+    //                                `resolveCodexUrl` line 294-298).
+    //   - azure-openai-responses   → `${base}/openai/deployments/<dep>/responses`
+    //                                (matched by the `/responses` boundary)
+    // Trailing boundary char is `?` (query), `/` (subpath like ?stream=), or
+    // end-of-string. Liberal enough to catch all `/responses` shapes without
+    // matching unrelated routes that contain the word "responses" as a
+    // substring (e.g. `/api/health-responses`).
+    const isChatCompletions = /\/v1\/chat\/completions(?:[?/]|$)/.test(url);
+    const isResponses =
+      /\/(?:v1|codex|openai\/deployments\/[^/]+)\/responses(?:[?/]|$)/.test(url) ||
+      /\/v1\/responses(?:[?/]|$)/.test(url) ||
+      /\/codex\/responses(?:[?/]|$)/.test(url);
 
     // OUTBOUND REWRITE — only for streaming Chat Completions where we
     // need to opt in to the usage tail-chunk.

@@ -259,6 +259,65 @@ describe("(criterion #5.c) integration — SSE response → captured usage", () 
     expect(u?.source).toBe("responses");
   });
 
+  // v3.3.9 — URL coverage test pinned to the providers pi-ai v0.74.0 ships.
+  // Each case stubs fetch to return a synthetic Responses-API SSE that
+  // carries `usage.input_tokens`, then asserts the interceptor caught it.
+  test("Codex base URL (chatgpt.com/backend-api/codex/responses) is captured", async () => {
+    globalThis.fetch = ((async (
+      _input: RequestInfo | URL,
+      _init?: RequestInit,
+    ) => {
+      const stream = sseStream([
+        'data: {"type":"response.completed","response":{"usage":{"input_tokens":11111,"output_tokens":22}}}',
+      ]);
+      return new Response(stream, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }) as unknown) as typeof globalThis.fetch;
+
+    installSupervisorUsageCapture();
+    const resp = await globalThis.fetch(
+      "https://chatgpt.com/backend-api/codex/responses",
+      { method: "POST", body: JSON.stringify({ input: "hi" }) },
+    );
+    const reader = resp.body!.getReader();
+    while (true) {
+      const { done } = await reader.read();
+      if (done) break;
+    }
+    await new Promise((r) => setTimeout(r, 30));
+    expect(getLastSupervisorUsage()?.prompt_tokens).toBe(11111);
+  });
+
+  test("Azure-OpenAI Responses (openai/deployments/<dep>/responses) is captured", async () => {
+    globalThis.fetch = ((async (
+      _input: RequestInfo | URL,
+      _init?: RequestInit,
+    ) => {
+      const stream = sseStream([
+        'data: {"type":"response.completed","response":{"usage":{"input_tokens":33333,"output_tokens":44}}}',
+      ]);
+      return new Response(stream, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }) as unknown) as typeof globalThis.fetch;
+
+    installSupervisorUsageCapture();
+    const resp = await globalThis.fetch(
+      "https://contoso.openai.azure.com/openai/deployments/gpt-5/responses?api-version=2024",
+      { method: "POST", body: JSON.stringify({ input: "hi" }) },
+    );
+    const reader = resp.body!.getReader();
+    while (true) {
+      const { done } = await reader.read();
+      if (done) break;
+    }
+    await new Promise((r) => setTimeout(r, 30));
+    expect(getLastSupervisorUsage()?.prompt_tokens).toBe(33333);
+  });
+
   test("non-LLM URL (e.g. /api/health) is NOT intercepted, no usage captured", async () => {
     globalThis.fetch = ((async (
       _input: RequestInfo | URL,
