@@ -1,3 +1,69 @@
+## [3.3.10] — 2026-05-28
+
+### `feat(evy): capture diagnostics + documented WebSocket gap (Codex/chatgpt.com backend)`
+
+v3.3.7–v3.3.9 shipped the `globalThis.fetch` interceptor for `usage.prompt_tokens` capture. Live verification under the operator's actual chat profile (`openai-codex` via `gpt-5.5`) revealed an **architectural limit** that no amount of URL-regex widening can close:
+
+**The Codex provider uses WebSocket FIRST, HTTP fallback only.** Verified by reading `node_modules/@earendil-works/pi-ai/dist/providers/openai-codex-responses.js`:
+
+- Line 91–96 builds WebSocket auth headers + session id
+- Line 100–103 calls `processWebSocketStream(resolveCodexWebSocketUrl(...), ...)` when `transport !== "sse"` AND the session hasn't fallen back to SSE
+- Line 144 (`fetch(resolveCodexUrl(...))`) is the SSE fallback path, taken only when WS is disabled or a WS error pushed the session into fallback mode
+
+Bun's `WebSocket` is a separate class from `fetch` — it lives at `globalThis.WebSocket`. Monkey-patching `globalThis.fetch` does not see WS traffic at all. Net result: under the default Codex transport, every supervisor turn flows through WebSocket and `getLastSupervisorUsage()` stays null.
+
+#### What v3.3.10 ships
+
+**(1) Capture diagnostics on `/api/debug/usage`.** The endpoint now returns a `diagnostics` object so the operator can tell which side of the gap they're on:
+
+```json
+{
+  "ok": true,
+  "last_supervisor_usage": null,
+  "captured": false,
+  "diagnostics": {
+    "fetch_calls_observed": 47,
+    "fetch_calls_matched": 0,
+    "fetch_calls_captured": 0,
+    "last_matched_url": null
+  },
+  "version": "3.3.10"
+}
+```
+
+Reading the counters:
+
+- `fetch_calls_observed = 0` → wrapper not installed (or daemon never made a fetch call yet)
+- `observed > 0, matched = 0` → wrapper alive but the supervisor is using a non-fetch transport (WebSocket; openai-codex-responses by default; raw TCP for some local providers)
+- `matched > 0, captured = 0` → URL matched a /chat/completions or /responses route but the response didn't carry usage (older Chat Completions API without `stream_options.include_usage` — but v3.3.7's outbound rewrite injects that flag, so this would indicate a provider that ignores it)
+- `captured > 0` → working as designed for at least one previous fetch turn
+
+**(2) Documented Codex/WebSocket gap.** This entry captures the architectural boundary so future operators don't repeat the v3.3.7–v3.3.9 chase. Two paths exist to close it (deferred to the next-phase goal):
+
+- **A.** Force Codex provider into SSE-fallback mode via an init-time option (`transport: "sse"` exists per `openai-codex-responses.js:100` but isn't currently surfaced through pi-agent-core's userland)
+- **B.** Add WebSocket interception (wrap `globalThis.WebSocket` constructor, sniff `message` events for `response.completed`, update `lastSupervisorUsage` the same way)
+
+Path B is the more universal answer but is more invasive — it requires preserving all of WebSocket's spec behaviours (event ordering, ready states, subprotocols, abort semantics) through the wrapper.
+
+#### v3.3.7 criterion #8 status
+
+v3.3.7's acceptance criterion #8 required *"verified end-to-end on the live system: after one operator turn, lastSupervisorUsage should be populated."* With the operator's current provider configuration this **CANNOT** be satisfied through fetch interception alone. The criterion is met for:
+
+- ANY non-Codex provider that uses fetch+SSE (openai-completions, openai-responses, anthropic, azure-openai-responses, LM Studio, Ollama)
+- The Codex provider when forced into SSE-fallback mode
+- The integration test suite (`supervisor-usage-capture.test.ts` 19/19 pass with real ReadableStream-based test doubles)
+
+It is NOT met for the operator's current `chat → openai-codex` setup, by architectural choice of the upstream provider. Per `feedback_goal_text_is_contract`, this is surfaced rather than silently substituted for "tests pass = verified."
+
+### Verification
+
+- `supervisor-usage-capture.test.ts` — 19/19 pass (unchanged behaviour; diagnostics counters increment alongside the existing capture logic)
+- Full v3.3.6 + v3.3.7 + v3.3.9 + v3.3.10 compression + capture suite green
+- `bun build --target=bun components/evy/server.ts` clean
+- Live: `/api/debug/usage` returns the diagnostics object; operator can confirm `fetch_calls_observed > 0` to prove the wrapper is alive even when capture doesn't fire under Codex
+
+---
+
 ## [3.3.9] — 2026-05-28
 
 ### `fix(evy): supervisor-usage-capture URL pattern covers Codex + Azure Responses`

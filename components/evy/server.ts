@@ -38,6 +38,7 @@ import type { Model } from "@earendil-works/pi-ai";
 import { registerBuiltInApiProviders } from "@earendil-works/pi-ai";
 import type { TSchema } from "typebox";
 import {
+  getCaptureDiagnostics,
   getLastSupervisorUsage,
   installSupervisorUsageCapture,
   resolveRealPromptTokens,
@@ -4425,12 +4426,33 @@ async function main() {
         });
       }
 
-      // ── /api/debug/usage — v3.3.8 introspection ────────────────────────
+      // ── /api/debug/usage — v3.3.8 introspection, v3.3.10 diagnostics ─
       // Returns the latest `lastSupervisorUsage` captured by the
-      // globalThis.fetch interceptor in supervisor-usage-capture.ts.
-      // Operator-facing diagnostic so the live capture path can be
-      // verified after deploys without booting a debugger or growing the
-      // transcript to threshold. Read-only; safe to expose unguarded.
+      // globalThis.fetch interceptor in supervisor-usage-capture.ts plus
+      // v3.3.10 wrapper counters (fetch_calls_observed / matched / captured
+      // + last_matched_url). Operator-facing diagnostic so the live capture
+      // path can be verified after deploys without booting a debugger or
+      // growing the transcript to threshold.
+      //
+      // Reading the counters:
+      //   - fetch_calls_observed = 0      → wrapper not installed
+      //   - observed > 0, matched = 0     → wrapper alive but supervisor
+      //                                     uses a non-fetch transport
+      //                                     (WebSocket, raw TCP, …). The
+      //                                     openai-codex-responses provider
+      //                                     defaults to WebSocket; HTTP is
+      //                                     the fallback only.
+      //   - matched > 0, captured = 0     → URL matched but the response
+      //                                     stream didn't carry a usage
+      //                                     object (older OpenAI Chat
+      //                                     Completions without
+      //                                     stream_options.include_usage,
+      //                                     for example — but v3.3.7's
+      //                                     outbound rewrite should be
+      //                                     setting that).
+      //   - captured > 0                  → working as designed.
+      //
+      // Read-only; safe to expose unguarded.
       if (
         url.pathname === "/api/debug/usage" &&
         (req.method === "GET" || req.method === undefined)
@@ -4440,6 +4462,7 @@ async function main() {
           ok: true,
           last_supervisor_usage: u,
           captured: u !== null,
+          diagnostics: getCaptureDiagnostics(),
           version: SUBCTL_VERSION,
         });
       }
