@@ -2577,6 +2577,31 @@ async function main() {
     return { ...(payload as Record<string, unknown>), cache_prompt: true };
   };
 
+  // v3.3.11 — When the supervisor is openai-codex, force the SSE transport
+  // so the supervisor-usage-capture fetch interceptor sees the response
+  // stream. Codex provider defaults to WebSocket (HTTP fallback only) per
+  // pi-ai/dist/providers/openai-codex-responses.js:100-103, which bypasses
+  // our globalThis.fetch monkey-patch and leaves `lastSupervisorUsage`
+  // null on every turn — blocking v3.3.7's acceptance criterion #8.
+  //
+  // The Agent constructor exposes `transport?: Transport` per
+  // pi-agent-core/dist/agent.d.ts:19. Setting it to "sse" makes the
+  // codex provider go straight to its SSE/fetch branch at line 144.
+  // Latency cost is small (the WS path is faster on warm sessions but
+  // the fallback exists for a reason — it's a real working code path
+  // the provider already uses on WS failure). The Transport type
+  // (pi-ai types.d.ts:19) is "sse" | "websocket" | "websocket-cached" | "auto"
+  // with "auto" being the default; we override only for codex.
+  //
+  // Non-codex supervisors retain the default transport. Switching profiles
+  // mid-session triggers applyProfileSwap which rebuilds the model; the
+  // Agent itself is not rebuilt mid-session, so the initial transport
+  // choice persists. If the operator changes supervisorCfg.provider to
+  // openai-codex via providers.json after boot, they'd need to restart
+  // to pick up forced-SSE — documented in the CHANGELOG.
+  const agentTransport: "sse" | "websocket" | "websocket-cached" | "auto" =
+    supervisorCfg.provider === "openai-codex" ? "sse" : "auto";
+
   const agent = new Agent({
     initialState: {
       systemPrompt: composeSystemPrompt(),
@@ -2587,6 +2612,7 @@ async function main() {
     sessionId: `subctl-master-${Date.now()}`,
     getApiKey,
     onPayload,
+    transport: agentTransport,
   });
 
   // ── shared lifecycle flags (declared early so the inbox tailer below

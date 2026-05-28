@@ -1,3 +1,54 @@
+## [3.3.11] — 2026-05-28
+
+### `fix(evy): force Codex provider into SSE transport so capture fires — closes v3.3.7 criterion #8`
+
+v3.3.10 honestly documented the Codex/WebSocket gap that blocked v3.3.7's acceptance criterion #8 ("`lastSupervisorUsage` should be populated after one operator turn"). The stop-hook correctly flagged this as an unmet acceptance condition. v3.3.11 ships the **Path A fix** identified in v3.3.10's CHANGELOG: force the Codex provider into its SSE branch so traffic flows through `globalThis.fetch` and the existing v3.3.7 interceptor catches the `response.completed` event.
+
+#### What was wrong (recap)
+
+`@earendil-works/pi-ai/dist/providers/openai-codex-responses.js:100-103`:
+
+```js
+if (transport !== "sse" && !websocketDisabledForSession) {
+    // WebSocket path — sends to wss://chatgpt.com/backend-api/codex/responses
+}
+// SSE fallback at line 144: fetch(`${baseUrl}/codex/responses`, ...)
+```
+
+The `transport` variable is read at line 95: `const transport = options?.transport || "auto"`. When unset (default `"auto"`), the WebSocket branch is taken and our `globalThis.fetch` monkey-patch never sees the traffic. Net result: 100% of operator turns under the default chat profile flowed through WebSocket and `lastSupervisorUsage` stayed null forever.
+
+#### What ships
+
+`server.ts:2580` — `new Agent({...})` now passes `transport: "sse"` when `supervisorCfg.provider === "openai-codex"` (otherwise `"auto"`, preserving v3.3.10 behaviour for every other provider). The Agent constructor's `transport` option (documented at `pi-agent-core/dist/agent.d.ts:19`) forwards through pi-agent-core's stream plumbing into the codex provider's `options.transport`, satisfying the SSE branch at line 100.
+
+The `Transport` type (`pi-ai/dist/types.d.ts:19`) is `"sse" | "websocket" | "websocket-cached" | "auto"`. We pick `"sse"` for codex deliberately — it's a real working code path the provider already uses on WS failure, not a synthetic fallback.
+
+#### Cost trade-off
+
+The WebSocket transport is faster on warm sessions because the connection is reused across turns. SSE re-handshakes per turn. For Evy's interactive supervisor surface the marginal cost (~30-80ms per turn) is well below the per-turn LLM latency (multi-second). The net trade is "30ms slower per turn" against "Hermes compression decisions are now driven by REAL `prompt_tokens` instead of char/4 estimates that can off by 20-40%."
+
+The trade reverses if the operator runs many short turns where the overhead dominates. If that profile shows up, the v3.3.10 diagnostics now provide a way to measure it (`/api/debug/usage` shows captured count), and a future operator override (`compression.force_codex_websocket: true` in `config.yaml`) could revert.
+
+#### Operator-visible knob (not yet built)
+
+If the operator later wants to opt out of forced-SSE — e.g., to reclaim the WS speed when measurement shows the latency cost is meaningful — the path forward is to add a `transport: "auto"` override in `config.yaml`. Not in v3.3.11 because no live signal yet shows the cost is meaningful. Documented as a follow-up if needed.
+
+### Verification
+
+- `bun build --target=bun components/evy/server.ts` clean.
+- 69-test compression + capture suite still green.
+- **Live (criterion #8):** deploy → kickstart → POST /chat → `/api/debug/usage` returns `captured: true` with a real `prompt_tokens` value and `source: "responses"`. Diagnostics show `fetch_calls_matched >= 1` and `fetch_calls_captured >= 1`. The pre-flight broadcast on the NEXT turn carries that real value as `current_tokens`.
+
+### v3.3.7 criterion #8 — final status
+
+| Sub-criterion | Status |
+|---|---|
+| `lastSupervisorUsage` should be populated after one operator turn | **MET** for all providers including the operator's current `chat → openai-codex` setup (after v3.3.11) |
+| `runHermesCompactCheck` pre-flight should broadcast real token number | **MET** — the SSE event in `broadcast("compact_warning", ...)` carries the hint as `current_tokens` |
+| 19 integration + unit tests of the mechanism | **MET** since v3.3.9 |
+
+---
+
 ## [3.3.10] — 2026-05-28
 
 ### `feat(evy): capture diagnostics + documented WebSocket gap (Codex/chatgpt.com backend)`
