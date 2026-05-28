@@ -1,3 +1,38 @@
+## [3.3.4] — 2026-05-28
+
+### `fix(claude-teams): unblock orchestrator spawn after v4 PATH collision + rename leftovers`
+
+Two layered breakages were turning every `claude-teams -a <alias>` invocation into the v4 chat help text and exit code 2. Root cause was discovered while operator tried to spawn an orchestrator and got the chat TUI usage instead.
+
+**(1) PATH collision (commit `0ae23a3`, PR #38).** The v4 chat entry point now lives at `~/.local/bin/subctl` and takes over the bare `subctl` name on most operators' interactive `$PATH`. The six `bin/claude-*` convenience shims (`claude-dash`, `claude-deck`, `claude-kill`, `claude-radar`, `claude-resume`, `claude-teams`) all did `exec subctl <verb>` and trusted PATH to resolve to the v3 dispatcher. After v4 won the PATH race, each shim printed v4's usage and exited without doing its job.
+
+Each shim now resolves its own location through any symlinks and execs the sibling `subctl` in the same `bin/` directory — always the v3 bash dispatcher in the install tree, independent of `$PATH` ordering.
+
+**(2) Stale `components/master/...` imports (commit `66ecbe7`, PR #38).** Two files in `providers/claude/` were missed by the v3 master→evy rename sweep (`03f8f0b`, v3.3.2):
+
+- `providers/claude/_write_snapshot.ts` — policy snapshot bridge invoked at spawn time
+- `providers/claude/_apply_team_template.ts` — v2.8.0 TOML template bridge
+
+Once the shim fix landed and dispatch reached v3, the policy snapshot bridge failed at module-load with `Cannot find module '../../components/master/tools/policy/audit'`. Repointed both files at `components/evy/...`. Other repo mentions of `components/master` were confirmed to be comments referencing the rename history, not live imports.
+
+**Verification:** `claude-teams -o -y -a claude-jason --dry-run` runs to "(dry run — not launching tmux)" with `allowlist_sha 812559ee` on both dev tree (`~/code/subctl`) and install tree (`~/.local/lib/subctl-install`). `bun -e 'await import(...)'` confirms both renamed-import files load cleanly. Integration tests on `providers/claude/__tests__/integration/spawn.test.ts` + `components/evy/tools/policy/__tests__/audit.test.ts`: 25/25 pass.
+
+### `fix(chat): harden voice toggle against first-paint race + SSE-reconnect drift` (PR #37)
+
+Voice toggle in `dashboard/public/tabs/chat.js` was racy on first paint and could drift out of sync after an SSE reconnect. Hardened the state contract so the UI control reflects the actual voice-render state across both edges.
+
+### `chore: Hermes research docs + ORCHESTRATION log + .codegraph gitignore` (PR #39)
+
+- `.subctl/docs/hermes-compact-and-skills-findings.md` — research artifact for v4 Evy bootstrap planning. Documents Hermes' LLM-driven compact algorithm (threshold = `max(50% × ctx, 64K floor)`, configurable via `compression.threshold`) and progressive-disclosure skill loading via system-prompt index + `skill_view` tool.
+- `ORCHESTRATION.md` — session log for the 2026-05-28 claude-teams unblock; root cause, fixes, validation gates, decision log.
+- `.gitignore` — ignore `.codegraph/` MCP index dir (sqlite + daemon scratch from `npx @colbymchenry/codegraph`).
+
+### Notes
+
+The stale `fix/policy-snapshot-evy-rename` branch (commit `557b19f`) authored 2026-05-25 documented only the `_write_snapshot.ts` half of the breakage. The actual shipped fix is broader (also `_apply_team_template.ts` and all 6 shims). Stale branch deleted as part of this release.
+
+---
+
 ## [3.3.3] — 2026-05-24
 
 ### `chore(ci): drain the no-secrets gate of pre-existing false positives`
