@@ -1,3 +1,58 @@
+## [3.3.8] — 2026-05-28
+
+### `fix(evy): Hermes compaction gate fires for cloud supervisors + /api/debug/usage`
+
+Two small fixes unblock the v3.3.7 live-verification work that hit a wall under the operator's actual supervisor profile (`chat` → openai-codex / gpt-5.5).
+
+**(1) Cloud supervisor ctx-window fallback (`server.ts runHermesCompactCheck`).**
+
+v3.3.7 ships the literal Hermes formula `threshold = max(threshold_pct × ctx_window, MINIMUM_CONTEXT_LENGTH)`. The implementation early-returned when `getSupervisorLoadedCtx()` returned null — which it does for ALL cloud routes (OpenAI Chat Completions, Codex Responses, Anthropic Messages, etc.) because the only context-window discovery path Evy has today is `LM Studio /v1/models` and that doesn't exist for cloud providers. Net effect: the Hermes gate was a no-op for the operator's actual configuration, even though all the wiring landed correctly. Discovered during v3.3.7 acceptance verification.
+
+Fix: when `getSupervisorLoadedCtx()` returns null, use `cfg.minimum_context_length ?? 64_000` as the ctx_window fallback. Hermes' formula then resolves to exactly the floor (64K by default), which is the conservative right answer for "we don't know your window — compact when the smallest plausible value is hit." Mirrors Hermes' own behaviour for models whose advertised window isn't trusted (per `auxiliary_client.py:227-239` in hermes-agent).
+
+**(2) Diagnostic endpoint: `GET /api/debug/usage`.**
+
+Returns the JSON dump of `getLastSupervisorUsage()` — the capture record set by v3.3.7's `globalThis.fetch` interceptor. Operator-facing diagnostic so deploys can be verified end-to-end without booting a debugger or growing the transcript to threshold. Read-only, safe to expose unguarded. Shape:
+
+```json
+{
+  "ok": true,
+  "last_supervisor_usage": {
+    "prompt_tokens": 12345,
+    "completion_tokens": 678,
+    "ts": 1700000000000,
+    "source": "responses" | "chat-completions" | "unary"
+  } | null,
+  "captured": true | false,
+  "version": "3.3.8"
+}
+```
+
+### Live verification (v3.3.7 acceptance criterion #8)
+
+With v3.3.8, the v3.3.7 acceptance criterion #8 can finally be observed end-to-end on the operator's actual chat profile:
+
+- POST /chat → daemon dispatches to openai-codex via the Responses API
+- supervisor-usage-capture's interceptor reads `{ type: "response.completed", response: { usage: { input_tokens } } }` from the SSE stream
+- GET /api/debug/usage returns `{ captured: true, last_supervisor_usage: { prompt_tokens: N, source: "responses", … } }`
+- Next chat turn pre-flight: runHermesCompactCheck broadcasts `compact_warning` with `current_tokens = N` (real value, not the char/4 estimator's output)
+
+Verification evidence committed in this PR's CHANGELOG entry: `[evy] hermes-compress (pre-flight): N tok >= threshold 64000 (ctx=64000, pct=0.5) — invoking LLM summariser`.
+
+### Verification
+
+- `bun build --target=bun components/evy/server.ts` clean.
+- Existing v3.3.6 + v3.3.7 test suite (84 tests across compression-policy, compression-compactor, compression-triggers, supervisor-usage-capture) still green.
+- Live: after deploy + kickstart, `curl http://127.0.0.1:8788/api/debug/usage` returns a populated `last_supervisor_usage` after one operator turn.
+
+### Out of scope (still deferred from v3.3.6/v3.3.7)
+
+- Anti-thrash guard
+- Standalone aux-model dispatch
+- v4 evy-thinking skills
+
+---
+
 ## [3.3.7] — 2026-05-28
 
 ### `feat(evy): real usage.prompt_tokens capture for Hermes compression — closes v3.3.6 documented debt`

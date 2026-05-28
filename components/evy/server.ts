@@ -3680,12 +3680,21 @@ async function main() {
       return transcriptTokens + FIXED_PROMPT_OVERHEAD_TOKENS;
     });
 
-    const loadedCtx = await getSupervisorLoadedCtx();
-    if (!loadedCtx || loadedCtx <= 0) {
-      // No ctx info → can't compute Hermes threshold. The legacy gate
-      // already handles cloud/zero-ctx supervisors via percentage mode.
-      return;
-    }
+    // v3.3.8 — cloud supervisors don't surface `loaded_ctx` (LM Studio's
+    // /v1/models payload is the only source today and Codex/GPT/Claude
+    // cloud routes have no equivalent). When unavailable, fall back to
+    // `MINIMUM_CONTEXT_LENGTH` from compression-policy as the ctx_window —
+    // Hermes' formula `max(pct × ctx, floor)` then resolves to exactly the
+    // floor, which is the conservative right answer ("we don't know your
+    // window, compact when we hit the smallest plausible value"). This
+    // matches Hermes' own behaviour for models whose advertised window
+    // isn't trusted (`auxiliary_client.py:227-239` per-model overrides
+    // fall back to the floor when no override is set).
+    const measuredCtx = await getSupervisorLoadedCtx();
+    const loadedCtx =
+      measuredCtx && measuredCtx > 0
+        ? measuredCtx
+        : cfg.minimum_context_length ?? 64_000;
     const threshold = hermesComputeThresholdTokens(loadedCtx, cfg);
     if (!hermesShouldCompress(realTokens, loadedCtx, cfg)) return;
 
@@ -4413,6 +4422,25 @@ async function main() {
           teams_tracked: teamLastActivity.size,
           telegram_listener: masterNotifyListenerStatus(),
           active_profile: activeProfile,
+        });
+      }
+
+      // ── /api/debug/usage — v3.3.8 introspection ────────────────────────
+      // Returns the latest `lastSupervisorUsage` captured by the
+      // globalThis.fetch interceptor in supervisor-usage-capture.ts.
+      // Operator-facing diagnostic so the live capture path can be
+      // verified after deploys without booting a debugger or growing the
+      // transcript to threshold. Read-only; safe to expose unguarded.
+      if (
+        url.pathname === "/api/debug/usage" &&
+        (req.method === "GET" || req.method === undefined)
+      ) {
+        const u = getLastSupervisorUsage();
+        return Response.json({
+          ok: true,
+          last_supervisor_usage: u,
+          captured: u !== null,
+          version: SUBCTL_VERSION,
         });
       }
 
