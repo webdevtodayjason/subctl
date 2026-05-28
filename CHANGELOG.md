@@ -1,3 +1,65 @@
+## [3.3.7] — 2026-05-28
+
+### `feat(evy): real usage.prompt_tokens capture for Hermes compression — closes v3.3.6 documented debt`
+
+Closes the documented gap in v3.3.6's CHANGELOG ("v3 Evy's pi-agent-core wrapper doesn't surface `usage` to userland yet, so v3.3.6 falls back to the existing `estimateTranscriptTokens` char/4 estimator … When pi-agent-core exposes usage in a later release, the `realPromptTokensHint` parameter is already plumbed end-to-end — replace the fallback with the actual value at the call site").
+
+`@earendil-works/pi-agent-core` is still at v0.74.0 (no upstream change yet), so v3.3.7 ships the **workaround** that criterion #1 of the goal text anticipated: a transport-level `globalThis.fetch` interceptor.
+
+#### Why a fetch monkey-patch
+
+Investigation (scout report in session transcript, 2026-05-28):
+
+- **pi-agent-core does NOT expose `usage` on any public surface** — verified by reading `node_modules/@earendil-works/pi-agent-core/dist/*` end-to-end. No event in the `agent.subscribe()` stream carries it, no property on `agent.state.messages[i]` carries it, and `agent.prompt()` returns `void`. The Agent class also doesn't take an injected fetch (or any HTTP / transport hook) in its constructor (`server.ts:2564`).
+- **pi-agent-core uses `globalThis.fetch` for ALL outbound LLM traffic** — no bundled HTTP client, no `undici`, no custom transport. Verified by absence of any other HTTP-client identifier in the package dist.
+- **Tee the response body, parse SSE chunks** is the only userland-side interception that preserves pi-agent-core's stream consumer. Cloning + `.json()`-ing the response would consume the body and break pi-agent-core's reader.
+
+#### What ships
+
+**`components/evy/supervisor-usage-capture.ts`** — new module:
+
+- `installSupervisorUsageCapture()` — installed exactly once at daemon boot (just after `registerBuiltInApiProviders()` in `server.ts`). Idempotent.
+- `getLastSupervisorUsage()` — returns the latest `{ prompt_tokens, completion_tokens, ts, source }` record captured from a supervisor response. Null until the first turn.
+- `resolveRealPromptTokens(hint, estimator)` — pure helper that picks between the real-tokens hint and the char/4 fallback. Centralised so `runHermesCompactCheck` and tests share the same decision.
+
+The interceptor handles three response shapes:
+
+1. **Chat Completions streaming** (`/v1/chat/completions` with `stream: true`). The interceptor INJECTS `stream_options: { include_usage: true }` into the outbound request body when missing — OpenAI emits a tail-chunk just before `[DONE]` carrying `{ choices: [], usage: { prompt_tokens, completion_tokens } }` only when this flag is set. (Without the injection, capturing wouldn't be possible — the chunks would simply not contain usage data.)
+2. **Responses API streaming** (`/v1/responses`). Usage rides on the terminal `{ type: "response.completed", response: { usage: { input_tokens, output_tokens } } }` event by default — no outbound rewrite needed.
+3. **Unary JSON** (either endpoint with `stream: false`). Clone the response, parse `usage` (Chat Completions) or `response.usage` (Responses) from the top-level body.
+
+In all three cases the response handed back to pi-agent-core is functionally identical to the original — streams are teed before the background reader consumes its branch.
+
+**`server.ts`** — three trigger sites updated to pass the captured value:
+
+- `runHermesCompactCheck("pre-flight", getLastSupervisorUsage()?.prompt_tokens)` — uses the PREVIOUS turn's recorded value.
+- `runHermesCompactCheck("post-turn", getLastSupervisorUsage()?.prompt_tokens)` — uses the JUST-LANDED turn's value (the SSE tail-chunk has been parsed by the time pi-agent-core's stream consumer reaches `[DONE]`, since the tee delivers chunks to both branches in lockstep).
+- `runHermesCompactCheck("recovery", getLastSupervisorUsage()?.prompt_tokens)` — uses the JUST-FAILED turn's value (request-time usage is still captured even when the supervisor returns an error, as long as the stream got far enough to emit the usage chunk).
+
+The interceptor REPLACES the previous v3.3.6 inline `let realTokens = realPromptTokensHint; if (undefined) { estimator() }` pattern with a single call to `resolveRealPromptTokens(hint, () => estimator())` — semantics preserved, decision now unit-testable in isolation.
+
+#### Fragility risk
+
+If `@earendil-works/pi-agent-core` switches to a bundled HTTP client (e.g. `undici` directly, custom socket, gRPC) in a future major version, the `globalThis.fetch` monkey-patch silently stops firing. The fallback to the char/4 estimator means the failure mode is "v3.3.6 behaviour" rather than a crash — degraded but not broken. The package version is pinned at `^0.74.0` in `components/evy/package.json`; any major-version upgrade should re-verify the assumption by checking whether `supervisor-usage-capture.ts`'s wrapper still wraps any traffic.
+
+#### Out of scope (deferred follow-ups)
+
+- **Open upstream issue against `@earendil-works/pi-agent-core`** requesting a first-class `usage` event surface. Criterion #1 of the goal text mentioned this as the alternative to the workaround; v3.3.7 ships the workaround AND the operator can decide later whether to file the upstream ask.
+- **Per-provider unreliability handling.** The "stop-and-ask trigger #2" anticipated providers (e.g. some LM Studio versions) might not populate `usage` reliably. No live data showing this yet; v3.3.7 trusts the hint when present. If false hints are observed in production, add a `±20% vs. estimator` sanity bound in a follow-up.
+- **Anti-thrash guard, standalone aux-model dispatch, v4 evy-thinking skills** — all unchanged from v3.3.6's deferred list.
+
+### Verification
+
+- `components/evy/__tests__/supervisor-usage-capture.test.ts` — **17/17 pass**. Coverage:
+  - `resolveRealPromptTokens` — 8 tests pinning the hint-vs-estimator decision: prefers hint, falls back on undefined/null/NaN/0/negative, estimator-not-called optimisation, estimator-called when needed.
+  - `getLastSupervisorUsage` round-trip — 3 tests on the module's mutable record.
+  - **Integration tests (criterion #5.c) — 6 tests** exercising the full request → response cycle via the patched `globalThis.fetch`: Chat Completions SSE usage capture, Responses API `response.completed` capture, unary JSON capture, non-LLM URL passthrough (no capture), outbound `stream_options.include_usage` injection (and confirmation it is NOT injected on non-stream requests).
+- Full v3.3.6 compression suite (`compression-policy.test.ts` + `compression-compactor.test.ts` + `compression-triggers.test.ts`) + the v3.3.7 capture suite: **67/67 pass**.
+- Full evy suite: **1265 pass / 5 fail / 3695 expect()**. +17 passes vs v3.3.6 (matches the 17 new tests). Zero new failures; the 5 failures are pre-existing on main (`lmstudioAuthHeader` env-fixtures, unrelated).
+- `bun build --target=bun components/evy/server.ts` clean.
+
+---
+
 ## [3.3.6] — 2026-05-28
 
 ### `feat(evy): literal Hermes compression policy — formula + YAML knob + LLM summariser + 3 triggers`

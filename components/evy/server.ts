@@ -37,6 +37,11 @@ import type {
 import type { Model } from "@earendil-works/pi-ai";
 import { registerBuiltInApiProviders } from "@earendil-works/pi-ai";
 import type { TSchema } from "typebox";
+import {
+  getLastSupervisorUsage,
+  installSupervisorUsageCapture,
+  resolveRealPromptTokens,
+} from "./supervisor-usage-capture";
 
 // pi-ai's stream factory keeps a registry keyed by `model.api`. Built-in
 // providers (anthropic-messages, openai-completions, openai-responses,
@@ -47,6 +52,16 @@ import type { TSchema } from "typebox";
 // a no-op stream. Diagnosed 2026-05-09 after the daemon's first boot
 // produced empty assistant responses while direct curl to LM Studio worked.
 registerBuiltInApiProviders();
+
+// v3.3.7 — Install the `globalThis.fetch` monkey-patch that captures
+// `usage.prompt_tokens` from supervisor API responses. MUST run before
+// any agent activity (pi-agent-core inherits whatever fetch is global at
+// the time of its calls — but for safety we install before the first
+// possible call site). pi-agent-core v0.74.0 doesn't expose usage on
+// any public surface (verified by reading dist + scouting events), so
+// the wrapper sniffs the SSE stream and the unary JSON body for the
+// usage object. See components/evy/supervisor-usage-capture.ts.
+installSupervisorUsageCapture();
 
 import { subctlOrchTools } from "./tools/subctl-orch";
 import { ghTools } from "./tools/gh";
@@ -3649,19 +3664,21 @@ async function main() {
 
     // Real prompt_tokens — Hermes priority order:
     //   1. `usage.prompt_tokens` from the most recent supervisor response
-    //      (preferred; the caller can pass this via `realPromptTokensHint`
-    //      when available). v3 Evy's pi-agent-core wrapper doesn't surface
-    //      `usage` yet, so the hint is usually undefined.
-    //   2. char/4 estimate including the +2500 fixed prompt overhead — the
-    //      same shape `runJitCompactCheck` already uses. This is the
-    //      working fallback for v3.3.6.
-    let realTokens = realPromptTokensHint;
-    if (realTokens === undefined || realTokens === null) {
+    //      (preferred; passed via `realPromptTokensHint` when the v3.3.7
+    //      `globalThis.fetch` interceptor in supervisor-usage-capture.ts
+    //      caught a usage chunk in the previous turn's response stream).
+    //   2. char/4 estimate including the +2500 fixed prompt overhead —
+    //      same shape `runJitCompactCheck` uses. The fallback when the
+    //      hint is unavailable (first turn after boot, sniffer disabled,
+    //      provider that doesn't ship a usage tail-chunk).
+    // resolveRealPromptTokens centralises the hint-vs-estimator decision
+    // so it's unit-testable in isolation from this closure (v3.3.7).
+    const realTokens = resolveRealPromptTokens(realPromptTokensHint, () => {
       const transcriptTokens = estimateTranscriptTokens(
         agent.state.messages as Array<{ content?: unknown }>,
       );
-      realTokens = transcriptTokens + FIXED_PROMPT_OVERHEAD_TOKENS;
-    }
+      return transcriptTokens + FIXED_PROMPT_OVERHEAD_TOKENS;
+    });
 
     const loadedCtx = await getSupervisorLoadedCtx();
     if (!loadedCtx || loadedCtx <= 0) {
@@ -3858,8 +3875,16 @@ async function main() {
       // the LLM-driven compactor when the real-token estimate crosses the
       // threshold. Coexists with runJitCompactCheck — both gates leave the
       // transcript valid for the next agent.prompt() call.
+      //
+      // v3.3.7 — pre-flight uses the PREVIOUS turn's `prompt_tokens` from
+      // `lastSupervisorUsage` (populated by the fetch interceptor). When
+      // null (first turn after boot, fetch sniffer disabled, or non-OpenAI-
+      // shape provider) the helper falls back to the char/4 estimator.
       try {
-        await runHermesCompactCheck("pre-flight");
+        await runHermesCompactCheck(
+          "pre-flight",
+          getLastSupervisorUsage()?.prompt_tokens,
+        );
       } catch (e) {
         console.error(
           `[evy] hermes pre-flight threw (continuing): ${(e as Error).message}`,
@@ -4050,8 +4075,17 @@ async function main() {
       // against the threshold. Mirrors Hermes' post-iteration check at
       // `agent/conversation_loop.py:3636-3663`. Runs BEFORE the transient-
       // retry path so a retry never inherits a known-over-budget window.
+      //
+      // v3.3.7 — post-turn uses the JUST-LANDED turn's `prompt_tokens`.
+      // The fetch interceptor records usage as the stream's tail-chunk
+      // is read, which finishes BEFORE pi-agent-core's stream consumer
+      // sees `[DONE]` — so by the time we reach here the latest record
+      // already reflects this turn.
       try {
-        await runHermesCompactCheck("post-turn");
+        await runHermesCompactCheck(
+          "post-turn",
+          getLastSupervisorUsage()?.prompt_tokens,
+        );
       } catch (e) {
         console.error(
           `[evy] hermes post-turn threw (continuing): ${(e as Error).message}`,
@@ -4074,8 +4108,15 @@ async function main() {
           errStr.includes("maximum context") ||
           errStr.includes("token limit");
         if (looksLikeOverflow) {
+          // v3.3.7 — recovery uses the JUST-FAILED turn's `prompt_tokens`
+          // (already captured by the interceptor — the failure on the
+          // provider side doesn't prevent us from having parsed the
+          // request-time usage, when present).
           try {
-            await runHermesCompactCheck("recovery");
+            await runHermesCompactCheck(
+              "recovery",
+              getLastSupervisorUsage()?.prompt_tokens,
+            );
           } catch (e) {
             console.error(
               `[evy] hermes recovery threw (continuing): ${(e as Error).message}`,
