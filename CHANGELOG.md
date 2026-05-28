@@ -1,3 +1,49 @@
+## [3.3.5] — 2026-05-28
+
+### `feat(evy): Hermes-aligned compact policy bump — +30K thresholds + warn-triggers-summariser`
+
+Two narrow behavioural changes to `components/evy/` that bring v3 Evy's auto-compact into alignment with the Hermes findings (see `.subctl/docs/hermes-compact-and-skills-findings.md` §1.5 for the verbatim spec). Both changes share the same goal: keep the supervisor's prompt window comfortably below the model's hard ceiling by compacting EARLIER, so the operator never sees the "supervisor went silent / 'Standing by'" overflow mode that v2.7.3 first hardened against.
+
+**(1) Default token thresholds bumped +30K each (`components/evy/compact-policy.ts`).**
+
+- `warn_tokens`: 25_000 → **55_000**
+- `compact_tokens`: 40_000 → **70_000**
+- `target_tokens`: 30_000 → **55_000**
+- `keep_recent`: 6 (unchanged)
+
+The original `25k / 40k / 30k` numbers were calibrated for the M3 Ultra incident on 2026-05-12 — a 65K-window LM-Studio supervisor with SKILL + tool schemas eating 25K before any transcript was loaded. Since v3.3.x the supervisor profile defaults to `chat` (Codex / gpt-5.5 class, 32K-128K windows depending on the model selection), and skill bundles have grown. The +30K bump applies the same "compact below the hard ceiling so the next turn fits" principle to the wider operating window, without re-architecting the absolute-token decision shape that v2.7.3 standardised on.
+
+Operators who set `warn_tokens` / `compact_tokens` explicitly in `~/.config/subctl/master/compact.json` are unaffected — only the file-absent / file-malformed defaults change.
+
+**(2) `warn` action now triggers the summariser (`components/evy/server.ts` `runJitCompactCheck`).**
+
+Pre-v3.3.5 the `runJitCompactCheck` JIT gate treated `warn` and `compact` differently:
+
+- `warn` → emit SSE `compact_warning` event, log to stderr, **return without compacting**
+- `compact` → emit SSE event AND call `compactTranscriptInline`
+
+After v3.3.5 both actions call `compactTranscriptInline`. The only difference between the two paths is the SSE `initiator` tag (`jit-warn` vs `jit`) and stage label (`warn-compacting` vs `compacting`), so the dashboard can still distinguish soft-threshold and hard-threshold compactions in the timeline view.
+
+Combined with the +30K bump, this gives the same behavioural envelope Hermes ships with: `warn_tokens` becomes the **operating threshold** that compaction actually triggers on, and `compact_tokens` becomes the **safety net** for the rare case where the warn-band compaction didn't reduce the transcript far enough. The two-stage decision shape is retained so existing dashboards, log filters, and the back-compat `threshold_pct` percentage mode (for old config files) keep working unchanged.
+
+**What is explicitly NOT in this release:**
+
+- **LLM-driven summarisation.** Hermes' compact uses an auxiliary cheap-model call to produce a structured summary of middle turns (`agent/context_compressor.py:946-1090+`). v3 Evy's `compactTranscriptInline` is a deterministic structured-text builder (recent user texts + assistant highlights + tools-called table). Replacing it with an LLM-driven summariser is v4 Evy work (Rust evy-thinking) per the findings doc §1.5 explicit scoping. v3.3.5 only lifts what's already there onto the warn trigger.
+- **`compression.threshold` knob in `config.yaml`.** Hermes uses YAML; v3 Evy already has a stable JSON config surface at `~/.config/subctl/master/compact.json` with absolute-token shape. No new config format. Operators tune via the existing knobs.
+- **Hermes-style recovery trigger** (post-API-error context-overflow re-compact). Out of scope for v3.3.5; existing JIT gate + 5-min ticker cover the same ground for the supervisor surface.
+
+**Verification:**
+
+- `components/evy/__tests__/compact-policy.test.ts` — defaults assertions updated to new values; 26/26 pass.
+- `components/evy/__tests__/auto-compact.test.ts` — three new tests for v3.3.5 contract:
+  - `60k transcript lands in warn band (55k ≤ x < 70k)` — verifies the bump-defaults band math.
+  - `v3.3.5 contract: full warn/compact/ok matrix at new bands` — pins the threshold boundaries at the decision-module surface.
+  - `warn band actually fits a realistic 60k transcript shape` — sanity-checks that a synthetic transcript built to ~60K tokens via the char/4 estimator actually lands in the warn band, not at a pathological boundary.
+- Full evy test suite: **1198 pass / 5 fail / 3555 expect()**. The 5 failures are pre-existing on main (`lmstudioAuthHeader` / `LMSTUDIO_API_TOKEN` env-fixture tests, unrelated to compact); zero new failures.
+- `bun build --target=bun components/evy/server.ts` clean.
+
+---
+
 ## [3.3.4] — 2026-05-28
 
 ### `fix(claude-teams): unblock orchestrator spawn after v4 PATH collision + rename leftovers`

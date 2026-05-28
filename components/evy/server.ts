@@ -3568,28 +3568,28 @@ async function main() {
     const loadedCtx = await getSupervisorLoadedCtx();
     const decision = decideCompactAction(current, loadedCtx ?? 0, cfg);
     if (decision.action === "ok") return;
-    if (decision.action === "warn") {
-      console.error(`[evy] compact-warn (jit): ${decision.reason}`);
-      broadcast("compact_warning", {
-        ts: new Date().toISOString(),
-        stage: "warn",
-        initiator: "jit",
-        current_tokens: decision.current_tokens,
-        warn_at: cfg.warn_tokens || null,
-        compact_at: cfg.compact_tokens || null,
-        threshold_used: decision.threshold_used,
-        reason: decision.reason,
-      });
-      return;
-    }
-    // decision.action === "compact"
+
+    // v3.3.5 — `warn` now triggers compaction (in addition to the existing
+    // SSE banner) per Hermes findings §1.5: lift the summariser to fire on
+    // warn so warn becomes the operating threshold and compact becomes a
+    // safety net. Both stages run through the same compactTranscriptInline
+    // call so the post-compact transcript shape is identical regardless of
+    // which threshold tripped. Distinct `initiator` values
+    // (`jit-warn` vs `jit`) let the dashboard tell them apart.
+    const isWarn = decision.action === "warn";
+    const initiator = isWarn ? "jit-warn" : "jit";
+    const stage = isWarn ? "warn-compacting" : "compacting";
+    const logLabel = isWarn
+      ? "just-in-time compact (warn-threshold)"
+      : "just-in-time compact";
+
     console.error(
-      `[evy] just-in-time compact: ${decision.reason} — compacting toward ${cfg.target_tokens.toLocaleString()} tok`,
+      `[evy] ${logLabel}: ${decision.reason} — compacting toward ${cfg.target_tokens.toLocaleString()} tok`,
     );
     broadcast("compact_warning", {
       ts: new Date().toISOString(),
-      stage: "compacting",
-      initiator: "jit",
+      stage,
+      initiator,
       current_tokens: decision.current_tokens,
       warn_at: cfg.warn_tokens || null,
       compact_at: cfg.compact_tokens || null,
@@ -3599,15 +3599,15 @@ async function main() {
     const result = compactTranscriptInline({
       target_tokens: cfg.target_tokens,
       keep_recent: cfg.keep_recent,
-      initiator: "jit",
+      initiator,
     });
     if (!result.ok) {
-      console.error(`[evy] just-in-time compact failed: ${result.error}`);
+      console.error(`[evy] ${logLabel} failed: ${result.error}`);
     } else if (result.noop) {
-      console.error(`[evy] just-in-time compact noop: ${result.message}`);
+      console.error(`[evy] ${logLabel} noop: ${result.message}`);
     } else {
       console.error(
-        `[evy] just-in-time compact ok — archived ${result.archived_count}, kept ${result.kept_msgs}`,
+        `[evy] ${logLabel} ok — archived ${result.archived_count}, kept ${result.kept_msgs}`,
       );
     }
   }
