@@ -12,7 +12,7 @@ Most recent session at top. Older sessions retained below as historical record.
 
 `claude-teams -o -y -a claude-jason` printed the v4 chat help and exited. Two layered bugs:
 
-1. **PATH collision** — `/Users/sem/.local/bin/subctl` (v4 chat root) beats `/Users/sem/bin/subctl` (v3 dispatcher) in the operator's interactive shell. All six `bin/claude-*` shims do `exec subctl <verb>`, so v4 caught them and emitted its own usage.
+1. **PATH collision** — `~/.local/bin/subctl` (v4 chat root) beats `~/bin/subctl` (v3 dispatcher) in the operator's interactive shell. All six `bin/claude-*` shims do `exec subctl <verb>`, so v4 caught them and emitted its own usage.
 2. **Stale `master/` imports** — `providers/claude/_write_snapshot.ts` and `_apply_team_template.ts` still imported from `components/master/...` after the v3 master→evy rename. The shim fix alone reached v3 dispatch but the spawn flow then died at module-load with `Cannot find module '../../components/master/tools/policy/audit'`.
 
 ### Fixes shipped
