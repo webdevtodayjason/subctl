@@ -20,10 +20,11 @@ SUBCTL_COGNEE_VENV_DEFAULT="$HOME/.local/share/subctl/cognee-venv"
 SUBCTL_COGNEE_LABEL="com.subctl.cognee"
 SUBCTL_COGNEE_HEALTH_URL="http://127.0.0.1:8745/health"
 SUBCTL_COGNEE_LLM_BASE_DEFAULT="${SUBCTL_COGNEE_LLM_BASE:-http://localhost:1234/v1}"
-# Match the model the operator already runs in LM Studio (see master log:
-# `reviewer=gemma-4-26b-a4b-it-mlx already loaded`). Override at install
-# time by exporting SUBCTL_COGNEE_LLM_MODEL=<your-model-id>.
-SUBCTL_COGNEE_LLM_MODEL_DEFAULT="${SUBCTL_COGNEE_LLM_MODEL:-gemma-4-26b-a4b-it-mlx}"
+# cognee's "reviewer" does structured entity/relationship extraction — a 9B is
+# plenty and keeps GPU load low. LM Studio is the single local-model endpoint
+# (oMLX retired 2026-05-28 — running it as a 2nd MLX engine alongside LM Studio
+# contributed to GPU/thermal hard-reboots). Override: export SUBCTL_COGNEE_LLM_MODEL=<id>.
+SUBCTL_COGNEE_LLM_MODEL_DEFAULT="${SUBCTL_COGNEE_LLM_MODEL:-qwen/qwen3.5-9b}"
 SUBCTL_COGNEE_LLM_KEY_DEFAULT="${SUBCTL_COGNEE_LLM_KEY:-lm-studio}"
 
 # Pick the python to wire into the launchd plist:
