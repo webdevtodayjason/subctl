@@ -2,7 +2,7 @@
 
 **Researched by:** hermes-researcher
 **Date:** 2026-05-27
-**Source:** `/Users/sem/code/hermes-agent` @ commit `e8955f222cecb6ed7ac3f0c541b9b5b02d22843f`
+**Source:** `~/code/hermes-agent` @ commit `e8955f222cecb6ed7ac3f0c541b9b5b02d22843f`
 
 ---
 
