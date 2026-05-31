@@ -264,7 +264,8 @@ claude-use() {
   echo "→ $target  ($CLAUDE_CONFIG_DIR)"
 }
 
-# safety net: bare `claude` (interactive REPL) reminds you to pick an account.
+# safety net: bare `claude` launches the account selected via `claude-use`;
+# if none is selected (master ~/.claude) it reminds you to pick one first.
 # Subcommands and non-interactive flags pass through unguarded — they don't
 # touch credentials beyond what they always have, and blocking them breaks
 # routine maintenance like `claude update`, `claude doctor`, `claude --version`.
@@ -282,13 +283,19 @@ claude() {
         ;;
     esac
   fi
-  # Bare `claude` with no args = interactive REPL → require explicit account.
+  # An account is already selected for this shell (via claude-use) — just
+  # launch it; no need to re-prompt.
+  if [[ -n "${CLAUDE_CONFIG_DIR:-}" ]]; then
+    "$CLAUDE_BIN" "$@"
+    return $?
+  fi
+  # No account selected (running as master ~/.claude) → require an explicit pick.
   echo "Pick an account first:"
   echo "  claude-use jason       # switch this shell"
   echo "  claude-jason           # one-off (per-command env)"
   echo
   echo "Current shell account: $(claude-whoami)"
-  echo "(or run $CLAUDE_BIN directly to bypass this guard)"
+  echo "(or run $CLAUDE_BIN directly to launch the master account)"
   return 1
 }
 FNS
