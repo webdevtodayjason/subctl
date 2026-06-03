@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # lib/backfill.sh — operator-invoked memory backfill helpers.
 #
 # Memory Init (post-v2.8.10) — wraps the master daemon's /memory/backfill/*

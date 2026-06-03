@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # lib/voice.sh — subctl voice layer install / enable / disable / status.
 #
 # v2.8.0. Mirrors lib/evy.sh's launchd plumbing for the master daemon

@@ -22,15 +22,36 @@ jobs:
       - name: Shellcheck
         # macOS runner uses /bin/bash 3.2 by default — avoid mapfile/globstar.
         # find + xargs is portable across bash 3.2 and 5.x.
+        #
+        # bin/subctl is checked in a SEPARATE invocation, alone, WITHOUT -x.
+        # It sources the entire lib/ tree; when the sourced files are also
+        # present as inputs, shellcheck follows them (regardless of -x) and the
+        # combined source graph explodes — ~76 min then OOM (SIGKILL) on the
+        # macos-15-arm64 runner. Checked alone (no source targets co-present,
+        # no -x) it is ~0.2s. The lib/ files carry their own `# shellcheck
+        # shell=bash` directives so they no longer need bin/subctl's context.
         run: |
           find install.sh uninstall.sh bin lib providers scripts \
-            \( -name '*.sh' -o -path 'bin/subctl' \) -type f > /tmp/sh_files.txt
-          echo "Files to check:"
+            \( -name '*.sh' -o -path 'bin/subctl' \) -type f \
+            ! -path 'bin/subctl' > /tmp/sh_files.txt
+          echo "Files to check (batch):"
           cat /tmp/sh_files.txt
           xargs shellcheck -x --severity=error < /tmp/sh_files.txt
+          echo "Checking bin/subctl standalone (no -x):"
+          shellcheck --severity=error bin/subctl
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
+
+      - name: Install dashboard deps
+        # bun build resolves imports from node_modules. dashboard/server.ts pulls
+        # in components/evy (@earendil-works/pi-ai, smol-toml, shell-quote) plus
+        # its own smol-toml. Install both workspaces (lockfiles are committed) so
+        # the build-check can resolve them — without this it errored "Could not
+        # resolve", masked for a week behind the shellcheck OOM at the prior step.
+        run: |
+          (cd components/evy && bun install --frozen-lockfile)
+          (cd dashboard && bun install --frozen-lockfile)
 
       - name: Build-check dashboard
         # `bun --check` evaluates the file (which would start Bun.serve and hang).

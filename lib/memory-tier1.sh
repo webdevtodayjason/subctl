@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # lib/memory-tier1.sh — Tier 1 candidate queue CLI helpers.
 #
 # Memory Init #5 Phase 3. Mirrors lib/memory-kernel.sh in shape: thin shell

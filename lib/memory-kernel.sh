@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # lib/memory-kernel.sh — Memory consciousness cycle CLI helpers.
 #
 # Memory Init #5 Phase 3 (Worker C / integration). Mirrors lib/memori.sh
