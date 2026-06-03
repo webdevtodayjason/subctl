@@ -43,6 +43,16 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
 
+      - name: Install dashboard deps
+        # bun build resolves imports from node_modules. dashboard/server.ts pulls
+        # in components/evy (@earendil-works/pi-ai, smol-toml, shell-quote) plus
+        # its own smol-toml. Install both workspaces (lockfiles are committed) so
+        # the build-check can resolve them — without this it errored "Could not
+        # resolve", masked for a week behind the shellcheck OOM at the prior step.
+        run: |
+          (cd components/evy && bun install --frozen-lockfile)
+          (cd dashboard && bun install --frozen-lockfile)
+
       - name: Build-check dashboard
         # `bun --check` evaluates the file (which would start Bun.serve and hang).
         # `bun build` parses + bundles without running, exits non-zero on errors.
