@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # lib/cognee.sh — subctl Cognee sidecar install / uninstall / status.
 #
 # v2.8.x — Memory Init #1 first-class install. Mirrors lib/memori.sh

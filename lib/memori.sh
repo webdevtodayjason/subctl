@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # lib/memori.sh — subctl Memori sidecar install / uninstall / status.
 #
 # v2.8.10 — Memory Init #3 (Phase 3b). Mirrors lib/voice.sh exactly,
