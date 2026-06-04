@@ -171,7 +171,9 @@ export function handleV4Events(req: Request): Response {
       // v3 is down.
       (async () => {
         try {
-          const up = await fetch(`${V3_BASE}/api/evy/events`, {
+          // The v3 master serves the SSE bus UNPREFIXED at /events (the
+          // dashboard's generic proxy strips /api/evy/* before forwarding).
+          const up = await fetch(`${V3_BASE}/events`, {
             headers: { Accept: "text/event-stream" },
             signal: req.signal,
           });
