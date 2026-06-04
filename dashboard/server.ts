@@ -75,7 +75,7 @@ import { execCommand } from "../components/evy/policy/exec.ts";
 import { classifySpawnError } from "./lib/spawn-errors.ts";
 // v4 BFF bridge (Fork A): routes chat to the v4 Rust daemon (:8797) and injects
 // translated tokens into the browser's /api/evy/events bus. See lib/v4-bridge.ts.
-import { handleV4Events, handleV4Chat, proxyV4Json, proxyV4WithSession } from "./lib/v4-bridge.ts";
+import { handleV4Events, handleV4Chat, proxyV4Json, proxyV4WithSession, proxyV4PostWithSession } from "./lib/v4-bridge.ts";
 // PR 11 (v2.7.0): policy-audit dashboard surface. Pure request handlers live
 // in dashboard/lib/audit-api.ts so they're testable without booting the
 // server. The SSE stream is built inline below — it owns its ReadableStream.
@@ -2948,6 +2948,13 @@ const server = Bun.serve({
         url.pathname === "/api/evy/transcript/util")
     ) {
       return proxyV4WithSession(req, url.pathname);
+    }
+    // P3 — compaction + clear write paths go to v4 (archive + persist).
+    if (req.method === "POST" && url.pathname === "/api/evy/transcript/compact") {
+      return proxyV4PostWithSession(req, url.pathname);
+    }
+    if (req.method === "POST" && url.pathname === "/api/evy/transcript/clear") {
+      return proxyV4PostWithSession(req, url.pathname, { resetSession: true });
     }
 
     if (url.pathname === "/api/live") {

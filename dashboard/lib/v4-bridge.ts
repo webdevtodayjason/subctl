@@ -273,6 +273,48 @@ export async function proxyV4WithSession(req: Request, v4Path: string): Promise<
   }
 }
 
+/**
+ * Proxy a POST to v4 with the current session injected (P3 compact / clear).
+ * `resetSession` drops the held session id after the call ("New Chat").
+ */
+export async function proxyV4PostWithSession(
+  req: Request,
+  v4Path: string,
+  opts?: { resetSession?: boolean },
+): Promise<Response> {
+  const incoming = new URL(req.url);
+  const target = new URL(`${V4_BASE}${v4Path}`);
+  incoming.searchParams.forEach((v, k) => target.searchParams.set(k, v));
+  if (currentV4Session) target.searchParams.set("session_id", currentV4Session);
+  let body: string | undefined;
+  try {
+    body = await req.text();
+  } catch {
+    body = undefined;
+  }
+  try {
+    const up = await fetch(target, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: body || undefined,
+      signal: req.signal,
+    });
+    const text = await up.text();
+    if (opts?.resetSession) {
+      currentV4Session = null;
+      broadcast(sse("transcript_cleared", {}));
+    } else {
+      broadcast(sse("transcript_compacted", {}));
+    }
+    return new Response(text, {
+      status: up.status,
+      headers: { "Content-Type": up.headers.get("Content-Type") ?? "application/json" },
+    });
+  } catch (err) {
+    return Response.json({ ok: false, error: `v4 daemon unreachable: ${(err as Error).message}` }, { status: 502 });
+  }
+}
+
 /** Simple JSON pass-through to v4 (P0 /health, and per-phase migrated routes). */
 export async function proxyV4Json(req: Request, v4Path: string): Promise<Response> {
   try {
