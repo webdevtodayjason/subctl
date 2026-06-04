@@ -250,6 +250,29 @@ export function resetV4Session(): void {
   currentV4Session = null;
 }
 
+/**
+ * Proxy a GET to v4 with the current chat session injected (P2 transcript /
+ * context / util). The browser asks session-less (`/transcript?limit=N`); the
+ * BFF supplies the session_id it holds — Goal 6: the BFF holds only the
+ * session_id needed to bridge v3's stateless UI to v4's session model.
+ */
+export async function proxyV4WithSession(req: Request, v4Path: string): Promise<Response> {
+  const incoming = new URL(req.url);
+  const target = new URL(`${V4_BASE}${v4Path}`);
+  incoming.searchParams.forEach((v, k) => target.searchParams.set(k, v));
+  if (currentV4Session) target.searchParams.set("session_id", currentV4Session);
+  try {
+    const up = await fetch(target, { method: "GET", headers: { Accept: "application/json" }, signal: req.signal });
+    const text = await up.text();
+    return new Response(text, {
+      status: up.status,
+      headers: { "Content-Type": up.headers.get("Content-Type") ?? "application/json" },
+    });
+  } catch (err) {
+    return Response.json({ ok: false, error: `v4 daemon unreachable: ${(err as Error).message}` }, { status: 502 });
+  }
+}
+
 /** Simple JSON pass-through to v4 (P0 /health, and per-phase migrated routes). */
 export async function proxyV4Json(req: Request, v4Path: string): Promise<Response> {
   try {
