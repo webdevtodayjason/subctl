@@ -73,6 +73,9 @@ import { aggregateAll as aggregateCostAll, type AccountCostSummary } from "./lib
 // imports; migrations land incrementally. Tracked in docs/exec-migration.md.
 import { execCommand } from "../components/evy/policy/exec.ts";
 import { classifySpawnError } from "./lib/spawn-errors.ts";
+// v4 BFF bridge (Fork A): routes chat to the v4 Rust daemon (:8797) and injects
+// translated tokens into the browser's /api/evy/events bus. See lib/v4-bridge.ts.
+import { handleV4Events, handleV4Chat, proxyV4Json } from "./lib/v4-bridge.ts";
 // PR 11 (v2.7.0): policy-audit dashboard surface. Pure request handlers live
 // in dashboard/lib/audit-api.ts so they're testable without booting the
 // server. The SSE stream is built inline below — it owns its ReadableStream.
@@ -2919,6 +2922,22 @@ const server = Bun.serve({
     // 308 redirect. Will be removed in v4.x.
     if (url.pathname.startsWith("/api/master/")) {
       url.pathname = "/api/evy/" + url.pathname.slice("/api/master/".length);
+    }
+
+    // ── v4 BFF seam (Fork A, strangler) ─────────────────────────────────────
+    // The chat+events PAIR is owned by the v4 bridge: chat POSTs go to the v4
+    // daemon and reply tokens are injected into the long-lived events bus the
+    // browser already listens on. Everything else still falls through to the v3
+    // master proxy below (migrated phase-by-phase). Placed before all other
+    // handlers so these three routes win.
+    if (url.pathname === "/health") {
+      return proxyV4Json(req, "/health");
+    }
+    if (url.pathname === "/api/evy/chat" && req.method === "POST") {
+      return handleV4Chat(req);
+    }
+    if (url.pathname === "/api/evy/events" && req.method === "GET") {
+      return handleV4Events(req);
     }
 
     if (url.pathname === "/api/live") {
