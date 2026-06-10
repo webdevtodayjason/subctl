@@ -31,6 +31,35 @@ interface MasterNotifyCreds {
 
 let _creds: MasterNotifyCreds | null = null;
 
+// v4 cutover (2026-06-09): the Telegram listener + bot ownership moved to
+// the v4 Rust daemon ([comms.telegram] in ~/.config/subctl/v4/config.toml)
+// and evy-notify.json was retired from this tree (parked at
+// evy-notify.json.v3-disabled). When the creds file is absent, outbound
+// text routes through v4's notify surface so alert paging keeps working
+// with a single getUpdates owner. Voice notes still require direct creds.
+const EVY_V4_NOTIFY_URL =
+  process.env.SUBCTL_V4_NOTIFY_URL ?? "http://127.0.0.1:8797/api/evy/notify";
+
+async function sendViaV4Notify(
+  text: string,
+): Promise<{ ok: boolean; message_id?: number; error?: string }> {
+  try {
+    const r = await fetch(EVY_V4_NOTIFY_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    const json = (await r.json()) as { ok: boolean; error?: string };
+    if (!json.ok) return { ok: false, error: json.error ?? "v4 notify error" };
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      error: `v4 notify unreachable at ${EVY_V4_NOTIFY_URL}: ${(err as Error).message}`,
+    };
+  }
+}
+
 function getCreds(): MasterNotifyCreds {
   if (_creds) return _creds;
   const raw = readFileSync(EVY_NOTIFY_CONFIG, "utf8");
@@ -119,7 +148,14 @@ async function sendMessage(
   text: string,
   opts: { parse_mode?: "MarkdownV2" | "HTML" } = {},
 ): Promise<{ ok: boolean; message_id?: number; error?: string }> {
-  const creds = getCreds();
+  let creds: MasterNotifyCreds;
+  try {
+    creds = getCreds();
+  } catch {
+    // No local bot creds (v4 owns them) — route through the v4 daemon.
+    // parse_mode is dropped on this path; v4 notify sends plain text.
+    return sendViaV4Notify(stripReasoningChannels(text));
+  }
   const url = `https://api.telegram.org/bot${creds.bot_token}/sendMessage`;
   // v2.8.9 — strip reasoning-channel markers before send. Local models
   // (notably gemma-4-26b-a4b-it MLX 4-bit) leak `<|channel>thought\n<channel|>`

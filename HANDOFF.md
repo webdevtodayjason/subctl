@@ -1,141 +1,56 @@
-# HANDOFF.md — session 2026-05-23 (v2.9.0 Tier 1 Consolidator)
+# HANDOFF — subctl / Evy
 
-**Operator:** Jason Brashear
-**Repo:** `webdevtodayjason/subctl` @ `/Users/you/code/subctl`
-**Branch:** `main` (no feature branches in flight)
-**Main HEAD:** (after this PR merges) v2.9.0 squash-merge of `feat/tier1-consolidator`
-**VERSION file:** `2.9.0`
-**Last tag:** `v2.9.0` (after tag is pushed)
-**Vault:** `/Users/you/Documents/Obsidian Vault/Subctl/` — refreshed 2026-05-22 21:30 CDT in prior session; new entries for v2.9.0 land at merge time
+**Session:** 2026-06-09 (gap analysis — supersedes the 06-02 handoff, which predated the Fork A deploy and the Phase 2 push).
+**Companion docs:** vault `Subctl-Rust/01 - Current State.md` · `Subctl-Rust/04 - Roadmap.md` (7 cutover criteria) · `Subctl-Rust/Initiatives/2026-06-04 - v4 full cutover (every-panel parity).md` · cutover test report `subctl-rust crates/evy/tests/cutover/REPORT.md`.
 
-## Quick verify (run these first on next session)
-
-```bash
-cd /Users/you/code/subctl
-git log --oneline -1                                              # expect v2.9.0 squash-merge
-git tag -l 'v*' | sort -V | tail -1                               # expect: v2.9.0
-cat VERSION                                                       # expect: 2.9.0
-curl -s http://127.0.0.1:8787/api/version                         # expect: {"version":"2.9.0"}
-curl -s http://127.0.0.1:8788/health | jq .version                # expect: "2.9.0"
-curl -s http://127.0.0.1:8745/health | jq .total_memories         # expect: 225 (or higher)
-ls ~/Library/LaunchAgents/com.subctl.claude-mem-reaper.plist 2>&1 # expect: file not found (retired)
-```
-
-If `main HEAD` doesn't match, fetch + verify before doing anything else.
-
-## Releases (2026-05-22 → 2026-05-23)
-
-| Tag | What | PR | Notes |
-|-----|------|-----|-------|
-| **v2.8.13** | Phase 4 local backend picker (LM Studio / Ollama / oMLX) + first-boot migration | #13 | 11 CodeRabbit passes |
-| **v2.8.14** | Watchdog re-classify on pane-hash change + observability | #14 | Fixes `claude-birdie` false alerts |
-| **v2.8.15** | Cognee write path — Tier 3 → Tier 4 promotion ticker | #15 | **Shipped broken** (silent entity_id bug) |
-| **v2.8.16** | Cognee entity_id fix | #16 | 222/222 promoted on first tick |
-| **v2.8.17** | Chat dropdown enumerates enabled models + bulk toggle | #17 | Worker stalled mid-task; salvaged + finished manually |
-| **v2.8.18** | API-key privacy guard + usage resilience | #18 | 8 CodeRabbit passes |
-| **v2.9.0** | Tier 1 Consolidator — LLM-driven dedup of pending Tier 1 candidates | (this PR) | New `POST /memory/tier1/consolidate` endpoint + dashboard ⚗ button + modal. `text_override` on approve endpoint so consolidator-merged text wins. Operator-in-the-loop required. |
-
-## Infrastructure work today
-
-- **claude-mem plugin upgraded** 9.0.12 → 13.3.0 via `/plugins` slash command. Manual `bun install` required inside the 13.3.0 cache dir — upstream missing install script. New daemon PID 1317.
-- **claude-mem reaper retired** (`com.subctl.claude-mem-reaper` launchd job + scripts removed). Was load-bearing for 9.0.12's retry_count bug; 13.x drops that mechanism.
-- **Cognee promotion drained** 3 → 225 memories after v2.8.16 fix.
-- **Tier 1 memory budget raised** 2200 → 4000 chars (`SUBCTL_MEMORY_LIMIT=4000` in master plist EnvironmentVariables). Unblocks the 63 pending Tier 1 approvals.
-- **System memory recovered** 127 GB → 76 GB used (killed 545 stuck 9.0.12 claude-mem retries + a runaway `--help` loop at 99% CPU).
-
-## Fleet status (pre-v2.9.0 merge — both hosts still on v2.8.18)
-
-| Host | Master | Dashboard | Network |
-|------|--------|-----------|---------|
-| Local | v2.8.18 ✓ | v2.8.18 ✓ | localhost |
-| M3 Ultra | v2.8.18 ✓ | v2.8.18 ✓ | 192.168.100.62 (home), 100.84.108.16 (office Tailscale) |
-
-After this PR merges + tag is pushed + deploy runs, both hosts move to v2.9.0.
-
-Cognee sidecar runs LOCAL ONLY (not M3). M3's cognee-promotion stays disarmed as expected.
-
-## Open work (priority order)
-
-### 1. v2.9.0 smoke test — actually run the consolidator
-
-The consolidator endpoint shipped behind operator-in-the-loop. Smoke test path:
-1. Open Memory tab in dashboard
-2. Click ⚗ Consolidate (LLM) button
-3. Modal renders with proposal — review the consolidated set + char budget meter
-4. Edit any entries inline, expand the Dropped section to spot-check
-5. Click Apply — should iterate through 1 approve per merged group + N rejects for merged-from + N rejects for dropped
-
-If anything's off, file a bug. The 63 pending candidates are the perfect test bed.
-
-### 2. v2.8.19 — per-alias backoff + composite-key cache
-
-Documented in v2.8.18 CHANGELOG as deferred. Lift `_usagePollBackoffUntil` from scalar to `Map<alias, BackoffState>` so a healthy alias keeps polling while a 429'd alias backs off independently. Same for `_usageLastGood` cache key (alias → alias+config_dir composite). ~50 LOC + tests.
-
-### 3. Handoff CLI for model-switch UX
-
-Operator explicitly named this today. `subctl model set <role> <provider> <model>` shells to master `/api/master/supervisor`. ~80 LOC in `lib/cli.sh`. Single worker, 30-45 min.
-
-### 4. AICTX integration retry
-
-`pip install aictx` worked. `aictx install` crashed on RepoMap Tree-sitter EOF prompt. Try `aictx install --help` for a non-interactive flag OR wrap in `script -q /dev/null aictx install` for a real TTY.
-
-### 5. Memory cycle Phase 4 — context slimming
-
-Deferred since 2026-05-17 Memory Init #5 waiting on real reviewer telemetry. With Cognee promotion live (222 curated → graph) the telemetry signal NOW exists. Unblocks. ~200 LOC + test surface. Single worker, 90-120 min.
-
-### 6. Provider Model Catalog Phase 3 — aggregator routing
-
-OpenRouter / Bedrock / Vercel / Cloudflare. ~400 LOC. Lower urgency, matrix completion.
-
-## Known issues operator surfaced today, NOT YET fixed in code
-
-- **M3 accounts.conf has stale openrouter row** — the sk-or-v1-d0ae21be... key was pasted as the alias. v2.8.18 ships the CLI guard + UI redaction so new ones blocked + masked. **Operator said they'd handle via the dashboard** (generate a new openrouter key, add through the web UI Secrets panel).
-- **M3 usage data 429-rate-limited** — Anthropic's `/api/oauth/usage` endpoint throttles busy accounts. v2.8.18 ships stale fallback + backoff so the dashboard shows last-known data with "·stale Xm" indicator instead of blanks. Self-heals as the rate-limit lifts. Also: `claude-jason` has no `.credentials.json` on M3 — would need `subctl auth claude claude-jason` run locally on M3 to populate. Not blocking.
-
-## Operator preferences captured this session (saved to memory)
-
-- **Loud idle signal** — at end-of-turn when everything's idle, fire `🚨🚨🚨 ALL HANDS IDLE — AWAITING USER 🚨🚨🚨` so the operator can scan-for-it when returning to the window.
-- **IN FLIGHT: framing** when work is pending — surface what's running (worker ID, CodeRabbit pass, etc.) so the operator knows whether to expect a notification or jump in.
-
-## Lessons learned today (read these first if you're picking up cold)
-
-These are in the vault at `/Users/you/Documents/Obsidian Vault/Subctl/Lessons Learned/`:
-
-1. **`2026-05-22 - Silent ticker bugs need scanned-but-empty signals`** — v2.8.15 ran "successfully" for 8 hours promoting 0 rows because `errors[]` was empty and logs gated on `scanned > 0`. Track work-attempted, not just work-succeeded.
-2. **`2026-05-22 - Salvage stalled-worker output before respawning`** — chat-dropdown-fix worker stalled mid-task. `git diff --stat HEAD` showed 4 of 6 deliverables already landed. Killed worker, committed the partial work, finished the gap manually. Saved 60-90 min vs respawn.
-3. **`2026-05-22 - Worker SendMessage race with idle notification`** — workers go idle after their first SendMessage, then process the next inbox message as a "status check" instead of new work. Pattern: explicit "NEW WORK — not a status check on your prior commit" framing in the first sentence breaks through.
-
-## Active processes worth knowing
-
-| Process | PID (last check) | Purpose |
-|---|---|---|
-| `com.subctl.master` (local) | check via `launchctl list \| grep com.subctl.master` | Master daemon (`:8788`) |
-| `com.subctl.dashboard` (local) | check via launchctl | Dashboard daemon (`:8787`) |
-| `com.subctl.cognee` (local) | check via launchctl | Cognee sidecar (`:8745`) |
-| `com.subctl.memori` (local) | check via launchctl | Memori sidecar (`:8746`) |
-| claude-mem worker-service daemon | PID 1317 | 13.3.0; auto-spawns when needed |
-
-## Where the canonical docs live
-
-- **Repo root:** this file (`HANDOFF.md`) + `CHANGELOG.md` + `VERSION` + `ORCHESTRATION.md`
-- **Vault root:** `/Users/you/Documents/Obsidian Vault/Subctl/`
-  - `01 - Current State.md` (always read first; refreshed today)
-  - `04 - Roadmap.md` (refreshed today)
-  - `Daily Updates/2026-05-22.md` (six-release wave narrative — prior session)
-  - `Orchestration Handoffs/2026-05-22-eod.md` (prior session's EOD snapshot — the v2.9.0 vault entries land at merge time)
-  - `Lessons Learned/2026-05-22 - *.md` (3 lessons captured 2026-05-22)
-  - `Initiatives/Tier 1 Consolidator.md` (now shipped as v2.9.0 — keeps the plan as the design-of-record)
-
-## Memory system
-
-Auto-memory at `/Users/you/.claude/projects/-Users-sem-code-subctl/memory/`. Includes:
-- `feedback_idle_signal.md` (today's addition — the loud idle signal rule)
-- `accounts_inventory.md`, `feedback_advisor_first.md`, `feedback_pivot_when_wrong.md`, etc.
-
-Check `MEMORY.md` for the full index.
-
-claude-mem 13.3.0 actively indexing this session's observations into the persistent cross-session memory (use `mcp__plugin_claude-mem_mcp-search__*` tools to query in future sessions).
+> Verified live (curl + git + auth.json inspection) 2026-06-09. Read this first if you're a fresh session.
 
 ---
 
-🚨🚨🚨 ALL HANDS IDLE — AWAITING USER 🚨🚨🚨
+## TL;DR — where we actually are
+
+The launch gate is the **7 cutover criteria** (vault Roadmap). **ALL 7 GREEN as of 2026-06-09 8:24 PM — THE GATE IS PASSED.** v4 is launched as the operator console. Everything through Phase 2 of the full cutover is merged + deployed. Remaining work is the every-panel-parity tail (Phases 3–7), not the gate.
+
+| Criterion | Status (live-verified 06-09) |
+|---|---|
+| #1 claude+codex spawn | **GREEN both halves.** Claude live (`8fbceb2`). Codex live-verified 06-09 after operator `codex login` ×2: native spawn on openai-jason → authenticated boot (gpt-5.5) → computed `4205` → native captures → native kill → registry drained. Caveat: the automated mandate paste was eaten by codex's directory-trust prompt (manual delivery used for the proof) — small slice open in the closet (`codex.rs` ready/trust handling) |
+| #2 policy vectors | **GREEN** — 134 tests + 76 cross-language vectors |
+| #3 HMAC trust marker | **GREEN** — byte-for-byte golden fixtures vs v3 |
+| #4 dashboard console | **GREEN** — v4 `:8797` is the browser front door (Phase 0), Overview native (Phase 1) |
+| #5 scheduler real cron job | **GREEN, live (06-09, `94c4a32`)** — InvokeShell real, `jobs.toml` boot loader landed; `usage-snapshot` job (hourly, min 7 UTC) fired live (run row Succeeded, snapshot artifact) and survived restart (`unchanged: 1`). Nit in closet: replacing a job definition wipes its run history |
+| #6 telegram ask path | **GREEN, live (06-09 8:24 PM)** — v3 listener disarmed (creds at `evy-notify.json.v3-disabled`), v4 owns the bot. `POST /api/evy/notify`+`/api/evy/ask` (`ef26db4`); plain-message-resolves-lone-ask fallback (`3b2abef`, live finding: operator types plain messages). Live round-trip: ask → operator typed "Got it!" → `{ok:true, reply}` |
+| #7 e2e workflow no-fallback | **GREEN, rigorous** — live worker computed `4321` via native spawn+captures, zero v3 fallback (06-06) |
+
+## Live topology (all healthy as of 06-09)
+
+| Port | Service | Notes |
+|---|---|---|
+| `:8797` | v4 Rust daemon (`com.subctl.evy-v4`) | browser front door; binary deployed 06-09 = current `main` (`94c4a32`) |
+| `:8787` | v3 Bun dashboard (`com.subctl.dashboard`) | BFF/proxy target; Fork A bridge intact |
+| `:8788` | v3 master (`com.subctl.evy`) | still authoritative: teams UI data, telegram, providers, voice |
+| `:8789` | TTS | v3 |
+
+## Git state
+
+- **subctl:** `origin/main` = local `main` = `feat/v4-web-frontend-integration` = `48123b2` (bridge merged; the feature branch is fully landed — safe to switch back to `main`). VERSION `3.3.12`, last tag `v3.3.12`. Untracked: `.mcp.json`, `CLAUDE.md` (CodeGraph opt-in — intentional, decide whether to commit).
+- **subctl-rust:** `main` = `origin/main` = `94c4a32`. Work happens in worktree `~/code/subctl-rust-evy-chat`. ⚠️ The base checkout `~/code/subctl-rust` sits on stale branch `feat/evy-persona-conversational-mode` (ahead 1: `d5554ce` Evy-persona vendor commit — merge or drop). Tag `v0.8.0` local-only.
+
+## Launch sequence (gap-ordered)
+
+1. ~~Operator codex re-auth~~ **DONE 06-09** — criterion #1 fully green (see table). Remaining codex nit: trust-prompt directive delivery (closet).
+2. ~~Criterion #5 slice~~ **DONE 06-09** (`94c4a32`, live-verified — see table).
+3. ~~Criterion #6 flip~~ **DONE 06-09 evening** (see table) — last step: one live ask round-trip (operator reply). Known cost: v3 alert-pushes dark until something calls v4 `/api/evy/notify` (follow-up #8 remainder, in closet).
+4. ~~Declare the gate~~ **GATE PASSED 2026-06-09 8:24 PM** — all 7 criteria live-green. v4 is launched as the operator console.
+5. **Full every-panel parity tail (operator's 06-04 expanded scope):** Phase 2 leftovers (projects CRUD, sessions list/preview, watchdog diag — all proxied today, nothing broken) → Phases 3–6 (chat/models/memory panels native, each XL/L) → Phase 7 retire v3 Bun + master.
+
+## Gotchas (carried forward, still true)
+
+- **CI gate for subctl-rust** = `cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace` (NOT `cargo check`).
+- **launchd PATH is bare** — absolute bins only (`tmux_bin()` precedent).
+- **If you touch `.github/workflows/ci.yml`** (subctl): keep `bin/subctl` out of the shellcheck `-x` batch; keep the dashboard `bun install` step.
+- v4 chat needs the model pin (`gemma-4-26b-a4b-it-mlx` in `~/.config/subctl/v4/config.toml`) — already in place.
+- Any total freeze → `sysctl kern.num_files kern.maxfiles` first.
+
+## Closet entries added 2026-06-09
+
+Criterion #5 live-hollow · criterion #6 not-live · stale `~/code/subctl-rust` checkout — see `Follow-Ups & To-Dos.md § subctl-rust v4 cutover`.
