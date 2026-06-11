@@ -2599,6 +2599,7 @@ body.terminal-disabled #terminal-modal { display: none !important; }
 }
 .profile-row .actions button:hover { color: #c4c4c4; border-color: #555; }
 .profile-row .actions .auth-btn { color: #5fd7ff; border-color: #2a4a5a; }
+.profile-row .actions .launch-btn { color: #8ec07c; border-color: #2f4a2a; }
 .profile-row .actions .delete-btn:hover { color: #d66c6c; border-color: #4a1f1f; }
 
 /* ── Skills screen ────────────────────────────────────────────────────── */
