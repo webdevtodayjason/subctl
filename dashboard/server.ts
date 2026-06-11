@@ -3309,6 +3309,10 @@ const server = Bun.serve({
                 try { controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)); }
                 catch { /* client gone */ }
               };
+              // Immediate comment frame terminates the response head even
+              // when the snapshot below fails (missing/rotated file) — see
+              // /api/update/events for the Bun lazy-head rationale.
+              try { controller.enqueue(encoder.encode(": open\n\n")); } catch { /* client gone */ }
               // Initial: send the last 200 lines so the UI doesn't start empty
               try {
                 const raw = readFileSync(path, "utf8");
@@ -3445,6 +3449,12 @@ const server = Bun.serve({
             };
             let lastSize = 0;
             try { lastSize = existsSync(path) ? statSync(path).size : 0; } catch { lastSize = 0; }
+            // Immediate comment frame terminates the response head — the
+            // snapshot below is async (.then) AND conditional (j.ok), so
+            // without this an empty/missing audit log left the head
+            // unterminated until the 25s keep-alive. See /api/update/events
+            // for the Bun lazy-head rationale.
+            try { controller.enqueue(encoder.encode(": open\n\n")); } catch { /* client gone */ }
             // Initial snapshot: send the most recent tail (50 entries) so
             // the UI doesn't start empty.
             try {
@@ -5242,6 +5252,15 @@ const server = Bun.serve({
           };
           updateEventSubscribers.add(subscriber);
 
+          // Immediate SSE comment frame (W6 row ① fix-at-source). Bun only
+          // finalizes a streaming response's HEAD when the first chunk
+          // enqueues — without this, an idle stream's head sat unterminated
+          // on the wire until the 15s keep-alive (bare curl hung, browsers
+          // direct-to-v3 waited 15s to open, and the v4 reverse-proxy's
+          // hyper client correctly refused to forward an unfinished head).
+          // EventSource ignores comment frames.
+          subscriber.write(": open\n\n");
+
           // Replay buffered events so a late-joining modal sees what the
           // run produced before its EventSource handshake completed.
           for (const ev of updateEventBuffer) {
@@ -6019,6 +6038,12 @@ const server = Bun.serve({
               },
             };
             session.subscribers.add(subscriber);
+            // Immediate comment frame terminates the response head — a
+            // fresh auth session has an empty event buffer, which left the
+            // head unterminated until the first auth event or the 15s
+            // keep-alive. See /api/update/events for the Bun lazy-head
+            // rationale.
+            subscriber.write(": open\n\n");
             // Replay buffered events for late-joiners (operator clicked
             // start, then took 200ms to open the EventSource).
             for (const ev of session.events) {
