@@ -81,6 +81,23 @@ run() { $DRY_RUN && echo "[dry-run] $*" || eval "$@"; }
 # The new com.subctl.evy.plist is loaded by `subctl evy enable` (operator-driven),
 # not by this migration. We tear down the old plist here so the v2.x daemon
 # stops running before the operator brings up the v3.0 daemon.
+# Coherence guarantee for the dual-name window (v3.3.x row ④): a handful of
+# modules still resolve the legacy master/ path while the canonical tier1
+# surfaces (tier1-memory.ts, dashboard /api/memory/tier1, v4 memory_http.rs)
+# read evy/. Ensure evy/ exists and master -> evy is a symlink, so writes
+# through EITHER name land in the same files. Without this, a FRESH install
+# (no v2.x artifacts, so the rename migration below no-ops) silently splits
+# state: dashboard tier1 edits to evy/ never reach a module reading master/.
+# No-op when master/ is a real dir — the rename migration owns that case.
+subctl_ensure_evy_layout() {
+  local cfg_dir="${HOME:?HOME unset}/.config/subctl"
+  run mkdir -p "$cfg_dir/evy"
+  if [[ ! -e "$cfg_dir/master" ]]; then
+    run ln -s "$cfg_dir/evy" "$cfg_dir/master"
+    subctl_info "  compat symlink: $cfg_dir/master → $cfg_dir/evy"
+  fi
+}
+
 subctl_migrate_to_evy() {
   local home_dir="${HOME:?HOME unset}"
   local cfg_dir="$home_dir/.config/subctl"
@@ -99,12 +116,16 @@ subctl_migrate_to_evy() {
   if [[ -d "$new_state" && ( ! -e "$old_state" || -L "$old_state" ) ]] \
      && [[ ! -f "$old_plist" ]]; then
     subctl_info "v3.0 Evy rename migration already complete (skipping)"
+    subctl_ensure_evy_layout   # re-create the symlink if it was removed
     return 0
   fi
 
-  # Nothing to migrate? (fresh install, no legacy artifacts)
+  # Nothing to migrate? (fresh install, no legacy artifacts) — still lay
+  # down the coherent evy/ + master-symlink layout so the daemon's first
+  # write lands in evy/ regardless of which path name the module resolves.
   if [[ ! -f "$old_plist" && ! -d "$old_state" && ! -f "$old_notify" ]]; then
     subctl_info "no v2.x master artifacts on disk — Evy rename migration not needed"
+    subctl_ensure_evy_layout
     return 0
   fi
 
@@ -168,6 +189,7 @@ subctl_migrate_to_evy() {
     subctl_info "  removed $old_plist"
   fi
 
+  subctl_ensure_evy_layout
   subctl_ok "Evy rename migration complete"
   subctl_info "  run 'subctl evy enable' to bring up the v3.0 daemon"
 }
