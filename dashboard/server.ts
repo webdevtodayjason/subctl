@@ -4749,9 +4749,11 @@ const server = Bun.serve({
     // system prompt every turn. Edits land in the next turn without
     // master restart.
     if (url.pathname === "/api/memory/tier1" && req.method === "GET") {
-      const home = process.env.HOME ?? "";
-      const memPath = join(home, ".config/subctl/evy/memory.md");
-      const userPath = join(home, ".config/subctl/evy/user.md");
+      // SUBCTL_CONFIG_DIR (not $HOME hardcode) — same resolution as the
+      // daemon's tier1-memory.ts and v4's memory_http.rs, so all three
+      // surfaces read/write the same evy/ files on every install.
+      const memPath = join(SUBCTL_CONFIG_DIR, "evy", "memory.md");
+      const userPath = join(SUBCTL_CONFIG_DIR, "evy", "user.md");
       const readSafe = (p: string, limit: number) => {
         if (!existsSync(p)) return { exists: false, content: "", char_count: 0, char_limit: limit };
         try {
@@ -4773,10 +4775,9 @@ const server = Bun.serve({
       if (body.which !== "memory" && body.which !== "user") {
         return Response.json({ ok: false, error: "which must be 'memory' or 'user'" }, { status: 400 });
       }
-      const home = process.env.HOME ?? "";
       const path = body.which === "memory"
-        ? join(home, ".config/subctl/evy/memory.md")
-        : join(home, ".config/subctl/evy/user.md");
+        ? join(SUBCTL_CONFIG_DIR, "evy", "memory.md")
+        : join(SUBCTL_CONFIG_DIR, "evy", "user.md");
       const limit = body.which === "memory" ? 2200 : 1375;
       const content = (body.content ?? "").trim();
       if (content.length > limit) {
@@ -4784,7 +4785,7 @@ const server = Bun.serve({
       }
       try {
         const { mkdirSync, writeFileSync } = require("node:fs") as typeof import("node:fs");
-        mkdirSync(join(home, ".config/subctl/evy"), { recursive: true });
+        mkdirSync(join(SUBCTL_CONFIG_DIR, "evy"), { recursive: true });
         writeFileSync(path, content);
         return Response.json({ ok: true, path, char_count: content.length, char_limit: limit, message: "next agent prompt will pick up the new content" });
       } catch (err) {

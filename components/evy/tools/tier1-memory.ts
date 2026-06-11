@@ -18,6 +18,13 @@
 // tiny), so writes from either side land in the next turn without a
 // daemon restart.
 //
+// Path contract (v3.3.x row ④ fix): evy/ is the canonical dir post-v3.0
+// rename, resolved under $SUBCTL_CONFIG_DIR (default ~/.config/subctl) —
+// the same resolution the dashboard tier1 endpoint and v4's memory_http.rs
+// use. Never the legacy master/ path: that only works on hosts where the
+// install-time master→evy compat symlink exists, and silently splits the
+// files on a fresh install.
+//
 // Hermes uses 2200/1375 char limits; we adopt the same as a default to
 // keep the always-loaded budget bounded. Configurable via env.
 
@@ -34,9 +41,18 @@ import {
   type WriteTier1Opts,
 } from "../tier1-candidates";
 
-const MASTER_DIR = join(homedir(), ".config", "subctl", "master");
-const MEMORY_PATH = join(MASTER_DIR, "memory.md");
-const USER_PATH = join(MASTER_DIR, "user.md");
+// Resolved per call (not at module load) so the daemon's per-turn re-read
+// and the Bun test harness both see the current SUBCTL_CONFIG_DIR.
+function evyDir(): string {
+  const cfg = process.env.SUBCTL_CONFIG_DIR ?? join(homedir(), ".config", "subctl");
+  return join(cfg, "evy");
+}
+export function memoryPath(): string {
+  return join(evyDir(), "memory.md");
+}
+export function userPath(): string {
+  return join(evyDir(), "user.md");
+}
 const MEMORY_LIMIT = parseInt(process.env.SUBCTL_MEMORY_LIMIT ?? "2200", 10);
 const USER_LIMIT = parseInt(process.env.SUBCTL_USER_LIMIT ?? "1375", 10);
 
@@ -85,11 +101,11 @@ function writeSafe(path: string, content: string): void {
 // ---------- public API consumed by server.ts at prompt time ----------
 
 export function readMemory(): MemoryFileInfo {
-  return readSafe(MEMORY_PATH, MEMORY_LIMIT, true);
+  return readSafe(memoryPath(), MEMORY_LIMIT, true);
 }
 
 export function readUser(): MemoryFileInfo {
-  return readSafe(USER_PATH, USER_LIMIT, false);
+  return readSafe(userPath(), USER_LIMIT, false);
 }
 
 /**
@@ -132,14 +148,14 @@ export const tier1MemoryTools = {
       return {
         ok: true,
         memory: {
-          path: MEMORY_PATH,
+          path: memoryPath(),
           char_count: memoryFile.char_count,
           char_limit: memoryFile.char_limit,
           entry_count: memoryFile.entries?.length ?? 0,
           entries: memoryFile.entries ?? [],
         },
         user_profile: {
-          path: USER_PATH,
+          path: userPath(),
           char_count: userFile.char_count,
           char_limit: userFile.char_limit,
           content: userFile.content,
@@ -204,7 +220,7 @@ export const tier1MemoryTools = {
           char_limit: MEMORY_LIMIT,
         };
       }
-      writeSafe(MEMORY_PATH, newContent);
+      writeSafe(memoryPath(), newContent);
       return {
         ok: true,
         appended_index: entries.length - 1,
@@ -249,7 +265,7 @@ export const tier1MemoryTools = {
       const removed = entries[index];
       entries.splice(index, 1);
       const newContent = serializeEntries(entries);
-      writeSafe(MEMORY_PATH, newContent);
+      writeSafe(memoryPath(), newContent);
       return {
         ok: true,
         removed_index: index,
@@ -285,10 +301,10 @@ export const tier1MemoryTools = {
           char_limit: USER_LIMIT,
         };
       }
-      writeSafe(USER_PATH, trimmed);
+      writeSafe(userPath(), trimmed);
       return {
         ok: true,
-        path: USER_PATH,
+        path: userPath(),
         char_count: trimmed.length,
         char_limit: USER_LIMIT,
       };
