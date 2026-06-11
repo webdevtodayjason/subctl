@@ -184,6 +184,14 @@ import {
   type ProfileName,
   type ProfilesFile,
 } from "./profiles";
+// ── v2.8.1 operator preferences (HTTP surface mounted W6 row ②) ──
+import {
+  loadPreferences,
+  setPreference,
+  deletePreference,
+  resetPreferences,
+} from "./preferences";
+import { preferencesTools } from "./tools/preferences";
 import {
   registerWatchdog,
   touchWatchdog,
@@ -749,6 +757,15 @@ export const toolRegistry: Record<string, InternalTool> = {
   ...Object.fromEntries(
     Object.entries(notifyTools).map(([k, v]) => [
       k, // notify_dashboard
+      v as unknown as InternalTool,
+    ]),
+  ),
+  // v2.8.1 bilateral preferences — keys already prefixed
+  // (evy_get_preferences, evy_set_preference). Registered W6 row ②
+  // alongside the /preferences HTTP mount; both shipped unmounted.
+  ...Object.fromEntries(
+    Object.entries(preferencesTools).map(([k, v]) => [
+      k,
       v as unknown as InternalTool,
     ]),
   ),
@@ -6196,6 +6213,87 @@ async function main() {
           active: result.preset,
           note: "takes effect on the next prompt — no restart needed",
         });
+      }
+
+      // ── Operator preferences (v2.8.1; HTTP surface mounted W6 row ②) ────
+      // Bilateral-maintenance config at ~/.config/subctl/preferences.toml.
+      // The dashboard's Preferences tab reaches these via its /api/preferences
+      // proxy (dashboard/server.ts rewrites /api/preferences/* → /preferences/*).
+      //
+      //   GET    /preferences                  → { ok, preferences }
+      //   POST   /preferences/<cat>/<key>      → { ok, entry }   body: { value, by?, reason? }
+      //   DELETE /preferences/<cat>/<key>      → { ok, removed }
+      //   POST   /preferences/reset            → { ok, preferences }   gated on { confirm: true }
+      if (url.pathname === "/preferences" && req.method === "GET") {
+        try {
+          return Response.json({ ok: true, preferences: loadPreferences() });
+        } catch (err) {
+          return Response.json(
+            { ok: false, error: (err as Error).message },
+            { status: 500 },
+          );
+        }
+      }
+      if (url.pathname === "/preferences/reset" && req.method === "POST") {
+        let body: { confirm?: boolean };
+        try {
+          body = await req.json();
+        } catch {
+          return Response.json({ ok: false, error: "invalid JSON" }, { status: 400 });
+        }
+        if (body.confirm !== true) {
+          return Response.json(
+            { ok: false, error: 'reset requires {"confirm": true}' },
+            { status: 400 },
+          );
+        }
+        return Response.json({ ok: true, preferences: resetPreferences() });
+      }
+      {
+        const m = url.pathname.match(/^\/preferences\/([^/]+)\/([^/]+)$/);
+        if (m && req.method === "POST") {
+          const category = decodeURIComponent(m[1]!);
+          const key = decodeURIComponent(m[2]!);
+          let body: { value?: unknown; by?: string; reason?: string };
+          try {
+            body = await req.json();
+          } catch {
+            return Response.json({ ok: false, error: "invalid JSON" }, { status: 400 });
+          }
+          if (body.value === undefined || body.value === null) {
+            return Response.json({ ok: false, error: "value required" }, { status: 400 });
+          }
+          try {
+            const by = body.by === "evy" ? "evy" : "operator";
+            const entry = setPreference(
+              category,
+              key,
+              body.value as string | number | boolean,
+              by,
+              body.reason,
+            );
+            return Response.json({ ok: true, entry });
+          } catch (err) {
+            return Response.json(
+              { ok: false, error: (err as Error).message },
+              { status: 400 },
+            );
+          }
+        }
+        if (m && req.method === "DELETE") {
+          try {
+            const removed = deletePreference(
+              decodeURIComponent(m[1]!),
+              decodeURIComponent(m[2]!),
+            );
+            return Response.json({ ok: true, removed });
+          } catch (err) {
+            return Response.json(
+              { ok: false, error: (err as Error).message },
+              { status: 400 },
+            );
+          }
+        }
       }
 
       // ── Provider Model Catalog Phase 3 — aggregator routing ─────────────

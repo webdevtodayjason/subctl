@@ -172,6 +172,11 @@ import {
   type Skill,
   type SkillCategory,
 } from "../components/evy/skills-registry.ts";
+// W6 row ③ — roster-shaped TOML team templates (Templates tab backing).
+import {
+  listTemplates as listTeamTemplates,
+  loadTemplate as loadTeamTemplate,
+} from "../components/evy/team-templates.ts";
 // ── end v2.8.1 skills clarity ──
 // ── v3.1.0 Kernel Fitness Phase 1: engagement instrumentation (write-only). ──
 // Imported here so the dashboard can record `acted` / `acked` outcomes
@@ -3623,6 +3628,39 @@ const server = Bun.serve({
       }
     }
 
+    // ── Team templates (TOML rosters, v2.8.0; mounted W6 row ③) ─────────
+    // Backing module: components/evy/team-templates.ts (seeds the stock
+    // templates on first list). Distinct from /api/teams above — that family
+    // serves the legacy v2.7.x single-persona JSON dir; these are the
+    // roster-shaped TOML templates the Templates tab (tabs/templates.js)
+    // renders. The tab shipped in v2.8.6 fetching these paths; the routes
+    // were never mounted — 404 until now.
+    //   GET /api/team-templates         → { ok, templates, errors }
+    //   GET /api/team-templates/<name>  → { ok, template }
+    if (url.pathname === "/api/team-templates" && req.method === "GET") {
+      try {
+        const { templates, errors } = listTeamTemplates();
+        return Response.json({ ok: true, templates, errors });
+      } catch (err) {
+        return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+      }
+    }
+    {
+      const m = url.pathname.match(/^\/api\/team-templates\/([^/]+)$/);
+      if (m && req.method === "GET") {
+        const name = decodeURIComponent(m[1]!);
+        try {
+          return Response.json({ ok: true, template: loadTeamTemplate(name) });
+        } catch (err) {
+          const msg = (err as Error).message;
+          return Response.json(
+            { ok: false, error: msg },
+            { status: msg.includes("not found") ? 404 : 400 },
+          );
+        }
+      }
+    }
+
     // ── Skills catalog endpoints ────────────────────────────────────────
     // GET /api/skills        — list all skills with frontmatter
     // GET /api/skills/sources — list imported sources
@@ -3729,28 +3767,11 @@ const server = Bun.serve({
       return Response.json({ ok: true, skills_dir: SKILLS_DIR, sources });
     }
 
-    {
-      const m = url.pathname.match(/^\/api\/skills\/(.+)$/);
-      if (m && req.method === "GET" && m[1] !== "sources") {
-        const id = decodeURIComponent(m[1]!);
-        // Resolve id → on-disk path
-        // id format: <source>/<rest>  → SKILLS_DIR/<source>/skills/<rest>/SKILL.md
-        const segs = id.split("/");
-        if (segs.length < 2) return Response.json({ ok: false, error: "invalid skill id" }, { status: 400 });
-        const source = segs[0]!;
-        const rest = segs.slice(1).join("/");
-        const path = join(SKILLS_DIR, source, "skills", rest, "SKILL.md");
-        if (!existsSync(path)) {
-          return Response.json({ ok: false, error: `skill not found: ${id}` }, { status: 404 });
-        }
-        try {
-          const raw = readFileSync(path, "utf8");
-          return Response.json({ ok: true, id, path, content: raw });
-        } catch (err) {
-          return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
-        }
-      }
-    }
+    // NOTE (W6 row ③): the GET /api/skills/<id> catch-all used to live here,
+    // BEFORE /api/skills/categorized and /api/skills/evy/* below — so its
+    // /^\/api\/skills\/(.+)$/ regex ate those paths first ("categorized"
+    // split to one segment → 400 "invalid skill id"). It now sits after
+    // every fixed-path /api/skills/* route, at the end of this section.
 
     if (url.pathname === "/api/skills/import" && req.method === "POST") {
       let body: { repo?: string; source?: string; branch?: string };
@@ -3885,6 +3906,33 @@ const server = Bun.serve({
       }
     }
     // ── end v2.8.1 skills clarity ──
+
+    // GET /api/skills/<id> — one skill's full SKILL.md content. MUST stay the
+    // LAST /api/skills/* route: its (.+) catch-all matches every sub-path, so
+    // any fixed route below it would be shadowed (W6 row ③ — it previously
+    // sat above /api/skills/categorized and 400'd that endpoint forever).
+    {
+      const m = url.pathname.match(/^\/api\/skills\/(.+)$/);
+      if (m && req.method === "GET" && m[1] !== "sources") {
+        const id = decodeURIComponent(m[1]!);
+        // Resolve id → on-disk path
+        // id format: <source>/<rest>  → SKILLS_DIR/<source>/skills/<rest>/SKILL.md
+        const segs = id.split("/");
+        if (segs.length < 2) return Response.json({ ok: false, error: "invalid skill id" }, { status: 400 });
+        const source = segs[0]!;
+        const rest = segs.slice(1).join("/");
+        const path = join(SKILLS_DIR, source, "skills", rest, "SKILL.md");
+        if (!existsSync(path)) {
+          return Response.json({ ok: false, error: `skill not found: ${id}` }, { status: 404 });
+        }
+        try {
+          const raw = readFileSync(path, "utf8");
+          return Response.json({ ok: true, id, path, content: raw });
+        } catch (err) {
+          return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });
+        }
+      }
+    }
 
     // ── Settings page endpoints ─────────────────────────────────────────
 
