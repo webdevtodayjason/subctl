@@ -84,19 +84,30 @@ subctl_account_field() {
   subctl_list_accounts | awk -F'\t' -v w="$want" -v i="$idx" '$1==w {print $i; exit}'
 }
 
-# Resolve an alias that may be given without the provider prefix.
-# `personal` → first match whose alias is `personal` OR `<provider>-personal`.
-# Returns the canonical alias on stdout, or empty (with exit 1) if no match.
+# Resolve an alias that may be given with or without the provider prefix.
+# `personal` → first match whose alias is `personal` OR `<provider>-personal`;
+# `claude-dfox` → alias `dfox` when its provider is `claude` (dashboard-created
+# profiles often carry bare aliases while muscle memory types prefixed ones).
+# Returns the canonical alias on stdout, or exit 1 if no match.
 subctl_resolve_alias() {
-  local want="$1"
+  local want="$1" hit
   subctl_list_accounts | awk -F'\t' -v w="$want" '
     $1==w { print $1; found=1; exit }
     END { if (!found) exit 1 }
   ' && return 0
-  # Try suffix match: any alias ending in "-$want"
-  subctl_list_accounts | awk -F'\t' -v w="$want" '
+  # Bare → prefixed: any alias ending in "-$want"
+  hit=$(subctl_list_accounts | awk -F'\t' -v w="$want" '
     $1 ~ "-" w "$" { print $1; exit }
-  '
+  ')
+  [[ -n "$hit" ]] && { printf '%s\n' "$hit"; return 0; }
+  # Prefixed → bare: "$want" is exactly "<provider>-<alias>"
+  hit=$(subctl_list_accounts | awk -F'\t' -v w="$want" '
+    w == $2 "-" $1 { print $1; exit }
+  ')
+  [[ -n "$hit" ]] && { printf '%s\n' "$hit"; return 0; }
+  # No match: fail so callers die with "unknown account: <name>" instead of
+  # threading an empty alias into downstream field lookups.
+  return 1
 }
 
 # Auth status of an account by config_dir. Returns: ready | empty | missing

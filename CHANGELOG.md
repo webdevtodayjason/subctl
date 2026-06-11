@@ -1,3 +1,28 @@
+## [3.3.13] — 2026-06-11
+
+### `fix(core): subctl_resolve_alias resolves provider-prefixed names to bare aliases — and fails loudly on no match`
+
+Adding a fifth Claude account through the v4 dashboard (Providers → Add provider) saved it under the bare alias the operator typed (`dfox`), while operator muscle memory — trained by `claude-jason` / `claude-titanium` / `claude-semfreak` — launched it as `claude-teams -o -y -a claude-dfox`. That failed with the opaque error:
+
+```
+✗ account  is provider=, not claude
+```
+
+Both fields blank. Two stacked defects:
+
+1. **Resolution was one-directional.** `subctl_resolve_alias` matched bare → prefixed (`personal` → `claude-personal`) but not prefixed → bare (`claude-dfox` → alias `dfox` under provider `claude`). Dashboard-created profiles often carry bare aliases, so the prefixed guess never resolved.
+2. **No-match returned success.** The suffix-match fallback exited 0 even when it printed nothing — despite the function's own docstring promising exit 1. Every caller was already written as `resolved=$(subctl_resolve_alias …) || subctl_die "unknown account: …"`, so the die never fired; the empty alias threaded into `subctl_account_field "" 2` and surfaced as the blank-fields provider error. (`argent`, the other bare-alias account, had the same trap armed.)
+
+#### What ships
+
+`lib/core.sh` `subctl_resolve_alias` now resolves in three passes — exact, bare → prefixed (unchanged), and prefixed → bare (`$want == "<provider>-<alias>"`, so `claude-dfox` → `dfox` but `openai-codex-dfox` does **not** match a claude-provider account) — and returns exit 1 on no match, which lets the existing `|| subctl_die "unknown account: <name>"` call sites in all four provider `teams.sh` files and `lib/sessions.sh` finally fire with the message they always intended.
+
+### Verification
+
+- New `lib/__tests__/core.test.ts` — 5 tests covering exact, bare→prefixed, prefixed→bare, provider-mismatch rejection, and unknown-alias exit 1.
+- Full provider suite (`bun test providers/`) — 87 pass, 0 fail.
+- Live: `subctl teams claude -a claude-dfox --dry-run` and `-a dfox` both resolve to the `dfox` account; `-a claude-nope` dies with `unknown account: claude-nope`.
+
 ## [3.3.12] — 2026-05-28
 
 ### `fix(shell): claude-use / claude-whoami resolve v3 subctl explicitly — survive v4 PATH collision`
