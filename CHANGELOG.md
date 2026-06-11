@@ -1,3 +1,32 @@
+## [3.3.15] — 2026-06-11
+
+### `W6 hardening wave — v3 side: dead surfaces restored, tier1 path unified, spawn-role scoping, SSE heads terminated`
+
+The v3 half of the W6 "hardening + latent restoration" wave (locked contract; 3 Fable workers + orchestrator; companion v4 work shipped in subctl-rust merges 43f0c0f + 9091a6c). Three PRs, one wave-story:
+
+#### PR #55 — tier1 path drift + spawn-role stamp (W6 rows ④⑦)
+
+- **tier1 memory unified on `$SUBCTL_CONFIG_DIR/evy/`** — `tools/tier1-memory.ts` read legacy `master/` paths (coherent only via a hand-made symlink; fresh installs silently split dashboard edits from the daemon's prompt), and the dashboard tier1 block hardcoded `$HOME`. Both sides now resolve the same path; `install.sh` gains `subctl_ensure_evy_layout()` (evy/ + compat symlink) on every migrate branch.
+- **`SUBCTL_AGENT_ROLE` scoped per spawn type** — the shared launcher hardcoded `worker` into EVERY tmux session it created, including `-o` orchestrator spawns and the operator's own interactive sessions (tripping orchestrator-mode's anti-self-promotion guard — reproduced live in `claude-samsung-phones`, 2026-06-11). Now: `-o` → `orchestrator`, prompt/template → `worker`, bare interactive → no stamp; plus a `set-environment -gu` scrub of the server-global leak vector. Role prints in the spawn banner.
+- 24 new regression tests (spawn-role, tier1 paths, install layout).
+
+#### PR #56 — dead operator surfaces restored (W6 rows ②③⑤)
+
+- **`/api/preferences` 404 → 200**: the complete v2.8.1 preferences module was never mounted in `components/evy/server.ts`. Mounted (GET/set/delete/reset + both evy tools; boot tool count 79→81).
+- **`/api/team-templates` 404 → 200**: routes mounted onto the existing v2.8.0 TOML-roster module (5 seeded templates).
+- **`/api/skills/categorized` 400 → 200**: the route existed but was shadowed by the `/api/skills/(.+)` catch-all; catch-all moved to section end (also un-shadows `/api/skills/evy/<name>`).
+- **Profile pill real-time**: rode its own one-shot no-reconnect EventSource (first stream drop stranded it until reload); now rides the canonical `connect()` SSE lifecycle with re-fetch on every (re)open.
+
+#### PR #57 — SSE heads terminated immediately (W6 row ① fix-at-source)
+
+Bun finalizes a streaming Response head only when the first chunk enqueues; frame-less-at-open SSE routes (`/api/update/events` + two audit streams) left heads UNTERMINATED on the wire — spec-compliant clients (hyper, EventSource) wait up to the first keep-alive; curl's lenient display masked it for weeks. Immediate `: open` comment frames in `start()`. Complements the v4 proxy's SSE head-grace (subctl-rust 9091a6c).
+
+### Verification (orchestrator-run, all live)
+
+- Per-PR gates green in clean worktrees (dashboard 196/0 ×2, touched modules 47/0, new suites 24/0; failures on pristine-main baseline byte-identical — environmental only).
+- Live post-deploy: `/api/preferences`, `/api/team-templates`, `/api/skills/categorized` all 200 with real payloads on :8787 AND through v4 :8797; bare `curl /api/update/events` returns headers + `: open` in <1s on both ports.
+- Earlier same-day: v3.3.13 (resolver prefixed↔bare + exit-1) and v3.3.14 (providers launch hints) pre-closed three more W6 rows.
+
 ## [3.3.14] — 2026-06-11
 
 ### `feat(dashboard): Providers tab — launch-command hints on authed Claude profiles`
