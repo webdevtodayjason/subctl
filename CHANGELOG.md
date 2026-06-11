@@ -1,3 +1,26 @@
+## [3.3.14] — 2026-06-11
+
+### `feat(dashboard): Providers tab — launch-command hints on authed Claude profiles`
+
+Companion polish to v3.3.13. The Providers tab told the operator how to **sign in** (the `auth` button copies `subctl auth claude <alias>`) but nothing said how to **launch** the account afterwards — the discoverability gap that sent the operator guessing `claude-teams -a claude-dfox` against bare alias `dfox`. v3.3.13 fixed the resolver so both alias forms work; this closes the loop in the UI.
+
+#### What ships
+
+`dashboard/public/tabs/providers.js`: every **authenticated Claude** profile row now carries two copy-on-click buttons next to edit/delete, same UX as the existing auth button (click → clipboard → "copied ✓"):
+
+- **teams** — copies `claude-teams -o -y -a <alias>` (spawn an orchestrator team on this account)
+- **chat** — copies `claude-use <alias>` (switch the current terminal's `claude` to this account)
+
+Claude-only by design: `claude-teams` / `claude-use` are Claude shims; openai-codex rows keep their device-code sign-in surface. Unauthed rows keep the auth button — the hints appear once the row flips to ✓, which is exactly the moment the operator needs them. `style.css` adds a green `.launch-btn` accent alongside the cyan `.auth-btn`.
+
+Served live by both the Bun dashboard (8787) and the v4 daemon (8797) — the v4 `static_dir` points at the same `dashboard/public` assets, so no v4 changes needed.
+
+### Verification
+
+- `bun test dashboard/__tests__/` — 196 pass, 0 fail (server-side; the tab has no DOM harness, consistent with the rest of `public/tabs/`).
+- `node --check` / `bun build --no-bundle` on `providers.js` — clean.
+- Live at 127.0.0.1:8797 → Providers: authed Claude rows show `teams` / `chat`; click copies the command for the row's real alias (`dfox`, `argent`, `claude-jason`, …).
+
 ## [3.3.13] — 2026-06-11
 
 ### `fix(core): subctl_resolve_alias resolves provider-prefixed names to bare aliases — and fails loudly on no match`

@@ -287,6 +287,33 @@ export async function mount({ root: _root }) {
               });
               actions.appendChild(auth);
             }
+            // v3.3.14 — authed Claude profiles get launch-command hints.
+            // The auth button told the operator how to sign in, but nothing
+            // said how to *launch* the account afterwards (the gap that sent
+            // the operator guessing `claude-teams -a claude-dfox` against
+            // bare alias `dfox`, 2026-06-11). Same copy-on-click UX as the
+            // auth button. Claude-only: `claude-teams` / `claude-use` are
+            // claude shims; codex rows keep the device-code sign-in surface.
+            const rowProvider = prof.provider || (p.id === "anthropic" ? "claude" : "openai");
+            if (rowProvider === "claude" && prof.authed) {
+              const hints = [
+                ["teams", `claude-teams -o -y -a ${prof.alias}`, "spawn an orchestrator team on this account"],
+                ["chat", `claude-use ${prof.alias}`, "switch this terminal's claude to this account"],
+              ];
+              for (const [label, cmd, what] of hints) {
+                const btn = document.createElement("button");
+                btn.type = "button";
+                btn.className = "launch-btn";
+                btn.textContent = label;
+                btn.title = `${what} — click to copy: ${cmd}`;
+                btn.addEventListener("click", () => {
+                  navigator.clipboard.writeText(cmd);
+                  btn.textContent = "copied ✓";
+                  setTimeout(() => btn.textContent = label, 1500);
+                });
+                actions.appendChild(btn);
+              }
+            }
             const editBtn = document.createElement("button");
             editBtn.type = "button";
             editBtn.textContent = "edit";
