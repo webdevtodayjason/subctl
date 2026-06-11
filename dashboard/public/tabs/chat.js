@@ -71,19 +71,26 @@ export const id = "chat";
 
 // ---- Module-scope handles for unmount() ----
 //
-// Three EventSource categories survive across closures:
+// Two EventSource categories survive across closures:
 //   1. masterEventSource           — Master chat's long-lived SSE stream.
 //      `connect()` reassigns this on each reconnect; we always close the
 //      latest one in unmount().
-//   2. profilePillEventSource      — Profile-pill's quiet observer SSE.
-//      Single instance; created once in wireProfilePill().
-//   3. oneShotEventSources         — per-call EventSource handles from
+//   2. oneShotEventSources         — per-call EventSource handles from
 //      attachOneShotAssistantCapture (Projects tab uses this for each
 //      project chat panel). Tracked in a Set so individual instances
 //      can self-remove on natural close.
 let masterEventSource = null;
-let profilePillEventSource = null;
 const oneShotEventSources = new Set();
+
+// Profile-pill hooks (W6 row ⑤). wireProfilePill() assigns these; the
+// canonical connect() lifecycle calls them so the pill rides the SAME
+// reconnecting SSE stream as the chat panel. The pill used to open its
+// own one-shot EventSource with no reconnect — the first drop (master
+// restart, sleep/wake) killed its real-time path until a page reload.
+// Lazy null-guards cover the first connect(), which runs before
+// wireProfilePill() in the boot order.
+let profilePillOnSwap = null;   // (eventData) => paint the swapped-to profile
+let profilePillResync = null;   // () => re-fetch /api/profile (SSE [re]connect)
 
 // Timers + intervals lifted out so unmount() can clear them. Each is
 // initialized to null and assigned inside the wirer that owns it.
@@ -713,22 +720,18 @@ export async function mount({ root: _root }) {
     }
     pill.addEventListener("click", toggle);
 
-    // Initial load + 30s poll fallback. We also piggyback on the
-    // existing /api/master/events SSE so out-of-band swaps (Telegram
-    // /profile, manual file edit, another tab) reflect immediately.
+    // Initial load + 30s poll fallback. Real-time path (W6 row ⑤): the
+    // canonical connect() stream calls these hooks — profile_swapped
+    // frames paint instantly, and every SSE [re]connect re-fetches
+    // /api/profile so a master restart can't strand a stale pill. The
+    // pill previously opened its own EventSource with no reconnect
+    // logic; one drop and it was dead until reload.
+    profilePillOnSwap = (d) => {
+      if (d && typeof d.to === "string") paint(d.to);
+    };
+    profilePillResync = refresh;
     refresh();
     profilePillPollTimer = setInterval(refresh, 30_000);
-    try {
-      profilePillEventSource = new EventSource("/api/master/events");
-      profilePillEventSource.addEventListener("profile_swapped", (e) => {
-        try {
-          const d = JSON.parse(e.data);
-          if (d && typeof d.to === "string") paint(d.to);
-        } catch { /* ignore */ }
-      });
-      // Don't reconnect on error here — the chat panel's connectSSE()
-      // already owns the canonical lifecycle. This is a quiet observer.
-    } catch { /* EventSource unavailable; poll-only fallback is fine */ }
   }
 
   // One-shot SSE listener that captures the next assistant turn (from the
@@ -1530,6 +1533,17 @@ export async function mount({ root: _root }) {
         }
         setConnState("connected");
         backoffMs = 1000;
+        // W6 row ⑤ — a reconnect usually means the master restarted
+        // (supervisor swap, deploy). Re-fetch the active profile now
+        // instead of waiting out the 30s poll.
+        if (profilePillResync) profilePillResync();
+      });
+      // W6 row ⑤ — profile pill rides the canonical stream so it keeps
+      // updating across reconnects (out-of-band swaps: Telegram /profile,
+      // another tab, manual profiles.json edit).
+      es.addEventListener("profile_swapped", (e) => {
+        if (!profilePillOnSwap) return;
+        try { profilePillOnSwap(JSON.parse(e.data)); } catch { /* ignore */ }
       });
       es.addEventListener("error", () => {
         try { es.close(); } catch {}
@@ -2178,8 +2192,8 @@ export async function mount({ root: _root }) {
   }
 
   // ── Boot wirers — mirror app.js boot order (452, 453, 454). Master
-  //    chat first so the SSE connection is in flight before the
-  //    profile pill opens its own quiet observer. ──
+  //    chat first so the canonical SSE connection is in flight before
+  //    wireProfilePill assigns the pill hooks it rides on. ──
   wireMasterChat();
   wireChatModelSelector();
   wireProfilePill();
@@ -2196,9 +2210,13 @@ export async function mount({ root: _root }) {
 export function unmount() {
   // Close every SSE stream this module ever opened.
   if (masterEventSource) { try { masterEventSource.close(); } catch {} masterEventSource = null; }
-  if (profilePillEventSource) { try { profilePillEventSource.close(); } catch {} profilePillEventSource = null; }
   for (const es of oneShotEventSources) { try { es.close(); } catch {} }
   oneShotEventSources.clear();
+
+  // Detach the profile-pill hooks so a closed pill can't be painted by
+  // a late SSE frame after unmount.
+  profilePillOnSwap = null;
+  profilePillResync = null;
 
   // Clear all the timer handles we lifted to module scope.
   if (chatModelSelectorPollTimer) { clearInterval(chatModelSelectorPollTimer); chatModelSelectorPollTimer = null; }
