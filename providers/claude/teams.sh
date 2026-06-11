@@ -190,6 +190,26 @@ provider_claude_teams() {
     fi
   fi
 
+  # ── agent-role resolution (v3.3.x row ⑦ fix) ──────────────────────────────
+  # SUBCTL_AGENT_ROLE=worker is the anti-self-promotion stamp read by the
+  # orchestrator-mode skill's activation guard. It used to be hardcoded into
+  # EVERY tmux session this launcher created — including -o orchestrator
+  # spawns and the operator's own interactive sessions — which tripped the
+  # guard in sessions that are supposed to orchestrate (reproduced
+  # 2026-06-11, operator session claude-samsung-phones). Scope it:
+  #   -o / --orchestrator                      → "orchestrator"
+  #   worker mandate present (-p / -f / -t / -T) → "worker"
+  #   bare interactive, -c, --resume            → "" (no stamp at all)
+  # Mandate-bearing spawns are how Evy / orch dispatch launches workers
+  # (always with a prompt or template), so the anti-stuck guard still
+  # covers every real worker.
+  local AGENT_ROLE=""
+  if $ORCHESTRATOR; then
+    AGENT_ROLE="orchestrator"
+  elif [[ -n "$INITIAL_PROMPT" || -n "$PROMPT_FILE" || -n "$TEMPLATE_NAME" || -n "$TEAM_TEMPLATE_NAME" ]]; then
+    AGENT_ROLE="worker"
+  fi
+
   [[ -z "$ACCOUNT" ]] && subctl_die "subctl teams claude requires -a <alias>. Run: subctl accounts"
 
   subctl_require tmux "install: brew install tmux" || return 1
@@ -539,6 +559,7 @@ ${INITIAL_PROMPT}"
   echo "   Account:   $resolved  ($email)"
   echo "   Config:    $cfg_dir"
   echo "   Command:   $CLAUDE_CMD"
+  echo "   Role:      ${AGENT_ROLE:-none (operator/interactive — no agent-role stamp)}"
   if [[ -n "$RESOLVED_MODE" ]]; then
     echo "   Mode:      $RESOLVED_MODE (preset: $DETECTED_PRESET)"
   fi
@@ -558,13 +579,18 @@ ${INITIAL_PROMPT}"
   # CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 is what surfaces the Team*/SendMessage
   # tools and the Agent(team_name=...) variant — without it /team is just a
   # markdown skill with no runtime, which defeats the whole point of `teams`.
-  # SUBCTL_AGENT_ROLE=worker — anti-stuck guard. Read by the orchestrator-mode
-  # SKILL's activation guard (~/.claude/skills/orchestrator-mode/SKILL.md):
-  # if this env is "worker", the skill MUST NOT activate. Workers execute
-  # their assigned task directly; they do not orchestrate sub-workers.
-  # Defends against the orchestrator-mode-deadlock pattern where a worker
-  # reading a multi-phase prompt that mentions 'orchestrator' would self-load
-  # the skill and wait forever for approval to dispatch sub-workers.
+  # SUBCTL_AGENT_ROLE — anti-stuck guard, scoped per spawn type (see the
+  # AGENT_ROLE resolution above). Read by the orchestrator-mode SKILL's
+  # activation guard (~/.claude/skills/orchestrator-mode/SKILL.md): if this
+  # env is "worker", the skill MUST NOT activate. Workers execute their
+  # assigned task directly; they do not orchestrate sub-workers. Defends
+  # against the orchestrator-mode-deadlock pattern where a worker reading a
+  # multi-phase prompt that mentions 'orchestrator' would self-load the
+  # skill and wait forever for approval to dispatch sub-workers.
+  # Orchestrator (-o) spawns get "orchestrator"; operator/interactive
+  # spawns get NO stamp — they must be free to load orchestrator-mode.
+  # The stamp travels as tmux SESSION env (-e), never server-global env,
+  # so it cannot leak into other sessions on the same tmux server.
   # -x 220 -y 50 sets the initial pane size. Without these flags tmux
   # creates the session at its default 80×24 because the spawning shell
   # has no controlling terminal (we use -d for detached). 80 columns is
@@ -573,12 +599,23 @@ ${INITIAL_PROMPT}"
   # portion of the modal stays blank. 220×50 gives Claude Code enough
   # horizontal room for tool-call call/result blocks to render on single
   # lines, and 50 rows is enough scrollback context. Diagnosed 2026-05-10.
+  local TMUX_ENV_ARGS=(
+    -e "CLAUDE_CONFIG_DIR=$cfg_dir"
+    -e "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1"
+    -e "SUBCTL_SPAWN_TS=$(date +%s)"
+  )
+  [[ -n "$AGENT_ROLE" ]] && TMUX_ENV_ARGS+=(-e "SUBCTL_AGENT_ROLE=$AGENT_ROLE")
   tmux new-session -d -s "$SESSION_NAME" -c "$PWD" \
     -x 220 -y 50 \
-    -e "CLAUDE_CONFIG_DIR=$cfg_dir" \
-    -e "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1" \
-    -e "SUBCTL_AGENT_ROLE=worker" \
-    -e "SUBCTL_SPAWN_TS=$(date +%s)"
+    "${TMUX_ENV_ARGS[@]}"
+
+  # Belt-and-braces: if the tmux SERVER was first started by a process that
+  # had SUBCTL_AGENT_ROLE in its environment (e.g. a worker shelling out to
+  # this launcher), the stamp lands in the server's GLOBAL env and every
+  # later session would inherit it. The stamp is only ever valid as
+  # per-session env, so scrub any global copy on every spawn. Safe for
+  # running workers — their session env overrides global.
+  tmux set-environment -gu SUBCTL_AGENT_ROLE 2>/dev/null || true
 
   # Defensive tmux ergonomics for this server. Without these, Claude Code's
   # mouse tracking eats wheel events, leaving tmux's scrollback unreachable
