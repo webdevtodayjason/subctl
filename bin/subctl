@@ -35,6 +35,10 @@ Usage:
   subctl teams pi-coding-agent -a <alias> [-p TEXT -f FILE -m MODEL --dry-run]
   subctl teams deepseek -a <alias> [-y -c -o -p TEXT -f FILE -m MODEL --dry-run]
 
+  subctl directive verify <file|->    Worker-side check that an HMAC directive
+                                      envelope is daemon-minted (W6.5; key
+                                      auto-resolves from the config dir).
+
   subctl radar                        /dispatch-check verdict + signals
   subctl radar log [--tail]           Inspect rate-limit events log
 
@@ -701,6 +705,14 @@ case "$cmd" in
   setup)
     . "$SUBCTL_REPO_ROOT/lib/setup.sh"
     subctl_setup "$@"
+    ;;
+
+  directive)
+    # W6.5 ③ — worker-side HMAC envelope verification. Spawned agents run
+    # `subctl directive verify <file>` per their team contract before
+    # acting on any [subctl-master directive · …] envelope.
+    . "$SUBCTL_REPO_ROOT/lib/directive.sh"
+    subctl_directive "$@"
     ;;
 
   notify)

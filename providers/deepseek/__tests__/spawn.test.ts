@@ -421,3 +421,103 @@ describe("signals.sh JSON shape", () => {
     expect(json.error).toBeTruthy();
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// W6.5 rider #420 — SUBCTL_AGENT_ROLE scoped to spawn type
+// ─────────────────────────────────────────────────────────────────────────
+//
+// The stamp used to be hardcoded =worker on EVERY spawn. Contract (mirrors
+// providers/claude/teams.sh + its spawn-role.test.ts), per this provider's
+// flag set:
+//   worker mandate present (-p / -f) → "worker"
+//   bare interactive, -c             → no stamp at all
+//   -o (documented NO-OP here)       → no stamp — it confers no role
+
+/** Drop a fake `tmux` into the fixture's PATH that records argv and
+ * satisfies the spawn flow (no stale session; ready marker on capture). */
+function armFakeTmux(f: Fixture): string {
+  const tmuxLog = join(f.root, "tmux-invoke.log");
+  const tmuxScript = [
+    "#!/bin/sh",
+    `echo "tmux $*" >> "${tmuxLog}"`,
+    'case "$1" in',
+    "  has-session) exit 1 ;;",
+    '  capture-pane) echo ">" ;;',
+    "esac",
+    "exit 0",
+  ].join("\n");
+  writeFileSync(join(f.fakeBin, "tmux"), tmuxScript);
+  chmodSync(join(f.fakeBin, "tmux"), 0o755);
+  return tmuxLog;
+}
+
+function roleNewSessionLine(tmuxLog: string): string {
+  const log = readFileSync(tmuxLog, "utf8");
+  const line = log.split("\n").find((l) => l.includes("new-session"));
+  expect(line).toBeTruthy();
+  return line!;
+}
+
+describe("agent-role scoping (#420)", () => {
+  beforeEach(() => { d = setup(); });
+
+  test("--dry-run banner: -p resolves worker", async () => {
+    const r = await runBash(
+      d,
+      `cd "${d.projectRoot}"
+       . "${TEAMS_SH}"
+       provider_deepseek_teams -a dsk-test -p "do the task" --dry-run`,
+    );
+    expect(r.code).toBe(0);
+    expect(r.stdout).toMatch(/Role:\s+worker/);
+  });
+
+  test("--dry-run banner: bare interactive spawn gets NO role stamp", async () => {
+    const r = await runBash(
+      d,
+      `cd "${d.projectRoot}"
+       . "${TEAMS_SH}"
+       provider_deepseek_teams -a dsk-test --dry-run`,
+    );
+    expect(r.code).toBe(0);
+    expect(r.stdout).toMatch(/Role:\s+none \(operator\/interactive/);
+  });
+
+  test("--dry-run banner: -o (no-op flag) does NOT confer a role", async () => {
+    const r = await runBash(
+      d,
+      `cd "${d.projectRoot}"
+       . "${TEAMS_SH}"
+       provider_deepseek_teams -a dsk-test -o --dry-run`,
+    );
+    expect(r.code).toBe(0);
+    expect(r.stdout).toMatch(/Role:\s+none \(operator\/interactive/);
+  });
+
+  test("worker spawn (-p) stamps SUBCTL_AGENT_ROLE=worker on new-session + scrubs global", async () => {
+    const tmuxLog = armFakeTmux(d);
+    const r = await runBash(
+      d,
+      `cd "${d.projectRoot}"
+       . "${TEAMS_SH}"
+       provider_deepseek_teams -a dsk-test -p "do the task" --no-attach`,
+    );
+    expect(r.code).toBe(0);
+    expect(roleNewSessionLine(tmuxLog)).toContain("SUBCTL_AGENT_ROLE=worker");
+    expect(readFileSync(tmuxLog, "utf8")).toMatch(/set-environment -gu SUBCTL_AGENT_ROLE/);
+  });
+
+  test("bare interactive spawn carries NO SUBCTL_AGENT_ROLE at all", async () => {
+    const tmuxLog = armFakeTmux(d);
+    const r = await runBash(
+      d,
+      `cd "${d.projectRoot}"
+       . "${TEAMS_SH}"
+       provider_deepseek_teams -a dsk-test --no-attach`,
+    );
+    expect(r.code).toBe(0);
+    const line = roleNewSessionLine(tmuxLog);
+    expect(line).not.toContain("SUBCTL_AGENT_ROLE");
+    expect(line).toContain("SUBCTL_DEEPSEEK_ACCOUNT=");
+  });
+});

@@ -93,6 +93,18 @@ EOF
     esac
   done
 
+  # ── agent-role resolution (#420, mirrors providers/claude/teams.sh) ──────
+  # SUBCTL_AGENT_ROLE used to be hardcoded =worker on EVERY spawn. Scope it:
+  #   worker mandate present (-p / -f) → "worker"
+  #   bare interactive, -c             → "" (no stamp at all)
+  # -o is a documented NO-OP here (no orchestrator role concept for
+  # codewhale in v3.0.0-rc1) — it deliberately does NOT produce an
+  # "orchestrator" stamp; role is keyed off mandate presence alone.
+  local AGENT_ROLE=""
+  if [[ -n "$INITIAL_PROMPT" || -n "$PROMPT_FILE" ]]; then
+    AGENT_ROLE="worker"
+  fi
+
   [[ -z "$ACCOUNT" ]] && subctl_die "subctl teams deepseek requires -a <alias>. Run: subctl accounts"
 
   if ! subctl_have codewhale; then
@@ -157,6 +169,7 @@ EOF
   echo "   Account:               $resolved  ($email)"
   echo "   codewhale HOME shadow: $dsk_home"
   echo "   Command:               ${CW_CMD[*]}"
+  echo "   Role:                  ${AGENT_ROLE:-none (operator/interactive — no agent-role stamp)}"
   [[ -n "$MODEL" ]] && echo "   Model:                 $MODEL"
   $YOLO          && echo "   Tool approval:         YOLO (auto-approve)"
   $CONTINUE      && echo "   Session:               resume --last"
@@ -181,16 +194,23 @@ EOF
   #
   # -x 220 -y 50: same rationale as claude/pi providers — wider pane so
   # the dashboard's tmux-preview modal stays readable.
+  # SUBCTL_AGENT_ROLE rides as tmux SESSION env (-e), scoped per spawn
+  # type (#420) — see the AGENT_ROLE resolution above. Interactive spawns
+  # get NO stamp.
   local -a tmux_env_args=(
     -e "HOME=$dsk_home"
     -e "SUBCTL_DEEPSEEK_ACCOUNT=$resolved"
-    -e "SUBCTL_AGENT_ROLE=worker"
     -e "SUBCTL_SPAWN_TS=$(date +%s)"
   )
+  [[ -n "$AGENT_ROLE" ]] && tmux_env_args+=( -e "SUBCTL_AGENT_ROLE=$AGENT_ROLE" )
 
   tmux new-session -d -s "$SESSION_NAME" -c "$PWD" \
     -x 220 -y 50 \
     "${tmux_env_args[@]}"
+
+  # Belt-and-braces (mirrors providers/claude/teams.sh): scrub any leaked
+  # server-GLOBAL copy of the stamp — it is only ever valid per-session.
+  tmux set-environment -gu SUBCTL_AGENT_ROLE 2>/dev/null || true
 
   # Mouse + wheel ergonomics — same defensive setup as claude/pi providers.
   tmux set-option -g mouse on 2>/dev/null || true

@@ -420,12 +420,153 @@ describe("contract preamble reporting vocabulary", () => {
     expect(teamsSource).toContain("SUBCTL_TEAM_NAME");
   });
 
-  test("contract preamble includes the HMAC self-test recipe", async () => {
+  test("contract preamble instructs the mechanical verify verb (W6.5 ③)", async () => {
     const teamsSource = readFileSync(TEAMS_SH, "utf8");
-    // The self-test value is fixed by the contract; if it drifts, the
-    // master side and worker side will disagree about HMAC computation
-    // and the trust channel breaks.
-    expect(teamsSource).toContain("4adef968060ec740");
-    expect(teamsSource).toContain("createHmac");
+    // W6.5 replaced the hand-run node recipe (and the in-prompt secret)
+    // with the `subctl directive verify` one-liner reading the key
+    // provisioned into CODEX_HOME. If these drift, workers lose their
+    // mechanical acceptance check and fall back to verifying by eye.
+    expect(teamsSource).toContain("subctl directive verify /tmp/directive.txt");
+    expect(teamsSource).toContain(".subctl-directive-key");
+    // The old in-prompt secret embed must stay gone — pane captures of
+    // the spawn prompt used to expose the signing key.
+    expect(teamsSource).not.toContain("Your shared HMAC secret with master");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// W6.5 rider #420 — SUBCTL_AGENT_ROLE scoped to spawn type
+// ─────────────────────────────────────────────────────────────────────────
+//
+// The stamp used to be hardcoded =worker on EVERY spawn. Contract (mirrors
+// providers/claude/teams.sh + its spawn-role.test.ts), per this provider's
+// flag set:
+//   worker mandate present (-p / -f)    → "worker"
+//   bare interactive                    → no stamp at all
+//   -c / -o (accepted-but-no-op flags)  → no stamp — they confer no role
+
+/** Drop a fake `tmux` into the fixture's PATH that records argv and
+ * satisfies the spawn flow (no stale session; codex ready marker on
+ * capture so the detached paste loop terminates fast). */
+function armFakeTmux(f: Fixture): string {
+  const tmuxLog = join(f.root, "tmux-invoke.log");
+  const tmuxScript = [
+    "#!/bin/sh",
+    `echo "tmux $*" >> "${tmuxLog}"`,
+    'case "$1" in',
+    "  has-session) exit 1 ;;",
+    '  capture-pane) echo "Context 100% left" ;;',
+    "esac",
+    "exit 0",
+  ].join("\n");
+  writeFileSync(join(f.fakeBin, "tmux"), tmuxScript);
+  chmodSync(join(f.fakeBin, "tmux"), 0o755);
+  return tmuxLog;
+}
+
+function roleNewSessionLine(tmuxLog: string): string {
+  const log = readFileSync(tmuxLog, "utf8");
+  const line = log.split("\n").find((l) => l.includes("new-session"));
+  expect(line).toBeTruthy();
+  return line!;
+}
+
+describe("agent-role scoping (#420)", () => {
+  test("--dry-run banner: -p resolves worker", async () => {
+    const r = await runBash(
+      d,
+      `cd "${d.projectRoot}"
+       . "${TEAMS_SH}"
+       provider_openai_codex_teams -a codex-test -p "do the task" --dry-run`,
+    );
+    expect(r.code).toBe(0);
+    expect(r.stdout).toMatch(/Role:\s+worker/);
+  });
+
+  test("--dry-run banner: bare interactive spawn gets NO role stamp", async () => {
+    const r = await runBash(
+      d,
+      `cd "${d.projectRoot}"
+       . "${TEAMS_SH}"
+       provider_openai_codex_teams -a codex-test --dry-run`,
+    );
+    expect(r.code).toBe(0);
+    expect(r.stdout).toMatch(/Role:\s+none \(operator\/interactive/);
+  });
+
+  test("--dry-run banner: -o (no-op flag) does NOT confer a role", async () => {
+    const r = await runBash(
+      d,
+      `cd "${d.projectRoot}"
+       . "${TEAMS_SH}"
+       provider_openai_codex_teams -a codex-test -o --dry-run`,
+    );
+    expect(r.code).toBe(0);
+    expect(r.stdout).toMatch(/Role:\s+none \(operator\/interactive/);
+  });
+
+  test("worker spawn (-p) stamps SUBCTL_AGENT_ROLE=worker on new-session + scrubs global", async () => {
+    const tmuxLog = armFakeTmux(d);
+    const r = await runBash(
+      d,
+      `cd "${d.projectRoot}"
+       . "${TEAMS_SH}"
+       provider_openai_codex_teams -a codex-test -p "do the task" --no-attach`,
+    );
+    expect(r.code).toBe(0);
+    expect(roleNewSessionLine(tmuxLog)).toContain("SUBCTL_AGENT_ROLE=worker");
+    expect(readFileSync(tmuxLog, "utf8")).toMatch(/set-environment -gu SUBCTL_AGENT_ROLE/);
+  });
+
+  test("bare interactive spawn carries NO SUBCTL_AGENT_ROLE at all", async () => {
+    const tmuxLog = armFakeTmux(d);
+    const r = await runBash(
+      d,
+      `cd "${d.projectRoot}"
+       . "${TEAMS_SH}"
+       provider_openai_codex_teams -a codex-test --no-attach`,
+    );
+    expect(r.code).toBe(0);
+    const line = roleNewSessionLine(tmuxLog);
+    expect(line).not.toContain("SUBCTL_AGENT_ROLE");
+    expect(line).toContain("CODEX_HOME=");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// W6.5 ③ — verification-key provisioning into CODEX_HOME
+// ─────────────────────────────────────────────────────────────────────────
+
+describe("verification-key provisioning (W6.5)", () => {
+  test("mandate spawn drops .subctl-directive-key (0600) matching the team hmac.secret", async () => {
+    // Provisioning lives in the same pre-dry-run block as the HMAC
+    // secret itself, so --dry-run is enough.
+    const r = await runBash(
+      d,
+      `cd "${d.projectRoot}"
+       . "${TEAMS_SH}"
+       provider_openai_codex_teams -a codex-test -p "build feature X" --dry-run`,
+    );
+    expect(r.code).toBe(0);
+    const keyPath = join(d.codexHome, ".subctl-directive-key");
+    expect(existsSync(keyPath)).toBe(true);
+    const key = readFileSync(keyPath, "utf8").trim();
+    expect(key).toMatch(/^[0-9a-f]{64}$/);
+    // Same bytes the daemon signs with — worker-side verify and
+    // daemon-side mint must share one key.
+    const secretPath = join(d.stateDir, "teams", "codex-proj", "hmac.secret");
+    expect(readFileSync(secretPath, "utf8").trim()).toBe(key);
+    expect(statSync(keyPath).mode & 0o777).toBe(0o600);
+  });
+
+  test("bare spawn provisions no key (no contract = no need)", async () => {
+    const r = await runBash(
+      d,
+      `cd "${d.projectRoot}"
+       . "${TEAMS_SH}"
+       provider_openai_codex_teams -a codex-test --dry-run`,
+    );
+    expect(r.code).toBe(0);
+    expect(existsSync(join(d.codexHome, ".subctl-directive-key"))).toBe(false);
   });
 });

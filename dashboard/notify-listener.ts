@@ -22,9 +22,16 @@ import { homedir } from "node:os";
 import { removePendingAsk } from "../components/evy/asks-pending";
 
 const HOME = homedir();
-const NOTIFY_CONFIG = join(HOME, ".config", "subctl", "notify.json");
-const INBOX_PATH    = join(HOME, ".config", "subctl", "inbox.jsonl");
-const OFFSET_PATH   = join(HOME, ".config", "subctl", "notify-listener.offset");
+// #425 (W6.5): honor SUBCTL_CONFIG_DIR — same resolution as
+// dashboard/server.ts. The HOME-hardcoded paths meant a scratch/test boot
+// of the dashboard with real HOME read the PRODUCTION notify.json and
+// armed a competing Telegram getUpdates long-poll against the live bot
+// (bit worker w6-restore for ~2 min on 2026-06-11).
+const CONFIG_DIR = process.env.SUBCTL_CONFIG_DIR
+  ?? join(process.env.XDG_CONFIG_HOME ?? join(HOME, ".config"), "subctl");
+const NOTIFY_CONFIG = join(CONFIG_DIR, "notify.json");
+const INBOX_PATH    = join(CONFIG_DIR, "inbox.jsonl");
+const OFFSET_PATH   = join(CONFIG_DIR, "notify-listener.offset");
 
 interface NotifyConfig {
   telegram_bot_token: string;
@@ -85,7 +92,7 @@ export function startNotifyListener(opts: StartListenerOptions = {}): { running:
     return { running: false, reason: "no bot token in notify config" };
   }
 
-  mkdirSync(join(HOME, ".config", "subctl"), { recursive: true });
+  mkdirSync(CONFIG_DIR, { recursive: true });
 
   _stateProvider = opts.stateProvider ?? null;
   _allowedChatId = cfg.telegram_chat_id ?? null;
