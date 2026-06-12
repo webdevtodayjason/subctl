@@ -77,11 +77,22 @@ subctl_list_accounts() {
   done < "$SUBCTL_ACCOUNTS_CONF"
 }
 
+# SIGPIPE note (W6.5): never pipe subctl_list_accounts straight into an
+# early-exit awk (`{print; exit}`). The producer is slow (5 _subctl_trim
+# command substitutions per row); awk's early exit closes the pipe while
+# the producer is mid-write, the producer takes SIGPIPE, and under
+# bin/subctl's `set -uo pipefail` the pipeline status becomes 141 — so the
+# lookup "fails" even though the answer was already printed and captured.
+# Position-dependent: aliases early in accounts.conf always lost the race
+# (reproduced 5/5 with openai-jason mid-file, 2026-06-11). Buffer the
+# roster once and feed awk via herestring instead.
+
 # Get a specific field for an alias. Field index: 1=alias 2=provider 3=email 4=config_dir 5=description
 # Usage: subctl_account_field <alias> <field_num>
 subctl_account_field() {
-  local want="$1" idx="$2"
-  subctl_list_accounts | awk -F'\t' -v w="$want" -v i="$idx" '$1==w {print $i; exit}'
+  local want="$1" idx="$2" all
+  all=$(subctl_list_accounts)
+  awk -F'\t' -v w="$want" -v i="$idx" '$1==w {print $i; exit}' <<<"$all"
 }
 
 # Resolve an alias that may be given with or without the provider prefix.
@@ -90,20 +101,21 @@ subctl_account_field() {
 # profiles often carry bare aliases while muscle memory types prefixed ones).
 # Returns the canonical alias on stdout, or exit 1 if no match.
 subctl_resolve_alias() {
-  local want="$1" hit
-  subctl_list_accounts | awk -F'\t' -v w="$want" '
+  local want="$1" hit all
+  all=$(subctl_list_accounts)
+  awk -F'\t' -v w="$want" '
     $1==w { print $1; found=1; exit }
     END { if (!found) exit 1 }
-  ' && return 0
+  ' <<<"$all" && return 0
   # Bare → prefixed: any alias ending in "-$want"
-  hit=$(subctl_list_accounts | awk -F'\t' -v w="$want" '
+  hit=$(awk -F'\t' -v w="$want" '
     $1 ~ "-" w "$" { print $1; exit }
-  ')
+  ' <<<"$all")
   [[ -n "$hit" ]] && { printf '%s\n' "$hit"; return 0; }
   # Prefixed → bare: "$want" is exactly "<provider>-<alias>"
-  hit=$(subctl_list_accounts | awk -F'\t' -v w="$want" '
+  hit=$(awk -F'\t' -v w="$want" '
     w == $2 "-" $1 { print $1; exit }
-  ')
+  ' <<<"$all")
   [[ -n "$hit" ]] && { printf '%s\n' "$hit"; return 0; }
   # No match: fail so callers die with "unknown account: <name>" instead of
   # threading an empty alias into downstream field lookups.
