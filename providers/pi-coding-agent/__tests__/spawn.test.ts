@@ -309,3 +309,93 @@ describe("signals.sh JSON shape", () => {
     expect(json.error).toBeTruthy();
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// W6.5 rider #420 — SUBCTL_AGENT_ROLE scoped to spawn type
+// ─────────────────────────────────────────────────────────────────────────
+//
+// Pi sessions are dashboard-spawnable for interactive use, but the stamp
+// used to be hardcoded =worker on EVERY spawn. Contract (mirrors
+// providers/claude/teams.sh + its spawn-role.test.ts):
+//   worker mandate present (-p / -f) → "worker"
+//   bare interactive                 → no stamp at all
+// Pi has no -o; there is no orchestrator role.
+
+/** Drop a fake `tmux` into the fixture's PATH that records argv and
+ * satisfies the spawn flow (no stale session; ready marker on capture). */
+function armFakeTmux(f: Fixture): string {
+  const tmuxLog = join(f.root, "tmux-invoke.log");
+  const tmuxScript = [
+    "#!/bin/sh",
+    `echo "tmux $*" >> "${tmuxLog}"`,
+    'case "$1" in',
+    "  has-session) exit 1 ;;",
+    '  capture-pane) echo ">" ;;',
+    "esac",
+    "exit 0",
+  ].join("\n");
+  writeFileSync(join(f.fakeBin, "tmux"), tmuxScript);
+  chmodSync(join(f.fakeBin, "tmux"), 0o755);
+  return tmuxLog;
+}
+
+function newSessionLine(tmuxLog: string): string {
+  const log = readFileSync(tmuxLog, "utf8");
+  const line = log.split("\n").find((l) => l.includes("new-session"));
+  expect(line).toBeTruthy();
+  return line!;
+}
+
+describe("agent-role scoping (#420)", () => {
+  test("--dry-run banner: -p resolves worker", async () => {
+    const r = await runBash(
+      d,
+      `cd "${d.projectRoot}"
+       . "${TEAMS_SH}"
+       provider_pi_coding_agent_teams -a pi-test -p "do the task" --dry-run`,
+    );
+    expect(r.code).toBe(0);
+    expect(r.stdout).toMatch(/Role:\s+worker/);
+  });
+
+  test("--dry-run banner: bare interactive spawn gets NO role stamp", async () => {
+    const r = await runBash(
+      d,
+      `cd "${d.projectRoot}"
+       . "${TEAMS_SH}"
+       provider_pi_coding_agent_teams -a pi-test --dry-run`,
+    );
+    expect(r.code).toBe(0);
+    expect(r.stdout).toMatch(/Role:\s+none \(operator\/interactive/);
+  });
+
+  test("worker spawn (-p) stamps SUBCTL_AGENT_ROLE=worker on new-session, session-scoped", async () => {
+    const tmuxLog = armFakeTmux(d);
+    const r = await runBash(
+      d,
+      `cd "${d.projectRoot}"
+       . "${TEAMS_SH}"
+       provider_pi_coding_agent_teams -a pi-test -p "do the task" --no-attach`,
+    );
+    expect(r.code).toBe(0);
+    expect(newSessionLine(tmuxLog)).toContain("SUBCTL_AGENT_ROLE=worker");
+    const log = readFileSync(tmuxLog, "utf8");
+    // Scrub of any leaked server-global stamp fires on every spawn.
+    expect(log).toMatch(/set-environment -gu SUBCTL_AGENT_ROLE/);
+  });
+
+  test("bare interactive spawn carries NO SUBCTL_AGENT_ROLE at all", async () => {
+    const tmuxLog = armFakeTmux(d);
+    const r = await runBash(
+      d,
+      `cd "${d.projectRoot}"
+       . "${TEAMS_SH}"
+       provider_pi_coding_agent_teams -a pi-test --no-attach`,
+    );
+    expect(r.code).toBe(0);
+    const line = newSessionLine(tmuxLog);
+    expect(line).not.toContain("SUBCTL_AGENT_ROLE");
+    // Other session env still rides along.
+    expect(line).toContain("SUBCTL_PI_ACCOUNT=");
+  });
+});
