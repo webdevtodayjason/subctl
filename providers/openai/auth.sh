@@ -65,7 +65,7 @@ _provider_openai_classify_plan() {
 #   - config.toml with anything else → leave alone (user-chosen)
 #
 # As of late 2026 OpenAI's coding-recommended model on ChatGPT Pro/Plus is
-# gpt-5.5 with intelligence levels (low|medium|high|extra-high). We default
+# gpt-6.1-sol with intelligence levels (low|medium|high|extra-high). We default
 # to medium; users can switch via the TUI picker or by editing the file.
 _provider_openai_seed_config() {
   local cfg_dir="$1"
@@ -75,12 +75,12 @@ _provider_openai_seed_config() {
 # Seeded by `subctl auth openai`. Safe to edit.
 # ChatGPT-subscription auth requires a model that the plan tier supports;
 # `gpt-5` (the CLI's hardcoded default) is rejected on Pro/Plus accounts.
-# As of late 2026 the recommended coding model is gpt-5.5 with one of the
+# As of late 2026 the recommended coding model is gpt-6.1-sol with one of the
 # reasoning levels (low|medium|high|extra-high).
-model = "gpt-5.5"
+model = "gpt-6.1-sol"
 model_reasoning_effort = "medium"
 TOML
-    subctl_info "  seeded $cfg_file (model=gpt-5.5, reasoning=medium)"
+    subctl_info "  seeded $cfg_file (model=gpt-6.1-sol, reasoning=medium)"
     return 0
   fi
   # File exists. Detect known-bad model values and patch the model line only.
@@ -92,13 +92,13 @@ TOML
     gpt-5|codex-mini|codex-mini-latest)
       local tmp
       tmp=$(mktemp)
-      sed -E 's|^([[:space:]]*model[[:space:]]*=[[:space:]]*).*$|\1"gpt-5.5"|' \
+      sed -E 's|^([[:space:]]*model[[:space:]]*=[[:space:]]*).*$|\1"gpt-6.1-sol"|' \
         "$cfg_file" > "$tmp" && mv "$tmp" "$cfg_file"
-      subctl_info "  patched $cfg_file: model \"$current_model\" → \"gpt-5.5\" (ChatGPT-Pro compatible)"
+      subctl_info "  patched $cfg_file: model \"$current_model\" → \"gpt-6.1-sol\" (ChatGPT-Pro compatible)"
       ;;
     "")
-      printf '\nmodel = "gpt-5.5"\n' >> "$cfg_file"
-      subctl_info "  appended model=\"gpt-5.5\" to $cfg_file (was missing)"
+      printf '\nmodel = "gpt-6.1-sol"\n' >> "$cfg_file"
+      subctl_info "  appended model=\"gpt-6.1-sol\" to $cfg_file (was missing)"
       ;;
   esac
 }
