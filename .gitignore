@@ -71,3 +71,6 @@ __pycache__/
 # claude-mem regenerates these subdir copies on session start.
 **/CLAUDE.md
 !/CLAUDE.md
+
+# Graft local cache (directory or symlink)
+/graft
